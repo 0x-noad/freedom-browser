@@ -489,7 +489,7 @@ npm run dist:linux:x64:docker
 npm run dist:linux:arm64:docker
 ```
 
-Both run `electron-builder` inside a Linux container and download the matching Radicle addon for the target arch.
+Both run `electron-builder` inside a Linux container and download the matching Radicle addon for the target arch. Each invocation produces the `.AppImage`, the `.deb` and the `.pacman` for that arch.
 
 ### Windows
 
