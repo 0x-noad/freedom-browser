@@ -160,6 +160,7 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'ipns', privileges: DWEB_PROTOCOL_PRIVILEGES },
 ]);
 const { registerSettingsIpc, loadSettings } = require('./settings-store');
+const { registerShortcutsIpc } = require('./shortcuts-ipc');
 const { registerBookmarksIpc } = require('./bookmarks-store');
 const { registerHistoryIpc, closeDb: closeHistoryDb } = require('./history');
 const {
@@ -255,6 +256,7 @@ async function bootstrap() {
     onNewWindow: createMainWindow,
   });
   registerSettingsIpc();
+  registerShortcutsIpc();
   registerBookmarksIpc();
   registerHistoryIpc();
   registerDownloadsIpc();
