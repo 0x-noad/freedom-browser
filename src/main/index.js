@@ -343,6 +343,14 @@ async function bootstrap() {
     log.error('[App] Failed to check vault status:', err.message);
   }
 
+  // VAULT data vault: window.vault for sites + the freedom://dapps launcher.
+  try {
+    require('./vault/register-data-vault').registerDataVault();
+    log.info('[App] Data vault registered');
+  } catch (err) {
+    log.error('[App] Failed to register the data vault:', err);
+  }
+
   const settings = loadSettings();
   // A profile cold-started from another window's "edit" button (Profiles
   // manager) carries --open-settings; land its first tab on Profile settings.

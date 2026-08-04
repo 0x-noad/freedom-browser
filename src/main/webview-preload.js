@@ -768,4 +768,82 @@ ipcRenderer.on('swarm:provider-event', (_event, { event, data }) => {
 // main-process `bzz:` protocol handler in `src/main/swarm/bzz-protocol.js`,
 // not by in-page JavaScript. See README "Swarm Content Retrieval".
 
-console.log('[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm provider)');
+
+// ============================================
+// VAULT Data Vault (window.vault) + vault home page bridge
+// ============================================
+
+// Site-facing provider. NOTE the deliberate difference from the ethereum/swarm
+// bridges above: the vault data plane goes page -> preload -> MAIN directly via
+// ipcRenderer.invoke, NOT sendToHost to the shell renderer. Main derives the
+// caller's origin from event.senderFrame.url, so the page can never assert a
+// different origin — that authoritative origin IS the vault's isolation model.
+const VAULT_INJECT_SOURCE = ipcRenderer.sendSync('internal:get-vault-inject-source');
+
+try {
+  const vaultScript = document.createElement('script');
+  vaultScript.textContent = VAULT_INJECT_SOURCE;
+  const injectVault = () => {
+    const head = document.head || document.documentElement;
+    head.insertBefore(vaultScript, head.firstChild);
+    vaultScript.remove();
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', injectVault, { once: true });
+  } else {
+    injectVault();
+  }
+} catch (err) {
+  console.error('[webview-preload] Failed to inject vault provider:', err);
+}
+
+window.addEventListener('message', async (event) => {
+  if (event.source !== window) return;
+  if (!event.data || event.data.type !== 'FREEDOM_VAULT_REQUEST') return;
+  const { id, method, params } = event.data;
+  let payload;
+  try {
+    payload = await ipcRenderer.invoke('vault:provider-request', { method, params });
+  } catch (err) {
+    payload = { error: { code: err.code || -32603, message: err.message } };
+  }
+  window.postMessage(
+    { type: 'FREEDOM_VAULT_RESPONSE', id, result: payload.result, error: payload.error },
+    window.location.origin
+  );
+});
+
+ipcRenderer.on('vault:provider-event', (_event, { notification }) => {
+  window.postMessage({ type: 'FREEDOM_VAULT_EVENT', notification }, window.location.origin);
+});
+
+// Owner-plane bridge for freedom://dapps (the vault home page). Enumerating the
+// sites you hold data for is exactly the cross-origin history leak the vault
+// exists to prevent, so this is guarded on BOTH sides: guardInternal here (the
+// browser's existing idiom) and, authoritatively, a senderFrame check in main —
+// a renderer-side location test alone is not a security boundary.
+const isVaultHomePage = () => {
+  const location = globalThis.location;
+  if (!location || location.protocol !== 'file:') return false;
+  const file = internalPages.routable?.dapps || 'dapps.html';
+  return (location.pathname || '').endsWith(`/pages/${file}`);
+};
+
+const guardVaultHome =
+  (name, fn) =>
+  (...args) => {
+    if (!isVaultHomePage()) {
+      console.warn(`[vaultHome] blocked "${name}" outside the vault home page`);
+      return Promise.reject(new Error('vaultHome is only available on freedom://dapps'));
+    }
+    return fn(...args);
+  };
+
+contextBridge.exposeInMainWorld('vaultHome', {
+  status: guardVaultHome('status', () => ipcRenderer.invoke('datavault:home-status')),
+  tiles: guardVaultHome('tiles', () => ipcRenderer.invoke('datavault:home-tiles')),
+  open: guardVaultHome('open', (namespace) => ipcRenderer.invoke('datavault:home-open', namespace)),
+  requestUnlock: guardVaultHome('requestUnlock', () => ipcRenderer.invoke('datavault:home-unlock')),
+});
+
+console.log('[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + vault provider)');

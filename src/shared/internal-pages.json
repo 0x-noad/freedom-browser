@@ -1,7 +1,8 @@
 {
   "routable": {
-    "home": "home.html",
+    "dapps": "dapps.html",
     "history": "history.html",
+    "home": "home.html",
     "links": "links.html",
     "payments": "payments.html",
     "profiles": "profiles.html",
@@ -9,5 +10,10 @@
     "publish": "publish.html",
     "settings": "settings.html"
   },
-  "other": ["error.html", "rad-browser.html", "ens-conflict.html", "ens-unverified.html"]
+  "other": [
+    "error.html",
+    "rad-browser.html",
+    "ens-conflict.html",
+    "ens-unverified.html"
+  ]
 }

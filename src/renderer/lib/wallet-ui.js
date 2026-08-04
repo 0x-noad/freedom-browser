@@ -28,6 +28,10 @@ import { initWalletSettings, closeWalletSettings } from './wallet/wallet-setting
 import { initCreateWallet, openCreateWallet, closeCreateWallet } from './wallet/create-wallet.js';
 import { initPublishSetup, openPublishSetup, closePublishSetup } from './wallet/publish-setup.js';
 import { initStampManager, closeStampManager } from './wallet/stamp-manager.js';
+import { initVaultData } from './wallet/vault-data.js';
+
+/** Set once initWalletUi runs; the tab handler below refreshes through it. */
+let vaultDataApi = null;
 import { initChequebookDeposit, closeChequebookDeposit } from './wallet/chequebook-deposit.js';
 import { initSwarmConnect, showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval } from './wallet/swarm-connect.js';
 import { initVaultUnlock, showVaultUnlock } from './wallet/vault-unlock.js';
@@ -89,6 +93,30 @@ export function initWalletUi() {
   initChainSwitcher();
   initReceive();
   initWalletSettings(switchTab);
+
+  // VAULT data vault pane. openAndFocus lets main surface a site's consent
+  // request here (per-field toggles) instead of a native dialog.
+  // The data vault has no unlock UI of its own — one unlock covers both vaults.
+  // Main routes a locked site-connect (or the launcher's Unlock button) here.
+  if (window.vaultData?.onShowUnlock) {
+    window.vaultData.onShowUnlock(async ({ id }) => {
+      try {
+        await showVaultUnlock('Your data vault');
+      } catch {
+        // user cancelled — main re-reads the real lock state either way
+      }
+      window.vaultData.respondUnlock(id);
+    });
+  }
+
+  vaultDataApi = initVaultData({
+    openAndFocus: () => {
+      openSidebarPanel();
+      switchTab('data');
+    },
+    // The pane's own Unlock button drives the browser's existing unlock screen.
+    requestUnlock: () => showVaultUnlock('Your data vault'),
+  });
   initCreateWallet();
   initPublishSetup();
   initStampManager();
@@ -158,6 +186,9 @@ function setupCoordinatorListeners() {
       }
       if (tabName === 'wallet') {
         refreshRecentPayments().catch((err) => console.error('[wallet-ui] recent payments refresh failed:', err));
+      }
+      if (tabName === 'data' && vaultDataApi) {
+        vaultDataApi.refresh();
       }
     });
   });

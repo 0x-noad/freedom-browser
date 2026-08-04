@@ -501,3 +501,40 @@ contextBridge.exposeInMainWorld('swarmFeedStore', {
   setFeedIdentity: (origin, identityMode) => ipcRenderer.invoke('swarm:set-feed-identity', origin, identityMode),
   revokeFeedAccess: (origin) => ipcRenderer.invoke('swarm:revoke-feed-access', origin),
 });
+
+// ============================================
+// VAULT data vault — OWNER plane (window.vaultData)
+// ============================================
+// The management surface for the "Data" pane. Deliberately separate from the
+// site-facing window.vault provider (injected into webviews by
+// webview-preload.js): these channels are on the MAIN-WINDOW preload only, so a
+// website can never reach them.
+contextBridge.exposeInMainWorld('vaultData', {
+  /** [{ namespace, origin, appName, fields, methods, bytes, lastUsed, connectedAt }] */
+  listPartitions: () => ipcRenderer.invoke('datavault:list-partitions'),
+  /** { totalBytes, partitionCount, unlocked } */
+  getUsage: () => ipcRenderer.invoke('datavault:usage'),
+  /** { namespace, locked, data?, bytes? } — data present only when unlocked */
+  getPartitionData: (namespace) => ipcRenderer.invoke('datavault:get-partition-data', namespace),
+  /** { deleted, namespace, freedBytes } */
+  deletePartition: (namespace) => ipcRenderer.invoke('datavault:delete-partition', namespace),
+  /** { cleared, freedBytes } */
+  clearAll: () => ipcRenderer.invoke('datavault:clear-all'),
+  /** { saved, path?, canceled? } — main shows the save dialog */
+  exportVault: () => ipcRenderer.invoke('datavault:export'),
+
+  // Consent flow — a site is asking for access. Main pushes a request; the
+  // "Data" pane renders per-field toggles and responds with the user's decision.
+  /** cb({ id, origin, namespace, appMetadata, icon, requestedScopes }) */
+  onConsentRequest: (cb) => ipcRenderer.on('datavault:consent-request', (_e, req) => cb(req)),
+  /** decision: { approved, grantedMethods?, grantedFields?, writePolicy?, reason? } */
+  respondConsent: (id, decision) => ipcRenderer.send('datavault:consent-response', { id, decision }),
+  /** Register this window as the consent target (also solves the boot race). */
+  signalReady: () => ipcRenderer.send('datavault:ui-ready'),
+
+  // Unlock flow — the launcher page (freedom://dapps) is a webview and cannot
+  // reach the sidebar's unlock screen, so main asks this window to show it.
+  /** cb({ id }) — show the browser's unlock screen, then call respondUnlock(id). */
+  onShowUnlock: (cb) => ipcRenderer.on('datavault:show-unlock', (_e, req) => cb(req)),
+  respondUnlock: (id) => ipcRenderer.send('datavault:unlock-result', { id }),
+});

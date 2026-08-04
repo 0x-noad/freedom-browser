@@ -10,6 +10,7 @@ module.exports = [
       'coverage/**',
       'node_modules/**',
       'src/renderer/vendor/**',
+      'src/main/vault/vendor/**', // generated: @vault/* bundled from the vault3r repo
       'ant-bin/**',
       'ipfs-bin/**',
       'ant-data/**',

@@ -1877,6 +1877,11 @@ export const initNavigation = () => {
   forwardBtn = document.getElementById('forward-btn');
   reloadBtn = document.getElementById('reload-btn');
   homeBtn = document.getElementById('home-btn');
+  // VAULT launcher: the grid of sites holding data in your vault.
+  const dappsBtn = document.getElementById('dapps-btn');
+  if (dappsBtn) {
+    dappsBtn.addEventListener('click', () => loadTarget('freedom://dapps'));
+  }
   bookmarksBar = document.querySelector('.bookmarks');
   protocolIcon = document.getElementById('protocol-icon');
   trustShield = document.getElementById('trust-shield');
