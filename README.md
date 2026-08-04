@@ -3,6 +3,21 @@
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 [![Platform](https://img.shields.io/badge/platform-macOS%20|%20Linux%20|%20Windows-lightgrey)](https://github.com/solardev-xyz/freedom-browser/releases)
 
+> **VAULT fork.** This is
+> [`0x-noad/freedom-browser`](https://github.com/0x-noad/freedom-browser), a fork of
+> [`solardev-xyz/freedom-browser`](https://github.com/solardev-xyz/freedom-browser)
+> with the **VAULT data vault** wired in (`window.vault`, wallet **Data** tab,
+> `freedom://dapps` launcher). Engine + reference glue:
+> [`absolutions19/vault3r-code-public`](https://github.com/absolutions19/vault3r-code-public).
+>
+> ```bash
+> npm install
+> unset ELECTRON_RUN_AS_NODE   # if launching from Cursor/VS Code agent terminals
+> npm start
+> # optional test dApp (from a sibling vault3r checkout):
+> #   pnpm serve:vault-test  →  open http://vault-test.localhost:8765/
+> ```
+
 Freedom is a browser for the decentralized web, with Swarm, IPFS, Radicle, and ENS as first-class protocols.
 It ships with integrated Swarm, IPFS, and Radicle nodes, enabling direct peer-to-peer network access without relying on centralized HTTP gateways. Radicle is available on macOS and Linux; the Windows build ships without Radicle until official Windows binaries are published upstream.
 
