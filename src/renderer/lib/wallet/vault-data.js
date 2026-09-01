@@ -54,7 +54,13 @@ export function initVaultData(opts = {}) {
   const reqFields = document.getElementById('vault-request-fields');
   const reqAllow = document.getElementById('vault-request-allow');
   const reqDeny = document.getElementById('vault-request-deny');
+  // Per-tab banner — which partition belongs to the page in front of you
+  const connectionBanner = document.getElementById('vault-connection-banner');
+  const connectionSite = document.getElementById('vault-connection-site');
+  const connectionFields = document.getElementById('vault-connection-fields');
+  const connectionManage = document.getElementById('vault-connection-manage');
   let currentNs = null;
+  let bannerPartition = null;
 
   function setView(name) {
     listView.classList.toggle('hidden', name !== 'list');
@@ -83,6 +89,8 @@ export function initVaultData(opts = {}) {
     setLocked(!usage.unlocked);
     if (!usage.unlocked) return;
 
+    updateConnectionBanner();
+
     const count = usage.partitionCount;
     usageText.textContent = `${fmtBytes(usage.totalBytes)} · ${count} site${count === 1 ? '' : 's'}`;
     const cap = Math.max(usage.totalBytes, 64 * 1024);
@@ -96,6 +104,7 @@ export function initVaultData(opts = {}) {
     // Hide every real view while locked, and drop any stale rows so nothing
     // survives behind the prompt.
     if (locked) {
+      hideConnectionBanner();
       listView.classList.add('hidden');
       detailView.classList.add('hidden');
       requestView.classList.add('hidden');
@@ -146,6 +155,54 @@ export function initVaultData(opts = {}) {
       row.appendChild(del);
       listEl.appendChild(row);
     }
+  }
+
+  // --- per-tab connection banner ---------------------------------------------
+  //
+  // The list is alphabetical and origin-keyed, so answering "does this page hold
+  // my data?" meant recognising your own origin in it. This mirrors the wallet's
+  // dapp / swarm / x402 banners: same navigation-completed hook, same shape,
+  // click through to the partition detail.
+
+  function hideConnectionBanner() {
+    bannerPartition = null;
+    connectionBanner?.classList.add('hidden');
+  }
+
+  function describeFields(fields) {
+    if (!fields.length) return 'no fields granted';
+    const writable = fields.filter((f) => f.write).length;
+    const label = `${fields.length} field${fields.length === 1 ? '' : 's'}`;
+    return writable ? `${label} · ${writable} writable` : `${label} · read only`;
+  }
+
+  async function updateConnectionBanner() {
+    if (!connectionBanner || !window.vaultData?.partitionForUrl) return;
+
+    const displayUrl = document.getElementById('address-input')?.value || '';
+    if (!displayUrl) {
+      hideConnectionBanner();
+      return;
+    }
+
+    let partition;
+    try {
+      partition = await window.vaultData.partitionForUrl(displayUrl);
+    } catch (err) {
+      console.error('[vault-data] connection lookup failed', err);
+      hideConnectionBanner();
+      return;
+    }
+
+    if (!partition) {
+      hideConnectionBanner();
+      return;
+    }
+
+    bannerPartition = partition;
+    connectionSite.textContent = partition.appName || hostOf(partition.origin);
+    connectionFields.textContent = describeFields(partition.fields || []);
+    connectionBanner.classList.remove('hidden');
   }
 
   async function showDetail(p) {
@@ -220,6 +277,21 @@ export function initVaultData(opts = {}) {
       showList();
     };
   }
+
+  if (connectionManage) {
+    connectionManage.addEventListener('click', () => {
+      if (bannerPartition) showDetail(bannerPartition);
+    });
+  }
+
+  // Same hooks the other three banners use, so the banner always describes the
+  // page you are looking at.
+  document.addEventListener('sidebar-opened', () => {
+    updateConnectionBanner();
+  });
+  document.addEventListener('navigation-completed', () => {
+    updateConnectionBanner();
+  });
 
   backBtn.addEventListener('click', showList);
   detailDelete.addEventListener('click', async () => {

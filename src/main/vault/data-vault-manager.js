@@ -132,6 +132,7 @@ class DataVaultManager {
     ipcMain.handle(CH.VAULT_LIST_PARTITIONS, () => this.listPartitions());
     ipcMain.handle(CH.VAULT_USAGE, () => this.getUsage());
     ipcMain.handle(CH.VAULT_GET_PARTITION_DATA, (_e, namespace) => this.getPartitionData(namespace));
+    ipcMain.handle(CH.VAULT_PARTITION_FOR_URL, (_e, url) => this.partitionForUrl(url));
     ipcMain.handle(CH.VAULT_DELETE_PARTITION, (_e, namespace) => this.deletePartition(namespace));
     ipcMain.handle(CH.VAULT_CLEAR_ALL, () => this.clearAll());
     ipcMain.handle(CH.VAULT_EXPORT, () => this.exportToFile());
@@ -432,6 +433,44 @@ class DataVaultManager {
     }
     out.sort((a, b) => b.bytes - a.bytes);
     return out;
+  }
+
+  /**
+   * The partition belonging to a browsed URL, or null when that site has no
+   * grant. Backs the "Data" pane's per-tab banner, which answers the question a
+   * user actually has when they open the pane: does the page in front of me hold
+   * my data, and what may it do with it?
+   *
+   * The namespace is derived here rather than matched by host in the renderer,
+   * because scheme is part of the derivation — `bzz://site` and `https://site`
+   * are separate partitions.
+   */
+  async partitionForUrl(url) {
+    if (!this._keystore.isUnlocked()) return null;
+    const origin = originForNamespace(url);
+    if (!origin) return null;
+
+    let namespace;
+    try {
+      ({ namespace } = deriveOriginNamespace(origin));
+    } catch {
+      return null;
+    }
+
+    const p = perms.getPermission(namespace);
+    if (!p) return null;
+
+    const bytes = await this._storage.byteSize(`doc:${storageKeyForNamespace(namespace)}`);
+    return {
+      namespace,
+      origin: p.origin,
+      appName: (p.appMetadata && p.appMetadata.name) || null,
+      fields: p.fields || [],
+      methods: p.methods || [],
+      bytes,
+      lastUsed: p.lastUsed || null,
+      connectedAt: p.connectedAt || null,
+    };
   }
 
   // --- vault home page (the dApp launcher) -------------------------------------

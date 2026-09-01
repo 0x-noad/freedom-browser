@@ -183,3 +183,58 @@
 .vault-locked .vault-btn {
   margin-top: 6px;
 }
+
+/* Per-tab connection banner — mirrors the wallet's dapp / swarm / x402 banners
+   so the data vault reads in the same terms as the rest of the sidebar. */
+.vault-connection-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: rgba(139, 92, 246, 0.1);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: 8px;
+}
+.vault-connection-banner.hidden { display: none; }
+.vault-connection-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+  cursor: pointer;
+}
+.vault-connection-indicator {
+  width: 8px;
+  height: 8px;
+  background: #8b5cf6;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.vault-connection-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.vault-connection-label { font-size: 11px; color: var(--muted); }
+.vault-connection-site {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vault-connection-fields {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-theme="light"] .vault-connection-banner {
+  background: rgba(139, 92, 246, 0.08);
+  border-color: rgba(139, 92, 246, 0.25);
+}

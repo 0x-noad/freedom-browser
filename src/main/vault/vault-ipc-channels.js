@@ -28,6 +28,7 @@ module.exports = {
   VAULT_LIST_PARTITIONS: 'datavault:list-partitions',
   VAULT_USAGE: 'datavault:usage',
   VAULT_GET_PARTITION_DATA: 'datavault:get-partition-data',
+  VAULT_PARTITION_FOR_URL: 'datavault:partition-for-url',
   VAULT_DELETE_PARTITION: 'datavault:delete-partition',
   VAULT_CLEAR_ALL: 'datavault:clear-all',
   VAULT_EXPORT: 'datavault:export', // integration decision #5

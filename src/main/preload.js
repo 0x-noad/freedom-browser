@@ -516,6 +516,8 @@ contextBridge.exposeInMainWorld('vaultData', {
   getUsage: () => ipcRenderer.invoke('datavault:usage'),
   /** { namespace, locked, data?, bytes? } — data present only when unlocked */
   getPartitionData: (namespace) => ipcRenderer.invoke('datavault:get-partition-data', namespace),
+  /** The partition for a browsed URL, or null — backs the per-tab banner */
+  partitionForUrl: (url) => ipcRenderer.invoke('datavault:partition-for-url', url),
   /** { deleted, namespace, freedBytes } */
   deletePartition: (namespace) => ipcRenderer.invoke('datavault:delete-partition', namespace),
   /** { cleared, freedBytes } */
