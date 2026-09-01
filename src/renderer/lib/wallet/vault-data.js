@@ -12,6 +12,16 @@
 
 import { getPermissionKey } from '../origin-utils.js';
 
+// Set by initVaultData so the tab-switch hook in dapp-provider.js can refresh
+// the banner the same way it refreshes the wallet / Swarm / x402 ones. Switching
+// tabs fires no navigation event, so the document listeners below never see it.
+let refreshConnectionBanner = () => {};
+
+/** Refresh the Data pane's per-tab banner (no-op before the pane is wired). */
+export function updateVaultConnectionBanner() {
+  return refreshConnectionBanner();
+}
+
 function fmtBytes(n) {
   if (!n) return '0 B';
   if (n < 1024) return `${n} B`;
@@ -297,6 +307,8 @@ export function initVaultData(opts = {}) {
     updateConnectionBanner();
   });
 
+  refreshConnectionBanner = updateConnectionBanner;
+
   backBtn.addEventListener('click', showList);
   detailDelete.addEventListener('click', async () => {
     if (!currentNs) return;
@@ -343,5 +355,5 @@ export function initVaultData(opts = {}) {
     window.vaultData.signalReady();
   }
 
-  return { refresh };
+  return { refresh, updateConnectionBanner };
 }

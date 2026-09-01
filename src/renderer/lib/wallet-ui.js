@@ -28,7 +28,7 @@ import { initWalletSettings, closeWalletSettings } from './wallet/wallet-setting
 import { initCreateWallet, openCreateWallet, closeCreateWallet } from './wallet/create-wallet.js';
 import { initPublishSetup, openPublishSetup, closePublishSetup } from './wallet/publish-setup.js';
 import { initStampManager, closeStampManager } from './wallet/stamp-manager.js';
-import { initVaultData } from './wallet/vault-data.js';
+import { initVaultData, updateVaultConnectionBanner } from './wallet/vault-data.js';
 
 /** Set once initWalletUi runs; the tab handler below refreshes through it. */
 let vaultDataApi = null;
@@ -43,6 +43,7 @@ import { initPublisherIdentityCreate, closePublisherIdentityCreate } from './wal
 export { showDappConnect, updateConnectionBanner, showDappTxApproval, showDappSignApproval };
 export { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showVaultUnlock };
 export { updateX402ConnectionBanner };
+export { updateVaultConnectionBanner };
 export { showDappPermissions, showSwarmPermissions, showX402Permissions };
 export { getSelectedChainId, setSelectedChainId };
 
