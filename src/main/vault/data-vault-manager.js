@@ -29,6 +29,7 @@ const perms = require('./data-vault-permissions');
 const { DataVaultKeystore } = require('./data-vault-keystore');
 const { DataVaultStorage } = require('./data-vault-storage');
 const { normalizeIcon, monogramFor, sanitizeName } = require('./data-vault-icon');
+const { resetVaultAutoLockTimer } = require('../vault-timer');
 
 /** Schemes the home page is allowed to launch. Anything else (javascript:, file:,
  *  data:, blob:) is rejected — the launcher must never become a way to navigate
@@ -170,17 +171,27 @@ class DataVaultManager {
       const sessionId = params && params.sessionId;
       this._requireOwnedSession(event, origin, sessionId);
 
+      // A site that only uses window.vault is otherwise invisible to the
+      // identity vault's auto-lock timer, so writing to the vault would let it
+      // lock mid-session while publishing to Swarm keeps it alive. Every
+      // successful data-plane call reports activity, exactly as each Swarm
+      // publishing method does (src/main/swarm/swarm-provider-ipc.js).
+      const active = (value) => {
+        resetVaultAutoLockTimer();
+        return value;
+      };
+
       switch (method) {
         case M.getData:
-          return ok(await this._engine.localGet(sessionId, params.paths || []));
+          return ok(active(await this._engine.localGet(sessionId, params.paths || [])));
         case M.setData:
-          return ok(await this._engine.localSet(sessionId, params.values || {}, params.baseVersion));
+          return ok(active(await this._engine.localSet(sessionId, params.values || {}, params.baseVersion)));
         case M.patchData:
-          return ok(await this._engine.localPatch(sessionId, params.ops || [], params.baseVersion));
+          return ok(active(await this._engine.localPatch(sessionId, params.ops || [], params.baseVersion)));
         case M.subscribe:
-          return ok(await this._engine.localSubscribe(sessionId, params.paths || []));
+          return ok(active(await this._engine.localSubscribe(sessionId, params.paths || [])));
         case M.unsubscribe:
-          return ok(await this._engine.localUnsubscribe(sessionId, params.subscriptionId));
+          return ok(active(await this._engine.localUnsubscribe(sessionId, params.subscriptionId)));
         case M.revoke: {
           const r = await this._engine.localRevoke(sessionId);
           this._sessions.delete(sessionId);
