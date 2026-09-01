@@ -92,6 +92,8 @@ const KNOWN_METHODS = [
   'swarm_writeSingleOwnerChunk',
   'swarm_readSingleOwnerChunk',
   'swarm_getSigningIdentity',
+  'swarm_isRetrievable',
+  'swarm_getBatch',
 ];
 
 // Tag ownership: tagUid → origin. Session-scoped, not persisted.
@@ -326,6 +328,17 @@ async function executeSwarmMethod(method, params, origin) {
       return handleReadSingleOwnerChunk(params, normalizedOrigin);
     }
 
+    // swarm_isRetrievable / swarm_getBatch: no permission required. Both read
+    // public network state — whether a reference still resolves, and the
+    // on-chain terms of a postage batch anyone can look up by ID.
+    if (method === 'swarm_isRetrievable') {
+      return handleIsRetrievable(params, normalizedOrigin);
+    }
+
+    if (method === 'swarm_getBatch') {
+      return handleGetBatch(params, normalizedOrigin);
+    }
+
     // swarm_readFeedEntry: no permission required. Feeds are public Swarm
     // data — any origin can read them via any Bee gateway without auth.
     // Gating this behind connection permission would force unnecessary
@@ -518,7 +531,17 @@ async function handlePublishData(params, origin) {
     updateEntry(historyEntry.id, { status: 'completed', ...result });
     log.info(`[SwarmProvider] publishData succeeded for ${origin}: ${result.bzzUrl}`);
 
-    return { result: { reference: result.reference, bzzUrl: result.bzzUrl } };
+    // batchId is deliberately included: the caller paid for this batch, and its
+    // remaining balance and depth are public on-chain state. Without the ID a
+    // site cannot tell (or show) how long its own upload stays paid for.
+    return {
+      result: {
+        reference: result.reference,
+        bzzUrl: result.bzzUrl,
+        batchId: result.batchIdUsed,
+        bytesSize: result.bytesSize,
+      },
+    };
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] publishData failed for ${origin}:`, err.message);
@@ -671,7 +694,15 @@ async function handlePublishFiles(params, origin) {
     updateEntry(historyEntry.id, { status: 'completed', ...result });
     log.info(`[SwarmProvider] publishFiles succeeded for ${origin}: ${result.bzzUrl} (${normalizedFiles.length} files)`);
 
-    return { result: { reference: result.reference, bzzUrl: result.bzzUrl, tagUid: result.tagUid } };
+    return {
+      result: {
+        reference: result.reference,
+        bzzUrl: result.bzzUrl,
+        tagUid: result.tagUid,
+        batchId: result.batchIdUsed,
+        bytesSize: result.bytesSize,
+      },
+    };
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] publishFiles failed for ${origin}:`, err.message);
@@ -709,6 +740,126 @@ async function handleGetUploadStatus(params, origin) {
     log.error(`[SwarmProvider] getUploadStatus failed for tag ${tagUid}:`, err.message);
     return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
   }
+}
+
+/**
+ * Handle swarm_isRetrievable: does the network still serve this reference?
+ *
+ * Wraps the node's `GET /stewardship/{reference}`. Without it a site can only
+ * attempt a fetch and guess, which conflates "the batch expired", "not
+ * replicated yet" and "my node is having a bad day".
+ */
+async function handleIsRetrievable(params, origin) {
+  if (!params || typeof params !== 'object') {
+    return invalidParams('params is required');
+  }
+
+  const { reference } = params;
+  const referenceError = validateHexString(reference, 32, 'invalid_reference', 'reference');
+  if (referenceError) return referenceError;
+
+  const budgetError = consumePermissionFreeReadBudget(origin, { requests: 1 });
+  if (budgetError) return budgetError;
+
+  const reachable = await checkBeeReachable();
+  if (!reachable.ok) {
+    return nodeUnavailable(reachable.reason);
+  }
+
+  const normalized = reference.toLowerCase();
+  try {
+    const res = await fetch(`${getAntApiUrl()}/stewardship/${normalized}`);
+    if (!res.ok) {
+      // 404 is a real answer from the node: it knows of no such content.
+      if (res.status === 404) {
+        return { result: { reference: normalized, isRetrievable: false } };
+      }
+      return nodeUnavailable('node-not-ready');
+    }
+    const body = await res.json();
+    return { result: { reference: normalized, isRetrievable: body.isRetrievable === true } };
+  } catch (err) {
+    log.error(`[SwarmProvider] isRetrievable failed for ${normalized}:`, err.message);
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+}
+
+/**
+ * Handle swarm_getBatch: the on-chain terms of a postage batch.
+ *
+ * `/stamps/{id}` answers for batches this node owns (and adds utilization);
+ * anything else comes from the node's view of the postage contract via
+ * `/batches`, so a site can verify a batch ID it was handed by someone else.
+ */
+async function handleGetBatch(params, origin) {
+  if (!params || typeof params !== 'object') {
+    return invalidParams('params is required');
+  }
+
+  const { batchId } = params;
+  const batchError = validateHexString(batchId, 32, 'invalid_batch_id', 'batchId');
+  if (batchError) return batchError;
+
+  const budgetError = consumePermissionFreeReadBudget(origin, { requests: 1 });
+  if (budgetError) return budgetError;
+
+  const reachable = await checkBeeReachable();
+  if (!reachable.ok) {
+    return nodeUnavailable(reachable.reason);
+  }
+
+  const normalized = batchId.toLowerCase();
+  const beeUrl = getAntApiUrl();
+  try {
+    const ownRes = await fetch(`${beeUrl}/stamps/${normalized}`);
+    if (ownRes.ok) {
+      const stamp = await ownRes.json();
+      return {
+        result: {
+          batchId: normalized,
+          depth: numberOrNull(stamp.depth),
+          bucketDepth: numberOrNull(stamp.bucketDepth),
+          batchTTL: numberOrNull(stamp.batchTTL),
+          utilization: numberOrNull(stamp.utilization),
+          usable: stamp.usable === true,
+          immutable: stamp.immutableFlag === true,
+          owned: true,
+        },
+      };
+    }
+
+    const allRes = await fetch(`${beeUrl}/batches`);
+    if (!allRes.ok) {
+      return { result: null };
+    }
+    const body = await allRes.json();
+    const batches = Array.isArray(body.batches) ? body.batches : [];
+    const found = batches.find(
+      (b) => String(b.batchID || '').replace(/^0x/, '').toLowerCase() === normalized
+    );
+    if (!found) return { result: null };
+
+    return {
+      result: {
+        batchId: normalized,
+        depth: numberOrNull(found.depth),
+        bucketDepth: numberOrNull(found.bucketDepth),
+        batchTTL: numberOrNull(found.batchTTL),
+        utilization: null,
+        usable: null,
+        immutable: found.immutableFlag === true,
+        owned: false,
+      },
+    };
+  } catch (err) {
+    log.error(`[SwarmProvider] getBatch failed for ${normalized}:`, err.message);
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+}
+
+function numberOrNull(value) {
+  const n = typeof value === 'string' ? Number(value) : value;
+  return Number.isFinite(n) ? n : null;
 }
 
 function mapChunkReadError(err) {

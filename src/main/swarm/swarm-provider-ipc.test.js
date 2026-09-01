@@ -311,6 +311,7 @@ describe('swarm-provider-ipc', () => {
         bzzUrl: 'bzz://abc123',
         tagUid: null,
         batchIdUsed: 'batch1',
+        bytesSize: 11,
       });
 
       const result = await invokeProvider('swarm_publishData', {
@@ -319,7 +320,12 @@ describe('swarm-provider-ipc', () => {
         name: 'greeting',
       }, 'myapp.eth');
 
-      expect(result.result).toEqual({ reference: 'abc123', bzzUrl: 'bzz://abc123' });
+      expect(result.result).toEqual({
+        reference: 'abc123',
+        bzzUrl: 'bzz://abc123',
+        batchId: 'batch1',
+        bytesSize: 11,
+      });
       expect(mockPublishData).toHaveBeenCalledWith('Hello world', {
         contentType: 'text/plain',
         name: 'greeting',
@@ -342,6 +348,7 @@ describe('swarm-provider-ipc', () => {
         bzzUrl: 'bzz://def456',
         tagUid: null,
         batchIdUsed: 'batch2',
+        bytesSize: 4,
       });
 
       const binaryData = Buffer.from([0x89, 0x50, 0x4e, 0x47]); // PNG header bytes
@@ -351,7 +358,12 @@ describe('swarm-provider-ipc', () => {
         name: 'test.png',
       }, 'myapp.eth');
 
-      expect(result.result).toEqual({ reference: 'def456', bzzUrl: 'bzz://def456' });
+      expect(result.result).toEqual({
+        reference: 'def456',
+        bzzUrl: 'bzz://def456',
+        batchId: 'batch2',
+        bytesSize: 4,
+      });
       expect(mockPublishData).toHaveBeenCalledWith(binaryData, {
         contentType: 'image/png',
         name: 'test.png',
@@ -366,6 +378,7 @@ describe('swarm-provider-ipc', () => {
         bzzUrl: 'bzz://ghi789',
         tagUid: null,
         batchIdUsed: 'batch3',
+        bytesSize: 4,
       });
 
       const ab = new ArrayBuffer(4);
@@ -375,7 +388,12 @@ describe('swarm-provider-ipc', () => {
         contentType: 'image/gif',
       }, 'myapp.eth');
 
-      expect(result.result).toEqual({ reference: 'ghi789', bzzUrl: 'bzz://ghi789' });
+      expect(result.result).toEqual({
+        reference: 'ghi789',
+        bzzUrl: 'bzz://ghi789',
+        batchId: 'batch3',
+        bytesSize: 4,
+      });
       // Should arrive as Buffer (normalized from ArrayBuffer)
       const calledData = mockPublishData.mock.calls[0][0];
       expect(Buffer.isBuffer(calledData)).toBe(true);
@@ -494,7 +512,8 @@ describe('swarm-provider-ipc', () => {
         reference: 'site123',
         bzzUrl: 'bzz://site123',
         tagUid: 42,
-        batchIdUsed: 'batch1',
+        batchIdUsed: 'batchF',
+        bytesSize: 1234,
       });
 
       const result = await invokeProvider('swarm_publishFiles', {
@@ -502,7 +521,13 @@ describe('swarm-provider-ipc', () => {
         indexDocument: 'index.html',
       }, 'myapp.eth');
 
-      expect(result.result).toEqual({ reference: 'site123', bzzUrl: 'bzz://site123', tagUid: 42 });
+      expect(result.result).toEqual({
+        reference: 'site123',
+        bzzUrl: 'bzz://site123',
+        tagUid: 42,
+        batchId: 'batchF',
+        bytesSize: 1234,
+      });
       expect(mockPublishFilesFromContent).toHaveBeenCalledWith(
         expect.arrayContaining([
           expect.objectContaining({ path: 'index.html' }),
@@ -1897,6 +1922,98 @@ describe('swarm-provider-ipc', () => {
       mockGetAllFeeds.mockReturnValue({});
       await invokeProvider('swarm_listFeeds', {}, 'specific-origin.eth');
       expect(mockGetAllFeeds).toHaveBeenCalledWith('specific-origin.eth');
+    });
+  });
+
+  describe('swarm_isRetrievable', () => {
+    const REF = 'ab'.repeat(32);
+
+    beforeEach(() => {
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+    });
+
+    function mockReachable() {
+      global.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) }); // /node
+    }
+
+    test('reports retrievable content without a permission grant', async () => {
+      mockGetPermission.mockReturnValue(null);
+      mockReachable();
+      global.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ isRetrievable: true }) });
+
+      const result = await invokeProvider('swarm_isRetrievable', { reference: REF }, 'reader.eth');
+
+      expect(result.result).toEqual({ reference: REF, isRetrievable: true });
+      expect(global.fetch).toHaveBeenLastCalledWith(`http://127.0.0.1:1633/stewardship/${REF}`);
+    });
+
+    test('treats a 404 from the node as not retrievable', async () => {
+      mockGetPermission.mockReturnValue(null);
+      mockReachable();
+      global.fetch.mockResolvedValueOnce({ ok: false, status: 404 });
+
+      const result = await invokeProvider('swarm_isRetrievable', { reference: REF }, 'reader.eth');
+
+      expect(result.result).toEqual({ reference: REF, isRetrievable: false });
+    });
+
+    test('rejects a malformed reference', async () => {
+      mockGetPermission.mockReturnValue(null);
+      const result = await invokeProvider('swarm_isRetrievable', { reference: 'nope' }, 'reader.eth');
+      expect(result.error.data.reason).toBe('invalid_reference');
+    });
+  });
+
+  describe('swarm_getBatch', () => {
+    const BATCH = 'cd'.repeat(32);
+
+    beforeEach(() => {
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+      mockGetPermission.mockReturnValue(null);
+      global.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) }); // /node
+    });
+
+    test("returns the node's own batch with utilization", async () => {
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ depth: 21, bucketDepth: 16, batchTTL: 2592000, utilization: 3, usable: true, immutableFlag: false }),
+      });
+
+      const result = await invokeProvider('swarm_getBatch', { batchId: BATCH }, 'reader.eth');
+
+      expect(result.result).toEqual({
+        batchId: BATCH,
+        depth: 21,
+        bucketDepth: 16,
+        batchTTL: 2592000,
+        utilization: 3,
+        usable: true,
+        immutable: false,
+        owned: true,
+      });
+    });
+
+    test('falls back to the global batch list for a batch the node does not own', async () => {
+      global.fetch
+        .mockResolvedValueOnce({ ok: false, status: 404 }) // /stamps/{id}
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ batches: [{ batchID: `0x${BATCH}`, depth: 20, bucketDepth: 16, batchTTL: 100, immutableFlag: true }] }),
+        });
+
+      const result = await invokeProvider('swarm_getBatch', { batchId: BATCH }, 'reader.eth');
+
+      expect(result.result).toMatchObject({ batchId: BATCH, depth: 20, batchTTL: 100, owned: false, immutable: true });
+      expect(result.result.utilization).toBeNull();
+    });
+
+    test('returns null for an unknown batch', async () => {
+      global.fetch
+        .mockResolvedValueOnce({ ok: false, status: 404 })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ batches: [] }) });
+
+      const result = await invokeProvider('swarm_getBatch', { batchId: BATCH }, 'reader.eth');
+      expect(result.result).toBeNull();
     });
   });
 

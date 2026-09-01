@@ -719,6 +719,8 @@ const SWARM_INJECT_SOURCE = `
         writeSingleOwnerChunk(params) { return this.request({ method: 'swarm_writeSingleOwnerChunk', params: params }); },
         readSingleOwnerChunk(params) { return this.request({ method: 'swarm_readSingleOwnerChunk', params: params }); },
         getSigningIdentity() { return this.request({ method: 'swarm_getSigningIdentity' }); },
+        isRetrievable(params) { return this.request({ method: 'swarm_isRetrievable', params: params }); },
+        getBatch(params) { return this.request({ method: 'swarm_getBatch', params: params }); },
 
         on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
         removeListener(event, handler) {
