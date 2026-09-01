@@ -37,6 +37,7 @@ function loadWebviewPreloadModule(options = {}) {
     syncResponses: {
       [IPC.GET_INTERNAL_PAGES]: internalPages,
       [IPC.GET_ETHEREUM_INJECT_SOURCE]: '/* ethereum inject source stub */',
+      'internal:get-vault-inject-source': '/* vault inject source stub */',
     },
     invokeResponses: {
       [IPC.HISTORY_GET]: [{ url: 'https://example.com' }],
@@ -51,9 +52,21 @@ function loadWebviewPreloadModule(options = {}) {
   const documentHandlers = {};
   const documentCaptureHandlers = {};
   const body = { tagName: 'BODY' };
+  // Provider injection targets documentElement directly (document-start), so the
+  // mock has to carry one for the scripts to land anywhere.
+  const insertedScripts = [];
+  const documentElement = {
+    firstChild: null,
+    insertBefore: jest.fn((node) => {
+      insertedScripts.push(node);
+      return node;
+    }),
+  };
   const document = {
     title: options.title || 'Internal Page',
     body,
+    documentElement: options.noDocumentElement ? null : documentElement,
+    createElement: jest.fn(() => ({ textContent: '', remove: jest.fn() })),
     addEventListener: jest.fn((event, handler, useCapture) => {
       documentHandlers[event] = handler;
       if (useCapture === true) {
@@ -104,6 +117,8 @@ function loadWebviewPreloadModule(options = {}) {
     clipboard,
     contextBridge,
     document,
+    documentElement,
+    insertedScripts,
     documentHandlers,
     documentCaptureHandlers,
     windowCaptureHandlers,
@@ -132,6 +147,40 @@ describe('webview-preload', () => {
     global.navigator = originalNavigator;
     global.location = originalLocation;
     jest.restoreAllMocks();
+  });
+
+  describe('provider injection', () => {
+    test('installs every provider at document-start, not on DOMContentLoaded', () => {
+      const { insertedScripts, documentHandlers } = loadWebviewPreloadModule();
+
+      // ethereum, swarm, vault, then the readiness signal — a deferred
+      // `<script type="module">` runs before DOMContentLoaded, so waiting for
+      // that event would hand it three undefined providers.
+      expect(insertedScripts).toHaveLength(4);
+      expect(insertedScripts[0].textContent).toBe('/* ethereum inject source stub */');
+      expect(insertedScripts[1].textContent).toContain('window.swarm');
+      expect(insertedScripts[2].textContent).toBe('/* vault inject source stub */');
+      expect(documentHandlers.DOMContentLoaded).toBeUndefined();
+    });
+
+    test('announces readiness with freedom#initialized once all providers exist', () => {
+      const { insertedScripts } = loadWebviewPreloadModule();
+      expect(insertedScripts[3].textContent).toContain("new Event('freedom#initialized')");
+    });
+
+    test('defers injection until the document element exists', () => {
+      const { insertedScripts, documentHandlers, documentElement } = loadWebviewPreloadModule({
+        noDocumentElement: true,
+      });
+
+      expect(insertedScripts).toHaveLength(0);
+      expect(typeof documentHandlers.DOMContentLoaded).toBe('function');
+
+      global.document.documentElement = documentElement;
+      documentHandlers.DOMContentLoaded();
+
+      expect(insertedScripts).toHaveLength(4);
+    });
   });
 
   test('exposes guarded freedomAPI methods for allowed internal pages', async () => {
@@ -184,7 +233,7 @@ describe('webview-preload', () => {
     }
 
     expect(consoleLogSpy).toHaveBeenCalledWith(
-      '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm provider)'
+      '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + vault provider)'
     );
   });
 

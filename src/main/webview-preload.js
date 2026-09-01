@@ -550,31 +550,75 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 });
 
 // ============================================
+// Page-realm provider injection
+// ============================================
+
+// Providers must exist before ANY page script runs. `<script type="module">` is
+// deferred by definition and deferred scripts execute BEFORE DOMContentLoaded,
+// so injecting on that event hands the most ordinary modern dapp an undefined
+// window.ethereum / window.swarm / window.vault at boot. The preload itself runs
+// at document-start, so insert into the document element the moment it exists —
+// normally immediately, with a MutationObserver covering the narrow window where
+// the parser has not produced <html> yet. Injection order is preserved so the
+// `freedom#initialized` signal always fires last.
+const pendingPageScripts = [];
+let pageRealmObserver = null;
+let pageRealmRetryArmed = false;
+
+const insertPageScript = (script) => {
+  const root = document.head || document.documentElement;
+  if (!root) return false;
+  root.insertBefore(script, root.firstChild);
+  // The provider has installed itself synchronously; the element is only a
+  // delivery vehicle, so take it back out of the page's DOM.
+  script.remove();
+  return true;
+};
+
+const flushPendingPageScripts = () => {
+  while (pendingPageScripts.length) {
+    if (!insertPageScript(pendingPageScripts[0])) return false;
+    pendingPageScripts.shift();
+  }
+  if (pageRealmObserver) {
+    pageRealmObserver.disconnect();
+    pageRealmObserver = null;
+  }
+  return true;
+};
+
+const injectIntoPageRealm = (source, label) => {
+  try {
+    const script = document.createElement('script');
+    script.textContent = source;
+    pendingPageScripts.push(script);
+    if (flushPendingPageScripts()) return;
+
+    if (pageRealmRetryArmed) return;
+    pageRealmRetryArmed = true;
+
+    // Nothing to insert into yet — retry as soon as the parser produces a node.
+    if (typeof MutationObserver === 'function') {
+      pageRealmObserver = new MutationObserver(() => flushPendingPageScripts());
+      pageRealmObserver.observe(document, { childList: true, subtree: true });
+    }
+    // Last resort where MutationObserver is unavailable. Deferred page scripts
+    // have already run by then — exactly the race above — but a late provider
+    // still beats no provider.
+    document.addEventListener('DOMContentLoaded', flushPendingPageScripts, { once: true });
+  } catch (err) {
+    console.error(`[webview-preload] Failed to inject ${label} provider:`, err);
+  }
+};
+
+// ============================================
 // Ethereum Provider (EIP-1193)
 // ============================================
 
 // Injected into the page realm so dapps see window.ethereum as an own-property
 // of their own window, which many wallet-detection libraries require.
 // The preload realm only bridges messages to/from the host renderer (below).
-try {
-  const script = document.createElement('script');
-  script.textContent = ETHEREUM_INJECT_SOURCE;
-
-  // Inject before any page scripts run
-  const inject = () => {
-    const head = document.head || document.documentElement;
-    head.insertBefore(script, head.firstChild);
-    script.remove();
-  };
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', inject, { once: true });
-  } else {
-    inject();
-  }
-} catch (err) {
-  console.error('[webview-preload] Failed to inject ethereum provider:', err);
-}
+injectIntoPageRealm(ETHEREUM_INJECT_SOURCE, 'ethereum');
 
 // Bridge postMessage from page to IPC
 window.addEventListener('message', (event) => {
@@ -621,9 +665,7 @@ ipcRenderer.on('dapp:provider-event', (_event, { event, data }) => {
 // Swarm Provider (window.swarm)
 // ============================================
 
-try {
-  const swarmScript = document.createElement('script');
-  swarmScript.textContent = `
+const SWARM_INJECT_SOURCE = `
     (function() {
       const pendingRequests = new Map();
       let requestId = 0;
@@ -713,23 +755,11 @@ try {
           emitEvent(event.data.event, event.data.data);
         }
       });
+      window.dispatchEvent(new Event('swarm#initialized'));
     })();
   `;
 
-  const injectSwarm = () => {
-    const head = document.head || document.documentElement;
-    head.insertBefore(swarmScript, head.firstChild);
-    swarmScript.remove();
-  };
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', injectSwarm, { once: true });
-  } else {
-    injectSwarm();
-  }
-} catch (err) {
-  console.error('[webview-preload] Failed to inject swarm provider:', err);
-}
+injectIntoPageRealm(SWARM_INJECT_SOURCE, 'swarm');
 
 // Bridge postMessage from page to IPC (Swarm)
 window.addEventListener('message', (event) => {
@@ -780,22 +810,15 @@ ipcRenderer.on('swarm:provider-event', (_event, { event, data }) => {
 // different origin — that authoritative origin IS the vault's isolation model.
 const VAULT_INJECT_SOURCE = ipcRenderer.sendSync('internal:get-vault-inject-source');
 
-try {
-  const vaultScript = document.createElement('script');
-  vaultScript.textContent = VAULT_INJECT_SOURCE;
-  const injectVault = () => {
-    const head = document.head || document.documentElement;
-    head.insertBefore(vaultScript, head.firstChild);
-    vaultScript.remove();
-  };
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', injectVault, { once: true });
-  } else {
-    injectVault();
-  }
-} catch (err) {
-  console.error('[webview-preload] Failed to inject vault provider:', err);
-}
+injectIntoPageRealm(VAULT_INJECT_SOURCE, 'vault');
+
+// One signal for all three providers, following the EIP-1193
+// `ethereum#initialized` convention. A site that boots before the providers
+// exist (or is unsure whether it did) waits for this instead of polling.
+injectIntoPageRealm(
+  `window.dispatchEvent(new Event('freedom#initialized'));`,
+  'freedom-initialized'
+);
 
 window.addEventListener('message', async (event) => {
   if (event.source !== window) return;
