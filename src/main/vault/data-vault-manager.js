@@ -53,6 +53,13 @@ const M = {
   getPermissions: 'vault_getPermissions',
 };
 
+// Methods every grant carries, whatever the site asked for. The engine gates
+// `vault_getPermissions` on its own presence in the granted method list, so a
+// site that requests only read/write scopes cannot read back the grant it
+// already holds — a confusing failure that leaks nothing when allowed, since
+// the caller is asking about permissions it was itself given.
+const ALWAYS_GRANTED_METHODS = [M.getPermissions];
+
 class DataVaultManager {
   /**
    * @param {object} deps
@@ -247,7 +254,7 @@ class DataVaultManager {
     if (remembered && covers(remembered, requestedMethods, requestedFields)) {
       return {
         approved: true,
-        grantedMethods: remembered.methods,
+        grantedMethods: withAlwaysGranted(remembered.methods),
         grantedFields: remembered.fields,
         writePolicy: remembered.writePolicy,
       };
@@ -272,18 +279,20 @@ class DataVaultManager {
         previousGrant: remembered || null,
       });
       if (decision && decision.approved) {
+        const grantedMethods = withAlwaysGranted(decision.grantedMethods || requestedMethods);
         perms.grantPermission(
           namespace,
           {
             origin: req.verification.domain,
             appMetadata: claimed.appMetadata,
             icon: claimed.icon,
-            methods: decision.grantedMethods || requestedMethods,
+            methods: grantedMethods,
             fields: decision.grantedFields || requestedFields,
             writePolicy: decision.writePolicy,
           },
           this._now(),
         );
+        return { ...decision, grantedMethods };
       }
       return decision || { approved: false, reason: 'no decision' };
     })();
@@ -620,9 +629,13 @@ function flattenFields(scopes) {
   for (const sc of scopes || []) for (const f of sc.fields || []) out.push(f);
   return out;
 }
+/** Add the methods every grant carries to `methods`, without duplicating them. */
+function withAlwaysGranted(methods) {
+  return [...new Set([...(methods || []), ...ALWAYS_GRANTED_METHODS])];
+}
 /** Does a remembered grant cover everything now requested? (method + field paths) */
 function covers(remembered, methods, fields) {
-  const have = new Set(remembered.methods || []);
+  const have = new Set(withAlwaysGranted(remembered.methods));
   if (!methods.every((m) => have.has(m))) return false;
   const havePaths = new Set((remembered.fields || []).map((f) => f.path));
   return fields.every((f) => havePaths.has(f.path));
