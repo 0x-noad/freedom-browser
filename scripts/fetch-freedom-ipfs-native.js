@@ -6,6 +6,7 @@ const fs = require('fs');
 const https = require('https');
 const os = require('os');
 const path = require('path');
+const { hostArch } = require('./host-arch');
 
 const projectRoot = path.join(__dirname, '..');
 const addonDir = path.join(projectRoot, 'native', 'freedom-ipfs-node');
@@ -106,13 +107,14 @@ function shouldBuildFromSource() {
 }
 
 function currentPlatformKey() {
-  return `${process.platform}-${process.arch}`;
+  return `${process.platform}-${hostArch()}`;
 }
 
 function currentPackageTarget() {
   const osName = packagePlatformByNodePlatform[process.platform];
   if (!osName) return null;
-  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : null;
+  const detected = hostArch();
+  const arch = detected === 'arm64' ? 'arm64' : detected === 'x64' ? 'x64' : null;
   return arch ? `${osName}-${arch}` : null;
 }
 

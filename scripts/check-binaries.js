@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { hostArchOrX64 } = require('./host-arch');
 
 const ANT_BIN_DIR = path.join(__dirname, '..', 'ant-bin');
 const FREEDOM_IPFS_NATIVE_PREBUILDS_DIR = path.join(
@@ -30,7 +31,7 @@ function getPlatformArch() {
       }
       if (!args.includes('--arm64') && !args.includes('--x64')) {
         // Default to current architecture
-        platforms.push({ os: 'mac', arch: process.arch === 'arm64' ? 'arm64' : 'x64' });
+        platforms.push({ os: 'mac', arch: hostArchOrX64() });
       }
     } else if (arg === '--linux') {
       if (args.includes('--arm64')) {
@@ -40,7 +41,7 @@ function getPlatformArch() {
         platforms.push({ os: 'linux', arch: 'x64' });
       }
       if (!args.includes('--arm64') && !args.includes('--x64')) {
-        platforms.push({ os: 'linux', arch: process.arch === 'arm64' ? 'arm64' : 'x64' });
+        platforms.push({ os: 'linux', arch: hostArchOrX64() });
       }
     } else if (arg === '--win') {
       if (args.includes('--arm64')) {
@@ -69,7 +70,7 @@ function getPlatformArch() {
       default:
         os = 'linux';
     }
-    platforms.push({ os, arch: process.arch === 'arm64' ? 'arm64' : 'x64' });
+    platforms.push({ os, arch: hostArchOrX64() });
   }
 
   return platforms;

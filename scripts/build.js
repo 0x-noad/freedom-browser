@@ -28,6 +28,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { isHostNativeBinary } = require('./native-binary-arch');
+const { hostArch } = require('./host-arch');
 
 const args = process.argv.slice(2);
 
@@ -120,12 +121,16 @@ const BS3_BINARY = path.join(
 // also detected and restored.
 
 const hostPlatform = { darwin: 'mac', win32: 'win', linux: 'linux' }[process.platform];
-const crossBuild = platform !== hostPlatform || archs.some((a) => a !== process.arch);
+// The machine's architecture, not the running Node's — an x64 Node on Apple
+// Silicon would otherwise call an arm64 build a cross-build and snapshot the
+// wrong addon. See ./host-arch.js.
+const machineArch = hostArch();
+const crossBuild = platform !== hostPlatform || archs.some((a) => a !== machineArch);
 
 let bs3Snapshot = null;
 if (crossBuild && fs.existsSync(BS3_BINARY)) {
   const current = fs.readFileSync(BS3_BINARY);
-  if (isHostNativeBinary(current)) {
+  if (isHostNativeBinary(current, process.platform, machineArch)) {
     bs3Snapshot = current;
   }
 }
@@ -133,7 +138,7 @@ if (crossBuild && fs.existsSync(BS3_BINARY)) {
 function restoreHostNativeDeps() {
   if (!crossBuild) return;
   const afterBuild = fs.existsSync(BS3_BINARY) ? fs.readFileSync(BS3_BINARY) : null;
-  if (isHostNativeBinary(afterBuild)) return;
+  if (isHostNativeBinary(afterBuild, process.platform, machineArch)) return;
   if (bs3Snapshot) {
     // try/catch so a failed write-back (e.g. build/Release wiped by a failed
     // cross-build) can't mask the original build error thrown past the finally.
