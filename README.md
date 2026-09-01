@@ -59,6 +59,21 @@ When a user enters a `bzz://`, `ipfs://`, `ipns://`, `rad://`, or ENS URL, the m
 
 ---
 
+## Building Sites for Freedom
+
+Freedom injects four providers into every page — `window.ethereum` (EIP-1193,
+announced over EIP-6963), `window.swarm` (publishing and reading Swarm),
+`window.vault` (per-site encrypted storage) and `window.ens` (ENS/WNS/GNS
+resolution) — all installed at document-start, before any page script runs.
+
+[**docs/site-authors.md**](docs/site-authors.md) is the guide for authors
+building *against* Freedom: what each provider does, when it prompts, the
+readiness checks that matter, and the constraints worth knowing before you
+design around them. Type definitions for all four ship in
+[`types/freedom-providers.d.ts`](types/freedom-providers.d.ts).
+
+---
+
 ## Swarm Content Retrieval
 
 A fresh Swarm node pulls chunks on-demand through the DHT, and any individual chunk lookup can transiently fail with `HTTP 404` even when the content is healthy and peers are connected. Across a page with 10–30 sub-resources (JS, CSS, fonts, images, video), a modest per-request failure rate compounds into visibly broken CSS, missing images, and videos that don't load. Retries almost always succeed — the problem is strictly first contact with cold content.
