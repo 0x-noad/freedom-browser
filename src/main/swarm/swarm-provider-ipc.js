@@ -131,6 +131,53 @@ function notConnected() {
   return notAuthorized('not_connected');
 }
 
+// The `reason` codes are the stable, machine-readable taxonomy sites branch on;
+// each one also carries prose that names the ACTION that clears it. A reason
+// that only names a state ("ultra-light-mode") sends developers off to fix the
+// node by hand when the browser already has a flow that does the whole thing.
+const REASON_GUIDANCE = {
+  'not-connected': {
+    message:
+      'This site has no publish grant. Call swarm_requestAccess() — it raises the browser\u2019s connect prompt.',
+    setupAvailable: false,
+  },
+  'node-stopped': {
+    message: 'The Swarm node is not running. Start it from the browser\u2019s node controls.',
+    setupAvailable: false,
+  },
+  'node-not-ready': {
+    message: 'The Swarm node is still starting up. Retry in a moment.',
+    setupAvailable: false,
+  },
+  'ultra-light-mode': {
+    message:
+      'Swarm publishing is not set up. Open the wallet\u2019s publish setup — it switches the node out of ultra-light mode, funds it, and buys storage. Funding the node wallet by hand does not do this.',
+    setupAvailable: true,
+  },
+  'no-usable-stamps': {
+    message:
+      'The node has no usable postage batch. Open the wallet\u2019s publish setup to buy storage.',
+    setupAvailable: true,
+  },
+};
+
+/** Prose + `setupAvailable` for a pre-flight reason code (null for `ok`). */
+function guidanceFor(reason) {
+  return REASON_GUIDANCE[reason] || { message: null, setupAvailable: false };
+}
+
+/** The node cannot publish right now — same reason code, plus what to do about it. */
+function nodeUnavailable(reason) {
+  const guidance = guidanceFor(reason);
+  return {
+    error: {
+      ...ERRORS.NODE_UNAVAILABLE,
+      message: `Node not available: ${reason}`,
+      data: { reason, reasonMessage: guidance.message, setupAvailable: guidance.setupAvailable },
+    },
+  };
+}
+
 function feedNotGranted() {
   return notAuthorized('feed_not_granted');
 }
@@ -377,11 +424,19 @@ async function handleGetCapabilities(origin) {
 
   const preFlight = await checkSwarmPreFlight();
 
+  // canPublish + reason are THE readiness check. Everything else here resolves
+  // whether or not a node is running, so a resolved getCapabilities (or a
+  // resolved requestAccess) says nothing about whether a publish would work.
+  const reason = !isConnected ? 'not-connected' : (preFlight.ok ? null : preFlight.reason);
+  const guidance = guidanceFor(reason);
+
   return {
     result: {
       specVersion: SPEC_VERSION,
       canPublish: isConnected && preFlight.ok,
-      reason: !isConnected ? 'not-connected' : (preFlight.ok ? null : preFlight.reason),
+      reason,
+      reasonMessage: guidance.message,
+      setupAvailable: guidance.setupAvailable,
       publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
       extensions: {
         ethereumWalletPublisherIdentity: true,
@@ -441,7 +496,7 @@ async function handlePublishData(params, origin) {
   // Pre-flight check
   const preFlight = await checkSwarmPreFlight();
   if (!preFlight.ok) {
-    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
+    return nodeUnavailable(preFlight.reason);
   }
 
   // Record history entry before upload. bytesSize is populated here (not only
@@ -595,7 +650,7 @@ async function handlePublishFiles(params, origin) {
 
   const preFlight = await checkSwarmPreFlight();
   if (!preFlight.ok) {
-    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
+    return nodeUnavailable(preFlight.reason);
   }
 
   const historyEntry = addEntry({
@@ -686,7 +741,7 @@ async function handlePublishChunk(params, origin) {
 
   const preFlight = await checkSwarmPreFlight();
   if (!preFlight.ok) {
-    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
+    return nodeUnavailable(preFlight.reason);
   }
 
   const historyEntry = addEntry({
@@ -731,7 +786,7 @@ async function handleReadChunk(params, origin) {
 
   const reachable = await checkBeeReachable();
   if (!reachable.ok) {
-    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${reachable.reason}`, data: { reason: reachable.reason } } };
+    return nodeUnavailable(reachable.reason);
   }
 
   try {
@@ -784,7 +839,7 @@ async function handleWriteSingleOwnerChunk(params, origin) {
 
   const preFlight = await checkSwarmPreFlight();
   if (!preFlight.ok) {
-    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
+    return nodeUnavailable(preFlight.reason);
   }
 
   const historyEntry = addEntry({
@@ -855,7 +910,7 @@ async function handleReadSingleOwnerChunk(params, origin) {
 
   const reachable = await checkBeeReachable();
   if (!reachable.ok) {
-    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${reachable.reason}`, data: { reason: reachable.reason } } };
+    return nodeUnavailable(reachable.reason);
   }
 
   try {
@@ -1036,7 +1091,7 @@ async function handleCreateFeed(params, origin) {
 
   const preFlight = await checkSwarmPreFlight();
   if (!preFlight.ok) {
-    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
+    return nodeUnavailable(preFlight.reason);
   }
 
   const activeIdentity = getActiveOriginIdentity(originEntry);
@@ -1120,7 +1175,7 @@ async function handleUpdateFeed(params, origin) {
 
   const preFlight = await checkSwarmPreFlight();
   if (!preFlight.ok) {
-    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
+    return nodeUnavailable(preFlight.reason);
   }
 
   let signerKey;
@@ -1210,7 +1265,7 @@ async function handleWriteFeedEntry(params, origin) {
 
   const preFlight = await checkSwarmPreFlight();
   if (!preFlight.ok) {
-    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
+    return nodeUnavailable(preFlight.reason);
   }
 
   let signerKey;
@@ -1336,7 +1391,7 @@ async function handleReadFeedEntry(params, origin) {
   // Read-only pre-flight: just check Bee API is reachable
   const reachable = await checkBeeReachable();
   if (!reachable.ok) {
-    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${reachable.reason}`, data: { reason: reachable.reason } } };
+    return nodeUnavailable(reachable.reason);
   }
 
   try {

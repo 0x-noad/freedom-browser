@@ -216,6 +216,8 @@ describe('swarm-provider-ipc', () => {
         specVersion: '1.0',
         canPublish: true,
         reason: null,
+        reasonMessage: null,
+        setupAvailable: false,
         publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
         extensions: {
           ethereumWalletPublisherIdentity: true,
@@ -1895,6 +1897,46 @@ describe('swarm-provider-ipc', () => {
       mockGetAllFeeds.mockReturnValue({});
       await invokeProvider('swarm_listFeeds', {}, 'specific-origin.eth');
       expect(mockGetAllFeeds).toHaveBeenCalledWith('specific-origin.eth');
+    });
+  });
+
+  describe('capability reasons', () => {
+    test('not-connected names the call that fixes it', async () => {
+      mockGetPermission.mockReturnValue(null);
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+      global.fetch
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [{ usable: true }] }) });
+
+      const result = await invokeProvider('swarm_getCapabilities', {}, 'myapp.eth');
+
+      expect(result.result.reason).toBe('not-connected');
+      expect(result.result.reasonMessage).toContain('swarm_requestAccess()');
+      expect(result.result.setupAvailable).toBe(false);
+    });
+
+    test('ultra-light-mode points at the publish setup flow', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+      global.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'ultra-light' }) });
+
+      const result = await invokeProvider('swarm_getCapabilities', {}, 'myapp.eth');
+
+      expect(result.result.reason).toBe('ultra-light-mode');
+      expect(result.result.reasonMessage).toContain('publish setup');
+      expect(result.result.setupAvailable).toBe(true);
+    });
+
+    test('a publish failure carries the same guidance', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+      global.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'ultra-light' }) });
+
+      const result = await invokeProvider('swarm_publishData', { data: 'hi', contentType: 'text/plain' }, 'myapp.eth');
+
+      expect(result.error.code).toBe(4900);
+      expect(result.error.data).toMatchObject({ reason: 'ultra-light-mode', setupAvailable: true });
     });
   });
 });
