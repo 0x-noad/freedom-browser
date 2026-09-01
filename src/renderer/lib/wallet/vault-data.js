@@ -10,6 +10,8 @@
  * machinery), so this module has no coupling to the wallet-state screen stack.
  */
 
+import { getPermissionKey } from '../origin-utils.js';
+
 function fmtBytes(n) {
   if (!n) return '0 B';
   if (n < 1024) return `${n} B`;
@@ -200,7 +202,9 @@ export function initVaultData(opts = {}) {
     }
 
     bannerPartition = partition;
-    connectionSite.textContent = partition.appName || hostOf(partition.origin);
+    // The permission key, not the site's claimed name — same value the wallet and
+    // Swarm banners show, and unlike appMetadata.name it is not page-controlled.
+    connectionSite.textContent = getPermissionKey(displayUrl) || hostOf(partition.origin);
     connectionFields.textContent = describeFields(partition.fields || []);
     connectionBanner.classList.remove('hidden');
   }
