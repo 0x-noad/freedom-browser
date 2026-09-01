@@ -38,6 +38,10 @@ module.exports = {
   ENS_RESOLVE_ADDRESS: 'ens:resolve-address',
   ENS_RESOLVE_REVERSE: 'ens:resolve-reverse',
   ENS_INVALIDATE_CONTENT: 'ens:invalidate-content',
+  // Site-facing name resolution (window.ens). Page -> webview preload -> main,
+  // never through the shell renderer: these are ungated public-chain reads and
+  // the renderer has nothing to add to them.
+  ENS_PROVIDER_REQUEST: 'ens:provider-request',
 
   // Settings
   SETTINGS_GET: 'settings:get',

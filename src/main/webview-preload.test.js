@@ -153,19 +153,20 @@ describe('webview-preload', () => {
     test('installs every provider at document-start, not on DOMContentLoaded', () => {
       const { insertedScripts, documentHandlers } = loadWebviewPreloadModule();
 
-      // ethereum, swarm, vault, then the readiness signal — a deferred
+      // ethereum, swarm, vault, ens, then the readiness signal — a deferred
       // `<script type="module">` runs before DOMContentLoaded, so waiting for
-      // that event would hand it three undefined providers.
-      expect(insertedScripts).toHaveLength(4);
+      // that event would hand it four undefined providers.
+      expect(insertedScripts).toHaveLength(5);
       expect(insertedScripts[0].textContent).toBe('/* ethereum inject source stub */');
       expect(insertedScripts[1].textContent).toContain('window.swarm');
       expect(insertedScripts[2].textContent).toBe('/* vault inject source stub */');
+      expect(insertedScripts[3].textContent).toContain('window.ens');
       expect(documentHandlers.DOMContentLoaded).toBeUndefined();
     });
 
     test('announces readiness with freedom#initialized once all providers exist', () => {
       const { insertedScripts } = loadWebviewPreloadModule();
-      expect(insertedScripts[3].textContent).toContain("new Event('freedom#initialized')");
+      expect(insertedScripts[4].textContent).toContain("new Event('freedom#initialized')");
     });
 
     test('defers injection until the document element exists', () => {
@@ -179,7 +180,7 @@ describe('webview-preload', () => {
       global.document.documentElement = documentElement;
       documentHandlers.DOMContentLoaded();
 
-      expect(insertedScripts).toHaveLength(4);
+      expect(insertedScripts).toHaveLength(5);
     });
   });
 
@@ -233,7 +234,7 @@ describe('webview-preload', () => {
     }
 
     expect(consoleLogSpy).toHaveBeenCalledWith(
-      '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + vault provider)'
+      '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + vault + ens provider)'
     );
   });
 

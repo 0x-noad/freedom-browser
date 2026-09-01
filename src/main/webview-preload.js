@@ -814,9 +814,89 @@ const VAULT_INJECT_SOURCE = ipcRenderer.sendSync('internal:get-vault-inject-sour
 
 injectIntoPageRealm(VAULT_INJECT_SOURCE, 'vault');
 
-// One signal for all three providers, following the EIP-1193
-// `ethereum#initialized` convention. A site that boots before the providers
-// exist (or is unsure whether it did) waits for this instead of polling.
+// ============================================
+// ENS / WNS / GNS Name Resolution (window.ens)
+// ============================================
+
+// Reads of public chain state, so — like the vault data plane — this goes page
+// -> preload -> MAIN directly rather than through the shell renderer. There is
+// no permission gate and nothing for the renderer to prompt about; main applies
+// a per-sender read budget so a page cannot turn the browser's quorum-checked
+// resolver pool into an open proxy.
+const ENS_INJECT_SOURCE = `
+    (function() {
+      const pending = new Map();
+      let requestId = 0;
+
+      function call(method, params) {
+        const id = ++requestId;
+        return new Promise(function (resolve, reject) {
+          pending.set(id, { resolve: resolve, reject: reject });
+          window.postMessage({ type: 'FREEDOM_ENS_REQUEST', id: id, method: method, params: params || {} }, '*');
+          setTimeout(function () {
+            if (pending.has(id)) {
+              pending.delete(id);
+              const e = new Error('Name resolution timed out');
+              e.code = -32603;
+              reject(e);
+            }
+          }, 30000);
+        });
+      }
+
+      window.ens = {
+        isFreedomBrowser: true,
+        request: function (args) {
+          if (!args || !args.method) return Promise.reject(new Error('method is required'));
+          return call(args.method, args.params);
+        },
+        reverse: function (address) { return call('ens_reverse', { address: address }); },
+        reverseMany: function (addresses) { return call('ens_reverseMany', { addresses: addresses }); },
+        resolve: function (name) { return call('ens_resolve', { name: name }); },
+      };
+
+      window.addEventListener('message', function (event) {
+        if (event.source !== window) return;
+        const d = event.data;
+        if (!d || typeof d !== 'object' || d.type !== 'FREEDOM_ENS_RESPONSE') return;
+        const p = pending.get(d.id);
+        if (!p) return;
+        pending.delete(d.id);
+        if (d.error) {
+          const e = new Error(d.error.message);
+          e.code = d.error.code;
+          e.data = d.error.data;
+          p.reject(e);
+        } else {
+          p.resolve(d.result);
+        }
+      });
+
+      window.dispatchEvent(new Event('ens#initialized'));
+    })();
+  `;
+
+injectIntoPageRealm(ENS_INJECT_SOURCE, 'ens');
+
+window.addEventListener('message', async (event) => {
+  if (event.source !== window) return;
+  if (!event.data || event.data.type !== 'FREEDOM_ENS_REQUEST') return;
+  const { id, method, params } = event.data;
+  let payload;
+  try {
+    payload = await ipcRenderer.invoke('ens:provider-request', { method, params });
+  } catch (err) {
+    payload = { error: { code: err.code || -32603, message: err.message } };
+  }
+  window.postMessage(
+    { type: 'FREEDOM_ENS_RESPONSE', id, result: payload.result, error: payload.error },
+    window.location.origin
+  );
+});
+
+// One signal for all providers, following the EIP-1193 `ethereum#initialized`
+// convention. A site that boots before the providers exist (or is unsure
+// whether it did) waits for this instead of polling.
 injectIntoPageRealm(
   `window.dispatchEvent(new Event('freedom#initialized'));`,
   'freedom-initialized'
@@ -871,4 +951,4 @@ contextBridge.exposeInMainWorld('vaultHome', {
   requestUnlock: guardVaultHome('requestUnlock', () => ipcRenderer.invoke('datavault:home-unlock')),
 });
 
-console.log('[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + vault provider)');
+console.log('[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + vault + ens provider)');
