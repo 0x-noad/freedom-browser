@@ -5,10 +5,36 @@
 
 > **VAULT fork.** This is
 > [`0x-noad/freedom-browser`](https://github.com/0x-noad/freedom-browser), a fork of
-> [`solardev-xyz/freedom-browser`](https://github.com/solardev-xyz/freedom-browser)
-> with the **VAULT data vault** wired in (`window.vault`, wallet **Data** tab,
-> `freedom://dapps` launcher). Engine + reference glue:
-> [`absolutions19/vault3r-code-public`](https://github.com/absolutions19/vault3r-code-public).
+> [`solardev-xyz/freedom-browser`](https://github.com/solardev-xyz/freedom-browser).
+>
+> **What this fork adds on top of upstream:**
+>
+> - **VAULT data vault** — per-site encrypted storage with per-field consent:
+>   `window.vault`, the wallet **Data** tab, and the `freedom://dapps` launcher.
+>   Engine + reference glue:
+>   [`absolutions19/vault3r-code-public`](https://github.com/absolutions19/vault3r-code-public)
+> - **`window.ens`** — ENS (`.eth`), WNS (`.wei`) and GNS (`.gwei`) resolution for
+>   pages, through the browser's own quorum-checked resolver and caches, with a
+>   batched `reverseMany()` for feeds. Upstream resolves all three for the address
+>   bar but exposes none of it to a page
+> - **Providers at document-start** — `window.ethereum`, `swarm`, `vault` and `ens`
+>   are installed before any page script runs, including deferred
+>   `<script type="module">`, plus a `freedom#initialized` readiness event
+> - **Verifiable Swarm content longevity** — publish results carry `batchId` and
+>   `bytesSize`, and `swarm_isRetrievable()` / `swarm_getBatch()` let a site check
+>   that content is still served and how long it stays paid for
+> - **Actionable Swarm readiness** — capability reasons carry `reasonMessage` (the
+>   action that clears them) and `setupAvailable`, instead of naming a state and
+>   stopping there
+> - **Vault usability fixes** — data-plane use keeps the vault unlocked,
+>   `vault_getPermissions` is granted with every grant, and the Data tab carries a
+>   per-tab connection banner matching the wallet's
+> - **Site-author documentation** — [`docs/site-authors.md`](docs/site-authors.md)
+>   covers all four providers together, with type definitions in
+>   [`types/freedom-providers.d.ts`](types/freedom-providers.d.ts)
+> - **Correct host arch on macOS** — binary downloads and build checks resolve the
+>   real hardware architecture, so an x64 Node under Rosetta no longer fetches
+>   `darwin-x64` for an arm64 Electron
 >
 > ```bash
 > npm install
