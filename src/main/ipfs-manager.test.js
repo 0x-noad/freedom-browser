@@ -1054,6 +1054,105 @@ describe('ipfs-manager', () => {
     }
   });
 
+  // Kubo's canonical trailing-slash redirect for a directory is written in the
+  // gateway's URL space (`Location: /ipfs/<cid>/docs/`), but Chromium resolves
+  // it against the `ipfs://` request URL it actually issued. Passing it through
+  // verbatim lands the tab on `ipfs://<cid>/ipfs/<cid>/docs/`, which 404s — so
+  // every directory URL without a trailing slash breaks in external mode.
+  // Rewriting it as a relative reference resolves to the same bytes whatever
+  // the `/<ns>/<ref>` prefix the ipfs:// host mapped to.
+  describe('gateway redirects that stay inside the requested path', () => {
+    const redirectCase = async ({ path, status = 301, location }) => {
+      const realFetch = global.fetch;
+      global.fetch = mockGatewayFetch(
+        async () => new Response(null, { status, headers: { location } })
+      );
+      try {
+        const ctx = loadIpfsManagerModule({
+          nativeAvailable: false,
+          activeProfile: {
+            metadata: {
+              nodes: {
+                ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+              },
+            },
+          },
+        });
+        await ctx.mod.startIpfs();
+        const response = await ctx.mod.serveNativeGatewayRequest({
+          path,
+          method: 'GET',
+          headers: new Headers(),
+        });
+        return { status: response.status, location: response.headers.get('location') };
+      } finally {
+        global.fetch = realFetch;
+      }
+    };
+
+    test("rewrites Kubo's directory 301 to a relative reference", async () => {
+      expect(
+        await redirectCase({
+          path: '/ipfs/bafybeidirectory/docs',
+          location: '/ipfs/bafybeidirectory/docs/',
+        })
+      ).toEqual({ status: 301, location: 'docs/' });
+    });
+
+    test('keeps the query string on the rewritten Location', async () => {
+      expect(
+        await redirectCase({
+          path: '/ipfs/bafybeidirectory/docs?page=2',
+          location: '/ipfs/bafybeidirectory/docs/?page=2',
+        })
+      ).toEqual({ status: 301, location: 'docs/?page=2' });
+    });
+
+    // An Ethereum name whose contenthash carries a base path resolves to
+    // `/ipfs/<cid>/<base>/<path>`; the relative form is prefix-agnostic, so it
+    // is right for this shape without this layer knowing the base path exists.
+    test('rewrites correctly when the gateway path carries a published base path', async () => {
+      expect(
+        await redirectCase({
+          path: '/ipfs/bafybeidirectory/site/docs',
+          location: '/ipfs/bafybeidirectory/site/docs/',
+        })
+      ).toEqual({ status: 301, location: 'docs/' });
+    });
+
+    test('rewrites a same-origin absolute Location too', async () => {
+      expect(
+        await redirectCase({
+          status: 302,
+          path: '/ipfs/bafybeidirectory/docs',
+          location: 'http://127.0.0.1:8080/ipfs/bafybeidirectory/docs/',
+        })
+      ).toEqual({ status: 302, location: 'docs/' });
+    });
+
+    // Outside the requested directory the prefix depth would have to be known
+    // to translate the target, so the Location is left exactly as the gateway
+    // wrote it rather than guessed at.
+    test('leaves a Location that climbs out of the requested path untouched', async () => {
+      expect(
+        await redirectCase({
+          path: '/ipfs/bafybeidirectory/docs',
+          location: '/ipfs/bafyotherroot/docs/',
+        })
+      ).toEqual({ status: 301, location: '/ipfs/bafyotherroot/docs/' });
+    });
+
+    test('only rewrites redirect statuses', async () => {
+      expect(
+        await redirectCase({
+          status: 200,
+          path: '/ipfs/bafybeidirectory/docs',
+          location: '/ipfs/bafybeidirectory/docs/',
+        })
+      ).toEqual({ status: 200, location: '/ipfs/bafybeidirectory/docs/' });
+    });
+  });
+
   test('drops content-encoding, content-length and hop-by-hop headers from the proxied response', async () => {
     const realFetch = global.fetch;
     global.fetch = mockGatewayFetch(
