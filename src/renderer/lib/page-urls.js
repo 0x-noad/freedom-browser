@@ -3,7 +3,8 @@
 // Canonical source of truth: src/shared/internal-pages.json
 // Served to the renderer via sync IPC → preload → window.internalPages
 
-import { isEnsHost, isTezosDomainHost } from './origin-utils.js';
+import { isEnsHost, isTezosDomainHost, isPotentialEnsName } from './origin-utils.js';
+import { isIpfsGatewayFormUrl } from './url-utils.js';
 
 const ROUTABLE_PAGES = window.internalPages?.routable || {};
 
@@ -209,6 +210,14 @@ export const getOnchainInterstitialTarget = (url) => {
 // form. Callers gate the cross-transport assertion on this — if the user
 // typed `bzz://name.eth` and the contenthash is IPFS, the assertion fails
 // rather than silently switching transports.
+//
+// An explicitly-typed `ens://`/`bzz://`/`ipfs://` scheme also admits plain
+// DNS names (ENSv2 resolves those), but gateway-form IPFS URLs are excluded:
+// in `ipfs://ipfs.io/ipfs/<cid>` the outer host is a gateway, not a name, and
+// `formatIpfsUrl` rewrites the URL to the embedded CID. Since `loadTarget`
+// consults this parser before that rewrite, claiming the host here would send
+// every gateway-form bookmark, history entry, and Kubo dir-listing link to the
+// ENS resolver instead of loading the content. See `isIpfsGatewayFormUrl`.
 const ENS_INPUT_PREFIXES = [
   { prefix: 'ens://', assertedTransport: null },
   { prefix: 'bzz://', assertedTransport: 'bzz' },
@@ -223,11 +232,13 @@ export const parseEnsInput = (raw) => {
   const lower = value.toLowerCase();
   let assertedTransport = null;
   let legacyEnsScheme = false;
+  let explicitEnsName = false;
   for (const { prefix, assertedTransport: assertion } of ENS_INPUT_PREFIXES) {
     if (lower.startsWith(prefix)) {
       value = value.slice(prefix.length);
       assertedTransport = assertion;
       legacyEnsScheme = prefix === 'ens://';
+      explicitEnsName = prefix !== 'ipns://' && !isIpfsGatewayFormUrl(raw);
       break;
     }
   }
@@ -241,7 +252,10 @@ export const parseEnsInput = (raw) => {
   }
 
   const isTezos = isTezosDomainHost(name);
-  if ((!isEnsHost(name) && !isTezos) || (legacyEnsScheme && isTezos)) {
+  if (
+    (!isEnsHost(name) && !isTezos && !(explicitEnsName && isPotentialEnsName(name))) ||
+    (legacyEnsScheme && isTezos)
+  ) {
     return null;
   }
 
