@@ -366,6 +366,85 @@ Why a `-dev` suffix rather than a bare `<next>`:
 - Per semver, `<next>-dev` sorts strictly below `<next>`, so the eventual release will always look like an upgrade to a dev install (never a downgrade).
 - Note: a `-dev` suffix does **not** rescue dev installs from missing a hotfix on the previous line. By semver, `0.8.0-dev > 0.7.1` (major/minor/patch dominate; pre-release tags only break ties within the same triple). This is acceptable here because dev builds are run by developers from source, not via `electron-updater`. If you ever hand pre-release builds to non-developer testers, revisit this.
 
+## Nightly builds
+
+Nightly builds exist so internal testers can run what is on `main` without building it themselves, and so the packaging path is exercised between releases instead of only on a release branch. They are **not** part of the release process above: nothing in §0–§9 changes, `freedom.baby/downloads` and the `latest` update channel are untouched, and a nightly is never promoted into a release.
+
+### What runs, when
+
+`.github/workflows/release.yml` also runs on a schedule, `0 3 * * *` — **03:00 UTC, 05:00 CEST / 04:00 CET**. The schedule only fires on `main` (GitHub runs scheduled workflows from the default branch).
+
+| Job              | What it does on a nightly run                                                                                       |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `plan`           | Decides nightly / publish / version / skip. Every other job reads its outputs.                                      |
+| build jobs       | The same four builds a tag push makes — macOS signed and notarized, Linux x64/arm64, Windows x64 — all bundling Tor |
+| smoke jobs       | The same §6 steps 1/2/6 against every artifact, asserting the nightly version                                       |
+| `e2e-full`       | The whole Playwright `harness` project (CI runs curated per-job spec lists and leaves about 26 specs unrun)         |
+| `nightly`        | Publishes the artifacts to the rolling `nightly` pre-release                                                        |
+| `nightly-failed` | Comments on (or opens) one `Nightly build failed` issue labelled `nightly`                                          |
+
+A scheduled run whose head commit is already published as the current nightly skips every job: `plan` compares `github.sha` with the `commit: <sha>` line in the existing release's notes, so a day with no merges costs one runner minute instead of four builds. `e2e-full` deliberately does **not** gate publishing — a red full suite is a signal to act on in the morning, not a reason to withhold a build from testers.
+
+The build takes as long as a release build (20–30 minutes, macOS longest because of the two notarizations).
+
+### Triggering one by hand
+
+Actions → "Release" → Run workflow, from any branch:
+
+- **`nightly`** — build as a nightly: stamp a nightly version and publish on the nightly update channel. On its own this only uploads workflow artifacts, exactly like any other dispatch run.
+- **`publish_nightly`** — also publish to the rolling `nightly` pre-release and move the `nightly` tag. Needs `nightly` ticked too.
+- `signed` and `bundle_tor` still apply; leave them on for anything a tester will install.
+
+A manual nightly never skips: ticking the box is someone asking for this exact build.
+
+### The version, the tag and the release
+
+The version is the `package.json` version with any pre-release suffix dropped, plus the date and the short commit:
+
+```
+0.8.6-dev  →  0.8.6-nightly.20260914.abc1234
+```
+
+Valid semver that sorts **below** `0.8.6`, so a nightly never looks newer than the stable build of the same version, and each night's build sorts above the previous one. The `plan` job computes it; each build job stamps it with `npm version --no-git-tag-version` before packaging. `main`'s committed version is never changed.
+
+There is one nightly tag and one nightly release, both called `nightly`, both rolling: the `nightly` job force-moves the tag to the built commit, replaces the assets, deletes the previous night's (their names carry the version, so they would otherwise pile up), and rewrites the notes with the version, the `commit: <sha>` line the next run's skip check reads, and the merge commits since the previous nightly.
+
+```
+https://github.com/solardev-xyz/freedom-browser/releases/tag/nightly
+```
+
+It is flagged "Pre-release", so it stays out of "Latest release" and no download link on `freedom.baby` points at it.
+
+### The update channel
+
+Nightly artifacts are built on the `nightly` channel against the rolling release's download URL, not on `latest` against `freedom.baby/downloads`. The workflow sets `FREEDOM_UPDATE_CHANNEL` / `FREEDOM_UPDATE_URL`; `scripts/build.js` turns them into `-c.publish.channel` / `-c.publish.url` (see `scripts/publish-channel.js`), so `app-update.yml` inside the packaged app points at the nightly feed and electron-builder writes `nightly-mac.yml`, `nightly-linux.yml`, `nightly-linux-arm64.yml` and `nightly-win-x64.yml` next to the artifacts.
+
+The consequence, which is the whole point:
+
+- a nightly install auto-updates to the next nightly, because that is the only channel it reads;
+- a stable install reads `latest*` on `freedom.baby` and is never offered a nightly;
+- nothing a nightly run does writes to `freedom.baby` at all.
+
+To leave the nightly channel, uninstall and install a release — there is no in-app path from nightly back to stable.
+
+### Installing one
+
+Same artifacts as a release, from the `nightly` release page: the signed and notarized macOS `.dmg`, the Linux `.AppImage` / `.deb` for x64 and arm64, and the unsigned Windows `Freedom-Setup-<version>.exe` or portable `-win.zip` (SmartScreen prompts; More info → Run anyway).
+
+**Internal testing only.** A nightly is whatever was on `main` at 03:00 UTC. It has passed the packaged smoke tests and nothing else — no §6 pass, no manual checklist, no changelog. Do not hand it to users.
+
+Run it against a scratch profile, for the same reason a release candidate gets one (§6, "Use a separate profile"): a nightly shares its app id and profile directory with an installed stable Freedom, so a half-finished migration on `main` would otherwise touch real data.
+
+```
+FREEDOM_TEST_USER_DATA="$HOME/freedom-nightly" /Applications/Freedom.app/Contents/MacOS/Freedom
+```
+
+### Next step: a merge queue
+
+Nightlies are only as useful as `main` is green. The recommended next step is to turn on a **GitHub merge queue** for `main`: CI then runs on the merged result of a batch of pull requests before any of them land, which both keeps a broken combination out of `main` (and out of the next nightly) and removes the "branch must be up to date" churn of re-running CI on every PR after every merge.
+
+That is a repository **settings** change (Settings → Branches → branch protection rule for `main` → "Require merge queue"), not a workflow change, so it is deliberately not part of this change and needs an admin to enable it.
+
 ## Appendix A: building locally (fallback)
 
 Use this only when the workflow cannot be used — for instance to debug a packaging problem the runner logs do not explain, or if GitHub Actions is down. Everything here reads the version from `package.json`; run it from the release branch.
@@ -457,7 +536,7 @@ Each packaged app carries only the prebuild for its own target: the `mac`/`linux
 - **Guards**: the tag must match `package.json`; a release lookup that fails for a transient API reason fails the run instead of creating a duplicate draft; more than one release on a tag aborts; re-running onto a published release aborts.
 - **Ordering inside a run**: create draft → upload every asset → (candidates only) flip to published pre-release. Watchers never see an empty release.
 - **Re-runs**: "Re-run failed jobs" keeps the successful legs' artifacts and re-runs `release`. "Re-run all jobs" rebuilds everything, including a fresh macOS signature and notarization — the bytes and hashes change, which is fine for a draft and forbidden for a published release (the guard above).
-- **Update channel**: `build.publish.channel` is pinned to `latest` in `package.json`; without it electron-builder derives the channel from the version's pre-release suffix and would name the manifest `rc-mac.yml`. `scripts/build.js` pins the Windows channel to `latest-win-x64` on the command line.
+- **Update channel**: `build.publish.channel` is pinned to `latest` in `package.json`; without it electron-builder derives the channel from the version's pre-release suffix and would name the manifest `rc-mac.yml`. `scripts/build.js` pins the Windows channel to `latest-win-x64` on the command line (`FREEDOM_UPDATE_CHANNEL` / `FREEDOM_UPDATE_URL` override both channel and feed — that is how nightlies stay off `latest`; see "Nightly builds").
 - **Known first-run fixes** worth remembering when a leg breaks: the adblock list download uses a retrying `https` client because the EasyList server drops connections; the Ant and IPFS fetch scripts extract archives with Windows' own bsdtar and relative paths because the Windows job runs in Git Bash, where GNU tar misreads `D:\...` as a remote host.
 - **Smoke gate**: `smoke-linux` (a matrix over x64/arm64), `smoke-mac-arm64` and `smoke-windows-x64` each run after their build job and before `release` (§6). They need no secrets and rebuild nothing — `npm ci --ignore-scripts`, then Playwright against the run's own artifacts. A failure in any of them blocks the release job; each uploads its Playwright traces as `smoke-<platform>-report` (deliberately not matching the `freedom-*` pattern the `release` job downloads, so traces can never become release assets). The mac job reads the signing state off the artifact name it downloaded (`freedom-mac-arm64-signed` / `-unsigned`) and only assesses Gatekeeper when there is a signature to assess, so an unsigned dispatch run still passes.
 - **Cost**: the repo is public, so runner minutes are free. A full run is four parallel build jobs of 10–25 minutes, plus a smoke job per platform of a few minutes each (also in parallel, each waiting only on its platform's build job (the two Linux smoke legs wait on the whole Linux build matrix, since `needs` cannot target one matrix leg)).
