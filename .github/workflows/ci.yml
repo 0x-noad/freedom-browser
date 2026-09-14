@@ -259,7 +259,8 @@ jobs:
   # stale anchors fail explicitly and never receive automatic risk consent.
   myotis-native-e2e:
     # Live peers and expiring trust anchors need an explicit qualification run.
-    # Unit, native-load and supervisor checks still run on ordinary PRs.
+    # Unit and native-load checks still run on ordinary PRs; the separate
+    # Windows supervisor workflow retains its existing push/manual triggers.
     if: github.event_name == 'workflow_dispatch' && inputs.myotis_live
     strategy:
       fail-fast: false
