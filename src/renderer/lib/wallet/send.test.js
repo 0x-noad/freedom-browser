@@ -148,6 +148,15 @@ const SEND_ELEMENT_IDS = [
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+// The review recipient is painted either as bare text (no name known) or as
+// a span list via replaceChildren; the fake DOM does not aggregate the two.
+const reviewRecipientText = (elements) => {
+  const el = elements['send-review-to'];
+  return el.children.length
+    ? el.children.map((child) => child.textContent || '').join('')
+    : el.textContent;
+};
+
 const deferred = () => {
   let resolve;
   const promise = new Promise((res) => { resolve = res; });
@@ -157,7 +166,7 @@ const deferred = () => {
 // Drives the real send screen against the real wallet-state/signature-flight
 // modules, so the shared sidebar lock under test is the same instance every
 // other approval surface would see.
-async function loadSendScreen() {
+async function loadSendScreen({ chains = [{ chainId: 100, name: 'Gnosis' }], reverseLookup = null } = {}) {
   jest.resetModules();
   // The screen arms focus/balance-refresh timers we don't care about here;
   // faking them keeps no handles alive past the test.
@@ -181,10 +190,13 @@ async function loadSendScreen() {
   global.window = {
     location: { href: 'file:///app/index.html' },
     internalPages: { routable: {} },
-    electronAPI: {},
+    electronAPI: reverseLookup ? { resolveEnsReverse: reverseLookup } : {},
     wallet: {
       parseAmount: jest.fn().mockResolvedValue({ success: true, value: '1000' }),
       sendTransaction: jest.fn(() => send.promise),
+      estimateGas: jest.fn().mockResolvedValue({ success: true, gasLimit: '21000' }),
+      getGasPrice: jest.fn().mockResolvedValue({ success: true, type: 'legacy', gasPrice: '1' }),
+      formatUnits: jest.fn(() => '0.000021'),
     },
     dispatchEvent: jest.fn(),
     CustomEvent: class {},
@@ -195,7 +207,7 @@ async function loadSendScreen() {
   jest.doMock('./balance-display.js', () => ({
     refreshBalances: jest.fn(),
     getTokensWithBalance: jest.fn(() => [token]),
-    getChainsWithBalance: jest.fn(() => [{ chainId: 100 }]),
+    getChainsWithBalance: jest.fn(() => chains),
     sortTokens: jest.fn((tokens) => tokens),
   }));
   jest.doMock('../tabs.js', () => ({ createTab: jest.fn() }));
@@ -204,8 +216,10 @@ async function loadSendScreen() {
   const flight = await import('./signature-flight.js');
   state.walletState.fullAddresses.wallet = ADDRESS;
   state.walletState.identityView = createElement('div');
-  state.walletState.selectedChainId = 100;
-  state.walletState.registeredChains = { 100: { name: 'Gnosis' } };
+  state.walletState.selectedChainId = chains[0].chainId;
+  state.walletState.registeredChains = Object.fromEntries(
+    chains.map((chain) => [chain.chainId, { name: chain.name }])
+  );
   // A hardware account: the send waits on a device prompt that cannot be
   // recalled, which is what makes the sidebar lock necessary.
   state.walletState.activeWalletIndex = 0;
@@ -270,6 +284,66 @@ describe('send screen sidebar ownership', () => {
     expect(elements['send-back'].disabled).toBe(false);
     state.hideAllSubscreens();
     expect(elements['sidebar-send'].classList.contains('hidden')).toBe(true);
+  });
+
+  // The ENS-recipient path already refuses a review whose name was resolved
+  // on a chain the user has since left. A 0x recipient stays valid across the
+  // switch, so the send itself is fine — but its best-effort reverse lookup
+  // answers for the old chain, and painting that chain's primary name beside
+  // the recipient is the same stale-advisory hazard.
+  test('a network switch mid reverse-lookup drops the other chain\'s primary name', async () => {
+    const reverse = deferred();
+    const { mod, elements } = await loadSendScreen({
+      chains: [
+        { chainId: 100, name: 'Gnosis' },
+        { chainId: 8453, name: 'Base' },
+      ],
+      reverseLookup: jest.fn(() => reverse.promise),
+    });
+
+    await mod.openSend({
+      chainId: 100,
+      tokenKey: 'gnosis-native',
+      recipient: ADDRESS,
+      amount: '1',
+    });
+
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+    expect(window.electronAPI.resolveEnsReverse).toHaveBeenCalledWith(ADDRESS, 100);
+
+    // The user switches to Base while the lookup is still in flight.
+    elements['send-chain-btn'].dispatch('click');
+    elements['send-chain-list'].children[1].dispatch('click');
+
+    reverse.resolve({ success: true, name: 'gnosis-only.eth' });
+    await flush();
+
+    // The bare-address render path: no name span, just the recipient.
+    expect(elements['send-review-view'].classList.contains('hidden')).toBe(false);
+    expect(reviewRecipientText(elements)).toBe(ADDRESS);
+    expect(reviewRecipientText(elements)).not.toContain('gnosis-only.eth');
+  });
+
+  test('a reverse-lookup name that settles on the same chain still shows', async () => {
+    const { mod, elements } = await loadSendScreen({
+      reverseLookup: jest.fn().mockResolvedValue({ success: true, name: 'stable.eth' }),
+    });
+
+    await mod.openSend({
+      chainId: 100,
+      tokenKey: 'gnosis-native',
+      recipient: ADDRESS,
+      amount: '1',
+    });
+
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+    await flush();
+
+    expect(elements['send-review-view'].classList.contains('hidden')).toBe(false);
+    expect(reviewRecipientText(elements)).toContain('stable.eth');
+    expect(reviewRecipientText(elements)).toContain(ADDRESS);
   });
 
   test('the send screen refuses to open over another surface\'s device confirmation', async () => {

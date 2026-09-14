@@ -951,8 +951,9 @@ async function handleSendContinue() {
       // recipient's primary Ethereum name alongside the address when one is
       // verifiably set. Fire in parallel with gas estimation so it
       // doesn't add latency to the Continue → Review transition; a
-      // failure here doesn't block the send.
-      reverseLookup = lookupPrimaryNameForAddress(recipientClass.value);
+      // failure here doesn't block the send. Pin it to the chain Continue
+      // was pressed on rather than letting it re-read the live selection.
+      reverseLookup = lookupPrimaryNameForAddress(recipientClass.value, resolutionChainId);
     }
 
     if (sendContinueBtn) sendContinueBtn.textContent = 'Loading…';
@@ -960,7 +961,15 @@ async function handleSendContinue() {
     // after signatures exist — there is no meaningful estimate here.
     const gasEstimate = activeSafeWallet() ? Promise.resolve() : estimateTransactionGas();
     const [, reverseResult] = await Promise.all([gasEstimate, reverseLookup]);
-    if (reverseResult && !sendTxState.recipientResolution) {
+    // Same mid-flight network-switch guard the ENS-recipient path above
+    // applies. A 0x recipient stays valid across a switch, so this does not
+    // block the review — it just drops the other chain's primary name
+    // rather than painting it beside the recipient.
+    if (
+      reverseResult &&
+      !sendTxState.recipientResolution &&
+      resolutionChainId === sendTxState.chainId
+    ) {
       sendTxState.recipientResolution = reverseResult;
     }
     populateSendReview();

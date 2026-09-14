@@ -7,6 +7,7 @@ const { cidV1BytesToBase32 } = require('../shared/cid-utils');
 const registry = require('./networks/network-registry');
 const { prefetchGatewayUrl, NOOP_HANDLE: NOOP_PREFETCH } = require('./ens-prefetch');
 const myotisManager = require('./myotis/myotis-manager');
+const { ccipReadFetch } = require('./ens/ccip-fetch');
 const { capCache } = require('./cache-utils');
 const {
   runWithPrivateLogContext,
@@ -664,7 +665,12 @@ async function callUniversalResolver(provider, method, args, overrides) {
       if (sender.toLowerCase() !== UNIVERSAL_RESOLVER_ADDRESS.toLowerCase()) {
         throw new Error('CCIP sender does not match the Universal Resolver', { cause: initialError });
       }
-      const response = await provider.ccipReadFetch({ to: sender }, callData, urls);
+      // Deliberately not `provider.ccipReadFetch`: on the quorum legs the
+      // provider is a plain ethers JsonRpcProvider, whose inherited
+      // implementation has no response-size cap and a 300s default timeout,
+      // for URLs an OffchainLookup revert chose. Use the same bounded
+      // fetcher (15s / 4MB per gateway) the Myotis provider is built on.
+      const response = await ccipReadFetch({ to: sender }, callData, urls);
       if (response == null) throw new Error('CCIP gateway returned no response', { cause: initialError });
       try {
         const raw = await provider.call({
@@ -2112,7 +2118,31 @@ async function doResolveEnsAddress(normalized, chainId = 1) {
   );
   const node = ethers.namehash(normalized);
   const nameSystem = nameSystemForName(normalized);
-  const multicoin = chainId !== 1 && !nameSystem.contractAddress;
+
+  // NameNFT registries (WNS/GNS) expose only ENS's chain-agnostic
+  // `addr(bytes32)`; they have no multicoin record to ask for, so there is
+  // no way to learn what address the name's owner wants on another chain.
+  // Answering an L2 send with the single mainnet record is the exact
+  // silent-L1-address-reuse hazard the ENS path avoids by querying the
+  // destination chain's coin type — the record may be a contract wallet
+  // that exists only on mainnet, and funds sent to it elsewhere can be
+  // unrecoverable. Refuse rather than guess. The reverse direction already
+  // takes this stance: `readMyotisReverse` only consults the NameNFT
+  // contracts when `coinType === ETH_COIN_TYPE`.
+  if (chainId !== 1 && nameSystem.contractAddress) {
+    return cacheAddressResult(normalized, {
+      success: false,
+      name: normalized,
+      system: nameSystem.id,
+      reason: 'CHAIN_UNSUPPORTED',
+      error:
+        `${nameSystem.label} names resolve on Ethereum mainnet only — ` +
+        `${normalized} has no address record for this network`,
+    });
+  }
+
+  // Guarded above: a contract-backed system can only reach here at chainId 1.
+  const multicoin = chainId !== 1;
   const callData = multicoin
     ? MULTICOIN_ADDR_SELECTOR + ethers.AbiCoder.defaultAbiCoder().encode(
       ['bytes32', 'uint256'], [node, ensCoinType(chainId)]

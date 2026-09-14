@@ -1,5 +1,6 @@
 const { ethers } = require('ethers');
 const myotis = require('../myotis/myotis-manager');
+const { ccipReadFetch } = require('./ccip-fetch');
 
 // Myotis 0.1.7's ENS API walks the legacy registry. Its generic EVM API
 // verifies arbitrary calls against an attested optimistic root, so use that
@@ -14,50 +15,10 @@ class MyotisProvider extends ethers.AbstractProvider {
     return ethers.Network.from(1);
   }
 
+  // Bounds live in the shared helper — see `ccip-fetch.js`. The block-pinned
+  // quorum legs' manual CCIP loop calls the same function directly.
   async ccipReadFetch(transaction, data, urls) {
-    for (const template of urls) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 15000);
-      try {
-        const sender = transaction.to.toLowerCase();
-        const url = template.replaceAll('{sender}', sender).replaceAll('{data}', data);
-        if (!['https:', 'http:'].includes(new URL(url).protocol)) continue;
-        const get = template.includes('{data}');
-        const response = await fetch(url, {
-          method: get ? 'GET' : 'POST',
-          signal: controller.signal,
-          headers: {
-            Accept: 'application/json',
-            ...(get ? {} : { 'Content-Type': 'application/json' }),
-          },
-          body: get ? undefined : JSON.stringify({ sender, data }),
-        });
-        if (!response.ok || Number(response.headers.get('content-length')) > 4 * 1024 * 1024) {
-          await response.body?.cancel();
-          continue;
-        }
-        const reader = response.body.getReader();
-        const chunks = [];
-        let size = 0;
-        for (;;) {
-          const next = await reader.read();
-          if (next.done) break;
-          size += next.value.byteLength;
-          if (size > 4 * 1024 * 1024) {
-            await reader.cancel();
-            throw new Error('CCIP response too large');
-          }
-          chunks.push(next.value);
-        }
-        const result = JSON.parse(Buffer.concat(chunks).toString('utf8')).data;
-        if (typeof result === 'string' && /^0x(?:[0-9a-fA-F]{2})*$/.test(result)) return result;
-      } catch {
-        /* Try the next gateway without logging names, URLs or payloads. */
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-    throw new Error('CCIP gateways unavailable or returned invalid data');
+    return ccipReadFetch(transaction, data, urls);
   }
 
   async _perform(request) {

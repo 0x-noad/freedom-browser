@@ -583,6 +583,59 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # Name resolution reaches the user through two surfaces that only the real
+  # main → preload → renderer round trip exercises: the address bar (what a
+  # typed name or `ipfs://` URL resolves to, and what gets painted back into
+  # the bar) and the wallet's Send recipient field (which chain a name is
+  # resolved for, and which address the review screen commits to).
+  #
+  # `ensv2.spec.js` drives the wallet DNS/Unicode-recipient flow and asserts
+  # each lookup is requested for the selected chain; its second describe —
+  # the native-IPFS ENS checker — self-skips unless `ENSV2_UI_LIVE=1`, so
+  # this job stays offline and deterministic. `address-bar.spec.js` covers
+  # the scheme/gateway-form rewrites the name parser has to decline, plus the
+  # typed-draft rules from #305/#310/#313/#314. Neither spec was in any job's
+  # curated list, so a regression in either shipped green — the #319 lesson.
+  e2e-address-bar-ens:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Run address-bar + ENSv2 E2E
+        run: |
+          xvfb-run -a npm run test:e2e -- \
+            test-e2e/address-bar.spec.js \
+            test-e2e/ensv2.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-address-bar-ens-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Onboarding wizard must create node identities while a real Swarm node (now
   # antd) is running. Drives the full password wizard end-to-end against a real
   # antd spawn across all three desktop platforms — the cross-platform proof

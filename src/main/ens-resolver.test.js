@@ -162,6 +162,13 @@ jest.mock('./myotis/myotis-manager', () => ({
 
 jest.mock('./ens/myotis-resolver', () => ({ resolveRecord: (...args) => mockMyotisResolveEnsRecord(...args) }));
 
+// The block-pinned CCIP loop uses the shared bounded gateway fetcher
+// (`ens/ccip-fetch`), not the provider's unbounded inherited one.
+const mockCcipReadFetch = jest.fn();
+jest.mock('./ens/ccip-fetch', () => ({
+  ccipReadFetch: (...args) => mockCcipReadFetch(...args),
+}));
+
 // Mock ethers with controllable provider and resolver behavior.
 // `mockUrResolve` is shared across all Contract instances — this is fine
 // for tests that use `mockResolvedValue(X)` (every quorum leg returns X
@@ -825,6 +832,35 @@ describe('ens-resolver', () => {
       expect(mockUrResolve).not.toHaveBeenCalled();
     });
 
+    // A NameNFT registry has one chain-agnostic `addr(bytes32)` record and no
+    // multicoin equivalent, so there is nothing to ask it about an L2. Handing
+    // the mainnet record back as a Base recipient is the silent L1-address
+    // reuse this PR removes for ENS; refuse for WNS/GNS too.
+    test.each([
+      ['alice.wei', 'wns', 'WNS'],
+      ['apoorv.gwei', 'gns', 'GNS'],
+    ])('refuses to resolve %s off mainnet instead of reusing its L1 record', async (name, system, label) => {
+      mockWnsAddr.mockResolvedValue('0x1111111111111111111111111111111111111111');
+      mockGnsAddr.mockResolvedValue('0x2222222222222222222222222222222222222222');
+
+      const result = await resolveEnsAddress(name, 8453);
+
+      expect(result).toMatchObject({
+        success: false,
+        name,
+        system,
+        reason: 'CHAIN_UNSUPPORTED',
+      });
+      expect(result.address).toBeUndefined();
+      expect(result.error).toContain(`${label} names resolve on Ethereum mainnet only`);
+      expect(mockWnsAddr).not.toHaveBeenCalled();
+      expect(mockGnsAddr).not.toHaveBeenCalled();
+      expect(mockUrResolve).not.toHaveBeenCalled();
+
+      // Mainnet for the same name is unaffected and still answers.
+      expect(await resolveEnsAddress(name)).toMatchObject({ success: true, system });
+    });
+
     test('normalizes mixed-case input to lowercase', async () => {
       mockUrResolve.mockResolvedValue(
         urReturnsAddress('0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045')
@@ -1262,17 +1298,25 @@ describe('ens-resolver', () => {
       ['address', 'string[]', 'bytes', 'bytes4', 'bytes'],
       [sender, ['https://gateway.example/{data}'], '0xbeef', '0x12345678', '0xdead']
     ).slice(2) });
+    beforeEach(() => {
+      mockCcipReadFetch.mockReset();
+      mockCcipReadFetch.mockResolvedValue('0xcafe');
+    });
     test('verifies every callback at the original block and unwraps the UR response', async () => {
       mockUrResolve.mockRejectedValue(offchain());
       const provider = {
-        ccipReadFetch: jest.fn().mockResolvedValue('0xcafe'),
+        // Present, and deliberately never used: ethers' inherited
+        // implementation has no size cap and a 300s default timeout.
+        ccipReadFetch: jest.fn().mockResolvedValue('0xdeadbeef'),
         call: jest.fn().mockRejectedValueOnce(offchain()).mockResolvedValue(
           abi.encode(['bytes', 'address'], [abi.encode(['address'], [urAddress]), urAddress])
         ),
       };
       const result = await universalResolverCall(provider, 'test.offchaindemo.eth', '0x1234', { blockTag: 12345 });
       expect(result.resolverAddress).toBe(urAddress);
-      expect(provider.ccipReadFetch).toHaveBeenCalledTimes(2);
+      expect(mockCcipReadFetch).toHaveBeenCalledTimes(2);
+      expect(provider.ccipReadFetch).not.toHaveBeenCalled();
+      expect(mockCcipReadFetch.mock.calls[0][0]).toEqual({ to: urAddress });
       expect(provider.call.mock.calls.every(([tx]) => tx.blockTag === 12345 && tx.enableCcipRead === false)).toBe(true);
       expect(provider.call.mock.calls[0][0].data).toBe('0x12345678' + abi.encode(['bytes', 'bytes'], ['0xcafe', '0xdead']).slice(2));
     });
@@ -1280,10 +1324,22 @@ describe('ens-resolver', () => {
       const provider = { ccipReadFetch: jest.fn().mockResolvedValue('0xcafe'), call: jest.fn().mockRejectedValue(offchain()) };
       mockUrResolve.mockRejectedValue(offchain(ethers.ZeroAddress));
       await expect(universalResolverCall(provider, 'test.eth', '0x', { blockTag: 123 })).rejects.toThrow('sender');
-      expect(provider.ccipReadFetch).not.toHaveBeenCalled();
+      expect(mockCcipReadFetch).not.toHaveBeenCalled();
       mockUrResolve.mockRejectedValue(offchain());
       await expect(universalResolverCall(provider, 'test.eth', '0x', { blockTag: 123 })).rejects.toThrow('recursion');
       expect(provider.call).toHaveBeenCalledTimes(10);
+    });
+    // A gateway that never answers must not hold a resolution open for
+    // ethers' 300s FetchRequest default — the shared helper aborts at 15s
+    // and the loop surfaces that as a failed resolution, not a hang.
+    test('surfaces an exhausted-gateway failure instead of stalling', async () => {
+      mockUrResolve.mockRejectedValue(offchain());
+      mockCcipReadFetch.mockRejectedValue(new Error('CCIP gateways unavailable or returned invalid data'));
+      const provider = { call: jest.fn() };
+      await expect(
+        universalResolverCall(provider, 'test.eth', '0x', { blockTag: 123 })
+      ).rejects.toThrow('CCIP gateways unavailable');
+      expect(provider.call).not.toHaveBeenCalled();
     });
   });
 

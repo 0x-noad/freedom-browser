@@ -1034,12 +1034,23 @@ describe('registerIpfsProtocol / registerIpnsProtocol private sessions', () => {
 
 describe('extensionless IPFS text navigation', () => {
   const fixture = 'Hello from IPFS Gateway Checker\n';
-  async function response(body, headers = {}, method = 'GET') {
-    return handleRequest('ipfs', new Request(`ipfs://${CIDV1_BASE32}/`, { method }), {
-      requestImpl: async () => new Response(method === 'HEAD' ? null : body, {
-        headers: { 'content-type': 'application/octet-stream', 'content-length': String(Buffer.byteLength(body)), ...headers },
-      }),
-    });
+  // Chromium's fixed navigation Accept header — the only signal a
+  // `protocol.handle` request carries that distinguishes a document load
+  // from a subresource (no Sec-Fetch-Dest on custom schemes; `destination`
+  // is always '' and `mode` always 'cors'). See `isDocumentRequest`.
+  const NAVIGATION_ACCEPT =
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,' +
+    'image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7';
+  async function response(body, headers = {}, method = 'GET', accept = NAVIGATION_ACCEPT) {
+    return handleRequest(
+      'ipfs',
+      new Request(`ipfs://${CIDV1_BASE32}/`, { method, headers: accept ? { accept } : {} }),
+      {
+        requestImpl: async () => new Response(method === 'HEAD' ? null : body, {
+          headers: { 'content-type': 'application/octet-stream', 'content-length': String(Buffer.byteLength(body)), ...headers },
+        }),
+      }
+    );
   }
   test('renders the checker fixture inline as text, never HTML', async () => {
     const result = await response(fixture);
@@ -1070,5 +1081,20 @@ describe('extensionless IPFS text navigation', () => {
     expect(await result.text()).toBe(body);
     const head = await response(fixture, {}, 'HEAD');
     expect(head.headers.get('content-type')).toBe('application/octet-stream');
+  });
+  // A subresource relabelled `text/plain; nosniff` is one Chromium refuses
+  // to execute or apply, so an existing page loading a small bare-CID
+  // script or stylesheet would silently lose it. Only document loads get
+  // the rewrite; every subresource Accept below is Chromium's real one.
+  test.each([
+    ['script/fetch', '*/*'],
+    ['stylesheet', 'text/css,*/*;q=0.1'],
+    ['image', 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'],
+    ['no Accept at all', ''],
+  ])('leaves a %s subresource untouched', async (_label, accept) => {
+    const result = await response(fixture, {}, 'GET', accept);
+    expect(result.headers.get('content-type')).toBe('application/octet-stream');
+    expect(result.headers.get('x-content-type-options')).toBeNull();
+    expect(await result.text()).toBe(fixture);
   });
 });
