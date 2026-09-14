@@ -1,5 +1,7 @@
 # Colibri as corroboration for stale-anchor Myotis
 
+**Implementation follow-up:** the subsequent [recovery spike](evidence/myotis-recovery-spike-2026-09/README.md) demonstrated live Myotis bootstrap, finalized advancement, restart, and exact independent Colibri state matches on Ethereum and Gnosis. The original research below predates those native runs; its statements about live recovery being untested describe that earlier scope. Shipping behavior remains unchanged.
+
 **Colibri is a viable component on both Ethereum and Gnosis, but our current Colibri configuration is not a drop-in answer to stale-anchor recovery.** We successfully verified public block proofs on both chains using Freedom’s exact package. Colibri can obtain independent checkpoint evidence, and its verified block proofs contain beacon headers from which comparison roots can be derived. However, ordinary Colibri success does not guarantee independent evidence, and a single matching finalized root cannot safely authorize every subsequent Myotis result.
 
 The strongest next design is **an explicitly authenticated, fresh checkpoint followed by a clean Myotis bootstrap**, or an ongoing verification policy that binds every released result to independently corroborated state. Colibri can help supply that evidence. If its checkpoint provider is ultimately the source we trust, fetching that provider’s checkpoint directly may be simpler than running a second verifier just to inherit the same trust.
