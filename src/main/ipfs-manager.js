@@ -136,6 +136,32 @@ function getEndpointLabel(rawUrl) {
   }
 }
 
+// A stock Kubo serves `localhost` as a *subdomain* gateway: `/ipfs/<cid>` on
+// `Host: localhost:<port>` answers 301 to `http://<cid>.ipfs.localhost:<port>/`
+// with no `X-Ipfs-*` headers, while the identical node answers the same path
+// with a 200 + `X-Ipfs-Path` on `127.0.0.1` (measured against a default-config
+// Kubo 0.42.0 on 2026-09-14; also pinned by
+// `__tests__/integration/ipfs-subdomain-gateway.test.js`). The probe never
+// follows a redirect (see probeExternalGateway), so a working default Kubo
+// typed in as `localhost:8080` reads as unreachable with nothing pointing at
+// the one-word cause. Say it in the status the nodes menu shows.
+const LOCALHOST_GATEWAY_HINT = ' — for Kubo, use 127.0.0.1 instead of localhost';
+
+function unreachableEndpointHint(rawUrl) {
+  try {
+    return new URL(rawUrl).hostname.toLowerCase() === 'localhost' ? LOCALHOST_GATEWAY_HINT : '';
+  } catch {
+    return '';
+  }
+}
+
+// `localhost` counts as loopback here: it resolves there, and Kubo binds its RPC
+// API to loopback by default, so it is the same machine either way.
+function isLoopbackHostname(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  return host === 'localhost' || host === '[::1]' || host === '::1' || /^127\./.test(host);
+}
+
 // The user configures only the gateway (e.g. :8080), but Kubo's RPC API answers
 // POST /api/v0/version with the running version. We derive the host from the
 // configured gateway URL and try the RPC there. Any failure just yields null and the
@@ -146,6 +172,14 @@ function kuboVersionUrl(gatewayUrl) {
     // ASSUMPTION: the RPC API is on port 5001 on the same host as the gateway.
     // This is Kubo's conventional default and it is NOT user-configured.
     // If a deployment moves the RPC port, version detection simply fails.
+    //
+    // Only attempted for a loopback gateway. The user configures a gateway, not
+    // an RPC API, so on any other host `:5001` belongs to whoever is listening
+    // there — a LAN box, or a remote `https://gw.example.com:5001` — and Kubo's
+    // own `:5001` is its *admin* RPC. Freedom must not send an unsolicited POST
+    // to an address the user never named; remote gateways simply fall back to
+    // showing the endpoint instead of a detected version.
+    if (!isLoopbackHostname(parsed.hostname)) return null;
     return `${parsed.protocol}//${parsed.hostname}:5001/api/v0/version`;
   } catch {
     return null;
@@ -272,7 +306,16 @@ function startHealthCheck() {
       // Soft health: an external gateway (e.g. Kubo) may briefly stop answering
       // while busy, so surface the outage without tearing down external mode and
       // recover automatically when it responds again.
-      const isHealthy = await probeExternalGateway(externalGatewayUrl);
+      const probedUrl = externalGatewayUrl;
+      const isHealthy = await probeExternalGateway(probedUrl);
+      // The probe can hang for its full 2s timeout, and the user can stop the
+      // node, switch profiles or restart into the native backend meanwhile. A
+      // verdict about an endpoint that is no longer the one being served must
+      // not be applied: a stale `false` landing on a healthy native node would
+      // set an ERROR the native health path never clears (every ipfs:// load
+      // 503s until the user toggles off/on). Same guard the version probe
+      // applies below.
+      if (currentMode !== MODE.EXTERNAL || externalGatewayUrl !== probedUrl) return;
       if (!isHealthy && currentState === STATUS.RUNNING) {
         updateState(STATUS.ERROR, 'External IPFS gateway is unreachable');
         setErrorState('ipfs', 'External node unreachable. Retrying…');
@@ -315,10 +358,21 @@ function startDisabledIpfs() {
 // native addon (see updateIpfsToggleState in renderer/lib/ipfs-ui.js), so it has
 // to be published on every external path — including the ones that did not reach
 // a running node — or the nodes-menu toggle stays disabled with no way to retry.
-function publishExternalIpfsMode(gateway) {
+//
+// `gateway` and `externalGateway` are deliberately not the same thing:
+//   - `gateway` means "ipfs:// traffic is being served here right now". Its
+//     consumers act on it without asking anything else — `ens-prefetch.js`
+//     speculatively GETs `<gateway>/ipfs/<cid>` for every resolved ipfs://
+//     contenthash, and the renderer's `state.ipfsBase` sends view-source
+//     straight at it. Publishing it while the node is stopped/unreachable means
+//     "IPFS off" would not stop IPFS-gateway traffic, and a remote gateway would
+//     keep learning names the user resolved but never visited.
+//   - `externalGateway` is the *configured* endpoint, for display only.
+function publishExternalIpfsMode(gateway, { serving = false } = {}) {
   updateService('ipfs', {
     api: null,
-    gateway: gateway || null,
+    gateway: serving ? gateway || null : null,
+    externalGateway: gateway || null,
     mode: MODE.EXTERNAL,
     backend: 'external-gateway',
   });
@@ -342,8 +396,9 @@ async function startExternalIpfs(config) {
     // still booting). Keep the profile's external mode published so the user can
     // start their gateway and hit the toggle again without relaunching Freedom.
     publishExternalIpfsMode(url);
-    updateState(STATUS.ERROR, 'External IPFS gateway is unreachable');
-    setStatusMessage('ipfs', 'External node unreachable');
+    const hint = unreachableEndpointHint(url);
+    updateState(STATUS.ERROR, `External IPFS gateway is unreachable${hint}`);
+    setStatusMessage('ipfs', `External node unreachable${hint}`);
     return;
   }
 
@@ -353,7 +408,7 @@ async function startExternalIpfs(config) {
   externalBytesServed = 0;
   externalGatewayVersion = null;
   clearService('ipfs');
-  publishExternalIpfsMode(url);
+  publishExternalIpfsMode(url, { serving: true });
   setStatusMessage('ipfs', `External node: ${getEndpointLabel(url)}`);
   updateState(STATUS.RUNNING);
   startHealthCheck();

@@ -50,6 +50,12 @@ function prefetchGatewayUrl(uri) {
       }
       url = `${antApiUrl}/bzz/${afterScheme}`;
     } else {
+      // The registry publishes `ipfs.gateway` only while a gateway is actually
+      // serving (see publishExternalIpfsMode in main/ipfs-manager.js) — a
+      // stopped, unreachable or not-yet-started external node reads null here,
+      // so switching IPFS off in the nodes menu also stops this speculative
+      // traffic instead of leaving a (possibly remote) gateway learning names
+      // the user resolved but never visited.
       const ipfsGatewayUrl = getIpfsGatewayUrl();
       if (!ipfsGatewayUrl) return NOOP_HANDLE;
 

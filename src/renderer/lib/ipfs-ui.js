@@ -68,11 +68,16 @@ const readNativeVersion = (diagnostics = {}) => {
 // NOT mark the version fetched, so later polls keep upgrading it instead of
 // locking in the placeholder forever.
 // Identity label for an external gateway: the detected node version when the
-// RPC answered, otherwise the gateway endpoint. Falls back to the registry gateway
-// when no diagnostics are at hand (immediate UI updates that don't carry a stats poll).
+// RPC answered, otherwise the gateway endpoint. Falls back to the registry's
+// configured endpoint when no diagnostics are at hand (immediate UI updates that
+// don't carry a stats poll). `externalGateway` is the configured endpoint and is
+// published in external mode whether or not the node is serving; `gateway` only
+// appears while it actually is (see publishExternalIpfsMode in main/ipfs-manager.js).
 const externalIdentityLabel = (diagnostics) => {
   if (diagnostics?.externalVersion) return diagnostics.externalVersion;
-  const gateway = diagnostics?.externalGateway || state.registry?.ipfs?.gateway || '';
+  const registryIpfs = state.registry?.ipfs;
+  const gateway =
+    diagnostics?.externalGateway || registryIpfs?.externalGateway || registryIpfs?.gateway || '';
   return gateway ? `External · ${gateway.replace(/^https?:\/\//, '')}` : 'External gateway';
 };
 

@@ -420,9 +420,12 @@ describe('ipfs-manager', () => {
       await ctx.mod.startIpfs();
 
       expect(ctx.nativeInstances).toHaveLength(0);
+      // A running external node is the one case where `gateway` is published:
+      // it means "ipfs:// is being served here right now".
       expect(ctx.updateService).toHaveBeenCalledWith('ipfs', {
         api: null,
         gateway: 'http://127.0.0.1:8080',
+        externalGateway: 'http://127.0.0.1:8080',
         mode: 'external',
         backend: 'external-gateway',
       });
@@ -475,6 +478,174 @@ describe('ipfs-manager', () => {
     }
   });
 
+  // A stock Kubo subdomain-redirects `localhost` (301 to `<cid>.ipfs.localhost`)
+  // and the probe never follows a redirect, so a perfectly healthy default Kubo
+  // typed in as `localhost:8080` reads unreachable. The same node answers
+  // path-style on `127.0.0.1` — say so instead of leaving the user guessing.
+  test('an unreachable localhost gateway points at 127.0.0.1 in its status', async () => {
+    const realFetch = global.fetch;
+    // What Kubo actually answers on `Host: localhost:<port>`.
+    global.fetch = jest.fn(
+      async () =>
+        new Response(null, {
+          status: 301,
+          headers: { location: 'http://bafkqaaa.ipfs.localhost:8080/' },
+        })
+    );
+    try {
+      const ctx = loadIpfsManagerModule({
+        activeProfile: {
+          metadata: {
+            nodes: {
+              ipfs: { mode: 'external', externalGateway: 'http://localhost:8080' },
+            },
+          },
+        },
+      });
+      ctx.mod.registerIpfsIpc();
+
+      await ctx.mod.startIpfs();
+
+      expect(ctx.setStatusMessage).toHaveBeenCalledWith(
+        'ipfs',
+        'External node unreachable — for Kubo, use 127.0.0.1 instead of localhost'
+      );
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'error',
+        error: 'External IPFS gateway is unreachable — for Kubo, use 127.0.0.1 instead of localhost',
+      });
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('a non-localhost gateway keeps the plain unreachable status', async () => {
+    const realFetch = global.fetch;
+    global.fetch = jest.fn(async () => new Response('bad gateway', { status: 502 }));
+    try {
+      const ctx = loadIpfsManagerModule({
+        activeProfile: {
+          metadata: {
+            nodes: {
+              ipfs: { mode: 'external', externalGateway: 'https://gw.example.test' },
+            },
+          },
+        },
+      });
+
+      await ctx.mod.startIpfs();
+
+      expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'External node unreachable');
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  // The user configures a gateway, never an RPC API. `:5001` on a remote or LAN
+  // host is somebody else's port (and Kubo's own :5001 is its admin RPC), so
+  // version detection is loopback-only.
+  test('never probes the RPC API port of a non-loopback gateway', async () => {
+    const realFetch = global.fetch;
+    global.fetch = mockGatewayFetch();
+    try {
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: {
+          metadata: {
+            nodes: {
+              ipfs: { mode: 'external', externalGateway: 'https://gw.example.test' },
+            },
+          },
+        },
+      });
+
+      await ctx.mod.startIpfs();
+      for (let i = 0; i < 5; i += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
+      expect(global.fetch).not.toHaveBeenCalledWith(
+        expect.stringContaining(':5001'),
+        expect.anything()
+      );
+      // The endpoint is still shown as the gateway's identity.
+      expect(ctx.mod.getNativeDiagnostics()).toMatchObject({
+        externalGateway: 'https://gw.example.test',
+        externalVersion: null,
+      });
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  // R1-F2/R2-F1: the external probe can hang for its full 2s timeout, during
+  // which the user can restart the node onto the native backend. A verdict about
+  // an endpoint that is no longer being served must not be applied — a stale
+  // `false` would set an ERROR the native health path never clears, 503-ing
+  // every ipfs:// load against a healthy native node.
+  test('a stale external health probe cannot wedge a node that switched to native', async () => {
+    jest.useFakeTimers();
+    const realFetch = global.fetch;
+    let releaseProbe = null;
+    const activeProfile = {
+      metadata: {
+        nodes: { ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' } },
+      },
+    };
+    try {
+      global.fetch = mockGatewayFetch();
+      const ctx = loadIpfsManagerModule({ activeProfile });
+      ctx.mod.registerIpfsIpc();
+
+      await ctx.mod.startIpfs();
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'running',
+      });
+
+      // The gateway stops answering: the next health probe hangs rather than
+      // refusing (LAN gateway down, firewall drop).
+      global.fetch = jest.fn(
+        () =>
+          new Promise((resolve) => {
+            releaseProbe = resolve;
+          })
+      );
+      jest.advanceTimersByTime(5000);
+      await Promise.resolve();
+      expect(releaseProbe).toBeInstanceOf(Function);
+
+      // Meanwhile the user switches the profile to managed and restarts IPFS.
+      activeProfile.metadata.nodes.ipfs = { mode: 'bundled' };
+      await ctx.mod.stopIpfs();
+      await ctx.mod.startIpfs();
+      expect(ctx.nativeInstances).toHaveLength(1);
+
+      // Only now does the stale probe settle, with an unhealthy verdict.
+      releaseProbe(new Response('bad gateway', { status: 502 }));
+      // Drain far past the probe's own read/settle chain, so a missing guard
+      // wedges the state *before* the assertions rather than between them.
+      for (let i = 0; i < 50; i += 1) {
+        await Promise.resolve();
+      }
+
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'running',
+        error: null,
+      });
+      expect(ctx.setErrorState).not.toHaveBeenCalled();
+      const response = await ctx.mod.serveNativeGatewayRequest({
+        path: '/ipfs/bafy',
+        method: 'GET',
+        headers: new Headers(),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe('native-body');
+    } finally {
+      global.fetch = realFetch;
+      jest.useRealTimers();
+    }
+  });
+
   test('stopping an external node keeps external mode in the registry so it can be re-enabled', async () => {
     const realFetch = global.fetch;
     global.fetch = mockGatewayFetch();
@@ -498,11 +669,14 @@ describe('ipfs-manager', () => {
       await ctx.mod.stopIpfs();
 
       // On stop the registry is NOT cleared to 'none'. It keeps external mode +
-      // endpoint so the renderer can offer to switch it back on.
+      // the configured endpoint so the renderer can offer to switch it back on.
+      // `gateway` (the "serving here right now" field ens-prefetch and
+      // state.ipfsBase act on) is dropped: IPFS off means no gateway traffic.
       expect(ctx.clearService).not.toHaveBeenCalled();
       expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', {
         api: null,
-        gateway: 'http://127.0.0.1:8080',
+        gateway: null,
+        externalGateway: 'http://127.0.0.1:8080',
         mode: 'external',
         backend: 'external-gateway',
       });
@@ -556,9 +730,11 @@ describe('ipfs-manager', () => {
       await ctx.mod.startIpfs();
 
       expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'External node unreachable');
+      // Mode yes (the toggle needs it), serving endpoint no (nothing is served).
       expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', {
         api: null,
-        gateway: 'http://127.0.0.1:8080',
+        gateway: null,
+        externalGateway: 'http://127.0.0.1:8080',
         mode: 'external',
         backend: 'external-gateway',
       });
@@ -574,6 +750,7 @@ describe('ipfs-manager', () => {
       expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', {
         api: null,
         gateway: 'http://127.0.0.1:8080',
+        externalGateway: 'http://127.0.0.1:8080',
         mode: 'external',
         backend: 'external-gateway',
       });
@@ -599,6 +776,7 @@ describe('ipfs-manager', () => {
     expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', {
       api: null,
       gateway: null,
+      externalGateway: null,
       mode: 'external',
       backend: 'external-gateway',
     });
@@ -624,7 +802,9 @@ describe('ipfs-manager', () => {
 
     expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', {
       api: null,
-      gateway: 'http://127.0.0.1:8080',
+      // Configured but never started: no serving endpoint yet.
+      gateway: null,
+      externalGateway: 'http://127.0.0.1:8080',
       mode: 'external',
       backend: 'external-gateway',
     });

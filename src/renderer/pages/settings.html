@@ -2129,9 +2129,22 @@
         return mode.charAt(0).toUpperCase() + mode.slice(1);
       };
 
+      // A node config keeps its external endpoint across a switch back to
+      // managed (the catalog merges node config updates rather than clamping
+      // them), so the stored value is only the endpoint in use while the mode
+      // actually is 'external'. Hide it otherwise, for every row, or a managed
+      // node advertises an address it is not serving from.
+      const withoutStoredExternalFields = (definition, config) => {
+        const stripped = { ...(config || {}) };
+        for (const field of definition.externalFields || []) delete stripped[field.key];
+        return stripped;
+      };
+
       const endpointLines = (definition, config, service) => {
         if (config?.mode === 'disabled') return [];
-        return definition.endpointLines?.(config, service) || [];
+        const effective =
+          config?.mode === 'external' ? config : withoutStoredExternalFields(definition, config);
+        return definition.endpointLines?.(effective, service) || [];
       };
 
       const externalFields = (definition, config) =>
