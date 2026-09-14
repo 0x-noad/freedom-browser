@@ -933,6 +933,9 @@ async function handleSendContinue() {
   }
 
   const resolutionChainId = sendTxState.chainId;
+  // A previous review's primary name belongs to its resolution chain.
+  // Recompute it on every Continue, including after Edit + network change.
+  sendTxState.recipientResolution = null;
   try {
     let reverseLookup = Promise.resolve(null);
     if (recipientClass.type === 'ens') {
@@ -961,6 +964,14 @@ async function handleSendContinue() {
     // after signatures exist — there is no meaningful estimate here.
     const gasEstimate = activeSafeWallet() ? Promise.resolve() : estimateTransactionGas();
     const [, reverseResult] = await Promise.all([gasEstimate, reverseLookup]);
+    await configureSendUnlockUI();
+    // The network selector remains editable throughout gas and unlock
+    // preparation. Check again after the last await so a name's old-chain
+    // address cannot reach review under the newly selected network.
+    if (recipientClass.type === 'ens' && resolutionChainId !== sendTxState.chainId) {
+      showSendError('recipient', 'Network changed. Resolve the recipient again.');
+      return;
+    }
     // Same mid-flight network-switch guard the ENS-recipient path above
     // applies. A 0x recipient stays valid across a switch, so this does not
     // block the review — it just drops the other chain's primary name
@@ -973,7 +984,6 @@ async function handleSendContinue() {
       sendTxState.recipientResolution = reverseResult;
     }
     populateSendReview();
-    await configureSendUnlockUI();
     showSendReviewView();
   } catch (err) {
     console.error('[WalletUI] Failed to prepare transaction:', err);

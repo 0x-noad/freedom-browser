@@ -138,3 +138,22 @@ address-bar/wallet browser tests passed (two live-only checks skipped); all
 15 live mainnet resolution assertions and four live browser checks passed. Full `npm test`: 4,350 passed,
 25 skipped, and the same three previously reproduced baseline failures in
 settings shortcuts and the Safe fork test.
+
+### Additional wallet review
+
+- Reproduced a late network-switch race: an ENS recipient could resolve on one
+  chain, then reach review under another chain if the user switched networks
+  during gas estimation or unlock setup. The final chain check now runs after
+  all asynchronous preparation and before the review becomes visible.
+- Reverse-name adoption also runs after unlock setup, so a network switch in
+  that interval cannot display the previous chain's primary name.
+- Reproduced stale primary names after Edit → change network → Continue.
+  Each Continue now clears the preceding review's name before resolving again.
+- Regression tests drive both asynchronous windows and the repeated-review
+  flow. The new ENS race tests and repeated-review test failed before their
+  respective fixes. All 12 wallet tests pass afterward.
+- Full local suite after these changes: 4,354 passed, 25 skipped, and the same
+  three baseline failures described above. Lint passes.
+
+The owner is upgrading Myotis in a separate worktree; its node upgrade and
+live validation are explicitly outside this PR's remaining review scope.

@@ -291,15 +291,20 @@ describe('send screen sidebar ownership', () => {
   // switch, so the send itself is fine — but its best-effort reverse lookup
   // answers for the old chain, and painting that chain's primary name beside
   // the recipient is the same stale-advisory hazard.
-  test('a network switch mid reverse-lookup drops the other chain\'s primary name', async () => {
+  test.each(['reverse', 'unlock'])('a network switch during %s preparation drops the other chain\'s primary name', async (stage) => {
     const reverse = deferred();
-    const { mod, elements } = await loadSendScreen({
+    const { mod, state, elements } = await loadSendScreen({
       chains: [
         { chainId: 100, name: 'Gnosis' },
         { chainId: 8453, name: 'Base' },
       ],
-      reverseLookup: jest.fn(() => reverse.promise),
+      reverseLookup: jest.fn(() => stage === 'reverse'
+        ? reverse.promise : Promise.resolve({ success: true, name: 'gnosis-only.eth' })),
     });
+    if (stage === 'unlock') {
+      state.walletState.derivedWallets = [{ index: 0, type: 'software' }];
+      window.identity = { getStatus: jest.fn(() => reverse.promise) };
+    }
 
     await mod.openSend({
       chainId: 100,
@@ -312,11 +317,13 @@ describe('send screen sidebar ownership', () => {
     await flush();
     expect(window.electronAPI.resolveEnsReverse).toHaveBeenCalledWith(ADDRESS, 100);
 
-    // The user switches to Base while the lookup is still in flight.
+    if (stage === 'unlock') expect(window.identity.getStatus).toHaveBeenCalled();
+    // The user switches to Base while review preparation is still in flight.
     elements['send-chain-btn'].dispatch('click');
     elements['send-chain-list'].children[1].dispatch('click');
 
-    reverse.resolve({ success: true, name: 'gnosis-only.eth' });
+    reverse.resolve(stage === 'reverse'
+      ? { success: true, name: 'gnosis-only.eth' } : { isUnlocked: true });
     await flush();
 
     // The bare-address render path: no name span, just the recipient.
@@ -344,6 +351,63 @@ describe('send screen sidebar ownership', () => {
     expect(elements['send-review-view'].classList.contains('hidden')).toBe(false);
     expect(reviewRecipientText(elements)).toContain('stable.eth');
     expect(reviewRecipientText(elements)).toContain(ADDRESS);
+  });
+
+  test.each(['gas', 'unlock'])('an ENS recipient cannot reach review after a network switch during %s preparation', async (stage) => {
+    const pending = deferred();
+    const { mod, state, elements } = await loadSendScreen({
+      chains: [
+        { chainId: 100, name: 'Gnosis' },
+        { chainId: 8453, name: 'Base' },
+      ],
+    });
+    window.electronAPI.resolveEnsAddress = jest.fn().mockResolvedValue({
+      success: true, name: 'test.ses.eth', address: ADDRESS,
+    });
+    if (stage === 'gas') {
+      window.wallet.estimateGas.mockImplementationOnce(() => pending.promise);
+    } else {
+      state.walletState.derivedWallets = [{ index: 0, type: 'software' }];
+      window.identity = { getStatus: jest.fn(() => pending.promise) };
+    }
+    await mod.openSend({ chainId: 100, tokenKey: 'gnosis-native', recipient: 'test.ses.eth', amount: '1' });
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+    expect(window.electronAPI.resolveEnsAddress).toHaveBeenCalledWith('test.ses.eth', 100);
+    expect(stage === 'gas' ? window.wallet.estimateGas : window.identity.getStatus).toHaveBeenCalled();
+
+    elements['send-chain-btn'].dispatch('click');
+    elements['send-chain-list'].children[1].dispatch('click');
+    pending.resolve(stage === 'gas' ? { success: true, gasLimit: '21000' } : { isUnlocked: true });
+    await flush();
+
+    expect(elements['send-review-view'].classList.contains('hidden')).toBe(true);
+    expect(elements['send-recipient-error'].textContent).toContain('Network changed');
+    expect(elements['send-continue-btn'].disabled).toBe(false);
+    expect(window.wallet.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  test('editing a reviewed address and changing networks replaces its previous primary name', async () => {
+    const { mod, elements } = await loadSendScreen({
+      chains: [{ chainId: 100, name: 'Gnosis' }, { chainId: 8453, name: 'Base' }],
+      reverseLookup: jest.fn()
+        .mockResolvedValueOnce({ success: true, name: 'gnosis-only.eth' })
+        .mockResolvedValueOnce({ success: true, name: 'base-only.eth' }),
+    });
+    await mod.openSend({ chainId: 100, tokenKey: 'gnosis-native', recipient: ADDRESS, amount: '1' });
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+    expect(reviewRecipientText(elements)).toContain('gnosis-only.eth');
+
+    elements['send-edit-btn'].dispatch('click');
+    elements['send-chain-btn'].dispatch('click');
+    elements['send-chain-list'].children[1].dispatch('click');
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+
+    expect(window.electronAPI.resolveEnsReverse).toHaveBeenLastCalledWith(ADDRESS, 8453);
+    expect(reviewRecipientText(elements)).toContain('base-only.eth');
+    expect(reviewRecipientText(elements)).not.toContain('gnosis-only.eth');
   });
 
   test('the send screen refuses to open over another surface\'s device confirmation', async () => {
