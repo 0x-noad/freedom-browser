@@ -92,8 +92,10 @@ zero download events after entering `ur.integration-tests.eth`.
   [existing Myotis cold-sync issue #200](https://github.com/solardev-xyz/freedom-browser/issues/200).
   The new adapter has deterministic EVM/CCIP tests but still needs a live run
   against a fully synced node. Its generic calls use optimistic state and are
-  explicitly marked unverified by Freedom's finalized-state policy; no finalized
-  or shared-block guarantee is claimed across its callbacks.
+  cryptographically verified against a sync-committee-attested optimistic root.
+  Freedom reports `trust.level: verified` and `finality: optimistic`; the native
+  record's `verified: false` denotes lack of finality, not lack of proof. No
+  finalized or shared-block guarantee is claimed across its callbacks.
 - Full `npm test` run: 4,316 passed, 25 skipped, 3 failed. The same three failures
   reproduce on unchanged `origin/main` e06b44e9: two macOS shortcut expectations
   in `settings-store.test.js`, and the Gnosis-only guard in `safe-fork.test.js`.
@@ -108,3 +110,31 @@ zero download events after entering `ur.integration-tests.eth`.
 These results support review of the read integration and the required screenshots;
 ENS launch-partner acceptance remains ENS's decision. A synced-Myotis live run is
 still needed before claiming every configured backend has passed independently.
+
+## PR review follow-up (2026-09-14)
+
+Reviewed the original change plus commits `ec293b7e` and `78cbc5aa` against the
+review comments and the installed ethers implementation.
+
+- Confirmed the gateway-form URL carve-out, navigation-only MIME inference,
+  WNS/GNS rejection outside mainnet, chain-pinned reverse display, and new
+  address-bar/ENS CI job.
+- Fixed the remaining Colibri automatic-CCIP path to use the shared 15-second,
+  4-MiB-per-gateway fetcher. New tests use the actual ethers BrowserProvider
+  and OffchainLookup callback machinery for forward and reverse queries;
+  both fail before the provider override and pass afterward.
+- Added real address-bar regression cases for `ipfs.io`, `dweb.link`,
+  `127.0.0.1` and `localhost:8080`. These run in the new CI job and verify that
+  the embedded CID loads without an ENS error dialog.
+- Corrected the Myotis trust explanation above: optimistic proof verification
+  is distinct from finality. This corrects audit wording; the trust policy
+  itself is unchanged.
+- Retained the existing full-resolution screenshots and commit history. PR
+  description links use immutable commit references so deleting the branch
+  does not break the evidence.
+
+Local verification: lint passed; 200 resolver/CCIP tests passed; 16 offline
+address-bar/wallet browser tests passed (two live-only checks skipped); all
+15 live mainnet resolution assertions and four live browser checks passed. Full `npm test`: 4,350 passed,
+25 skipped, and the same three previously reproduced baseline failures in
+settings shortcuts and the Safe fork test.

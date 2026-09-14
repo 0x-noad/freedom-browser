@@ -8,8 +8,8 @@
  * gateway can stall an address-bar or wallet resolution for minutes per URL,
  * or stream unbounded bytes into the main process.
  *
- * This is the one implementation both ENS resolution paths use: the Myotis
- * verified-EVM provider (`myotis-resolver.js`) and the block-pinned quorum
+ * This is the implementation all ENS resolution paths use: the Myotis
+ * and Colibri providers' automatic CCIP callbacks and the block-pinned RPC
  * legs' manual CCIP loop (`ens-resolver.js#callUniversalResolver`). Keeping
  * them on one function is what stops their bounds from drifting apart.
  *
