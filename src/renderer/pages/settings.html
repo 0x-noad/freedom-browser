@@ -699,6 +699,13 @@
         font-size: 12px;
       }
 
+      .profile-node-note {
+        margin: 0;
+        color: var(--text-muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
       .profile-node-actions {
         display: flex;
         justify-content: flex-end;
@@ -2057,6 +2064,11 @@
           externalFields: [
             { key: 'externalGateway', label: 'Gateway', placeholder: 'http://127.0.0.1:8080' },
           ],
+          // Shown under the gateway field whenever "Use external node" is
+          // selected: the embedded node verifies what it retrieves, an external
+          // gateway is trusted for the bytes it serves.
+          externalNote:
+            'Freedom does not verify content integrity in this mode — the gateway is trusted for every ipfs:// page it serves.',
           endpointLines: (config) =>
             config?.externalGateway
               ? [config.externalGateway]
@@ -2154,9 +2166,14 @@
             </div>`
         );
 
+        const note = definition?.externalNote
+          ? `<p class="profile-node-note">${esc(definition.externalNote)}</p>`
+          : '';
+
         return `
           <div class="profile-node-editor" data-external-editor ${mode === 'external' ? '' : 'hidden'}>
             ${fields.join('')}
+            ${note}
           </div>`;
       };
 

@@ -2,6 +2,14 @@
 
 All notable changes to Freedom will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- External IPFS node mode under Settings > Nodes, for hosts where the embedded node cannot run
+  - Point a profile at your own gateway, or accept the one Freedom detects on the standard local port at launch
+  - Freedom does not verify content integrity in this mode; the gateway is trusted for every page it serves
+
 ## [0.8.5] - 2026-09-10
 
 ### Added

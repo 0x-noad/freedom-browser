@@ -21,6 +21,7 @@ const { fetchBuffer, fetchToFile } = require('./http-fetch');
 const { success, failure, validateWebContentsId } = require('./ipc-contract');
 const IPC = require('../shared/ipc-channels');
 const { normalizeSocksEndpoint } = require('../shared/socks-endpoint');
+const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
 const {
   startProbe: startSwarmProbe,
   cancelProbe: cancelSwarmProbe,
@@ -241,25 +242,11 @@ const PROFILE_NODE_ENDPOINT_NORMALIZERS = {
   externalSocks: normalizeSocksEndpoint,
 };
 
+// The node managers normalize the stored endpoint with this same function
+// (see src/shared/http-endpoint.js), so a value accepted here is dialled
+// verbatim later — including the userinfo rejection undici's fetch requires.
 function normalizeProfileNodeEndpoint(rawValue) {
-  if (rawValue == null) return null;
-  const trimmed = String(rawValue).trim();
-  if (!trimmed) return null;
-
-  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-
-  try {
-    const parsed = new URL(withProtocol);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return null;
-    }
-    parsed.hash = '';
-    parsed.search = '';
-    parsed.pathname = parsed.pathname.replace(/\/+$/, '');
-    return parsed.toString().replace(/\/+$/, '');
-  } catch {
-    return null;
-  }
+  return normalizeHttpEndpoint(rawValue);
 }
 
 function validateProfileNodeConfigUpdate(protocol, patch = {}) {

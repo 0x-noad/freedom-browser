@@ -14,6 +14,12 @@ const {
   clearService,
 } = require('./service-registry');
 const { FreedomIpfsNativeNode } = require('./ipfs/freedom-ipfs-native-node');
+const {
+  IPFS_GATEWAY_PROBE_PATH,
+  isIpfsGatewayProbeResponse,
+} = require('./ipfs/ipfs-gateway-probe');
+const { redactForLog } = require('./private/private-log-context');
+const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
 
 const STATUS = {
   STOPPED: 'stopped',
@@ -115,27 +121,11 @@ function isExternalIpfsConfig(config = getProfileIpfsConfig()) {
 }
 
 // Accept a bare host:port or a full URL and return a canonical http(s) origin
-// with no trailing slash, or null when the value is unusable. Mirrors the
-// externalApi normalization Ant uses so both nodes accept the same shapes.
+// with no trailing slash, or null when the value is unusable. This is the same
+// normalizer the profile IPC boundary validates the stored value with, so what
+// Settings accepts is exactly what gets dialled here.
 function normalizeExternalGatewayUrl(rawUrl) {
-  if (typeof rawUrl !== 'string') return null;
-  const trimmed = rawUrl.trim();
-  if (!trimmed) return null;
-
-  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-
-  try {
-    const parsed = new URL(withProtocol);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return null;
-    }
-    parsed.hash = '';
-    parsed.search = '';
-    parsed.pathname = parsed.pathname.replace(/\/+$/, '');
-    return parsed.toString().replace(/\/+$/, '');
-  } catch {
-    return null;
-  }
+  return normalizeHttpEndpoint(rawUrl);
 }
 
 function getEndpointLabel(rawUrl) {
@@ -181,27 +171,50 @@ async function detectExternalGatewayVersion(gatewayUrl, { timeoutMs = 2000 } = {
 }
 
 // Probe an external IPFS gateway by requesting the empty-file CID `bafkqaaa`,
-// which every gateway resolves locally.
-// A 2xx/3xx answer means a real gateway is listening and anything else is treated
-// as unreachable. Uses the same fetch stack that serves real gateway requests,
-// so the health probe can't disagree with a working request path.
+// which every gateway resolves locally. Only an IPFS-specific answer counts (an
+// `X-Ipfs-*` header, or the exactly-empty 200 body that CID must produce) — a
+// plain 200 would also come from the dev server that is far more likely to be
+// listening on :8080. Redirects are not followed, so a gateway answering with a
+// 3xx (e.g. Kubo's subdomain redirect) reads as unreachable rather than sending
+// this probe somewhere else. Uses the same fetch stack that serves real gateway
+// requests, so the health probe can't disagree with a working request path.
 async function probeExternalGateway(gatewayUrl, { timeoutMs = 2000 } = {}) {
   if (!gatewayUrl) return false;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${gatewayUrl}/ipfs/bafkqaaa`, {
+    const res = await fetch(`${gatewayUrl}${IPFS_GATEWAY_PROBE_PATH}`, {
       method: 'GET',
       signal: controller.signal,
-      redirect: 'follow',
+      redirect: 'manual',
     });
-    // Drain the body so the socket is released promptly.
-    res.body?.cancel?.().catch(() => {});
-    return res.status >= 200 && res.status < 400;
+    const bodyBytes = await probeBodyBytes(res);
+    return isIpfsGatewayProbeResponse({ status: res.status, headers: res.headers, bodyBytes });
   } catch {
     return false;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+// Read just enough of the probe body to tell "empty" from "not empty", then
+// release the socket. A gateway's answer for `bafkqaaa` is zero bytes; anything
+// else is some other server and there is no reason to buffer its page.
+async function probeBodyBytes(res) {
+  const reader = res.body?.getReader?.();
+  if (!reader) return 0;
+  try {
+    // Skip zero-length chunks: only "the stream ended without bytes" is empty.
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return 0;
+      if (value?.byteLength) return value.byteLength;
+    }
+  } catch {
+    // A body that failed mid-read proves nothing; null never reads as empty.
+    return null;
+  } finally {
+    reader.cancel?.().catch(() => {});
   }
 }
 
@@ -500,6 +513,28 @@ function countingGatewayStream(upstreamBody, release) {
   });
 }
 
+// Response headers that must not survive the proxy hop. undici has already
+// decoded the body per the fetch spec, so forwarding the upstream
+// `content-encoding` (and its compressed `content-length`) would have Chromium
+// decode the plaintext a second time — ERR_CONTENT_DECODING_FAILED or a
+// truncated page from any nginx/Caddy-fronted or public gateway. The rest are
+// hop-by-hop headers that describe the upstream connection, not this response.
+const DROPPED_UPSTREAM_RESPONSE_HEADERS = [
+  'content-encoding',
+  'content-length',
+  'transfer-encoding',
+  'connection',
+  'keep-alive',
+];
+
+function proxiedResponseHeaders(upstreamHeaders) {
+  const headers = new Headers(upstreamHeaders);
+  for (const name of DROPPED_UPSTREAM_RESPONSE_HEADERS) {
+    headers.delete(name);
+  }
+  return headers;
+}
+
 async function serveExternalGatewayRequest({ path: gatewayPath, method, headers, signal }) {
   if (currentState !== STATUS.RUNNING || !externalGatewayUrl) {
     return new Response(
@@ -524,24 +559,37 @@ async function serveExternalGatewayRequest({ path: gatewayPath, method, headers,
       method: method || 'GET',
       headers,
       signal,
-      redirect: 'follow',
+      // Never follow the gateway's redirects: a hostile or MITM'd gateway
+      // answering `302 Location: http://127.0.0.1:1633/…` would otherwise have
+      // Freedom fetch the user's own loopback/LAN services and hand the body
+      // back under the `ipfs://` origin. The 3xx is passed through to Chromium,
+      // which applies the normal cross-origin rules to it. The native path does
+      // not follow redirects either.
+      redirect: 'manual',
     });
 
-    // No body to stream (HEAD, 204/304, etc.): the request is already complete.
+    // No body to stream (HEAD, 204/304, a passed-through 3xx): the request is
+    // already complete.
     if (!upstream.body) {
       releaseHandle();
-      return upstream;
+      return new Response(null, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: proxiedResponseHeaders(upstream.headers),
+      });
     }
 
     return new Response(countingGatewayStream(upstream.body, releaseHandle), {
       status: upstream.status,
       statusText: upstream.statusText,
-      headers: upstream.headers,
+      headers: proxiedResponseHeaders(upstream.headers),
     });
   } catch (err) {
     releaseHandle();
     if (err?.name === 'AbortError') throw err;
-    log.warn(`[IPFS] External gateway request failed for ${gatewayPath}: ${err?.message || err}`);
+    log.warn(
+      `[IPFS] External gateway request failed for ${redactForLog(gatewayPath)}: ${err?.message || err}`
+    );
     return new Response(
       JSON.stringify({ code: 502, message: 'external IPFS gateway request failed' }),
       {

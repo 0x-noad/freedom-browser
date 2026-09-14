@@ -10,6 +10,24 @@ const PROFILE_IPFS_DATA_DIR = '/tmp/freedom-user-data/ipfs-data';
 const NATIVE_IPFS_DATA_DIR = path.join(PROFILE_IPFS_DATA_DIR, 'freedom-ipfs');
 const loadedContexts = [];
 
+const GATEWAY_PROBE_PATH = '/ipfs/bafkqaaa';
+
+// What a real gateway answers the probe CID with: an empty 200 carrying the
+// `X-Ipfs-Path` header every IPFS gateway sets. A plain 200 with a body is
+// explicitly NOT a gateway (see the dev-server test below), so every external
+// mode test has to answer the probe like a gateway before it can proxy.
+function gatewayProbeResponse() {
+  return new Response(null, { status: 200, headers: { 'x-ipfs-path': GATEWAY_PROBE_PATH } });
+}
+
+function mockGatewayFetch(handler) {
+  return jest.fn(async (url, init) => {
+    if (String(url).endsWith(GATEWAY_PROBE_PATH)) return gatewayProbeResponse();
+    if (handler) return handler(url, init);
+    return new Response('external-body', { status: 200 });
+  });
+}
+
 function createWindowMock() {
   return {
     webContents: {
@@ -384,7 +402,7 @@ describe('ipfs-manager', () => {
   test('starts in external mode and proxies gateway requests even when the native addon is absent', async () => {
     const window = createWindowMock();
     const realFetch = global.fetch;
-    global.fetch = jest.fn(async () => new Response('external-body', { status: 200 }));
+    global.fetch = mockGatewayFetch();
     try {
       const ctx = loadIpfsManagerModule({
         windows: [window],
@@ -423,7 +441,7 @@ describe('ipfs-manager', () => {
       expect(await response.text()).toBe('external-body');
       expect(global.fetch).toHaveBeenCalledWith(
         'http://127.0.0.1:8080/ipfs/bafy',
-        expect.objectContaining({ method: 'GET', redirect: 'follow' })
+        expect.objectContaining({ method: 'GET', redirect: 'manual' })
       );
     } finally {
       global.fetch = realFetch;
@@ -459,7 +477,7 @@ describe('ipfs-manager', () => {
 
   test('stopping an external node keeps external mode in the registry so it can be re-enabled', async () => {
     const realFetch = global.fetch;
-    global.fetch = jest.fn(async () => new Response('external-body', { status: 200 }));
+    global.fetch = mockGatewayFetch();
     try {
       const ctx = loadIpfsManagerModule({
         // Native addon absent: the only way back on is that the registry still
@@ -513,7 +531,7 @@ describe('ipfs-manager', () => {
 
   test('external mode reports gateway telemetry (bytes streamed + active handles) via diagnostics', async () => {
     const realFetch = global.fetch;
-    global.fetch = jest.fn(async () => new Response('external-body', { status: 200 }));
+    global.fetch = mockGatewayFetch();
     try {
       const ctx = loadIpfsManagerModule({
         nativeAvailable: false,
@@ -552,7 +570,7 @@ describe('ipfs-manager', () => {
 
   test('external mode detects the Kubo version from the RPC API and reports it as identity', async () => {
     const realFetch = global.fetch;
-    global.fetch = jest.fn(async (url) => {
+    global.fetch = mockGatewayFetch(async (url) => {
       if (String(url).includes('/api/v0/version')) {
         return new Response(JSON.stringify({ Version: '0.30.0' }), { status: 200 });
       }
@@ -588,6 +606,198 @@ describe('ipfs-manager', () => {
     }
   });
 
+  test('does not treat a dev server answering 200 for every path as a gateway', async () => {
+    const realFetch = global.fetch;
+    // A Vite/CRA-style dev server on :8080: 200 + index.html for any path,
+    // including the probe CID. Accepting it would route every ipfs:// load
+    // through a server that has never heard of IPFS.
+    global.fetch = jest.fn(
+      async () =>
+        new Response('<!doctype html><html><body>dev server</body></html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        })
+    );
+    try {
+      const ctx = loadIpfsManagerModule({
+        activeProfile: {
+          metadata: {
+            nodes: {
+              ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+            },
+          },
+        },
+      });
+
+      await ctx.mod.startIpfs();
+
+      expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'External node unreachable');
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:8080/ipfs/bafkqaaa',
+        expect.objectContaining({ method: 'GET', redirect: 'manual' })
+      );
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('the probe does not follow a gateway redirect into another local service', async () => {
+    const realFetch = global.fetch;
+    const requested = [];
+    global.fetch = jest.fn(async (url, init) => {
+      requested.push(String(url));
+      // `redirect: 'manual'` is what keeps undici from fetching the Location
+      // target itself; assert the flag and mimic the 3xx it then surfaces.
+      expect(init.redirect).toBe('manual');
+      return new Response(null, { status: 302, headers: { location: 'http://127.0.0.1:1633/' } });
+    });
+    try {
+      const ctx = loadIpfsManagerModule({
+        activeProfile: {
+          metadata: {
+            nodes: {
+              ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+            },
+          },
+        },
+      });
+
+      await ctx.mod.startIpfs();
+
+      expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'External node unreachable');
+      expect(requested).toEqual(['http://127.0.0.1:8080/ipfs/bafkqaaa']);
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('a proxied gateway redirect is passed through, never followed', async () => {
+    const realFetch = global.fetch;
+    const requested = [];
+    global.fetch = mockGatewayFetch(async (url, init) => {
+      requested.push(String(url));
+      expect(init.redirect).toBe('manual');
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'http://127.0.0.1:1633/bzz/secret' },
+      });
+    });
+    try {
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: {
+          metadata: {
+            nodes: {
+              ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+            },
+          },
+        },
+      });
+      await ctx.mod.startIpfs();
+
+      const response = await ctx.mod.serveNativeGatewayRequest({
+        path: '/ipfs/bafy',
+        method: 'GET',
+        headers: new Headers(),
+      });
+
+      // The 3xx reaches Chromium as-is; Freedom never fetches the loopback
+      // service the hostile gateway pointed at.
+      expect(response.status).toBe(302);
+      expect(response.headers.get('location')).toBe('http://127.0.0.1:1633/bzz/secret');
+      // The version detection also talks to :5001; nothing else is dialled,
+      // and in particular not the redirect's target.
+      expect(requested.filter((url) => !url.includes('/api/v0/version'))).toEqual([
+        'http://127.0.0.1:8080/ipfs/bafy',
+      ]);
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('drops content-encoding, content-length and hop-by-hop headers from the proxied response', async () => {
+    const realFetch = global.fetch;
+    global.fetch = mockGatewayFetch(
+      async () =>
+        // undici has already decoded this body; forwarding the upstream
+        // content-encoding would have Chromium decode it a second time.
+        new Response('external-body', {
+          status: 200,
+          headers: {
+            'content-type': 'text/plain',
+            'content-encoding': 'gzip',
+            'content-length': '42',
+            'transfer-encoding': 'chunked',
+            connection: 'keep-alive',
+            'keep-alive': 'timeout=5',
+            'x-ipfs-path': '/ipfs/bafy',
+          },
+        })
+    );
+    try {
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: {
+          metadata: {
+            nodes: {
+              ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+            },
+          },
+        },
+      });
+      await ctx.mod.startIpfs();
+
+      const response = await ctx.mod.serveNativeGatewayRequest({
+        path: '/ipfs/bafy',
+        method: 'GET',
+        headers: new Headers(),
+      });
+
+      expect([...response.headers.keys()].sort()).toEqual(['content-type', 'x-ipfs-path']);
+      expect(await response.text()).toBe('external-body');
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('a failed external request logs the redacted path in a private window', async () => {
+    const realFetch = global.fetch;
+    global.fetch = mockGatewayFetch(async () => {
+      throw new Error('socket hang up');
+    });
+    try {
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: {
+          metadata: {
+            nodes: {
+              ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+            },
+          },
+        },
+      });
+      await ctx.mod.startIpfs();
+
+      // Same module instance the manager under test loaded, so the async
+      // context it sets is the one redactForLog reads.
+      const { runWithPrivateLogContext } = require('./private/private-log-context');
+      const response = await runWithPrivateLogContext(true, () =>
+        ctx.mod.serveNativeGatewayRequest({
+          path: '/ipfs/bafysecret/where-the-user-went',
+          method: 'GET',
+          headers: new Headers(),
+        })
+      );
+
+      expect(response.status).toBe(502);
+      const warning = ctx.log.warn.mock.calls.map((call) => call.join(' ')).join('\n');
+      expect(warning).toContain('<private>');
+      expect(warning).not.toContain('bafysecret');
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
   test('normalizeExternalGatewayUrl canonicalizes hosts and rejects unusable values', () => {
     const ctx = loadIpfsManagerModule();
     expect(ctx.mod.normalizeExternalGatewayUrl('127.0.0.1:8080')).toBe('http://127.0.0.1:8080');
@@ -597,5 +807,9 @@ describe('ipfs-manager', () => {
     expect(ctx.mod.normalizeExternalGatewayUrl('   ')).toBeNull();
     expect(ctx.mod.normalizeExternalGatewayUrl('ftp://example.test')).toBeNull();
     expect(ctx.mod.normalizeExternalGatewayUrl(null)).toBeNull();
+    // undici's fetch refuses a credentialed URL, so a gateway that carries
+    // userinfo is rejected here instead of failing every request later.
+    expect(ctx.mod.normalizeExternalGatewayUrl('http://user:pass@127.0.0.1:8080')).toBeNull();
+    expect(ctx.mod.normalizeExternalGatewayUrl('http://user@127.0.0.1:8080')).toBeNull();
   });
 });
