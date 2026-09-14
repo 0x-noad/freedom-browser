@@ -2,6 +2,12 @@
 
 All notable changes to Freedom will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Nightly builds of `main` for internal testers, on their own update channel — a nightly updates to the next nightly, stable installs are never offered one
+
 ## [0.8.5] - 2026-09-10
 
 ### Added
