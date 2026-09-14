@@ -545,6 +545,24 @@ async function doSyncIpfsProfileMode() {
   // the old gateway every 5s while the UI says stopped, and could flip the
   // state back to RUNNING behind a managed/disabled config. Tear it down and
   // drop the endpoint with it, the same way doStopIpfs does.
+  //
+  // R1-F1: "changed" is the operative word. Settings saves node config
+  // unconditionally, so a user troubleshooting a downed gateway who opens
+  // Settings > Nodes > IPFS and clicks Save without editing anything lands
+  // here too — and for an unchanged external endpoint the armed probe is still
+  // describing exactly what the profile names. Tearing it down there settles a
+  // recovering gateway to STOPPED permanently: nothing re-arms the retry and
+  // the user has to notice and toggle the node by hand. Leave that state
+  // untouched (the registry already describes it) and only tear down when the
+  // config the probe was armed for is genuinely gone.
+  const stillProbingConfiguredGateway =
+    healthCheckInterval !== null &&
+    currentMode === MODE.EXTERNAL &&
+    externalGatewayUrl !== null &&
+    isExternalIpfsConfig(config) &&
+    normalizeExternalGatewayUrl(config.externalGateway) === externalGatewayUrl;
+  if (stillProbingConfiguredGateway) return;
+
   stopHealthCheck();
   currentMode = MODE.BUNDLED;
   externalGatewayUrl = null;

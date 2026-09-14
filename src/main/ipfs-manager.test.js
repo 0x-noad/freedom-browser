@@ -941,6 +941,49 @@ describe('ipfs-manager', () => {
         jest.useRealTimers();
       }
     });
+
+    // R1-F1, the complement: Settings saves node config unconditionally, so a
+    // user troubleshooting a downed gateway can land in doSyncIpfsProfileMode
+    // with *nothing* changed. The probe is then still armed for the endpoint the
+    // profile names, and tearing it down there would settle the node to STOPPED
+    // with nothing left to notice the gateway coming back.
+    test('a no-change save keeps the soft retry armed and still auto-recovers', async () => {
+      jest.useFakeTimers();
+      const realFetch = global.fetch;
+      const gateway = 'http://127.0.0.1:8080';
+      const activeProfile = {
+        metadata: { nodes: { ipfs: { mode: 'external', externalGateway: gateway } } },
+      };
+      try {
+        const ctx = await startThenFailExternal(activeProfile);
+
+        // Settings > Nodes > IPFS, Save, with the same external endpoint —
+        // spelled the way the user typed it rather than the normalized form the
+        // manager dialled, because that round-trips through Settings too.
+        activeProfile.metadata.nodes.ipfs = { mode: 'external', externalGateway: '127.0.0.1:8080' };
+        await ctx.mod.syncProfileMode();
+
+        // Still in soft ERROR, still external, still describing the endpoint.
+        await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+          status: 'error',
+        });
+        expect(ctx.mod.getNativeDiagnostics().externalGateway).toBe(gateway);
+
+        // The gateway comes back, and the still-armed probe finds it.
+        global.fetch = mockGatewayFetch();
+        jest.advanceTimersByTime(5000);
+        await drainMicrotasks();
+
+        expect(probeCallsTo(global.fetch, gateway)).toBe(1);
+        await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+          status: 'running',
+        });
+        expect(ctx.clearErrorState).toHaveBeenLastCalledWith('ipfs');
+      } finally {
+        global.fetch = realFetch;
+        jest.useRealTimers();
+      }
+    });
   });
 
   test('external mode reports gateway telemetry (bytes streamed + active handles) via diagnostics', async () => {
