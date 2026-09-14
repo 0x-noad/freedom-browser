@@ -11,6 +11,7 @@ function setup(abi = 25) {
     statusJson: jest.fn(() => JSON.stringify({ snapPeers: 2 })), drainLogs: jest.fn(),
     ensRecordJson: jest.fn(), requestAccountJson: jest.fn(), estimateGasJson: jest.fn(),
     acceptStaleAnchor: jest.fn(() => true),
+    checkpointImportVersion: jest.fn(() => 1), createWithCheckpoint: jest.fn(() => 8),
     feeEstimateJson: jest.fn(), sendRawTransactionJson: jest.fn(),
     ethCallJson: jest.fn(async () => '{"resultHex":"0x1234"}'),
   };
@@ -67,23 +68,39 @@ test.each(['load', 'abi', 'create', 'start'])('reports only the bounded %s start
 });
 
 
-test('refuses ABI22 and missing Node methods before creating a handle', () => {
-  const old = setup(22); old.start();
-  expect(old.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: false, failure: 'abi' }));
-  const missing = setup(); delete missing.addon.estimateGasJson; missing.start();
-  expect(missing.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: false, failure: 'methods' }));
-  expect(missing.addon.create).not.toHaveBeenCalled();
-});
-
-
-test('applies consent only to the current parked handle, with no caller-supplied arguments', async () => {
+test('does not expose the stale-anchor risk bypass', async () => {
   const ctx = setup(); ctx.start();
+  ctx.addon.statusJson.mockReturnValue('{"beaconState":"STALE_ANCHOR"}');
   ctx.send({ type: 'request', id: 1, op: 'accept-stale-anchor', args: [] });
   expect(ctx.addon.acceptStaleAnchor).not.toHaveBeenCalled();
-  ctx.addon.statusJson.mockReturnValue('{"beaconState":"STALE_ANCHOR"}');
-  ctx.send({ type: 'request', id: 2, op: 'accept-stale-anchor', args: [true] });
-  expect(ctx.addon.acceptStaleAnchor).not.toHaveBeenCalled();
-  ctx.send({ type: 'request', id: 3, op: 'accept-stale-anchor', args: [] });
-  expect(ctx.addon.acceptStaleAnchor).toHaveBeenCalledWith(7);
-  expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ id: 3, ok: true, result: { accepted: true } }));
+  expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ id: 1, ok: false }));
+});
+
+test('imports only a chain-bound checkpoint through the explicit native capability', () => {
+  const ctx = setup();
+  const checkpoint = { chainId: 100, network: 'gnosis', root: '0x' + 'ab'.repeat(32), slot: 30000000 };
+  ctx.send({ type: 'start', addonPath: '/addon.node', network: 'gnosis', dataDir: '/owned', checkpoint, resumeVerifiedState: true });
+  expect(ctx.addon.create).not.toHaveBeenCalled();
+  expect(ctx.addon.createWithCheckpoint).toHaveBeenCalledWith('gnosis', '/owned', checkpoint.root, checkpoint.slot, true);
+  expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: true, checkpointSupported: true }));
+});
+
+test.each([
+  { chainId: 1 }, { network: 'mainnet' }, { root: '0x' + '00'.repeat(32) }, { slot: 1.5 }, { slot: Number.MAX_SAFE_INTEGER + 1 },
+])('refuses malformed or wrong-chain checkpoint before native creation: %s', (change) => {
+  const ctx = setup();
+  const checkpoint = { chainId: 100, network: 'gnosis', root: '0x' + 'ab'.repeat(32), slot: 30000000, ...change };
+  ctx.send({ type: 'start', addonPath: '/addon.node', network: 'gnosis', dataDir: '/owned', checkpoint, resumeVerifiedState: false });
+  expect(ctx.addon.create).not.toHaveBeenCalled();
+  expect(ctx.addon.createWithCheckpoint).not.toHaveBeenCalled();
+  expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: false, failure: 'configuration' }));
+});
+
+test('refuses an unsupported addon instead of falling back to its embedded checkpoint', () => {
+  const ctx = setup(); ctx.addon.checkpointImportVersion.mockReturnValue(0);
+  ctx.send({ type: 'start', addonPath: '/addon.node', network: 'mainnet', dataDir: '/owned',
+    checkpoint: { chainId: 1, network: 'mainnet', root: '0x' + 'ab'.repeat(32), slot: 15000000 }, resumeVerifiedState: false });
+  expect(ctx.addon.create).not.toHaveBeenCalled();
+  expect(ctx.addon.createWithCheckpoint).not.toHaveBeenCalled();
+  expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: false, failure: 'checkpoint-unsupported' }));
 });

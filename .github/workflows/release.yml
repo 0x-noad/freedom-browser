@@ -139,7 +139,10 @@ jobs:
       - name: Download libradicle addon
         run: npm run radicle:download -- --mac --arm64
 
-      - name: Download Myotis addon
+      - name: Install pinned Myotis Rust toolchain
+        run: rustup toolchain install 1.94 --profile minimal
+
+      - name: Build pinned Myotis checkpoint addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -356,7 +359,10 @@ jobs:
       - name: Download libradicle addon
         run: npm run radicle:download -- --linux --${{ matrix.arch }}
 
-      - name: Download Myotis addon
+      - name: Install pinned Myotis Rust toolchain
+        run: rustup toolchain install 1.94 --profile minimal
+
+      - name: Build pinned Myotis checkpoint addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -806,7 +812,10 @@ jobs:
       - name: Download libradicle addon
         run: npm run radicle:download -- --win --x64
 
-      - name: Download Myotis addon
+      - name: Install pinned Myotis Rust toolchain
+        run: rustup toolchain install 1.94 --profile minimal
+
+      - name: Build pinned Myotis checkpoint addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}

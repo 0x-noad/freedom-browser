@@ -9,7 +9,6 @@ const OPERATIONS = Object.freeze({
   gas: 'estimateGasJson',
   fee: 'feeEstimateJson',
   broadcast: 'sendRawTransactionJson',
-  'accept-stale-anchor': 'acceptStaleAnchor',
 });
 
 function runChild(host = process, loadAddon = require) {
@@ -46,11 +45,28 @@ function runChild(host = process, loadAddon = require) {
         failure = 'abi';
         if (addon.init() !== EXPECTED_ABI) throw new Error('ABI');
         failure = 'create';
-        handle = addon.create(message.network, message.dataDir);
+        const checkpointSupported = typeof addon.createWithCheckpoint === 'function' &&
+          typeof addon.checkpointImportVersion === 'function' && addon.checkpointImportVersion() === 1;
+        if (message.checkpoint) {
+          failure = 'configuration';
+          const checkpoint = message.checkpoint;
+          const chainId = message.network === 'mainnet' ? 1 : 100;
+          if (checkpoint.chainId !== chainId || checkpoint.network !== message.network ||
+              !/^0x[0-9a-f]{64}$/i.test(checkpoint.root || '') || /^0x0{64}$/i.test(checkpoint.root) ||
+              !Number.isSafeInteger(checkpoint.slot) || checkpoint.slot <= 0 ||
+              typeof message.resumeVerifiedState !== 'boolean') throw new Error('checkpoint');
+          failure = 'checkpoint-unsupported';
+          if (!checkpointSupported) throw new Error('checkpoint capability');
+          failure = 'create';
+          handle = addon.createWithCheckpoint(message.network, message.dataDir,
+            checkpoint.root, checkpoint.slot, message.resumeVerifiedState);
+        } else {
+          handle = addon.create(message.network, message.dataDir);
+        }
         if (handle < 1) throw new Error('create');
         failure = 'start';
         if (!addon.start(handle)) throw new Error('start');
-        send({ type: 'started', ok: true });
+        send({ type: 'started', ok: true, checkpointSupported });
       } catch {
         send({ type: 'started', ok: false, failure });
         stop();
@@ -71,15 +87,6 @@ function runChild(host = process, loadAddon = require) {
     }
     if (op !== 'status') active += 1;
     try {
-      // Consent is only meaningful for this still-parked native handle.
-      if (op === 'accept-stale-anchor') {
-        if (args.length || JSON.parse(addon.statusJson(handle)).beaconState !== 'STALE_ANCHOR') {
-          reply(false);
-        } else {
-          reply(true, { accepted: addon.acceptStaleAnchor(handle) === true });
-        }
-        return;
-      }
       const raw = op === 'status'
         ? addon.statusJson(handle)
         : await addon[OPERATIONS[op]](handle, ...args);

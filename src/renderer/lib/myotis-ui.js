@@ -11,8 +11,13 @@ let peersCount = null;
 let finalizedBlock = null;
 let versionText = null;
 let divider = null;
-let reviewAnchorButton = null;
-const reviewingAnchors = new Set();
+let retryCheckpointButton = null;
+const retryingCheckpoints = new Set();
+const retryErrors = new Map();
+const notifiedFailures = new Map();
+const pendingNotices = new Map();
+let recoveryNotice = null;
+let recoveryNoticeText = null;
 let latestStatus = null;
 let desiredRunning = null;
 let reconciling = false;
@@ -28,15 +33,14 @@ const gnosis = {
   block: null,
   version: null,
   divider: null,
-  reviewAnchorButton: null,
+  retryCheckpointButton: null,
   status: null,
   desiredRunning: null,
   reconciling: false,
 };
 
 const isLiveRunning = () => latestStatus?.running === true;
-const isEffectivelyRunning = () =>
-  desiredRunning === null ? isLiveRunning() : desiredRunning;
+const isEffectivelyRunning = () => (desiredRunning === null ? isLiveRunning() : desiredRunning);
 
 const stateLabel = (status) => {
   if (!status) return 'Unavailable';
@@ -45,7 +49,11 @@ const stateLabel = (status) => {
   if (status.state === 'error') return 'Error';
   if (status.state === 'off') return 'Off';
   if (status.state === 'ready') return 'Ready';
-  if (status.beaconState === 'STALE_ANCHOR') return 'Stale checkpoint';
+  if (status.state === 'recovering') return 'Recovering';
+  if (status.state === 'recovery-blocked') {
+    return status.recovery?.reason === 'stalled' ? 'Syncing slowly' : 'Sync paused';
+  }
+  if (status.beaconState === 'STALE_ANCHOR') return 'Sync paused';
   if (status.paused) return 'Paused';
   if (status.currentPeriod && status.targetPeriod) {
     return `Syncing ${status.currentPeriod}/${status.targetPeriod}`;
@@ -58,11 +66,11 @@ const updateControls = (status) => {
   const supported = status?.supported !== false;
   const available = status?.available === true;
   const disabled = status?.state === 'disabled';
-  const controllable = supported && available && !disabled;
+  const controllable = supported && (available || status?.running === true) && !disabled;
   const running = isEffectivelyRunning();
 
   if (divider) divider.hidden = !supported;
-  updateAnchorButton(reviewAnchorButton, status, 1);
+  updateRecovery(retryCheckpointButton, status, 1);
 
   if (toggleButton) {
     toggleButton.hidden = !supported;
@@ -70,6 +78,8 @@ const updateControls = (status) => {
     toggleButton.classList.toggle('disabled', !controllable);
     if (disabled) {
       toggleButton.title = 'Disabled for this profile in Settings';
+    } else if (status?.recovery) {
+      toggleButton.title = recoveryMessage(status);
     } else if (!available) {
       toggleButton.title = 'Myotis native addon not found';
     } else if (status?.error) {
@@ -102,19 +112,18 @@ const updateGnosisControls = (status) => {
   const supported = status?.supported !== false;
   const available = status?.available === true;
   const disabled = status?.state === 'disabled';
-  const controllable = supported && available && !disabled;
-  const running = gnosis.desiredRunning === null
-    ? status?.running === true
-    : gnosis.desiredRunning;
+  const controllable = supported && (available || status?.running === true) && !disabled;
+  const running = gnosis.desiredRunning === null ? status?.running === true : gnosis.desiredRunning;
 
   if (gnosis.divider) gnosis.divider.hidden = !supported;
-  updateAnchorButton(gnosis.reviewAnchorButton, status, gnosis.chainId);
+  updateRecovery(gnosis.retryCheckpointButton, status, gnosis.chainId);
 
   if (gnosis.button) {
     gnosis.button.hidden = !supported;
     gnosis.button.disabled = !controllable;
     gnosis.button.classList.toggle('disabled', !controllable);
     if (disabled) gnosis.button.title = 'Disabled for this profile in Settings';
+    else if (status?.recovery) gnosis.button.title = recoveryMessage(status);
     else if (!available) gnosis.button.title = 'Myotis native addon not found';
     else if (status?.error) gnosis.button.title = status.error;
     else gnosis.button.removeAttribute('title');
@@ -129,24 +138,99 @@ const updateGnosisControls = (status) => {
   }
 };
 
-function updateAnchorButton(button, status, chainId) {
-  if (!button) return;
-  button.hidden = !(status?.running && status?.available && status?.state !== 'disabled' &&
-    status?.beaconState === 'STALE_ANCHOR');
-  button.disabled = reviewingAnchors.has(chainId);
+const recoveryFailureMessage = (reason) =>
+  ({
+    unavailable: 'Could not reach the checkpoint service. Check your connection and retry.',
+    stale: 'The checkpoint service returned an outdated checkpoint. Retry to get a recent one.',
+    mismatch: 'Checkpoint could not be verified. Sync is paused.',
+    clock: 'Check your computer’s date and time, then retry.',
+    storage: 'Could not save sync recovery data. Check available disk space and retry.',
+    ownership:
+      'Could not confirm that the previous node stopped. Close other Freedom instances and retry.',
+    unsupported: 'Update Freedom to recover this node.',
+    startup: 'Could not restart the node. Retry to resume syncing.',
+    stalled:
+      'Sync is taking longer than expected. Check your connection; the node will keep trying.',
+  })[reason] || 'Could not recover this node. Retry to resume syncing.';
+
+const recoveryMessage = (status) => {
+  const recovery = status?.recovery;
+  if (status?.state === 'recovery-blocked') return recoveryFailureMessage(recovery?.reason);
+  if (status?.state !== 'recovering') return '';
+  if (recovery?.phase === 'waiting') {
+    const retryAt = recovery.nextRetryAt;
+    const seconds = Number.isFinite(retryAt) ? Math.ceil((retryAt - Date.now()) / 1000) : 0;
+    const reason =
+      recovery.reason === 'stale'
+        ? 'Checkpoint is still out of date.'
+        : 'Checkpoint service unavailable.';
+    return seconds > 0 ? `${reason} Retrying in ${seconds}s…` : `${reason} Waiting to retry…`;
+  }
+  if (recovery?.phase === 'restarting') {
+    return recovery.mode === 'restart'
+      ? 'Restarting node…'
+      : 'Checkpoint verified. Restarting sync…';
+  }
+  return 'Updating sync checkpoint…';
+};
+
+function renderRecoveryNotice() {
+  if (!recoveryNotice || !recoveryNoticeText) return;
+  const notices = [...pendingNotices.values()];
+  recoveryNotice.hidden = notices.length === 0;
+  recoveryNoticeText.textContent =
+    notices.length > 1
+      ? 'Ethereum and Gnosis sync need attention. Open Nodes for details.'
+      : notices[0] || '';
 }
 
-async function reviewAnchor(chainId) {
-  if (reviewingAnchors.has(chainId)) return;
-  reviewingAnchors.add(chainId);
+function updateRecovery(button, status, chainId) {
+  const active = status?.running && status?.state !== 'disabled';
+  const blocked = active && status?.state === 'recovery-blocked';
+  const message = document.getElementById(
+    chainId === 100 ? 'myotis-gnosis-recovery-message' : 'myotis-recovery-message'
+  );
+  if (!blocked) retryErrors.delete(chainId);
+  if (message) {
+    message.textContent = active ? retryErrors.get(chainId) || recoveryMessage(status) : '';
+    message.hidden = !message.textContent;
+    message.classList.toggle('warning', Boolean(blocked));
+  }
+  if (button) {
+    button.hidden = !(blocked && status.recovery?.canRetry);
+    button.disabled = retryingCheckpoints.has(chainId);
+    button.textContent = button.disabled ? 'Retrying…' : 'Retry sync';
+  }
+  if (blocked) {
+    const key = `${status.recovery?.attempt}:${status.recovery?.reason}`;
+    if (notifiedFailures.get(chainId) !== key) {
+      notifiedFailures.set(chainId, key);
+      pendingNotices.set(
+        chainId,
+        `${chainId === 100 ? 'Gnosis' : 'Ethereum'}: ${recoveryFailureMessage(status.recovery?.reason)}`
+      );
+    }
+  } else {
+    notifiedFailures.delete(chainId);
+    pendingNotices.delete(chainId);
+  }
+  renderRecoveryNotice();
+}
+
+async function retryCheckpoint(chainId) {
+  const status = chainId === 100 ? gnosis.status : latestStatus;
+  if (retryingCheckpoints.has(chainId) || !status?.running || !status.recovery?.canRetry) return;
+  retryingCheckpoints.add(chainId);
+  retryErrors.delete(chainId);
   const update = chainId === 100 ? updateGnosisControls : updateControls;
-  update(chainId === 100 ? gnosis.status : latestStatus);
+  update(status);
   try {
-    update(await window.myotis.reviewStaleAnchor(chainId));
+    update(await window.myotis.retryCheckpoint(chainId));
   } catch {
-    pushDebug('Myotis checkpoint review failed');
+    retryErrors.set(chainId, 'The retry could not start. Try again.');
+    pushDebug('Myotis checkpoint retry failed');
   } finally {
-    reviewingAnchors.delete(chainId);
+    retryingCheckpoints.delete(chainId);
     update(chainId === 100 ? gnosis.status : latestStatus);
   }
 }
@@ -228,8 +312,8 @@ export const initMyotisUi = () => {
   finalizedBlock = document.getElementById('myotis-finalized-block');
   versionText = document.getElementById('myotis-version-text');
   divider = document.getElementById('myotis-divider');
-  reviewAnchorButton = document.getElementById('myotis-review-anchor');
-  gnosis.reviewAnchorButton = document.getElementById('myotis-gnosis-review-anchor');
+  retryCheckpointButton = document.getElementById('myotis-retry-checkpoint');
+  gnosis.retryCheckpointButton = document.getElementById('myotis-gnosis-retry-checkpoint');
   gnosis.button = document.getElementById('myotis-gnosis-toggle-btn');
   gnosis.toggle = document.getElementById('myotis-gnosis-toggle-switch');
   gnosis.info = document.getElementById('myotis-gnosis-info');
@@ -239,10 +323,25 @@ export const initMyotisUi = () => {
   gnosis.version = document.getElementById('myotis-gnosis-version-text');
   gnosis.divider = document.getElementById('myotis-gnosis-divider');
 
+  recoveryNotice = document.getElementById('myotis-recovery-notice');
+  recoveryNoticeText = document.getElementById('myotis-recovery-notice-text');
+
   if (listenersAttached) return;
   listenersAttached = true;
-  reviewAnchorButton?.addEventListener('click', () => reviewAnchor(1));
-  gnosis.reviewAnchorButton?.addEventListener('click', () => reviewAnchor(100));
+  const dismissNotice = () => {
+    pendingNotices.clear();
+    renderRecoveryNotice();
+  };
+  document.getElementById('myotis-recovery-notice-close')?.addEventListener('click', dismissNotice);
+  document.getElementById('myotis-recovery-notice-open')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const chainId = pendingNotices.keys().next().value;
+    if (!state.antMenuOpen) document.getElementById('bee-menu-button')?.click();
+    (chainId === 100 ? gnosis.info : infoPanel)?.scrollIntoView?.({ block: 'nearest' });
+    dismissNotice();
+  });
+  retryCheckpointButton?.addEventListener('click', () => retryCheckpoint(1));
+  gnosis.retryCheckpointButton?.addEventListener('click', () => retryCheckpoint(100));
 
   toggleButton?.addEventListener('click', () => {
     if (toggleButton.disabled) return;
@@ -266,8 +365,6 @@ export const initMyotisUi = () => {
       if (status?.chainId === gnosis.chainId) updateGnosisControls(status);
       else updateControls(status);
     });
-    window.myotis.getStatus?.(gnosis.chainId).then(updateGnosisControls).catch(() => {});
-  } else {
-    refreshStatus();
   }
+  refreshStatus();
 };

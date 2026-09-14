@@ -296,4 +296,31 @@ describe('MyotisProcess', () => {
     await uncertain; await unsent; await active;
     verifiedExit();
   });
+  test('forwards the imported checkpoint only after supervisor ownership', () => {
+    const { MyotisProcess } = require('./myotis-process');
+    const checkpoint = { chainId: 100, network: 'gnosis', root: '0x' + 'ab'.repeat(32), slot: 123 };
+    processClient = new MyotisProcess({ addonPath: '/addon.node', network: 'gnosis', dataDir: '/owned', checkpoint, resumeVerifiedState: true, ...callbacks });
+    expect(child.send).not.toHaveBeenCalled();
+    receipt('owned');
+    expect(child.send).toHaveBeenCalledWith(expect.objectContaining({ checkpoint, resumeVerifiedState: true, dataDir: '/owned' }), expect.any(Function));
+    child.emit('message', { type: 'started', generation: processClient.generation, ok: true, checkpointSupported: true });
+    expect(processClient.checkpointSupported).toBe(true);
+  });
+
+  test('old addon capability remains false unless explicitly reported', () => {
+    ready();
+    expect(processClient.checkpointSupported).toBe(false);
+  });
+
+  test('a verified late exit supersedes the old false stop result', async () => {
+    ready();
+    const stopping = processClient.stop();
+    await jest.advanceTimersByTimeAsync(5001);
+    await expect(stopping).resolves.toBe(false);
+    verifiedExit();
+    expect(processClient.exited).toBe(true);
+    await expect(processClient.stop()).resolves.toBe(true);
+    expect(callbacks.onExit).toHaveBeenCalledTimes(1);
+  });
+
 });
