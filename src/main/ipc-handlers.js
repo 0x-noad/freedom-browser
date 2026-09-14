@@ -354,6 +354,15 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
       const radicleManager = require('./radicle-manager');
       await radicleManager.syncProfileMode();
     }
+    if (protocol === 'ipfs') {
+      // Publish the newly configured mode to the service registry. Nothing is
+      // restarted (the Settings hint tells the user to restart the node), but a
+      // profile switched to external mode has to become controllable from the
+      // nodes menu right away — otherwise, on a host where the native addon
+      // cannot load, the toggle stays disabled until the app is relaunched.
+      const ipfsManager = require('./ipfs-manager');
+      await ipfsManager.syncProfileMode();
+    }
     return success({ profile });
   } catch (err) {
     log.error('[profile] Failed to update node config:', err);

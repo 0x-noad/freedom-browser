@@ -310,12 +310,27 @@ function startDisabledIpfs() {
   log.info('[IPFS] Disabled for active profile');
 }
 
+// Publish "this profile is on an external gateway" to the registry. The mode is
+// what tells the renderer the backend is one Freedom can control without the
+// native addon (see updateIpfsToggleState in renderer/lib/ipfs-ui.js), so it has
+// to be published on every external path — including the ones that did not reach
+// a running node — or the nodes-menu toggle stays disabled with no way to retry.
+function publishExternalIpfsMode(gateway) {
+  updateService('ipfs', {
+    api: null,
+    gateway: gateway || null,
+    mode: MODE.EXTERNAL,
+    backend: 'external-gateway',
+  });
+}
+
 // Route `ipfs://` / `ipns://` gateway requests to a user-provided external HTTP
 // gateway instead of the in-process native node. This is what lets IPFS work on
 // hosts where the native addon cannot load
 async function startExternalIpfs(config) {
   const url = normalizeExternalGatewayUrl(config?.externalGateway);
   if (!url) {
+    publishExternalIpfsMode(null);
     updateState(STATUS.ERROR, 'External IPFS gateway is not configured');
     setStatusMessage('ipfs', 'External node not configured');
     return;
@@ -323,6 +338,10 @@ async function startExternalIpfs(config) {
 
   const reachable = await probeExternalGateway(url);
   if (!reachable) {
+    // The endpoint is configured but not answering (gateway not started yet,
+    // still booting). Keep the profile's external mode published so the user can
+    // start their gateway and hit the toggle again without relaunching Freedom.
+    publishExternalIpfsMode(url);
     updateState(STATUS.ERROR, 'External IPFS gateway is unreachable');
     setStatusMessage('ipfs', 'External node unreachable');
     return;
@@ -334,12 +353,7 @@ async function startExternalIpfs(config) {
   externalBytesServed = 0;
   externalGatewayVersion = null;
   clearService('ipfs');
-  updateService('ipfs', {
-    api: null,
-    gateway: url,
-    mode: MODE.EXTERNAL,
-    backend: 'external-gateway',
-  });
+  publishExternalIpfsMode(url);
   setStatusMessage('ipfs', `External node: ${getEndpointLabel(url)}`);
   updateState(STATUS.RUNNING);
   startHealthCheck();
@@ -427,16 +441,43 @@ async function doStartIpfs() {
 function publishStoppedIpfsMode() {
   const config = getProfileIpfsConfig();
   if (isExternalIpfsConfig(config)) {
-    updateService('ipfs', {
-      api: null,
-      gateway: normalizeExternalGatewayUrl(config.externalGateway),
-      mode: MODE.EXTERNAL,
-      backend: 'external-gateway',
-    });
+    publishExternalIpfsMode(normalizeExternalGatewayUrl(config.externalGateway));
     setStatusMessage('ipfs', 'External node stopped');
     return;
   }
   clearService('ipfs');
+}
+
+// The profile's IPFS node config changed (Settings > Nodes) or the node was
+// never started at launch. Nothing is restarted here — Settings' own save hint
+// tells the user to restart the node to apply a mode/endpoint change — but the
+// registry must still describe the *configured* backend: it is what the renderer
+// reads to decide whether the nodes-menu toggle is controllable (external) and
+// whether an `ipfs://` navigation lands on the "disabled for this profile"
+// panel. Without it, switching a profile to external mode on a host where the
+// native addon cannot load left the toggle hard-disabled until the next launch.
+async function doSyncIpfsProfileMode() {
+  const config = getProfileIpfsConfig();
+
+  if (isDisabledIpfsConfig(config)) {
+    if (currentState === STATUS.RUNNING || currentState === STATUS.STARTING) {
+      await doStopIpfs();
+    }
+    startDisabledIpfs();
+    return;
+  }
+
+  // A live node keeps serving on the backend it actually started with until the
+  // user restarts it, so don't publish a mode the running node contradicts.
+  if (currentState === STATUS.RUNNING || currentState === STATUS.STARTING) return;
+
+  // A failure recorded against the previous config no longer describes this one.
+  const hadError = currentState === STATUS.ERROR;
+  if (hadError) clearErrorState('ipfs');
+  // Publish the profile mode to the registry BEFORE the status update, as the
+  // stop path does, so the renderer never sees the new status against a stale mode.
+  publishStoppedIpfsMode();
+  if (hadError) updateState(STATUS.STOPPED);
 }
 
 async function doStopIpfs() {
@@ -474,6 +515,12 @@ function startIpfs() {
 
 function stopIpfs() {
   return enqueueOp(doStopIpfs);
+}
+
+// Serialized with start/stop so a sync can't interleave with a transition and
+// publish a mode the op that is still running is about to overwrite.
+function syncProfileMode() {
+  return enqueueOp(doSyncIpfsProfileMode);
 }
 
 // Proxy a gateway request to the configured external HTTP gateway. The protocol
@@ -692,6 +739,7 @@ module.exports = {
   registerIpfsIpc,
   startIpfs,
   stopIpfs,
+  syncProfileMode,
   getActivePort,
   getActiveGatewayPort,
   getIpfsDataPath,

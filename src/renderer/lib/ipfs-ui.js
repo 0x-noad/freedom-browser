@@ -182,20 +182,6 @@ export const updateIpfsUi = (status, error) => {
   }
 };
 
-const setToggleDisabled = (disabled) => {
-  if (!ipfsToggleBtn) return;
-
-  if (disabled) {
-    ipfsToggleBtn.classList.add('disabled');
-    ipfsToggleBtn.setAttribute('disabled', 'true');
-    ipfsToggleBtn.setAttribute('title', 'IPFS binary not found');
-  } else {
-    ipfsToggleBtn.classList.remove('disabled');
-    ipfsToggleBtn.removeAttribute('disabled');
-    ipfsToggleBtn.removeAttribute('title');
-  }
-};
-
 // Update the status row from registry
 export const updateIpfsStatusLine = () => {
   if (!ipfsStatusRow || !ipfsStatusLabel || !ipfsStatusValue) return;
@@ -221,27 +207,43 @@ export const updateIpfsStatusLine = () => {
   }
 };
 
-// Update toggle disabled state based on node mode
+// Sole writer of the toggle's disabled/external/title state: it reads BOTH
+// inputs — the native-addon availability probe and the registry mode — so
+// neither can clobber the other's decision regardless of which lands first. (A
+// separate binary-probe writer used to disable the toggle unconditionally,
+// re-disabling an external gateway the registry had just declared controllable.)
 export const updateIpfsToggleState = () => {
   if (!ipfsToggleBtn) return;
 
   const mode = state.registry?.ipfs?.mode;
-  const isReused = mode === 'reused';
-  const isExternal = mode === 'external';
 
-  if (isReused) {
-    ipfsToggleBtn.classList.add('external');
-    ipfsToggleBtn.setAttribute('title', 'Using existing node — cannot be controlled from Freedom');
-  } else if (isExternal) {
-    // A user-configured external gateway is controllable and works even when the
-    // native addon is unavailable, so keep the switch enabled and drop the "binary not found"
-    // hint that setToggleDisabled would otherwise leave in place.
-    ipfsToggleBtn.classList.remove('external');
-    ipfsToggleBtn.classList.remove('disabled');
+  // A user-configured external gateway is controllable and needs no native
+  // addon, so it stays enabled even when the binary probe came back negative —
+  // it is the escape hatch for exactly the hosts where the addon can't load.
+  const disabled = !ipfsBinaryAvailable && mode !== 'external';
+
+  ipfsToggleBtn.classList.toggle('disabled', disabled);
+  if (disabled) {
+    ipfsToggleBtn.setAttribute('disabled', 'true');
+  } else {
     ipfsToggleBtn.removeAttribute('disabled');
-    ipfsToggleBtn.setAttribute('title', 'Using an external IPFS gateway');
-  } else if (ipfsBinaryAvailable) {
-    ipfsToggleBtn.classList.remove('external');
+  }
+
+  // An auto-detected node Freedom didn't start is shown as external but can't
+  // be controlled (the click handler declines it).
+  ipfsToggleBtn.classList.toggle('external', mode === 'reused');
+
+  const title =
+    mode === 'reused'
+      ? 'Using existing node — cannot be controlled from Freedom'
+      : mode === 'external'
+        ? 'Using an external IPFS gateway'
+        : disabled
+          ? 'IPFS binary not found'
+          : null;
+  if (title) {
+    ipfsToggleBtn.setAttribute('title', title);
+  } else {
     ipfsToggleBtn.removeAttribute('title');
   }
 };
@@ -310,7 +312,10 @@ export const initIpfsUi = () => {
   if (window.ipfs) {
     window.ipfs.checkBinary().then(({ available }) => {
       ipfsBinaryAvailable = available;
-      setToggleDisabled(!available);
+      // Re-derive the toggle state from both inputs rather than disabling
+      // outright: the profile may be on an external gateway, which the missing
+      // addon says nothing about.
+      updateIpfsToggleState();
       if (!available) {
         pushDebug('IPFS binary not found - toggle disabled');
       }

@@ -529,6 +529,165 @@ describe('ipfs-manager', () => {
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'External node not configured');
   });
 
+  // #350: the registry mode is what tells the renderer the backend is one
+  // Freedom can control without the native addon. A start that never reached a
+  // running node still has to publish it, or the nodes-menu toggle stays
+  // disabled and the user can never retry without relaunching the app.
+  test('a failed external start still publishes external mode so the user can retry', async () => {
+    const realFetch = global.fetch;
+    let gatewayUp = false;
+    global.fetch = jest.fn(async (url, init) => {
+      if (!gatewayUp) return new Response('bad gateway', { status: 502 });
+      return mockGatewayFetch()(url, init);
+    });
+    try {
+      const ctx = loadIpfsManagerModule({
+        // Native addon absent: external mode is the only backend available.
+        nativeAvailable: false,
+        activeProfile: {
+          metadata: {
+            nodes: {
+              ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+            },
+          },
+        },
+      });
+
+      await ctx.mod.startIpfs();
+
+      expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'External node unreachable');
+      expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', {
+        api: null,
+        gateway: 'http://127.0.0.1:8080',
+        mode: 'external',
+        backend: 'external-gateway',
+      });
+
+      // The user starts their gateway and hits the toggle again — no relaunch.
+      gatewayUp = true;
+      await ctx.mod.startIpfs();
+
+      expect(ctx.setStatusMessage).toHaveBeenLastCalledWith(
+        'ipfs',
+        'External node: 127.0.0.1:8080'
+      );
+      expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', {
+        api: null,
+        gateway: 'http://127.0.0.1:8080',
+        mode: 'external',
+        backend: 'external-gateway',
+      });
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('an unconfigured external gateway still publishes external mode', async () => {
+    const ctx = loadIpfsManagerModule({
+      nativeAvailable: false,
+      activeProfile: {
+        metadata: {
+          nodes: {
+            ipfs: { mode: 'external' },
+          },
+        },
+      },
+    });
+
+    await ctx.mod.startIpfs();
+
+    expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', {
+      api: null,
+      gateway: null,
+      mode: 'external',
+      backend: 'external-gateway',
+    });
+  });
+
+  test('syncProfileMode publishes a newly configured external mode without a relaunch', async () => {
+    const activeProfile = {
+      metadata: { nodes: { ipfs: { mode: 'bundled', externalGateway: null } } },
+    };
+    const ctx = loadIpfsManagerModule({ nativeAvailable: false, activeProfile });
+
+    // Launch: the native addon can't load, so the registry says nothing usable.
+    await ctx.mod.startIpfs();
+    expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'Native node unavailable');
+    expect(ctx.updateService).not.toHaveBeenCalled();
+
+    // The user switches the profile to an external gateway in Settings.
+    activeProfile.metadata.nodes.ipfs = {
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
+    };
+    await ctx.mod.syncProfileMode();
+
+    expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', {
+      api: null,
+      gateway: 'http://127.0.0.1:8080',
+      mode: 'external',
+      backend: 'external-gateway',
+    });
+    expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'External node stopped');
+    // The failure recorded against the old config no longer describes this one.
+    expect(ctx.clearErrorState).toHaveBeenCalledWith('ipfs');
+
+    // And the toggle's start now reaches the configured gateway.
+    const realFetch = global.fetch;
+    global.fetch = mockGatewayFetch();
+    try {
+      await ctx.mod.startIpfs();
+      expect(ctx.setStatusMessage).toHaveBeenLastCalledWith(
+        'ipfs',
+        'External node: 127.0.0.1:8080'
+      );
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('syncProfileMode publishes disabled mode and stops a running node', async () => {
+    const activeProfile = { metadata: { nodes: { ipfs: { mode: 'bundled' } } } };
+    const ctx = loadIpfsManagerModule({ activeProfile });
+
+    await ctx.mod.startIpfs();
+    expect(ctx.nativeInstances).toHaveLength(1);
+
+    activeProfile.metadata.nodes.ipfs = { mode: 'disabled' };
+    await ctx.mod.syncProfileMode();
+
+    expect(ctx.nativeInstances[0].stop).toHaveBeenCalled();
+    expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', {
+      api: null,
+      gateway: null,
+      mode: 'disabled',
+      backend: 'freedom-ipfs',
+    });
+    expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'Node disabled for this profile');
+  });
+
+  test('syncProfileMode leaves a running node on the backend it actually started with', async () => {
+    const activeProfile = { metadata: { nodes: { ipfs: { mode: 'bundled' } } } };
+    const ctx = loadIpfsManagerModule({ activeProfile });
+
+    await ctx.mod.startIpfs();
+    ctx.updateService.mockClear();
+    ctx.setStatusMessage.mockClear();
+
+    // Settings' own save hint says a mode change needs a node restart, so the
+    // live bundled node must keep serving — and the registry must keep
+    // describing it — until the user restarts it.
+    activeProfile.metadata.nodes.ipfs = {
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
+    };
+    await ctx.mod.syncProfileMode();
+
+    expect(ctx.nativeInstances[0].stop).not.toHaveBeenCalled();
+    expect(ctx.updateService).not.toHaveBeenCalled();
+    expect(ctx.setStatusMessage).not.toHaveBeenCalled();
+  });
+
   test('external mode reports gateway telemetry (bytes streamed + active handles) via diagnostics', async () => {
     const realFetch = global.fetch;
     global.fetch = mockGatewayFetch();

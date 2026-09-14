@@ -126,6 +126,9 @@ window.serviceRegistry?.getRegistry?.().then((registry) => {
   if (registry) {
     pushDebug(`[ServiceRegistry] Initial state: ${JSON.stringify(registry)}`);
     updateRegistry(registry);
+    // A profile already on an external IPFS gateway must have a usable toggle
+    // from the first paint, not only after the next registry broadcast.
+    updateIpfsToggleState();
   }
 });
 
