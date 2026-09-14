@@ -24,21 +24,43 @@
  * payload and the name being resolved are all private.
  */
 
+const { isIP } = require('node:net');
+
 const CCIP_TIMEOUT_MS = 15_000;
 const CCIP_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
-async function ccipReadFetch(transaction, data, urls) {
+async function ccipReadFetch(transaction, data, urls, signal) {
   for (const template of urls) {
+    if (signal?.aborted) break;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), CCIP_TIMEOUT_MS);
     try {
       const sender = transaction.to.toLowerCase();
       const url = template.replaceAll('{sender}', sender).replaceAll('{data}', data);
-      if (!['https:', 'http:'].includes(new URL(url).protocol)) continue;
+      const parsed = new URL(url);
+      const host = parsed.hostname
+        .replace(/^\[|\]$/g, '')
+        .replace(/\.$/, '')
+        .toLowerCase();
+      // Resolver-controlled URLs must not become POSTs to the browser's
+      // unauthenticated local node APIs. HTTPS also authenticates the DNS
+      // hostname at connection time; never follow a redirect back to HTTP.
+      if (
+        parsed.protocol !== 'https:' ||
+        parsed.username ||
+        parsed.password ||
+        isIP(host) ||
+        !host.includes('.') ||
+        host.endsWith('.localhost') ||
+        host.endsWith('.local') ||
+        host.endsWith('.internal')
+      )
+        continue;
       const get = template.includes('{data}');
       const response = await fetch(url, {
         method: get ? 'GET' : 'POST',
-        signal: controller.signal,
+        signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
+        redirect: 'error',
         headers: {
           Accept: 'application/json',
           ...(get ? {} : { 'Content-Type': 'application/json' }),
@@ -73,7 +95,9 @@ async function ccipReadFetch(transaction, data, urls) {
       clearTimeout(timer);
     }
   }
-  throw new Error('CCIP gateways unavailable or returned invalid data');
+  const error = new Error('CCIP gateways unavailable or returned invalid data');
+  error.code = 'CCIP_GATEWAY_FAILED';
+  throw error;
 }
 
 module.exports = { ccipReadFetch, CCIP_TIMEOUT_MS, CCIP_MAX_RESPONSE_BYTES };

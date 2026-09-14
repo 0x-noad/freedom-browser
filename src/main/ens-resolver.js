@@ -649,9 +649,10 @@ function decodeReverseMismatchClaimedName(err) {
 // deliberately block-pinned; keep every callback at that same block rather
 // than falling back to an unpinned read or treating OffchainLookup as absence.
 async function callUniversalResolver(provider, method, args, overrides) {
+  const { onCcipRead, ccipSignal, ...contractOverrides } = overrides;
   const ur = new ethers.Contract(UNIVERSAL_RESOLVER_ADDRESS, UR_ABI, provider);
   try {
-    return await ur[method](...args, { enableCcipRead: true, ...overrides });
+    return await ur[method](...args, { enableCcipRead: true, ...contractOverrides });
   } catch (initialError) {
     if (overrides.blockTag == null || overrides.blockTag === 'latest') throw initialError;
     const abi = ethers.AbiCoder.defaultAbiCoder();
@@ -670,7 +671,14 @@ async function callUniversalResolver(provider, method, args, overrides) {
       // implementation has no response-size cap and a 300s default timeout,
       // for URLs an OffchainLookup revert chose. Use the same bounded
       // fetcher (15s / 4MB per gateway) the Myotis provider is built on.
-      const response = await ccipReadFetch({ to: sender }, callData, urls);
+      let response;
+      onCcipRead?.(true);
+      try {
+        response = await ccipReadFetch({ to: sender }, callData, urls, ccipSignal);
+      } finally {
+        onCcipRead?.(false);
+      }
+      if (ccipSignal?.aborted) throw new Error('CCIP resolution cancelled', { cause: initialError });
       if (response == null) throw new Error('CCIP gateway returned no response', { cause: initialError });
       try {
         const raw = await provider.call({
@@ -707,6 +715,7 @@ function nodeFromResolverCallData(callData) {
 // shape as the Universal Resolver path so the quorum analyzer and record
 // decoders can be shared unchanged.
 async function nameNftResolverCall(provider, name, callData, overrides = {}) {
+  const { onCcipRead: _onCcipRead, ccipSignal: _ccipSignal, ...contractOverrides } = overrides;
   const nameSystem = nameSystemForName(name);
   if (!nameSystem.contractAddress) {
     throw new Error(`No NameNFT contract configured for ${nameSystem.label}`);
@@ -720,7 +729,7 @@ async function nameNftResolverCall(provider, name, callData, overrides = {}) {
   );
 
   if (selector === CONTENTHASH_SELECTOR) {
-    const contenthash = await registryContract.contenthash(node, overrides);
+    const contenthash = await registryContract.contenthash(node, contractOverrides);
     return {
       resolvedData: ethers.AbiCoder.defaultAbiCoder().encode(
         ['bytes'],
@@ -731,7 +740,7 @@ async function nameNftResolverCall(provider, name, callData, overrides = {}) {
   }
 
   if (selector === ADDR_SELECTOR) {
-    const address = await registryContract.addr(node, overrides);
+    const address = await registryContract.addr(node, contractOverrides);
     return {
       resolvedData: ethers.AbiCoder.defaultAbiCoder().encode(
         ['address'],
@@ -797,7 +806,7 @@ async function universalResolverReverseCall(provider, normalizedAddress, _callDa
       resolverAddress: UNIVERSAL_RESOLVER_ADDRESS,
     };
   } catch (err) {
-    if (isProviderError(err)) throw err;
+    if (isProviderError(err) || err.code === 'CCIP_GATEWAY_FAILED') throw err;
     if (isResolverNotFoundError(err)) {
       return {
         resolvedData: encodeReverseOutcome(REVERSE_OUTCOME.noRecord),
@@ -824,6 +833,7 @@ async function universalResolverReverseCall(provider, normalizedAddress, _callDa
 // the target system's suffix, allowing the existing NameNFT routing helper to
 // select the correct contract while quorum compares ABI-identical strings.
 async function nameNftReverseResolverCall(provider, name, callData, overrides = {}) {
+  const { onCcipRead: _onCcipRead, ccipSignal: _ccipSignal, ...contractOverrides } = overrides;
   const nameSystem = nameSystemForName(name);
   if (!nameSystem.contractAddress) {
     throw new Error(`No NameNFT contract configured for ${nameSystem.label}`);
@@ -834,7 +844,7 @@ async function nameNftReverseResolverCall(provider, name, callData, overrides = 
     NAME_NFT_ABI,
     provider
   );
-  const claimedName = await registryContract.reverseResolve(address, overrides);
+  const claimedName = await registryContract.reverseResolve(address, contractOverrides);
   return {
     resolvedData: ethers.AbiCoder.defaultAbiCoder().encode(['string'], [claimedName || '']),
     resolverAddress: nameSystem.contractAddress,
@@ -875,7 +885,11 @@ async function runQuorumLeg(
   callResolver = universalResolverCall,
 ) {
   let provider;
+  let usedGateway = false;
+  let deadlineAfterGateway = false;
+  const ccipController = new AbortController();
   const cleanup = () => {
+    ccipController.abort();
     if (provider) {
       try { provider.destroy(); } catch { /* already torn down */ }
       provider = null;
@@ -884,11 +898,27 @@ async function runQuorumLeg(
   if (cancelToken) cancelToken.cleanups.add(cleanup);
   try {
     provider = createEthereumProvider(url);
-    const urCall = callResolver(provider, name, callData, { blockTag: blockHash });
-    const result = await withTimeout(urCall, timeoutMs, cleanup);
+    const urCall = callResolver(provider, name, callData, {
+      blockTag: blockHash,
+      onCcipRead: (active) => { if (active) usedGateway = true; },
+      ccipSignal: ccipController.signal,
+    });
+    const result = await withTimeout(urCall, timeoutMs, () => {
+      // Once a gateway has consumed part of this shared deadline, expiry
+      // cannot distinguish gateway delay from callback RPC delay. Keep
+      // the provider healthy; explicit RPC failures still quarantine it.
+      deadlineAfterGateway = usedGateway;
+      cleanup();
+    });
     markProviderSuccess(url);
     return { url, status: 'data', resolvedData: result.resolvedData, resolverAddress: result.resolverAddress };
   } catch (err) {
+    if (deadlineAfterGateway || err.code === 'CCIP_GATEWAY_FAILED') {
+      // A gateway outage is retryable, not an agreed absent record. Keep
+      // the RPC healthy and keep the failure out of negative-record caches.
+      markProviderSuccess(url);
+      return { url, status: 'error', error: err };
+    }
     if (isResolverNotFoundError(err)) {
       markProviderSuccess(url);
       return { url, status: 'not_found', reason: 'NO_RESOLVER' };

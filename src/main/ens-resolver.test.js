@@ -179,6 +179,7 @@ const mockGetBlock = jest.fn();
 const mockDestroy = jest.fn();
 const mockGetResolver = jest.fn();
 const mockResolveName = jest.fn();
+const mockProviderCall = jest.fn();
 const mockUrResolve = jest.fn();
 const mockUrReverse = jest.fn();
 const mockWnsContenthash = jest.fn();
@@ -238,6 +239,7 @@ jest.mock('ethers', () => {
           },
           getResolver: mockGetResolver,
           resolveName: mockResolveName,
+          call: mockProviderCall,
           destroy: mockDestroy,
         };
       }),
@@ -1340,6 +1342,49 @@ describe('ens-resolver', () => {
         universalResolverCall(provider, 'test.eth', '0x', { blockTag: 123 })
       ).rejects.toThrow('CCIP gateways unavailable');
       expect(provider.call).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ['quorum', 'timeout'], ['direct', 'timeout'],
+      ['quorum', 'rejection'], ['direct', 'rejection'],
+      ['quorum', 'callback-budget'], ['direct', 'callback-budget'],
+    ])('a gateway failure via %s (%s) leaves healthy RPCs available for another name', async (method, failure) => {
+      jest.useFakeTimers();
+      try {
+        mockLoadSettings.mockReturnValue({
+          ...mockLoadSettings(), ensResolutionMethod: method, ensResolutionOrder: [method],
+          ...(method === 'direct' ? { enableEnsCustomRpc: true, ensRpcUrl: TEST_PROVIDERS[0] } : {}),
+        });
+        mockUrResolve.mockRejectedValue(offchain());
+        mockProviderCall.mockImplementation(() => new Promise(() => {}));
+        const signals = [];
+        mockCcipReadFetch.mockImplementation((_tx, _data, _urls, signal) => {
+          signals.push(signal);
+          if (failure === 'rejection') {
+            return Promise.reject(Object.assign(new Error('CCIP gateway timeout'), { code: 'CCIP_GATEWAY_FAILED' }));
+          }
+          if (failure === 'callback-budget') {
+            return new Promise((resolve) => setTimeout(() => resolve('0xcafe'), 4500));
+          }
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(new Error('CCIP cancelled')));
+          });
+        });
+        const pending = resolveEnsContent('slow-gateway.eth').catch((error) => error);
+        await jest.advanceTimersByTimeAsync(5001);
+        expect(await pending).toBeInstanceOf(Error);
+        expect(signals.length).toBeGreaterThan(0);
+        expect(signals.every((signal) => signal?.aborted)).toBe(true);
+
+        // Do not reset provider health: an unrelated name must work at once,
+        // before the 60-second quarantine would have elapsed.
+        mockUrResolve.mockResolvedValue(urReturnsBytes(swarmContenthashFor('a'.repeat(64))));
+        const next = await resolveEnsContent('healthy-next.eth');
+        expect(next.type).toBe('ok');
+        expect((await resolveEnsContent('slow-gateway.eth')).type).toBe('ok');
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 

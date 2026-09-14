@@ -37,6 +37,7 @@ test('substitutes the template and returns the gateway hex', async () => {
   const [url, init] = global.fetch.mock.calls[0];
   expect(url).toBe(`https://gw.example/${UR.toLowerCase()}/0xbeef`);
   expect(init.method).toBe('GET');
+  expect(init.redirect).toBe('error');
 });
 
 test('POSTs the sender and data when the template has no {data}', async () => {
@@ -57,22 +58,59 @@ test('tries the next gateway when one fails, and rejects once all are exhausted'
     .mockResolvedValueOnce(jsonResponse('0xcafe'));
 
   expect(
-    await ccipReadFetch(TX, '0x', ['https://a/{data}', 'https://b/{data}', 'https://c/{data}'])
+    await ccipReadFetch(TX, '0x', [
+      'https://a.example/{data}',
+      'https://b.example/{data}',
+      'https://c.example/{data}',
+    ])
   ).toBe('0xcafe');
 
   global.fetch = jest.fn().mockResolvedValue(new Response('', { status: 502 }));
-  await expect(ccipReadFetch(TX, '0x', ['https://a/{data}'])).rejects.toThrow(
+  await expect(ccipReadFetch(TX, '0x', ['https://a.example/{data}'])).rejects.toThrow(
     'CCIP gateways unavailable'
   );
 });
 
-test('refuses a non-http(s) gateway URL without fetching it', async () => {
+test.each([
+  'file:///etc/passwd',
+  'http://127.0.0.1:1633/stamps/1/17',
+  'http://gateway.example/query',
+  'https://127.0.0.1/query',
+  'https://2130706433/query',
+  'https://[::1]/query',
+  'https://[::ffff:127.0.0.1]/query',
+  'https://localhost./query',
+  'https://node.localhost/query',
+  'https://node.local/query',
+  'https://node.internal/query',
+  'https://node/query',
+  'https://user:password@gateway.example/query',
+])('refuses unsafe gateway %s without fetching it', async (url) => {
   global.fetch = jest.fn();
 
-  await expect(ccipReadFetch(TX, '0x', ['file:///etc/passwd'])).rejects.toThrow(
-    'CCIP gateways unavailable'
-  );
+  await expect(ccipReadFetch(TX, '0x', [url])).rejects.toThrow('CCIP gateways unavailable');
   expect(global.fetch).not.toHaveBeenCalled();
+});
+
+test('cancelling a resolution aborts its request and prevents subsequent gateways', async () => {
+  const controller = new AbortController();
+  global.fetch = jest.fn(
+    (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(init.signal.reason));
+      })
+  );
+  const pending = ccipReadFetch(
+    TX,
+    '0x',
+    ['https://a.example/', 'https://b.example/'],
+    controller.signal
+  );
+  const assertion = expect(pending).rejects.toThrow('CCIP gateways unavailable');
+  controller.abort();
+  await assertion;
+  expect(global.fetch).toHaveBeenCalledTimes(1);
+  expect(global.fetch.mock.calls[0][1].signal.aborted).toBe(true);
 });
 
 // The bounds this helper exists for. ethers' inherited implementation has

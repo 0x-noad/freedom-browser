@@ -286,12 +286,7 @@ describe('send screen sidebar ownership', () => {
     expect(elements['sidebar-send'].classList.contains('hidden')).toBe(true);
   });
 
-  // The ENS-recipient path already refuses a review whose name was resolved
-  // on a chain the user has since left. A 0x recipient stays valid across the
-  // switch, so the send itself is fine — but its best-effort reverse lookup
-  // answers for the old chain, and painting that chain's primary name beside
-  // the recipient is the same stale-advisory hazard.
-  test.each(['reverse', 'unlock'])('a network switch during %s preparation drops the other chain\'s primary name', async (stage) => {
+  test.each(['reverse', 'unlock'])('a network switch during %s preparation refuses the stale review', async (stage) => {
     const reverse = deferred();
     const { mod, state, elements } = await loadSendScreen({
       chains: [
@@ -326,9 +321,8 @@ describe('send screen sidebar ownership', () => {
       ? { success: true, name: 'gnosis-only.eth' } : { isUnlocked: true });
     await flush();
 
-    // The bare-address render path: no name span, just the recipient.
-    expect(elements['send-review-view'].classList.contains('hidden')).toBe(false);
-    expect(reviewRecipientText(elements)).toBe(ADDRESS);
+    expect(elements['send-review-view'].classList.contains('hidden')).toBe(true);
+    expect(elements['send-general-error'].textContent).toContain('Network changed');
     expect(reviewRecipientText(elements)).not.toContain('gnosis-only.eth');
   });
 
@@ -353,7 +347,9 @@ describe('send screen sidebar ownership', () => {
     expect(reviewRecipientText(elements)).toContain(ADDRESS);
   });
 
-  test.each(['gas', 'unlock'])('an ENS recipient cannot reach review after a network switch during %s preparation', async (stage) => {
+  test.each([
+    ['gas', 'test.ses.eth'], ['unlock', 'test.ses.eth'], ['gas', ADDRESS],
+  ])('a network switch during %s preparation refuses review for %s', async (stage, recipient) => {
     const pending = deferred();
     const { mod, state, elements } = await loadSendScreen({
       chains: [
@@ -370,10 +366,10 @@ describe('send screen sidebar ownership', () => {
       state.walletState.derivedWallets = [{ index: 0, type: 'software' }];
       window.identity = { getStatus: jest.fn(() => pending.promise) };
     }
-    await mod.openSend({ chainId: 100, tokenKey: 'gnosis-native', recipient: 'test.ses.eth', amount: '1' });
+    await mod.openSend({ chainId: 100, tokenKey: 'gnosis-native', recipient, amount: '1' });
     elements['send-continue-btn'].dispatch('click');
     await flush();
-    expect(window.electronAPI.resolveEnsAddress).toHaveBeenCalledWith('test.ses.eth', 100);
+    if (recipient !== ADDRESS) expect(window.electronAPI.resolveEnsAddress).toHaveBeenCalledWith(recipient, 100);
     expect(stage === 'gas' ? window.wallet.estimateGas : window.identity.getStatus).toHaveBeenCalled();
 
     elements['send-chain-btn'].dispatch('click');
@@ -382,9 +378,39 @@ describe('send screen sidebar ownership', () => {
     await flush();
 
     expect(elements['send-review-view'].classList.contains('hidden')).toBe(true);
-    expect(elements['send-recipient-error'].textContent).toContain('Network changed');
+    expect(elements['send-general-error'].textContent).toContain('Network changed');
     expect(elements['send-continue-btn'].disabled).toBe(false);
     expect(window.wallet.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  test.each([false, true])('automatic Touch ID waits for an accepted review (network changed: %s)', async (changeNetwork) => {
+    const pending = deferred();
+    const { mod, state, elements } = await loadSendScreen({
+      chains: [{ chainId: 100, name: 'Gnosis' }, { chainId: 8453, name: 'Base' }],
+    });
+    state.walletState.derivedWallets = [{ index: 0, type: 'software' }];
+    window.identity = {
+      getStatus: jest.fn().mockResolvedValue({ isUnlocked: false }),
+      getVaultMeta: jest.fn(() => pending.promise),
+    };
+    window.quickUnlock = {
+      canUseTouchId: jest.fn().mockResolvedValue(true),
+      isEnabled: jest.fn().mockResolvedValue(true),
+      unlock: jest.fn().mockResolvedValue({ success: false, error: 'Touch ID cancelled' }),
+    };
+    await mod.openSend({ chainId: 100, tokenKey: 'gnosis-native', recipient: ADDRESS, amount: '1' });
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+    expect(window.identity.getVaultMeta).toHaveBeenCalled();
+    if (changeNetwork) {
+      elements['send-chain-btn'].dispatch('click');
+      elements['send-chain-list'].children[1].dispatch('click');
+    }
+    pending.resolve({ userKnowsPassword: true });
+    await flush();
+    await jest.advanceTimersByTimeAsync(100);
+    expect(window.quickUnlock.unlock).toHaveBeenCalledTimes(changeNetwork ? 0 : 1);
+    expect(elements['send-review-view'].classList.contains('hidden')).toBe(changeNetwork);
   });
 
   test('editing a reviewed address and changing networks replaces its previous primary name', async () => {

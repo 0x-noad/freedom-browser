@@ -964,18 +964,20 @@ async function handleSendContinue() {
     // after signatures exist — there is no meaningful estimate here.
     const gasEstimate = activeSafeWallet() ? Promise.resolve() : estimateTransactionGas();
     const [, reverseResult] = await Promise.all([gasEstimate, reverseLookup]);
-    await configureSendUnlockUI();
+    if (resolutionChainId !== sendTxState.chainId) {
+      showSendError('general', 'Network changed. Prepare the transaction again.');
+      return;
+    }
+    const autoUnlock = await configureSendUnlockUI();
     // The network selector remains editable throughout gas and unlock
     // preparation. Check again after the last await so a name's old-chain
     // address cannot reach review under the newly selected network.
-    if (recipientClass.type === 'ens' && resolutionChainId !== sendTxState.chainId) {
-      showSendError('recipient', 'Network changed. Resolve the recipient again.');
+    if (resolutionChainId !== sendTxState.chainId) {
+      showSendError('general', 'Network changed. Prepare the transaction again.');
       return;
     }
-    // Same mid-flight network-switch guard the ENS-recipient path above
-    // applies. A 0x recipient stays valid across a switch, so this does not
-    // block the review — it just drops the other chain's primary name
-    // rather than painting it beside the recipient.
+    // Adopt a primary name only after the complete review has passed its
+    // network checks, together with its gas estimate and recipient address.
     if (
       reverseResult &&
       !sendTxState.recipientResolution &&
@@ -985,6 +987,14 @@ async function handleSendContinue() {
     }
     populateSendReview();
     showSendReviewView();
+    if (autoUnlock) {
+      const reviewedState = sendTxState;
+      setTimeout(() => {
+        if (sendTxState === reviewedState && !sendReviewView?.classList.contains('hidden')) {
+          handleSendTouchIdUnlock();
+        }
+      }, 100);
+    }
   } catch (err) {
     console.error('[WalletUI] Failed to prepare transaction:', err);
     showSendError('general', err.message || 'Failed to estimate gas');
@@ -1262,9 +1272,7 @@ async function configureSendUnlockUI() {
       sendPasswordSection?.classList.add('hidden');
     }
 
-    if (hasTouchId) {
-      setTimeout(() => handleSendTouchIdUnlock(), 100);
-    }
+    return hasTouchId;
   } catch (err) {
     console.error('[WalletUI] Failed to configure send unlock UI:', err);
     sendTouchIdBtn?.classList.add('hidden');

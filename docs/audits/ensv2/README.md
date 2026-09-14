@@ -147,13 +147,45 @@ settings shortcuts and the Safe fork test.
   all asynchronous preparation and before the review becomes visible.
 - Reverse-name adoption also runs after unlock setup, so a network switch in
   that interval cannot display the previous chain's primary name.
+- Network changes reject preparation for address-only recipients too, because
+  their gas estimate and selected token also belong to the preceding chain.
+- Automatic Touch ID starts only after the final network check and visible
+  review; leaving that review before the timer fires cancels the prompt.
 - Reproduced stale primary names after Edit → change network → Continue.
   Each Continue now clears the preceding review's name before resolving again.
 - Regression tests drive both asynchronous windows and the repeated-review
   flow. The new ENS race tests and repeated-review test failed before their
-  respective fixes. All 12 wallet tests pass afterward.
-- Full local suite after these changes: 4,354 passed, 25 skipped, and the same
+  respective fixes. All 15 wallet tests pass afterward.
+- Full local suite after these changes: 4,376 passed, 25 skipped, and the same
   three baseline failures described above. Lint passes.
+
+### Adversarial CCIP review
+
+- Resolver-controlled gateways now require HTTPS with normal certificate and
+  hostname verification. IP literals, local/single-label names, credentials,
+  and redirects are rejected. TLS is the protection against sending plaintext
+  POST requests to local node APIs; hostname filtering alone would not prevent
+  a public DNS name resolving to a private address.
+- The existing overall RPC-leg deadline remains in place. Expiry while waiting
+  on a gateway aborts that fetch and all later gateway attempts, without
+  quarantining the healthy RPC. Gateway failures are retryable errors, not
+  agreed missing records or negative-cache entries. Regression tests cover
+  timeout and explicit failure through direct and quorum strategies, then retry
+  both the same name and an unrelated name without resetting provider health.
+- Expiry during a callback also keeps the RPC healthy when an earlier gateway
+  round used some of that shared deadline. The callback-budget test reproduced
+  healthy-provider quarantine before this correction. Explicit RPC failures
+  retain their existing quarantine behavior. Callback calls remain pinned to
+  the original block.
+- All 15 live mainnet assertions pass with the stricter gateway policy.
+- The combined address-bar and live ENS browser suite passes all 18 checks,
+  including both wallet themes and native IPFS checker rendering.
+- Gateway requests still run independently per quorum leg. Sharing requests
+  would reduce duplicate work, but is an optional performance improvement;
+  the existing requests remain bounded and cancelled when their leg ends.
+- ENSIP-19 default-address handling remains in the resolver contract; the
+  client continues querying the destination chain's coin type, as specified in
+  [ENSIP-19](https://docs.ens.domains/ensip/19/).
 
 The owner is upgrading Myotis in a separate worktree; its node upgrade and
 live validation are explicitly outside this PR's remaining review scope.
