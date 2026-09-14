@@ -868,6 +868,81 @@ describe('ipfs-manager', () => {
     expect(ctx.setStatusMessage).not.toHaveBeenCalled();
   });
 
+  // R4-F2: the external health check is deliberately *soft* — it keeps probing
+  // an unreachable gateway so the node can recover on its own. That means a
+  // node left in ERROR still has a live 5s interval armed against the endpoint
+  // the profile no longer names, so every non-running sync path has to tear it
+  // down or Freedom keeps GETting the old gateway forever while the UI says
+  // stopped (and a late healthy probe could flip it back to RUNNING).
+  describe('leaving external mode stops probing the old gateway', () => {
+    const drainMicrotasks = async () => {
+      for (let i = 0; i < 50; i += 1) await Promise.resolve();
+    };
+
+    const probeCallsTo = (fetchMock, gateway) =>
+      fetchMock.mock.calls.filter((call) => String(call[0]) === `${gateway}${GATEWAY_PROBE_PATH}`)
+        .length;
+
+    // Start external, then knock the gateway over so the node sits in the soft
+    // ERROR state with its health check still running.
+    const startThenFailExternal = async (activeProfile) => {
+      const gateway = activeProfile.metadata.nodes.ipfs.externalGateway;
+      global.fetch = mockGatewayFetch();
+      const ctx = loadIpfsManagerModule({ nativeAvailable: false, activeProfile });
+      ctx.mod.registerIpfsIpc();
+      await ctx.mod.startIpfs();
+
+      global.fetch = jest.fn(async () => new Response('bad gateway', { status: 502 }));
+      jest.advanceTimersByTime(5000);
+      await drainMicrotasks();
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'error',
+      });
+      // The soft check is provably still armed against the old endpoint.
+      expect(probeCallsTo(global.fetch, gateway)).toBe(1);
+      return ctx;
+    };
+
+    test.each([
+      ['managed', { mode: 'bundled' }],
+      ['disabled', { mode: 'disabled' }],
+      ['another external endpoint', { mode: 'external', externalGateway: 'http://127.0.0.1:9090' }],
+    ])('sync to %s stops the probe against the old gateway', async (_label, nextConfig) => {
+      jest.useFakeTimers();
+      const realFetch = global.fetch;
+      const gateway = 'http://127.0.0.1:8080';
+      const activeProfile = {
+        metadata: { nodes: { ipfs: { mode: 'external', externalGateway: gateway } } },
+      };
+      try {
+        const ctx = await startThenFailExternal(activeProfile);
+
+        // The user changes the node config in Settings.
+        activeProfile.metadata.nodes.ipfs = nextConfig;
+        await ctx.mod.syncProfileMode();
+        global.fetch.mockClear();
+
+        // Three full health-check intervals later, nothing has been sent to the
+        // endpoint the profile no longer names.
+        jest.advanceTimersByTime(15000);
+        await drainMicrotasks();
+
+        expect(probeCallsTo(global.fetch, gateway)).toBe(0);
+        expect(global.fetch).not.toHaveBeenCalled();
+        // The interval itself is disarmed, not merely quiet: the disabled path
+        // would stop dialling anyway (the callback's external branch is gated on
+        // the mode), so without this a revert of `stopHealthCheck()` there would
+        // leave a live 5s timer for the rest of the session and still pass.
+        expect(jest.getTimerCount()).toBe(0);
+        // And the stale endpoint is gone from the diagnostics with it.
+        expect(ctx.mod.getNativeDiagnostics().externalGateway).toBeUndefined();
+      } finally {
+        global.fetch = realFetch;
+        jest.useRealTimers();
+      }
+    });
+  });
+
   test('external mode reports gateway telemetry (bytes streamed + active handles) via diagnostics', async () => {
     const realFetch = global.fetch;
     global.fetch = mockGatewayFetch();
@@ -944,6 +1019,57 @@ describe('ipfs-manager', () => {
       global.fetch = realFetch;
     }
   });
+
+  // R4-F3: the loopback gate is what keeps that unsolicited RPC POST on the
+  // user's own machine, so it must only accept *literal* loopback addresses. A
+  // `127.` prefix test also accepts a resolvable DNS name whose owner points it
+  // anywhere they like, and the POST goes there instead.
+  test.each([
+    ['127.evil.example', false],
+    ['127.0.0.1.evil.example', false],
+    ['127x0x0x1', false],
+    ['127.0.0.1', true],
+    ['127.1.2.3', true],
+    ['localhost', true],
+  ])(
+    'version detection dials :5001 only for a literal loopback host (%s)',
+    async (hostname, expectProbe) => {
+      const realFetch = global.fetch;
+      global.fetch = mockGatewayFetch(async (url) => {
+        if (String(url).includes('/api/v0/version')) {
+          return new Response(JSON.stringify({ Version: '0.30.0' }), { status: 200 });
+        }
+        return new Response('external-body', { status: 200 });
+      });
+      try {
+        const ctx = loadIpfsManagerModule({
+          nativeAvailable: false,
+          activeProfile: {
+            metadata: {
+              nodes: {
+                ipfs: { mode: 'external', externalGateway: `http://${hostname}:8080` },
+              },
+            },
+          },
+        });
+        await ctx.mod.startIpfs();
+        // The version detection is fire-and-forget; let its microtasks settle.
+        for (let i = 0; i < 5; i += 1) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+
+        const dialled5001 = global.fetch.mock.calls.some((call) =>
+          String(call[0]).includes(':5001')
+        );
+        expect(dialled5001).toBe(expectProbe);
+        expect(ctx.mod.getNativeDiagnostics().externalVersion).toBe(
+          expectProbe ? 'Kubo 0.30.0' : null
+        );
+      } finally {
+        global.fetch = realFetch;
+      }
+    }
+  );
 
   test('does not treat a dev server answering 200 for every path as a gateway', async () => {
     const realFetch = global.fetch;
@@ -1096,7 +1222,7 @@ describe('ipfs-manager', () => {
           path: '/ipfs/bafybeidirectory/docs',
           location: '/ipfs/bafybeidirectory/docs/',
         })
-      ).toEqual({ status: 301, location: 'docs/' });
+      ).toEqual({ status: 301, location: './docs/' });
     });
 
     test('keeps the query string on the rewritten Location', async () => {
@@ -1105,7 +1231,36 @@ describe('ipfs-manager', () => {
           path: '/ipfs/bafybeidirectory/docs?page=2',
           location: '/ipfs/bafybeidirectory/docs/?page=2',
         })
-      ).toEqual({ status: 301, location: 'docs/?page=2' });
+      ).toEqual({ status: 301, location: './docs/?page=2' });
+    });
+
+    // R4-F1: a relative reference whose first segment contains a `:` is parsed
+    // as an absolute URL with that segment as its scheme, and `:` is a legal
+    // UnixFS directory name — so the reference has to be `./`-prefixed or
+    // Chromium reads `re:port/` as the (unknown) `re:` scheme and the
+    // navigation fails instead of opening the directory.
+    test('rewrites a directory name containing a colon so it stays a relative path', async () => {
+      const { location } = await redirectCase({
+        path: '/ipfs/bafybeidirectory/re:port',
+        location: '/ipfs/bafybeidirectory/re:port/',
+      });
+
+      expect(location).toBe('./re:port/');
+      // What Chromium does with it: resolved against the ipfs:// request URL it
+      // must land inside the ipfs:// origin, not on a `re:` scheme.
+      const resolved = new URL(location, 'ipfs://bafybeidirectory/re:port');
+      expect(resolved.protocol).toBe('ipfs:');
+      expect(resolved.href).toBe('ipfs://bafybeidirectory/re:port/');
+      // The bare form this replaced does exactly the thing the `./` prevents.
+      expect(new URL('re:port/', 'ipfs://bafybeidirectory/re:port').protocol).toBe('re:');
+    });
+
+    // Every shape still resolves back to the bytes the gateway pointed at.
+    test('the everyday directory rewrite resolves under the ipfs:// origin', () => {
+      expect(new URL('./docs/', 'ipfs://bafybeidirectory/docs').href).toBe(
+        'ipfs://bafybeidirectory/docs/'
+      );
+      expect(new URL('./', 'ipfs://bafybeidirectory/a/b').href).toBe('ipfs://bafybeidirectory/a/');
     });
 
     // An Ethereum name whose contenthash carries a base path resolves to
@@ -1117,7 +1272,7 @@ describe('ipfs-manager', () => {
           path: '/ipfs/bafybeidirectory/site/docs',
           location: '/ipfs/bafybeidirectory/site/docs/',
         })
-      ).toEqual({ status: 301, location: 'docs/' });
+      ).toEqual({ status: 301, location: './docs/' });
     });
 
     test('rewrites a same-origin absolute Location too', async () => {
@@ -1127,7 +1282,7 @@ describe('ipfs-manager', () => {
           path: '/ipfs/bafybeidirectory/docs',
           location: 'http://127.0.0.1:8080/ipfs/bafybeidirectory/docs/',
         })
-      ).toEqual({ status: 302, location: 'docs/' });
+      ).toEqual({ status: 302, location: './docs/' });
     });
 
     // Outside the requested directory the prefix depth would have to be known

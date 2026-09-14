@@ -155,11 +155,17 @@ function unreachableEndpointHint(rawUrl) {
   }
 }
 
+// Literal IPv4 loopback only: every octet must be digits. A `127.` *prefix*
+// test would also accept a resolvable DNS name like `127.evil.example`, which
+// points wherever its owner wants — and this gate is what keeps the unsolicited
+// `:5001` RPC POST on the user's own machine.
+const LOOPBACK_IPV4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+
 // `localhost` counts as loopback here: it resolves there, and Kubo binds its RPC
 // API to loopback by default, so it is the same machine either way.
 function isLoopbackHostname(hostname) {
   const host = String(hostname || '').toLowerCase();
-  return host === 'localhost' || host === '[::1]' || host === '::1' || /^127\./.test(host);
+  return host === 'localhost' || host === '[::1]' || host === '::1' || LOOPBACK_IPV4.test(host);
 }
 
 // The user configures only the gateway (e.g. :8080), but Kubo's RPC API answers
@@ -339,8 +345,13 @@ function checkBinary() {
 }
 
 function startDisabledIpfs() {
+  // Reachable from a soft-ERROR external node, whose health check is still
+  // running (the soft path deliberately keeps probing so it can recover). It
+  // must not outlive the endpoint it was armed for.
+  stopHealthCheck();
   currentMode = MODE.DISABLED;
   externalGatewayUrl = null;
+  externalGatewayVersion = null;
   clearService('ipfs');
   updateService('ipfs', {
     api: null,
@@ -526,6 +537,19 @@ async function doSyncIpfsProfileMode() {
   // user restarts it, so don't publish a mode the running node contradicts.
   if (currentState === STATUS.RUNNING || currentState === STATUS.STARTING) return;
 
+  // Not running, so nothing is being served — but an external node left in soft
+  // ERROR still has its health check armed against the *old* endpoint (the soft
+  // path keeps probing precisely so an unreachable gateway can recover on its
+  // own). Once the profile names a different backend or endpoint that probe is
+  // describing something the user no longer asked for: it would keep GETting
+  // the old gateway every 5s while the UI says stopped, and could flip the
+  // state back to RUNNING behind a managed/disabled config. Tear it down and
+  // drop the endpoint with it, the same way doStopIpfs does.
+  stopHealthCheck();
+  currentMode = MODE.BUNDLED;
+  externalGatewayUrl = null;
+  externalGatewayVersion = null;
+
   // A failure recorded against the previous config no longer describes this one.
   const hadError = currentState === STATUS.ERROR;
   if (hadError) clearErrorState('ipfs');
@@ -675,10 +699,18 @@ function rewriteGatewayLocation(location, requestUrl) {
   if (!dir || !target.pathname.startsWith(dir)) return null;
 
   const relative = target.pathname.slice(dir.length);
-  // A target that *is* the directory resolves to `./` — still a valid relative
-  // reference, and the one Kubo emits for `/ipfs/<cid>/a/b` → `/ipfs/<cid>/a/`
-  // only when `b` was the whole path segment, so keep it expressible.
-  return `${relative || './'}${target.search}${target.hash}`;
+  // Always `./`-prefixed, never bare. A bare relative reference whose first
+  // segment contains a `:` is parsed as an absolute URL with that segment as
+  // its *scheme* (RFC 3986 §4.2 / the WHATWG URL parser), and `:` is a legal
+  // UnixFS directory name: `ipfs://<cid>/re:port` → Kubo's
+  // `301 Location: /ipfs/<cid>/re:port/` → bare `re:port/` would be read as
+  // scheme `re:` and fail the navigation instead of opening the directory.
+  // The prefix also keeps a name that starts the relative part with `/` or `//`
+  // (a doubled slash in the gateway path) from resolving against the origin
+  // root or being read as a scheme-relative authority. It is a no-op for the
+  // everyday `docs/` case (`./docs/` resolves identically) and for the empty
+  // target-is-the-directory case, which stays `./`.
+  return `./${relative}${target.search}${target.hash}`;
 }
 
 // 3xx from the gateway: rewrite `Location` in place when it can be expressed in
