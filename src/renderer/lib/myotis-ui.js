@@ -11,6 +11,8 @@ let peersCount = null;
 let finalizedBlock = null;
 let versionText = null;
 let divider = null;
+let reviewAnchorButton = null;
+const reviewingAnchors = new Set();
 let latestStatus = null;
 let desiredRunning = null;
 let reconciling = false;
@@ -26,6 +28,7 @@ const gnosis = {
   block: null,
   version: null,
   divider: null,
+  reviewAnchorButton: null,
   status: null,
   desiredRunning: null,
   reconciling: false,
@@ -42,6 +45,8 @@ const stateLabel = (status) => {
   if (status.state === 'error') return 'Error';
   if (status.state === 'off') return 'Off';
   if (status.state === 'ready') return 'Ready';
+  if (status.beaconState === 'STALE_ANCHOR') return 'Stale checkpoint';
+  if (status.paused) return 'Paused';
   if (status.currentPeriod && status.targetPeriod) {
     return `Syncing ${status.currentPeriod}/${status.targetPeriod}`;
   }
@@ -57,6 +62,7 @@ const updateControls = (status) => {
   const running = isEffectivelyRunning();
 
   if (divider) divider.hidden = !supported;
+  updateAnchorButton(reviewAnchorButton, status, 1);
 
   if (toggleButton) {
     toggleButton.hidden = !supported;
@@ -102,6 +108,7 @@ const updateGnosisControls = (status) => {
     : gnosis.desiredRunning;
 
   if (gnosis.divider) gnosis.divider.hidden = !supported;
+  updateAnchorButton(gnosis.reviewAnchorButton, status, gnosis.chainId);
 
   if (gnosis.button) {
     gnosis.button.hidden = !supported;
@@ -121,6 +128,28 @@ const updateGnosisControls = (status) => {
     gnosis.version.textContent = versionLabel(status?.version && `Myotis v${status.version}`);
   }
 };
+
+function updateAnchorButton(button, status, chainId) {
+  if (!button) return;
+  button.hidden = !(status?.running && status?.available && status?.state !== 'disabled' &&
+    status?.beaconState === 'STALE_ANCHOR');
+  button.disabled = reviewingAnchors.has(chainId);
+}
+
+async function reviewAnchor(chainId) {
+  if (reviewingAnchors.has(chainId)) return;
+  reviewingAnchors.add(chainId);
+  const update = chainId === 100 ? updateGnosisControls : updateControls;
+  update(chainId === 100 ? gnosis.status : latestStatus);
+  try {
+    update(await window.myotis.reviewStaleAnchor(chainId));
+  } catch {
+    pushDebug('Myotis checkpoint review failed');
+  } finally {
+    reviewingAnchors.delete(chainId);
+    update(chainId === 100 ? gnosis.status : latestStatus);
+  }
+}
 
 export const stopMyotisInfoPolling = () => {
   if (pollInterval) clearInterval(pollInterval);
@@ -199,6 +228,8 @@ export const initMyotisUi = () => {
   finalizedBlock = document.getElementById('myotis-finalized-block');
   versionText = document.getElementById('myotis-version-text');
   divider = document.getElementById('myotis-divider');
+  reviewAnchorButton = document.getElementById('myotis-review-anchor');
+  gnosis.reviewAnchorButton = document.getElementById('myotis-gnosis-review-anchor');
   gnosis.button = document.getElementById('myotis-gnosis-toggle-btn');
   gnosis.toggle = document.getElementById('myotis-gnosis-toggle-switch');
   gnosis.info = document.getElementById('myotis-gnosis-info');
@@ -210,6 +241,8 @@ export const initMyotisUi = () => {
 
   if (listenersAttached) return;
   listenersAttached = true;
+  reviewAnchorButton?.addEventListener('click', () => reviewAnchor(1));
+  gnosis.reviewAnchorButton?.addEventListener('click', () => reviewAnchor(100));
 
   toggleButton?.addEventListener('click', () => {
     if (toggleButton.disabled) return;

@@ -408,3 +408,7 @@
 .tor-toggle.disabled .tor-toggle-switch {
   background: var(--border);
 }
+
+.myotis-anchor-review[hidden] {
+  display: none;
+}

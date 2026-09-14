@@ -1,6 +1,6 @@
 // Private child entry point. Never import this module into Electron main.
 // No profile policy, wallet signing, renderer IPC, or credentials live here.
-const EXPECTED_ABI = 22;
+const EXPECTED_ABI = 25;
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const OPERATIONS = Object.freeze({
   ens: 'ensRecordJson',
@@ -9,6 +9,7 @@ const OPERATIONS = Object.freeze({
   gas: 'estimateGasJson',
   fee: 'feeEstimateJson',
   broadcast: 'sendRawTransactionJson',
+  'accept-stale-anchor': 'acceptStaleAnchor',
 });
 
 function runChild(host = process, loadAddon = require) {
@@ -39,6 +40,9 @@ function runChild(host = process, loadAddon = require) {
         if (!['mainnet', 'gnosis'].includes(message.network)) throw new Error('network');
         failure = 'load';
         addon = loadAddon(message.addonPath);
+        failure = 'methods';
+        if (['init', 'create', 'start', 'stop', 'statusJson', 'drainLogs', ...Object.values(OPERATIONS)]
+          .some((method) => typeof addon[method] !== 'function')) throw new Error('methods');
         failure = 'abi';
         if (addon.init() !== EXPECTED_ABI) throw new Error('ABI');
         failure = 'create';
@@ -61,12 +65,21 @@ function runChild(host = process, loadAddon = require) {
     lastId = id;
     const reply = (ok, result) => send({ type: 'reply', id, op, ok, result });
     if (JSON.stringify(args).length > MAX_MESSAGE_BYTES ||
-      (op !== 'status' && (!Object.hasOwn(OPERATIONS, op) || active >= 2))) {
+      (op !== 'status' && (!Object.hasOwn(OPERATIONS, op) || active >= 1))) {
       reply(false);
       return;
     }
     if (op !== 'status') active += 1;
     try {
+      // Consent is only meaningful for this still-parked native handle.
+      if (op === 'accept-stale-anchor') {
+        if (args.length || JSON.parse(addon.statusJson(handle)).beaconState !== 'STALE_ANCHOR') {
+          reply(false);
+        } else {
+          reply(true, { accepted: addon.acceptStaleAnchor(handle) === true });
+        }
+        return;
+      }
       const raw = op === 'status'
         ? addon.statusJson(handle)
         : await addon[OPERATIONS[op]](handle, ...args);

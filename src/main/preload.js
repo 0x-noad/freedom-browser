@@ -335,6 +335,7 @@ contextBridge.exposeInMainWorld('ant', {
 });
 
 contextBridge.exposeInMainWorld('myotis', {
+  reviewStaleAnchor: (chainId = 1) => ipcRenderer.invoke('myotis:reviewStaleAnchor', chainId),
   start: (chainId) => chainId == null
     ? ipcRenderer.invoke('myotis:start')
     : ipcRenderer.invoke('myotis:start', chainId),

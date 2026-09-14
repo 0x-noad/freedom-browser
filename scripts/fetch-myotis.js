@@ -11,15 +11,15 @@ const OUTPUT_DIR = path.join(__dirname, '..', 'myotis-bin');
 const MYOTIS_REPO = process.env.MYOTIS_REPO || 'biafra23/myotis';
 // The known-good Myotis release this app version is built and tested against.
 // Bump deliberately (with a live e2e run) — do NOT float on `latest`. The
-// engine ABI the addon reports must match myotis-manager's EXPECTED_ABI.
-const PINNED_RELEASE_TAG = 'v0.1.7';
+// engine ABI the addon reports must match myotis-child's EXPECTED_ABI.
+const PINNED_RELEASE_TAG = 'v0.1.9';
 // In-repo trust root for the pinned release: sha256 of its
 // myotis-node.SHA256SUMS asset, recorded at pin time. The sums file comes
 // from the same GitHub release as the addons, so without this pin a
 // compromised release could swap binaries *and* checksums together. Update
 // alongside PINNED_RELEASE_TAG on every deliberate bump.
 const PINNED_SHA256SUMS_DIGEST =
-  '458743f281a7886e953a32ccef599bc253781e278c12cfe05a5addc23aa2569a';
+  '0f9d7cfc46ad3c482f94021a73c89fa84bf056abef276beff30664db1062b32e';
 const MYOTIS_RELEASE_TAG = process.env.MYOTIS_RELEASE_TAG || PINNED_RELEASE_TAG;
 
 // Every target the release publishes, installed in one run (fetch-ant.js

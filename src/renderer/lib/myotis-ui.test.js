@@ -19,6 +19,8 @@ async function loadMyotisUi(options = {}) {
     block: createElement('span'),
     version: createElement('span'),
     divider: createElement('div'),
+    reviewAnchor: createElement('button'),
+    gnosisReviewAnchor: createElement('button'),
     gnosisButton: createElement('button'),
     gnosisToggle: createElement('span'),
     gnosisInfo: createElement('div', { classes: ['ipfs-info'] }),
@@ -38,6 +40,8 @@ async function loadMyotisUi(options = {}) {
       'myotis-finalized-block': elements.block,
       'myotis-version-text': elements.version,
       'myotis-divider': elements.divider,
+      'myotis-review-anchor': elements.reviewAnchor,
+      'myotis-gnosis-review-anchor': elements.gnosisReviewAnchor,
       'myotis-gnosis-toggle-btn': elements.gnosisButton,
       'myotis-gnosis-toggle-switch': elements.gnosisToggle,
       'myotis-gnosis-info': elements.gnosisInfo,
@@ -56,6 +60,7 @@ async function loadMyotisUi(options = {}) {
     state: 'off',
   };
   const api = {
+    reviewStaleAnchor: jest.fn(),
     start: jest.fn().mockResolvedValue({
       supported: true,
       available: true,
@@ -234,4 +239,26 @@ describe('myotis-ui', () => {
     expect(ctx.elements.gnosisButton.hidden).toBe(true);
     expect(ctx.elements.gnosisDivider.hidden).toBe(true);
   });
+  test.each([1, 100])('shows checkpoint review only for a parked chain %s', async (chainId) => {
+    const ctx = await loadMyotisUi(); ctx.mod.initMyotisUi();
+    await flushMicrotasks();
+    const button = chainId === 100 ? ctx.elements.gnosisReviewAnchor : ctx.elements.reviewAnchor;
+    const label = chainId === 100 ? ctx.elements.gnosisState : ctx.elements.state;
+    expect(button.hidden).toBe(true);
+    const status = { chainId, running: true, available: true, state: 'syncing', beaconState: 'STALE_ANCHOR' };
+    ctx.getStatusHandler()(status);
+    expect(label.textContent).toBe('Stale checkpoint');
+    expect(button.hidden).toBe(false);
+    let complete;
+    ctx.api.reviewStaleAnchor.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
+    button.dispatch('click'); button.dispatch('click');
+    expect(ctx.api.reviewStaleAnchor).toHaveBeenCalledTimes(1);
+    expect(ctx.api.reviewStaleAnchor).toHaveBeenCalledWith(chainId);
+    expect(button.disabled).toBe(true);
+    complete({ ...status, beaconState: 'SYNCING' });
+    await flushMicrotasks();
+    expect(button.hidden).toBe(true);
+    expect(button.disabled).toBe(false);
+  });
+
 });

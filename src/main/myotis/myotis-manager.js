@@ -13,7 +13,7 @@ const path = require('path');
 const { getMyotisDataDir } = require('../profile-paths');
 
 const { MyotisProcess } = require('./myotis-process');
-const MYOTIS_VERSION = '0.1.7';
+const MYOTIS_VERSION = '0.1.9';
 const AVAILABILITY_POLL_MS = 1000;
 const STATUS_FRESH_MS = 6000;
 const STATUS_REQUEST_MS = 10000;
@@ -51,6 +51,7 @@ function instanceFor(chainId = 1) {
       wasReady: false,
       stopping: false,
       availabilityEpoch: 0,
+      reviewingAnchor: false,
     });
   }
   return instances.get(id);
@@ -295,7 +296,7 @@ function getStatus(chainId = 1) {
 // never as an error.
 function updateReadiness(instance, s) {
   const ready = Boolean(
-    s && s.beaconState === 'SYNCED' && s.elReaderAvailable === true && s.elHunting === false &&
+    s && s.running === true && s.paused !== true && s.beaconState === 'SYNCED' && s.elReaderAvailable === true && s.elHunting === false &&
     typeof s.snapPeers === 'number' && s.snapPeers > 0
   );
   publishAvailability(instance, ready, ready ? 'ready' : 'not-ready');
@@ -317,6 +318,7 @@ function getAvailabilityEpoch(chainId = 1) {
 function runningInstance(chainId = 1) {
   const instance = instanceFor(chainId);
   if (shuttingDown || instance.stopping || !instance.client?.accepting) throw new Error(`${instance.displayName} Myotis client is not running`);
+  if (!isReady(chainId)) throw new Error(`${instance.displayName} Myotis verified reader is not ready`);
   return instance;
 }
 
@@ -359,7 +361,13 @@ async function feeEstimate(chainId = 1) {
 
 async function sendRawTransaction(rawTransaction, chainId = 1) {
   const instance = runningInstance(chainId);
-  return instance.client.request('broadcast', [rawTransaction]);
+  const result = await instance.client.request('broadcast', [rawTransaction]);
+  if (!result || result.error || ['error', 'unavailable'].includes(result.status) || !(result.txHash || result.result)) {
+    const error = new Error('Myotis broadcast outcome uncertain; reconcile the original signed transaction');
+    error.code = 'MYOTIS_BROADCAST_UNCERTAIN';
+    throw error;
+  }
+  return result;
 }
 
 async function stopMyotis(chainId = 1) {
@@ -406,6 +414,7 @@ function publicStatus(chainId = 1) {
     supported,
     available,
     version: MYOTIS_VERSION,
+    abi: 25,
     chainId: instance.chainId,
     network: instance.name,
     displayName: instance.displayName,
@@ -426,6 +435,10 @@ function publicStatus(chainId = 1) {
     running: true,
     state: ready ? 'ready' : 'syncing',
     beaconState: s.beaconState,
+    paused: s.paused,
+    wsBoundPeriods: s.wsBoundPeriods,
+    optimisticBlockNumber: s.optimisticBlockNumber,
+    executionBlockNumber: s.executionBlockNumber,
     currentPeriod: s.currentPeriod,
     targetPeriod: s.targetPeriod,
     peerCount: s.peerCount,
@@ -433,6 +446,66 @@ function publicStatus(chainId = 1) {
     finalizedBlockNumber: s.finalizedBlockNumber,
     uptimeSeconds: Math.round((Date.now() - instance.startedAt) / 1000),
   };
+}
+
+// Only the main browser chrome may request this native confirmation. A page
+// cannot grant consent by passing a boolean through IPC.
+function staleAnchorWindow(event) {
+  const { BrowserWindow } = require('electron');
+  const { fileURLToPath } = require('url');
+  try {
+    if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame) return null;
+    if (fileURLToPath(event.senderFrame.url) !== path.resolve(__dirname, '../../renderer/index.html')) return null;
+    const win = BrowserWindow.fromWebContents(event.sender);
+    return win && !win.isDestroyed() && win.webContents === event.sender ? win : null;
+  } catch { return null; }
+}
+
+async function reviewStaleAnchor(event, chainId = 1) {
+  const win = staleAnchorWindow(event);
+  if (!win) throw new Error('Myotis recovery is only available from the browser Nodes menu');
+  const instance = instanceFor(chainId);
+  const client = instance.client;
+  let requesterChanged = false;
+  const eligible = () => !requesterChanged && !shuttingDown && !isDisabledMyotisConfig() && !instance.stopping &&
+    instance.client === client && client?.accepting &&
+    getStatus(chainId)?.beaconState === 'STALE_ANCHOR';
+  if (!eligible() || instance.reviewingAnchor) return publicStatus(chainId);
+  instance.reviewingAnchor = true;
+  const invalidateRequester = () => { requesterChanged = true; };
+  event.sender.once('did-start-navigation', invalidateRequester);
+  event.sender.once('destroyed', invalidateRequester);
+  try {
+    const { dialog } = require('electron');
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'warning',
+      title: `${instance.displayName} Myotis checkpoint is stale`,
+      message: 'Sync from an old trust checkpoint?',
+      detail: `${instance.displayName}'s saved or bundled checkpoint is too old for safe automatic sync. ` +
+        'An attacker could supply a false chain history that passes signature checks from this old checkpoint. ' +
+        'The safer option is to keep Myotis blocked and update to a build with a fresh checkpoint. ' +
+        'Accepting this risk allows sync for this running node only. The choice is not saved; ' +
+        'stopping or restarting the node clears it. Chain state obtained during this run may still be saved.',
+      buttons: ['Keep blocked', 'Accept risk and sync'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    // Never transfer a delayed confirmation to a replacement node or window.
+    if (response === 1 && staleAnchorWindow(event) === win && eligible()) {
+      const result = await client.request('accept-stale-anchor');
+      if (instance.client === client && result?.accepted) {
+        instance.lastStatus = null;
+        publishAvailability(instance, false, 'anchor-recovery');
+        pollStatus(instance);
+      }
+    }
+    return publicStatus(chainId);
+  } finally {
+    event.sender.removeListener('did-start-navigation', invalidateRequester);
+    event.sender.removeListener('destroyed', invalidateRequester);
+    instance.reviewingAnchor = false;
+  }
 }
 
 function registerMyotisIpc() {
@@ -448,6 +521,7 @@ function registerMyotisIpc() {
     await stopMyotis(chainId);
     return publicStatus(chainId);
   });
+  ipcMain.handle(IPC.MYOTIS_REVIEW_STALE_ANCHOR, reviewStaleAnchor);
   ipcMain.handle(IPC.MYOTIS_GET_STATUS, (_event, chainId = 1) => publicStatus(chainId));
   publishStatus();
 }

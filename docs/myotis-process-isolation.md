@@ -1,6 +1,6 @@
 # Myotis process isolation
 
-Myotis v0.1.7 / ABI 22 remains pinned. Every addon call, including init,
+Myotis v0.1.9 / ABI 25 is pinned. Every addon call, including init,
 create, start, status, log draining and stop, runs outside Electron main.
 Each enabled chain has its own native supervisor and Electron-as-Node child.
 Main retains profile configuration and paths, chain routing policy, signing,
@@ -10,15 +10,18 @@ sandbox** or an aggregate CPU/memory limit.
 
 ## Request and lifecycle contract
 
-- Per chain: two native read/broadcast operations, sixteen queued requests,
+- Per chain: one native read/broadcast operation, sixteen queued requests,
   and one independent status request. Requests have a ten-second total budget,
   including queue time. Router reads retain their configured/interactive budget;
   expiration permits configured fallback without stopping the chain. The route
   slot remains held until the underlying manager request settles.
 - The process manager's own deadlines govern native health. Expiring an unsent
-  queued request removes only that request. Expiring active work makes the child unavailable, rejects pending callers, stops admission,
-  and starts shutdown. Native permits remain held until the matching reply or
-  verified process exit. Status has a separate ten-second hard request deadline
+  queued request removes only that request. An active caller expires after ten
+  seconds without releasing its native slot or stopping the chain. Its late reply
+  releases only that slot and cannot complete a newer caller. A separate fixed
+  100-second native watchdog stops an unresponsive generation; this is a host
+  availability policy, not a guarantee that native cancellation finishes on time.
+  Native permits remain held until the matching reply or verified process exit. Status has a separate ten-second hard request deadline
   and a six-second cache freshness limit. Staleness disables routing without
   stopping the generation or releasing its single pending status permit; a
   late status reply can restore readiness. Main's synchronous queries read only
@@ -61,6 +64,23 @@ Main records bounded lifecycle facts once per event per generation: startup
 attempt/result (configuration, load, ABI, create or start failure), unavailability,
 stop request and supervisor exit classification/code/signal/receipt/forced status.
 Raw addon logs, exception text, request arguments and profile paths are excluded.
+
+## Stale checkpoint recovery
+
+ABI 25 parks in `STALE_ANCHOR` when neither the embedded checkpoint nor saved
+state is recent enough. Verified reads remain unavailable. The Nodes menu shows
+**Stale checkpoint** and **Review stale checkpoint…** for the affected chain.
+The browser chrome can open a native confirmation with **Keep blocked** as the
+default. **Accept risk and sync** calls `acceptStaleAnchor` only for the same
+still-parked process generation. Subframes/web pages cannot request the dialog;
+stopping, replacing the node or navigating the requester invalidates consent.
+No age-bound widening or consent setting is persisted. A new native handle
+starts gated again, but state synced during a consented run can be persisted.
+Updating to a build with a fresh checkpoint is the safer alternative.
+
+The v0.1.9 Gnosis checkpoint ages out on **2026-09-15 at 13:53 UTC**; Ethereum's
+on **2026-09-29 at 03:28 UTC**. A newer synced snapshot can keep a returning
+profile within the bound. See the [release notes](https://github.com/biafra23/myotis/releases/tag/v0.1.9).
 
 ## Native ownership and durable recovery
 
@@ -132,8 +152,8 @@ requirement is a release limitation.
 
 ## Build and signing
 
-No addon upgrade, npm dependency, download, install or rebuild is required by
-this change. Build the small helper from the checked-in C source with an already
+The v0.1.9 migration requires `npm run myotis:download`; the checksum manifest
+is pinned in the downloader. No npm dependency changes are required. Build the small helper from the checked-in C source with an already
 installed compiler:
 
 ```sh
@@ -156,6 +176,33 @@ Existing app/Electron-helper entitlements and other signing options are preserve
 RunAsNode fuse compatibility, ASAR script loading, native addon ABI/loading,
 helper signing, and notarized
 package behavior require qualification of the actual shipped artifact.
+
+## v0.1.9 qualification
+
+The release upgrade starts from main `b5fd764c`, retaining the Windows controller
+exit fix and POSIX ownership-receipt race fix. ABI 25 scheduling, readiness and
+result handling were ported selectively from the earlier Agent/Myotis test
+branch; its Agent code and temporary debug-artifact activation are not included.
+The earlier evidence below remains attributed to its original revisions.
+
+The live ENS/read suite no longer skips the old v0.1.7 catch-up stall. Run the
+CI workflow manually with `myotis_live: true` for the three-platform live matrix.
+Both it and `myotis:smoke` fail explicitly on stale anchors, never granting risk
+consent. The live matrix is manual because static anchors expire and third-party
+peer availability is external to a PR; normal CI still checks addon loading and
+supervisor behavior. Release qualification must run the real reads with fresh
+anchors, plus actual Quit and packaged signing/loading checks. A successful ABI
+handshake or mocked unit suite is not evidence of verified blockchain reads.
+
+Local checks on 2026-09-14 used main's unchanged lock: all five release addons
+passed the pinned checksum manifest; the macOS arm64 addon loaded with ABI 25
+and every required export under Electron 44.3.0, then exited normally. The Mac
+supervisor compiled. Focused unit/style/license checks and lint passed; the
+Nodes menu was inspected in both themes using mocked statuses and fresh test
+profiles. Full unit execution reported 4,314 passing tests and three failures
+(two settings shortcut tests and one Safe fork test), each reproduced separately
+on unchanged main with the same dependencies. No real blockchain sync/read,
+blocked-native lifecycle campaign or signed/package qualification is claimed.
 
 ## Source basis and remaining qualification
 
