@@ -14,8 +14,11 @@
  * That flow is the REQUEST path. The synchronous CHECK path
  * (`navigator.permissions.query`, `Notification.permission`) is boolean-only
  * in Electron, so it cannot report Chrome's "prompt" state: it answers false
- * only for a recorded deny and reports an undecided permission as allowed —
- * see the check handler for why (#361).
+ * only for a recorded deny and reports an undecided permission as allowed.
+ * Every capability promptable today stays gated by the REQUEST path, so
+ * that answer is a read-side over-report rather than a grant — but it is a
+ * per-permission property to re-check, not a blanket one; see the check
+ * handler for why (#361).
  *
  * `pointerLock` and `fullscreen` stay auto-allowed (status quo). `hid`
  * is deliberately NOT promptable: Ledger hardware-wallet support drives
@@ -699,10 +702,27 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
     // answers false here; undecided reports allowed, which is also
     // Electron's own default when no check handler is installed.
     //
-    // This does not widen what a site actually gets. The request path is
-    // unchanged: an undecided request still raises the anchored prompt,
-    // a Block there still denies, and a recorded deny is still silently
-    // refused both here and there.
+    // For each permission promptable today this does not widen what a site
+    // actually gets, because the capability itself is gated by the REQUEST
+    // path, which is unchanged: an undecided request still raises the
+    // anchored prompt, a Block there still denies, and a recorded deny is
+    // still silently refused both here and there. That holds for
+    // notifications too, the one capability a page can exercise without
+    // ever calling requestPermission(): a bare `new Notification()` from an
+    // undecided origin raises the anchored prompt and displays nothing
+    // until the user clicks Allow (verified in the running app on
+    // 2026-09-15, Electron 44.3.0 — PR #363). What an undecided site does
+    // get is the read-side lie this trade-off is about: query() /
+    // Notification.permission report "granted" and enumerateDevices()
+    // exposes device labels before any decision.
+    //
+    // That is a per-permission property, not a standing guarantee of this
+    // handler. Before making a new permission promptable, check in the
+    // running app which handler its capability actually consults: if it is
+    // gated on THIS one rather than the request path, answering true while
+    // undecided hands the capability over silently, with no prompt and no
+    // recorded decision — such a permission has to keep answering false
+    // here.
     let keys;
     if (permission === 'media') {
       const key = MEDIA_TYPE_KEYS[details?.mediaType];
