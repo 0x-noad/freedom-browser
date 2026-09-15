@@ -80,21 +80,33 @@ unavailable until normal sync and execution-reader readiness return.
 Each attempt runs Colibri's WASM verifier in a disposable worker with its own
 empty store, separate from ENS verification. It verifies a recent block proof,
 extracts the authenticated committee checkpoint header, recomputes its root,
-and requires the configured checkpoint authority to identify the same root as
-finalized. The checkpoint must be at most one hour old and consistent with the
+and requires the configured checkpoint quorum to endorse that same slot/root
+as finalized. The checkpoint must be at most one hour old and consistent with the
 computer's clock. Worker results are validated again before lifecycle or storage
 use. The whole verification attempt has a 90-second deadline; individual network
 requests have 20-second deadlines and bounded response sizes.
 
-The explicitly selected checkpoint authorities are `mainnet.checkpoint.sigp.io`
-for Ethereum and `checkpoint.gnosischain.com` for Gnosis. Proofs come from
-`mainnet1.colibri-proof.tech` and `gnosis.colibri-proof.tech`, respectively.
-Verification restricts checkpoint requests to the selected authority: it does
-not fall back to an arbitrary prover or configured RPC server. This remains an
-external checkpoint trust policy, not a claim that weak subjectivity or trust
-in checkpoint publication has disappeared. A compromised selected authority can
-undermine the bootstrap; Colibri verification does not independently establish
-the authority’s finality claim.
+Ethereum requires 2 of 3 checkpoint authorities: `mainnet.checkpoint.sigp.io`,
+`beaconstate.ethstaker.cc`, and `beaconstate-mainnet.chainsafe.io`. Gnosis requires
+both `checkpoint.gnosischain.com` and `checkpoint-sync-gnosis.dappnode.net`.
+Proofs still come from `mainnet1.colibri-proof.tech` and
+`gnosis.colibri-proof.tech`, respectively, and Colibri proof verification is
+mandatory. There is no reduced-threshold fallback to any prover or RPC server.
+
+Each provider gets one vote for the exact requested slot/root only after an
+explicit finality endorsement. If its latest checkpoint has advanced, the
+Checkpointz finalized-history API can endorse the same older block. Mere block
+existence is insufficient. Publication lag or missing history is retryable;
+conflicting evidence that prevents quorum pauses recovery with an explanation
+and Retry. Ethereum can tolerate a dissenting or unavailable third source;
+Gnosis cannot recover while either source is unavailable.
+
+This is an external checkpoint trust policy. Security depends on sufficiently
+many independent operators being honest; domain names alone do not establish
+independence. Public operator/upstream provenance and limits are documented in
+[the quorum review](audits/myotis-checkpoint-quorum-2026-09.md). Colibri adds its
+committee-history proof check, but does not independently establish canonical
+finality or remove weak subjectivity.
 
 A successful attempt waits for verified exit of the old native generation,
 then creates a new per-profile, per-chain state directory and imports the
@@ -106,6 +118,11 @@ record is resumed; existing legacy state from builds that allowed risk consent
 is preserved but not silently adopted. Saved checkpoints can be older than one
 hour on restart because Myotis still evaluates its saved verified state against
 the native weak-subjectivity bound; renewed staleness triggers another recovery.
+New schema-v2 checkpoint records retain the distinct quorum voter origins;
+worker and new-generation validation require the configured threshold. Existing
+schema-v1 generations retain their original single-authority provenance and can
+resume under the previous trust policy. They cannot authorize a new recovery or
+be relabeled as quorum-verified. Renewed staleness requires v2 acquisition.
 Malformed records or unsafe state paths fail closed as storage failures.
 Native ownership quarantine is independent and is never cleared by this flow.
 Every load or replacement also checks the legacy base-directory ownership

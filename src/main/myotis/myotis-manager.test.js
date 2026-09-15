@@ -251,9 +251,9 @@ describe('myotis-manager', () => {
     expect(ctx.clients).toHaveLength(1);
   });
 
-  test('retries unavailable evidence twice, then waits for an explicit trusted retry', async () => {
+  test.each(['CHECKPOINT_UNAVAILABLE', 'CHECKPOINT_QUORUM_UNAVAILABLE'])('retries %s twice, then waits for an explicit trusted retry', async (code) => {
     const ctx = loadManager();
-    ctx.acquireCheckpoint.mockRejectedValue(Object.assign(new Error('offline'), { code: 'CHECKPOINT_UNAVAILABLE' }));
+    ctx.acquireCheckpoint.mockRejectedValue(Object.assign(new Error('offline'), { code }));
     ctx.status.beaconState = 'STALE_ANCHOR';
     await ctx.mod.startMyotis({ chainId: 100 }); await flush();
     expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'waiting', attempt: 1 });
@@ -273,15 +273,15 @@ describe('myotis-manager', () => {
     expect(ctx.mod.publicStatus(100).state).toBe('off');
   });
 
-  test('mismatching evidence stays blocked without automatic retries or a risk bypass', async () => {
+  test.each([['CHECKPOINT_MISMATCH', 'mismatch'], ['CHECKPOINT_QUORUM_CONFLICT', 'quorum-conflict']])('evidence %s stays blocked without automatic retries or a risk bypass', async (code, reason) => {
     const ctx = loadManager();
-    ctx.acquireCheckpoint.mockRejectedValue(Object.assign(new Error('invalid'), { code: 'CHECKPOINT_MISMATCH' }));
+    ctx.acquireCheckpoint.mockRejectedValue(Object.assign(new Error('invalid'), { code }));
     ctx.status.beaconState = 'STALE_ANCHOR';
     await ctx.mod.startMyotis({ chainId: 100 }); await flush();
     await jest.advanceTimersByTimeAsync(120000);
     expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(1);
     expect(ctx.store.replaceCheckpoint).not.toHaveBeenCalled();
-    expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'blocked', reason: 'mismatch' });
+    expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'blocked', reason });
     await expect(ctx.mod.getAccount('0xabc', 100)).rejects.toThrow('not ready');
   });
 

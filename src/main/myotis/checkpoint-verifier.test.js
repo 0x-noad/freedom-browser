@@ -18,13 +18,13 @@ function checkpoint(chainId = 1) {
       config.slotsPerEpoch -
     config.slotsPerEpoch;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     chainId,
     network: config.network,
     root: '0x' + '12'.repeat(32),
     slot,
     verifiedAt: NOW,
-    source: config.source,
+    sources: [...config.sources],
     finalizedEpoch: slot / config.slotsPerEpoch,
   };
 }
@@ -176,6 +176,8 @@ describe('checkpoint worker lifecycle', () => {
     'CHECKPOINT_RACE',
     'CHECKPOINT_CLOCK',
     'CHECKPOINT_INCOMPATIBLE',
+    'CHECKPOINT_QUORUM_UNAVAILABLE',
+    'CHECKPOINT_QUORUM_CONFLICT',
   ])(
     'preserves worker error category %s without arbitrary message text',
     async (code) => {
@@ -256,16 +258,32 @@ describe('checkpoint record validation', () => {
   });
 
   test.each([
-    { source: 'https://mainnet1.colibri-proof.tech' },
+    { sources: ['https://mainnet1.colibri-proof.tech'] },
     { root: '0x' + '00'.repeat(32) },
     { slot: 1.5 },
     { network: 'gnosis' },
-    { schemaVersion: 2 },
+    { schemaVersion: 3 },
     { finalizedEpoch: -1 },
   ])('rejects malformed or unpinned record %p', (patch) => {
     expect(() => validateCheckpoint({ ...checkpoint(), ...patch }, 1, { now: NOW })).toThrow(
       expect.objectContaining({ code: 'CHECKPOINT_MISMATCH' })
     );
+  });
+
+  test.each([
+    [],
+    [CHECKPOINT_NETWORKS[1].sources[0]],
+    Array(2).fill(CHECKPOINT_NETWORKS[1].sources[0]),
+    ['https://unapproved.invalid', CHECKPOINT_NETWORKS[1].sources[0]],
+  ])('missing, duplicate or unapproved voters cannot authorize a record: %p', (...sources) => {
+    expect(() => validateCheckpoint({ ...checkpoint(), sources }, 1, { now: NOW })).toThrow();
+  });
+
+  test('legacy single-authority records can resume but cannot authorize new recovery', () => {
+    const value = { ...checkpoint(), schemaVersion: 1, source: CHECKPOINT_NETWORKS[1].source };
+    delete value.sources;
+    expect(() => validateCheckpoint(value, 1, { now: NOW })).toThrow();
+    expect(validateCheckpoint(value, 1, { now: NOW, fresh: false })).toEqual(value);
   });
 
   test('aged record is valid structurally for native snapshot freshness evaluation', () => {
@@ -276,7 +294,7 @@ describe('checkpoint record validation', () => {
     );
     expect(validateCheckpoint(value, 1, { now: later, fresh: false })).toEqual(value);
     expect(() =>
-      validateCheckpoint({ ...value, source: 'https://other.test' }, 1, { fresh: false })
+      validateCheckpoint({ ...value, sources: ['https://other.test'] }, 1, { fresh: false })
     ).toThrow(expect.objectContaining({ code: 'CHECKPOINT_MISMATCH' }));
   });
 

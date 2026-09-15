@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 const {
   verifyCheckpoint,
+  checkpointQuorum,
   headerRoot,
   fetchBytes,
   MAX_PROOF_BYTES,
@@ -102,12 +103,12 @@ describe('checkpoint proof/finality policy', () => {
       const f = fixture(chainId);
       const result = await verifyCheckpoint(chainId, f.dependencies);
       expect(result).toEqual({
-        schemaVersion: 1,
+        schemaVersion: 2,
         chainId,
         network: f.config.network,
         root: headerRoot(f.header),
         slot: f.slot,
-        source: f.config.source,
+        sources: [...f.config.sources],
         verifiedAt: NOW,
         finalizedEpoch: f.slot / f.config.slotsPerEpoch,
       });
@@ -117,7 +118,7 @@ describe('checkpoint proof/finality policy', () => {
         beacon_apis: [],
         prover: [],
       });
-      expect(f.fetch).toHaveBeenCalledTimes(3);
+      expect(f.fetch).toHaveBeenCalledTimes(1 + 2 * f.config.sources.length);
       for (const [, options] of f.fetch.mock.calls) expect(options.redirect).toBe('error');
     }
   );
@@ -138,7 +139,7 @@ describe('checkpoint proof/finality policy', () => {
       throw new Error('offline');
     });
     await expect(verifyCheckpoint(1, f.dependencies)).rejects.toMatchObject({
-      code: 'CHECKPOINT_UNAVAILABLE',
+      code: 'CHECKPOINT_QUORUM_UNAVAILABLE',
     });
   });
 
@@ -173,7 +174,7 @@ describe('checkpoint proof/finality policy', () => {
       return originalFetch(url);
     });
     await expect(verifyCheckpoint(1, f.dependencies)).rejects.toMatchObject({
-      code: 'CHECKPOINT_UNAVAILABLE',
+      code: 'CHECKPOINT_QUORUM_UNAVAILABLE',
     });
   });
 
@@ -209,7 +210,7 @@ describe('checkpoint proof/finality policy', () => {
     f.finality.data.finalized.epoch = String(Number(f.finality.data.finalized.epoch) + 1);
     f.finality.data.finalized.root = '0x' + '99'.repeat(32);
     await expect(verifyCheckpoint(1, f.dependencies)).rejects.toMatchObject({
-      code: 'CHECKPOINT_RACE',
+      code: 'CHECKPOINT_QUORUM_UNAVAILABLE',
     });
   });
 
@@ -217,11 +218,11 @@ describe('checkpoint proof/finality policy', () => {
     const f = fixture();
     f.finality.data.finalized.root = '0x' + '99'.repeat(32);
     await expect(verifyCheckpoint(1, f.dependencies)).rejects.toMatchObject({
-      code: 'CHECKPOINT_MISMATCH',
+      code: 'CHECKPOINT_QUORUM_CONFLICT',
     });
   });
 
-  test.each([[true, 'CHECKPOINT_MISMATCH'], ['false', 'CHECKPOINT_UNAVAILABLE']])(
+  test.each([[true, 'CHECKPOINT_QUORUM_CONFLICT'], ['false', 'CHECKPOINT_QUORUM_UNAVAILABLE']])(
     'optimistic or mistyped metadata %p is not accepted',
     async (value, code) => {
       const f = fixture();
@@ -268,6 +269,115 @@ describe('checkpoint proof/finality policy', () => {
     await expect(verifyCheckpoint(1, f.dependencies)).rejects.toMatchObject({
       code: 'CHECKPOINT_CLOCK',
     });
+  });
+
+
+  test.each([0, 1, 2])('Ethereum recovers with authority %i offline', async (index) => {
+    const f = fixture();
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation((url) => url.startsWith(f.config.sources[index])
+      ? Promise.reject(new Error('offline')) : original(url));
+    const result = await verifyCheckpoint(1, f.dependencies);
+    expect(result.sources).toEqual(f.config.sources.filter((_, i) => i !== index));
+  });
+
+  test.each([1, 100])('chain %i never accepts one vote', async (chainId) => {
+    const f = fixture(chainId);
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation((url) => url === f.config.prover || url.startsWith(f.config.sources[0])
+      ? original(url) : Promise.reject(new Error('offline')));
+    await expect(verifyCheckpoint(chainId, f.dependencies)).rejects.toMatchObject({
+      code: 'CHECKPOINT_QUORUM_UNAVAILABLE',
+    });
+  });
+
+  test.each([1, 100])('chain %i distinguishes an actual split from missing votes', async (chainId) => {
+    const f = fixture(chainId);
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation((url) => {
+      if (url.startsWith(f.config.sources[1])) {
+        return Promise.resolve(new Response(JSON.stringify(url.endsWith('finality_checkpoints')
+          ? { data: { finalized: { epoch: f.finality.data.finalized.epoch, root: '0x' + '99'.repeat(32) } } }
+          : { data: { root: '0x' + '99'.repeat(32) } })));
+      }
+      if (f.config.sources[2] && url.startsWith(f.config.sources[2])) return Promise.reject(new Error('offline'));
+      return original(url);
+    });
+    await expect(verifyCheckpoint(chainId, f.dependencies)).rejects.toMatchObject({ code: 'CHECKPOINT_QUORUM_CONFLICT' });
+  });
+
+  test('two matching Ethereum votes tolerate one dissenting authority', async () => {
+    const f = fixture();
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation((url) => url.startsWith(f.config.sources[0])
+      ? Promise.resolve(new Response(JSON.stringify(url.endsWith('finality_checkpoints')
+        ? { data: { finalized: { epoch: f.finality.data.finalized.epoch, root: '0x' + '99'.repeat(32) } } }
+        : { data: { root: '0x' + '99'.repeat(32) } }))) : original(url));
+    const result = await verifyCheckpoint(1, f.dependencies);
+    expect(result.sources).toEqual(f.config.sources.slice(1));
+  });
+
+  test('aligned finalized history permits different latest epochs without comparing unrelated roots', async () => {
+    const f = fixture(100);
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation((url) => {
+      if (!url.startsWith(f.config.sources[1])) return original(url);
+      if (url.endsWith('finality_checkpoints')) return Promise.resolve(new Response(JSON.stringify({
+        data: { finalized: { epoch: String(f.slot / 16 + 1), root: '0x' + '99'.repeat(32) } },
+      })));
+      if (url.endsWith('/slots')) return Promise.resolve(new Response(JSON.stringify({ data: { slots: [
+        { slot: String(f.slot), block_root: headerRoot(f.header) },
+      ] } })));
+      return original(url);
+    });
+    await expect(verifyCheckpoint(100, f.dependencies)).resolves.toMatchObject({ sources: [...f.config.sources] });
+  });
+
+  test.each(['missing', 'conflicting', 'duplicate'])('finalized history %s never supplies a vote', async (variant) => {
+    const f = fixture(100);
+    const original = f.fetch.getMockImplementation();
+    const entry = { slot: f.slot, block_root: headerRoot(f.header) };
+    f.fetch.mockImplementation((url) => {
+      if (!url.startsWith(f.config.sources[1])) return original(url);
+      if (url.endsWith('finality_checkpoints')) return Promise.resolve(new Response(JSON.stringify({
+        data: { finalized: { epoch: String(f.slot / 16 + 1), root: '0x' + '99'.repeat(32) } },
+      })));
+      if (url.endsWith('/slots')) return Promise.resolve(new Response(JSON.stringify({ data: { slots:
+        variant === 'missing' ? [] : variant === 'duplicate' ? [entry, entry] : [{ ...entry, block_root: '0x' + '99'.repeat(32) }],
+      } })));
+      return original(url);
+    });
+    await expect(verifyCheckpoint(100, f.dependencies)).rejects.toMatchObject({
+      code: variant === 'missing' ? 'CHECKPOINT_QUORUM_UNAVAILABLE' : 'CHECKPOINT_QUORUM_CONFLICT',
+    });
+  });
+
+  test('repeated Colibri lookups reuse votes, not extra voter identities', async () => {
+    const f = fixture(100);
+    const originalVerify = f.runtime.Colibri.prototype.verifyProof;
+    f.runtime.Colibri.prototype.verifyProof = async function (...args) {
+      await originalVerify.apply(this, args);
+      return originalVerify.apply(this, args);
+    };
+    await verifyCheckpoint(100, f.dependencies);
+    expect(f.fetch).toHaveBeenCalledTimes(5);
+  });
+
+  test('all authorities agreeing cannot override invalid Colibri proof', async () => {
+    const f = fixture();
+    f.failVerification(new Error('invalid zk proof'));
+    await expect(verifyCheckpoint(1, f.dependencies)).rejects.toMatchObject({ code: 'CHECKPOINT_MISMATCH' });
+    expect(f.fetch).toHaveBeenCalledTimes(7);
+  });
+
+  test('all authority requests retain HTTPS origins and reject redirects', async () => {
+    const f = fixture();
+    await checkpointQuorum(f.slot, f.config, f.fetch, () => NOW);
+    for (const [url, options] of f.fetch.mock.calls) {
+      expect(f.config.sources).toContain(new URL(url).origin);
+      expect(options.redirect).toBe('error');
+      expect(options.method).toBe('GET');
+    }
   });
 
   test('storage is cleared after an attempt', async () => {
@@ -336,6 +446,8 @@ describe('bounded HTTP bodies', () => {
 // Use the actual pinned WASM in a fresh process; do not confuse mocked policy
 // checks above with cryptographic verification. Responses are public captures,
 // and the clock is restored to capture time so this test is deterministic/offline.
+// Metadata is replayed for each voter: this tests cryptographic integration, not
+// independent real-world quorum observations (covered by the live campaign).
 describe('captured proofs with the real Colibri WASM', () => {
   beforeAll(() => {
     // These captures qualify this exact verifier/API, not a semver-compatible build.
@@ -388,7 +500,8 @@ describe('captured proofs with the real Colibri WASM', () => {
       expect(result.good.network).toBe(network);
       expect(result.corrupt).toBe('CHECKPOINT_MISMATCH');
       expect(result.malformed).toEqual(Array(3).fill('CHECKPOINT_UNAVAILABLE'));
-      expect(result.wrongChain).toBe('CHECKPOINT_MISMATCH');
+      // Wrong-network metadata may fail the quorum clock check before the proof check.
+      expect(['CHECKPOINT_MISMATCH', 'CHECKPOINT_CLOCK']).toContain(result.wrongChain);
     },
     40_000
   );

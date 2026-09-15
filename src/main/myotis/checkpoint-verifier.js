@@ -8,7 +8,14 @@ const MAX_AGE_MS = 60 * 60 * 1000;
 const CHECKPOINT_NETWORKS = Object.freeze({
   1: Object.freeze({
     network: 'mainnet',
+    // Also serves as Colibri's intercepted request origin and the legacy v1 source.
     source: 'https://mainnet.checkpoint.sigp.io',
+    sources: Object.freeze([
+      'https://mainnet.checkpoint.sigp.io',
+      'https://beaconstate.ethstaker.cc',
+      'https://beaconstate-mainnet.chainsafe.io',
+    ]),
+    threshold: 2,
     prover: 'https://mainnet1.colibri-proof.tech',
     genesis: 1606824023,
     secondsPerSlot: 12,
@@ -17,6 +24,11 @@ const CHECKPOINT_NETWORKS = Object.freeze({
   100: Object.freeze({
     network: 'gnosis',
     source: 'https://checkpoint.gnosischain.com',
+    sources: Object.freeze([
+      'https://checkpoint.gnosischain.com',
+      'https://checkpoint-sync-gnosis.dappnode.net',
+    ]),
+    threshold: 2,
     prover: 'https://gnosis.colibri-proof.tech',
     genesis: 1638993340,
     secondsPerSlot: 5,
@@ -24,6 +36,8 @@ const CHECKPOINT_NETWORKS = Object.freeze({
   }),
 });
 const ERROR_MESSAGES = Object.freeze({
+  CHECKPOINT_QUORUM_UNAVAILABLE: 'Not enough checkpoint sources could confirm a recent checkpoint. Try again.',
+  CHECKPOINT_QUORUM_CONFLICT: 'Checkpoint sources disagree. Sync is paused.',
   CHECKPOINT_UNAVAILABLE: 'The checkpoint service could not complete verification. Try again.',
   CHECKPOINT_INCOMPATIBLE: 'This checkpoint verifier is incompatible. Update Freedom to try again.',
   CHECKPOINT_MISMATCH: 'The checkpoint evidence did not pass verification.',
@@ -50,12 +64,20 @@ function networkFor(chainId) {
 // code. This also gives persisted checkpoints the same chain and freshness rules.
 function validateCheckpoint(value, chainId, { now = Date.now(), fresh = true } = {}) {
   const config = networkFor(chainId);
+  // Existing generations retain their original trust policy. New recovery and
+  // worker results always require v2 quorum provenance, even for fresh v1 records.
+  const legacy = !fresh && value?.schemaVersion === 1 && value.source === config.source;
+  const quorum = value?.schemaVersion === 2 &&
+    Array.isArray(value.sources) &&
+    value.sources.length >= config.threshold &&
+    value.sources.length <= config.sources.length &&
+    new Set(value.sources).size === value.sources.length &&
+    value.sources.every((source) => config.sources.includes(source));
   if (
     !value ||
-    value.schemaVersion !== 1 ||
+    (!legacy && !quorum) ||
     value.chainId !== chainId ||
     value.network !== config.network ||
-    value.source !== config.source ||
     typeof value.root !== 'string' ||
     !/^0x[0-9a-f]{64}$/.test(value.root) ||
     /^0x0{64}$/.test(value.root) ||
@@ -82,13 +104,13 @@ function validateCheckpoint(value, chainId, { now = Date.now(), fresh = true } =
   }
   if (fresh && now - slotTime > MAX_AGE_MS) throw checkpointError('CHECKPOINT_STALE');
   return {
-    schemaVersion: 1,
+    schemaVersion: legacy ? 1 : 2,
     chainId,
     network: config.network,
     root: value.root,
     slot: value.slot,
     verifiedAt: value.verifiedAt,
-    source: config.source,
+    ...(legacy ? { source: config.source } : { sources: [...value.sources] }),
     finalizedEpoch: value.finalizedEpoch,
   };
 }

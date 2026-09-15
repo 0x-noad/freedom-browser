@@ -134,6 +134,82 @@ async function fetchBytes(fetchImpl, url, options, limit) {
   }
 }
 
+// Each authority votes once for a (slot, root) only after explicitly endorsing
+// finality. A block-root response alone is never a vote. Checkpointz's history
+// endpoint lists finalized slots, allowing comparison when latest epochs differ.
+async function checkpointVote(source, slot, config, fetchImpl, now) {
+  const metadata = async (pathname) => parseMetadata(await fetchBytes(
+    fetchImpl, source + pathname, { method: 'GET' }, MAX_METADATA_BYTES
+  ));
+  const [blockResult, finalityResult] = await Promise.allSettled([
+    metadata(`/eth/v1/beacon/blocks/${slot}/root`),
+    metadata('/eth/v1/beacon/states/head/finality_checkpoints'),
+  ]);
+  for (const result of [blockResult, finalityResult]) {
+    if (result.status === 'rejected') throw result.reason;
+  }
+  const block = blockResult.value;
+  const finality = finalityResult.value;
+  for (const body of [block, finality]) {
+    if (body.execution_optimistic !== undefined && typeof body.execution_optimistic !== 'boolean') {
+      throw checkpointError('CHECKPOINT_UNAVAILABLE');
+    }
+    if (body.execution_optimistic === true) throw checkpointError('CHECKPOINT_QUORUM_CONFLICT');
+  }
+  const root = metadataValue(rootHex, block.data?.root);
+  const epoch = metadataValue(uint, finality.data?.finalized?.epoch);
+  const finalizedRoot = metadataValue(rootHex, finality.data?.finalized?.root);
+  const epochSlot = epoch * config.slotsPerEpoch;
+  const wallSlot = Math.floor((now() / 1000 - config.genesis) / config.secondsPerSlot);
+  if (!Number.isSafeInteger(epochSlot) || epochSlot > wallSlot) {
+    throw checkpointError('CHECKPOINT_CLOCK');
+  }
+  if (epochSlot < slot) throw checkpointError('CHECKPOINT_RACE');
+  if (finalizedRoot !== root) {
+    if (epoch === Math.ceil(slot / config.slotsPerEpoch)) {
+      throw checkpointError('CHECKPOINT_QUORUM_CONFLICT');
+    }
+    const history = await metadata('/checkpointz/v1/beacon/slots');
+    if (!Array.isArray(history.data?.slots) || history.data.slots.length > 256) {
+      throw checkpointError('CHECKPOINT_UNAVAILABLE');
+    }
+    const entries = history.data.slots.filter((entry) => metadataValue(uint, entry?.slot) === slot);
+    if (!entries.length) throw checkpointError('CHECKPOINT_RACE');
+    // Reject duplicate or contradictory evidence within an authority's history.
+    if (entries.length !== 1 || metadataValue(rootHex, entries[0].block_root) !== root) {
+      throw checkpointError('CHECKPOINT_QUORUM_CONFLICT');
+    }
+  }
+  return { source, slot, root, finalizedEpoch: Math.ceil(slot / config.slotsPerEpoch) };
+}
+
+async function checkpointQuorum(slot, config, fetchImpl, now) {
+  const results = await Promise.allSettled(config.sources.map(
+    (source) => checkpointVote(source, slot, config, fetchImpl, now)
+  ));
+  const votes = results.filter((result) => result.status === 'fulfilled').map((result) => result.value);
+  const groups = new Map();
+  for (const vote of votes) {
+    const group = groups.get(vote.root) || [];
+    group.push(vote);
+    groups.set(vote.root, group);
+  }
+  const winner = [...groups.values()].find((group) => group.length >= config.threshold);
+  if (winner) return {
+    slot, root: winner[0].root, finalizedEpoch: winner[0].finalizedEpoch,
+    sources: winner.map((vote) => vote.source),
+  };
+  if (groups.size > 1 || results.some((result) => result.reason?.code === 'CHECKPOINT_QUORUM_CONFLICT')) {
+    throw checkpointError('CHECKPOINT_QUORUM_CONFLICT');
+  }
+  if (results.every((result) => result.reason?.code === 'CHECKPOINT_CLOCK')) {
+    throw checkpointError('CHECKPOINT_CLOCK');
+  }
+  // Publication lag, HTTP failures and malformed responses do not establish a
+  // conflict. Never reduce the configured threshold because a source is missing.
+  throw checkpointError('CHECKPOINT_QUORUM_UNAVAILABLE');
+}
+
 async function verifyCheckpoint(chainId, dependencies = {}) {
   const config = networkFor(chainId);
   const fetchImpl = dependencies.fetch || globalThis.fetch;
@@ -145,6 +221,7 @@ async function verifyCheckpoint(chainId, dependencies = {}) {
   if (typeof decode_proof !== 'function') throw checkpointError('CHECKPOINT_INCOMPATIBLE');
   const storage = new Map();
   const observations = [];
+  const quorumRequests = new Map();
   let transportError = null;
   let requestCount = 0;
   let client;
@@ -177,15 +254,14 @@ async function verifyCheckpoint(chainId, dependencies = {}) {
           );
           if (++requestCount > MAX_TRUST_REQUESTS) throw checkpointError('CHECKPOINT_UNAVAILABLE');
           const slot = uint(url.pathname.split('/').at(-2));
-          const bytes = await fetchBytes(
-            fetchImpl,
-            String(url),
-            { method: 'GET' },
-            MAX_METADATA_BYTES
-          );
-          const body = parseMetadata(bytes);
-          const root = metadataValue(rootHex, body?.data?.root);
-          observations.push({ slot, root });
+          if (!quorumRequests.has(slot)) {
+            quorumRequests.set(slot, checkpointQuorum(slot, config, fetchImpl, now));
+          }
+          const observation = await quorumRequests.get(slot);
+          observations.push(observation);
+          // Colibri sees only the root endorsed by the fixed quorum. The origin
+          // here is an interception boundary, not a mandatory individual voter.
+          const bytes = JSON.stringify({ data: { root: observation.root } });
           return new Response(bytes, {
             status: 200,
             headers: { 'content-type': 'application/json' },
@@ -255,54 +331,23 @@ async function verifyCheckpoint(chainId, dependencies = {}) {
     const slot = uint(checkpoint.header?.slot);
     requireEvidence(slot > 0);
     const root = headerRoot(checkpoint.header);
-    requireEvidence(observations.some((item) => item.slot === slot && item.root === root));
+    const quorum = observations.find((item) => item.slot === slot && item.root === root);
+    requireEvidence(quorum);
     const slotTime = (config.genesis + slot * config.secondsPerSlot) * 1000;
     requireEvidence(Number.isSafeInteger(slotTime));
     if (slotTime > now()) throw checkpointError('CHECKPOINT_CLOCK');
     if (now() - slotTime > MAX_AGE_MS) throw checkpointError('CHECKPOINT_STALE');
 
-    // A verified block proof is not itself a finality certificate. The selected
-    // authority must explicitly identify this same root as finalized. These
-    // services may omit execution_optimistic; finality remains their trust claim.
-    const finality = parseMetadata(
-      await fetchBytes(
-        fetchImpl,
-        config.source + '/eth/v1/beacon/states/head/finality_checkpoints',
-        { method: 'GET' },
-        MAX_METADATA_BYTES
-      )
-    );
-    if (
-      finality.execution_optimistic !== undefined &&
-      typeof finality.execution_optimistic !== 'boolean'
-    ) {
-      throw checkpointError('CHECKPOINT_UNAVAILABLE');
-    }
-    requireEvidence(finality.execution_optimistic !== true);
-    const finalizedEpoch = metadataValue(uint, finality.data?.finalized?.epoch);
-    const finalizedRoot = metadataValue(rootHex, finality.data?.finalized?.root);
-    const epochSlot = finalizedEpoch * config.slotsPerEpoch;
-    requireEvidence(Number.isSafeInteger(epochSlot));
-    const wallSlot = Math.floor((now() / 1000 - config.genesis) / config.secondsPerSlot);
-    if (epochSlot > wallSlot) throw checkpointError('CHECKPOINT_CLOCK');
-    requireEvidence(epochSlot >= slot);
-    if (finalizedRoot !== root) {
-      throw checkpointError(
-        finalizedEpoch > Math.floor(slot / config.slotsPerEpoch)
-          ? 'CHECKPOINT_RACE'
-          : 'CHECKPOINT_MISMATCH'
-      );
-    }
     return validateCheckpoint(
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         chainId,
         network: config.network,
         root,
         slot,
         verifiedAt: now(),
-        source: config.source,
-        finalizedEpoch,
+        sources: quorum.sources,
+        finalizedEpoch: quorum.finalizedEpoch,
       },
       chainId,
       { now: now() }
@@ -328,4 +373,4 @@ if (!isMainThread && parentPort) {
     .finally(() => parentPort.close());
 }
 
-module.exports = { verifyCheckpoint, fetchBytes, headerRoot, MAX_PROOF_BYTES, MAX_METADATA_BYTES };
+module.exports = { checkpointQuorum, verifyCheckpoint, fetchBytes, headerRoot, MAX_PROOF_BYTES, MAX_METADATA_BYTES };

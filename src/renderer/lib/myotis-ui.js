@@ -140,6 +140,8 @@ const updateGnosisControls = (status) => {
 
 const recoveryFailureMessage = (reason) =>
   ({
+    'quorum-unavailable': 'Not enough checkpoint sources could confirm a recent checkpoint. Check your connection and retry.',
+    'quorum-conflict': 'Checkpoint sources disagree. Sync is paused. Retry to check again.',
     unavailable: 'Could not reach the checkpoint service. Check your connection and retry.',
     stale: 'The checkpoint service returned an outdated checkpoint. Retry to get a recent one.',
     mismatch: 'Checkpoint could not be verified. Sync is paused.',
@@ -163,7 +165,9 @@ const recoveryMessage = (status) => {
     const reason =
       recovery.reason === 'stale'
         ? 'Checkpoint is still out of date.'
-        : 'Checkpoint service unavailable.';
+        : recovery.reason === 'quorum-unavailable'
+          ? 'Waiting for checkpoint sources to agree.'
+          : 'Checkpoint service unavailable.';
     return seconds > 0 ? `${reason} Retrying in ${seconds}s…` : `${reason} Waiting to retry…`;
   }
   if (recovery?.phase === 'restarting') {

@@ -15,13 +15,13 @@ function checkpoint(chainId = 1, rootByte = '12') {
       config.slotsPerEpoch -
     config.slotsPerEpoch;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     chainId,
     network: config.network,
     root: '0x' + rootByte.repeat(32),
     slot,
     verifiedAt: NOW,
-    source: config.source,
+    sources: [...config.sources],
     finalizedEpoch: slot / config.slotsPerEpoch,
   };
 }
@@ -198,7 +198,7 @@ describe('checkpoint generation store on the real filesystem', () => {
     [
       'checkpoint source',
       (record) => {
-        record.checkpoint.source = 'https://unapproved.invalid';
+        record.checkpoint.sources = ['https://unapproved.invalid'];
       },
     ],
     [

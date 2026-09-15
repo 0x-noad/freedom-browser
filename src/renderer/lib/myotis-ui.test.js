@@ -534,6 +534,8 @@ describe('myotis-ui', () => {
     ['unsupported', 'Update Freedom'],
     ['startup', 'restart the node'],
     ['stalled', 'node will keep trying'],
+    ['quorum-unavailable', 'Not enough checkpoint sources'],
+    ['quorum-conflict', 'Checkpoint sources disagree'],
     ['unavailable', 'connection'],
     ['stale', 'outdated checkpoint'],
   ])('gives an actionable explanation for %s', async (reason, text) => {

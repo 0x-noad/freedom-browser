@@ -427,11 +427,13 @@ function recoverCheckpoint(instance, { resetAttempts = false } = {}) {
     } catch (error) {
       if (!currentRun(instance, token) || controller.signal.aborted) return false;
       const reasons = {
+        CHECKPOINT_QUORUM_UNAVAILABLE: 'quorum-unavailable',
+        CHECKPOINT_QUORUM_CONFLICT: 'quorum-conflict',
         CHECKPOINT_MISMATCH: 'mismatch', CHECKPOINT_CLOCK: 'clock',
         CHECKPOINT_STORAGE: 'storage', CHECKPOINT_OWNERSHIP: 'ownership', CHECKPOINT_STALE: 'stale',
         CHECKPOINT_INCOMPATIBLE: 'unsupported',
       };
-      const retry = ['CHECKPOINT_UNAVAILABLE', 'CHECKPOINT_RACE', 'CHECKPOINT_STALE'].includes(error.code);
+      const retry = ['CHECKPOINT_UNAVAILABLE', 'CHECKPOINT_QUORUM_UNAVAILABLE', 'CHECKPOINT_RACE', 'CHECKPOINT_STALE'].includes(error.code);
       failRecovery(instance, reasons[error.code] || 'unavailable', retry);
       return false;
     }
