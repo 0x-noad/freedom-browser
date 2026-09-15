@@ -21,7 +21,7 @@ function checkpoint(chainId = 1, rootByte = '12') {
     root: '0x' + rootByte.repeat(32),
     slot,
     verifiedAt: NOW,
-    sources: [...config.sources],
+    sources: config.sources.slice(0, config.participants),
     finalizedEpoch: slot / config.slotsPerEpoch,
   };
 }

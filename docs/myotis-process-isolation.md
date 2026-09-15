@@ -86,8 +86,15 @@ computer's clock. Worker results are validated again before lifecycle or storage
 use. The whole verification attempt has a 90-second deadline; individual network
 requests have 20-second deadlines and bounded response sizes.
 
-Ethereum requires 2 of 3 checkpoint authorities: `mainnet.checkpoint.sigp.io`,
-`beaconstate.ethstaker.cc`, and `beaconstate-mainnet.chainsafe.io`. Gnosis requires
+Ethereum requires 2 of at most 3 participating checkpoint authorities, drawn
+from seven configured candidates: Sigma Prime, EthStaker, ChainSafe, Attestant,
+beaconcha.in, PietjePuk, and Stakely. The worker starts with the first three and
+replaces unavailable candidates in a stable order, without revisiting a candidate
+within the same lookup. Valid dissent and contradictory evidence retain their
+seats; three conflicting responses cannot cause a search for agreeable reserves.
+HTTP failures, malformed bodies and missing/lagging finality may be replaced.
+Clock-invalid or contradictory evidence is not treated as mere unavailability.
+The existing overall worker deadline bounds all replacement rounds. Gnosis requires
 both `checkpoint.gnosischain.com` and `checkpoint-sync-gnosis.dappnode.net`.
 Proofs still come from `mainnet1.colibri-proof.tech` and
 `gnosis.colibri-proof.tech`, respectively, and Colibri proof verification is

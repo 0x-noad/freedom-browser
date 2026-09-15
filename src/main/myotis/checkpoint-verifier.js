@@ -14,7 +14,12 @@ const CHECKPOINT_NETWORKS = Object.freeze({
       'https://mainnet.checkpoint.sigp.io',
       'https://beaconstate.ethstaker.cc',
       'https://beaconstate-mainnet.chainsafe.io',
+      'https://mainnet-checkpoint-sync.attestant.io',
+      'https://sync-mainnet.beaconcha.in',
+      'https://checkpointz.pietjepuk.net',
+      'https://mainnet-checkpoint-sync.stakely.io',
     ]),
+    participants: 3,
     threshold: 2,
     prover: 'https://mainnet1.colibri-proof.tech',
     genesis: 1606824023,
@@ -28,6 +33,7 @@ const CHECKPOINT_NETWORKS = Object.freeze({
       'https://checkpoint.gnosischain.com',
       'https://checkpoint-sync-gnosis.dappnode.net',
     ]),
+    participants: 2,
     threshold: 2,
     prover: 'https://gnosis.colibri-proof.tech',
     genesis: 1638993340,
@@ -70,7 +76,7 @@ function validateCheckpoint(value, chainId, { now = Date.now(), fresh = true } =
   const quorum = value?.schemaVersion === 2 &&
     Array.isArray(value.sources) &&
     value.sources.length >= config.threshold &&
-    value.sources.length <= config.sources.length &&
+    value.sources.length <= config.participants &&
     new Set(value.sources).size === value.sources.length &&
     value.sources.every((source) => config.sources.includes(source));
   if (

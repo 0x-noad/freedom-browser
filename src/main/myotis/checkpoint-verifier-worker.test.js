@@ -108,7 +108,7 @@ describe('checkpoint proof/finality policy', () => {
         network: f.config.network,
         root: headerRoot(f.header),
         slot: f.slot,
-        sources: [...f.config.sources],
+        sources: f.config.sources.slice(0, f.config.participants),
         verifiedAt: NOW,
         finalizedEpoch: f.slot / f.config.slotsPerEpoch,
       });
@@ -118,7 +118,7 @@ describe('checkpoint proof/finality policy', () => {
         beacon_apis: [],
         prover: [],
       });
-      expect(f.fetch).toHaveBeenCalledTimes(1 + 2 * f.config.sources.length);
+      expect(f.fetch).toHaveBeenCalledTimes(1 + 2 * f.config.participants);
       for (const [, options] of f.fetch.mock.calls) expect(options.redirect).toBe('error');
     }
   );
@@ -278,7 +278,7 @@ describe('checkpoint proof/finality policy', () => {
     f.fetch.mockImplementation((url) => url.startsWith(f.config.sources[index])
       ? Promise.reject(new Error('offline')) : original(url));
     const result = await verifyCheckpoint(1, f.dependencies);
-    expect(result.sources).toEqual(f.config.sources.filter((_, i) => i !== index));
+    expect(result.sources).toEqual(f.config.sources.slice(0, 3).filter((_, i) => i !== index));
   });
 
   test.each([1, 100])('chain %i never accepts one vote', async (chainId) => {
@@ -300,10 +300,75 @@ describe('checkpoint proof/finality policy', () => {
           ? { data: { finalized: { epoch: f.finality.data.finalized.epoch, root: '0x' + '99'.repeat(32) } } }
           : { data: { root: '0x' + '99'.repeat(32) } })));
       }
-      if (f.config.sources[2] && url.startsWith(f.config.sources[2])) return Promise.reject(new Error('offline'));
+      if (f.config.sources.slice(2).some((source) => url.startsWith(source))) return Promise.reject(new Error('offline'));
       return original(url);
     });
     await expect(verifyCheckpoint(chainId, f.dependencies)).rejects.toMatchObject({ code: 'CHECKPOINT_QUORUM_CONFLICT' });
+  });
+
+  test('two unavailable original candidates are replaced from the wider pool', async () => {
+    const f = fixture();
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation((url) => f.config.sources.slice(0, 2).some((source) => url.startsWith(source))
+      ? Promise.reject(new Error('offline')) : original(url));
+    const result = await verifyCheckpoint(1, f.dependencies);
+    expect(result.sources).toEqual(f.config.sources.slice(2, 5));
+    const contacted = new Set(f.fetch.mock.calls.filter(([url]) => url !== f.config.prover).map(([url]) => new URL(url).origin));
+    expect([...contacted]).toEqual(f.config.sources.slice(0, 5));
+  });
+
+  test('exhausts all seven candidates without accepting a lone vote', async () => {
+    const f = fixture();
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation((url) => url === f.config.prover || url.startsWith(f.config.sources[6])
+      ? original(url) : Promise.reject(new Error('offline')));
+    await expect(verifyCheckpoint(1, f.dependencies)).rejects.toMatchObject({ code: 'CHECKPOINT_QUORUM_UNAVAILABLE' });
+    expect(new Set(f.fetch.mock.calls.filter(([url]) => url !== f.config.prover).map(([url]) => new URL(url).origin)).size).toBe(7);
+  });
+
+  test('three disagreeing participants are never replaced by agreeable reserves', async () => {
+    const f = fixture();
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation((url) => {
+      const index = f.config.sources.findIndex((source) => url.startsWith(source));
+      if (index < 0 || index > 2) return original(url);
+      const root = '0x' + String(index + 1).repeat(64);
+      return Promise.resolve(new Response(JSON.stringify(url.endsWith('finality_checkpoints')
+        ? { data: { finalized: { epoch: f.finality.data.finalized.epoch, root } } }
+        : { data: { root } })));
+    });
+    await expect(verifyCheckpoint(1, f.dependencies)).rejects.toMatchObject({ code: 'CHECKPOINT_QUORUM_CONFLICT' });
+    expect(f.fetch).toHaveBeenCalledTimes(7);
+    expect(f.fetch.mock.calls.some(([url]) => f.config.sources.slice(3).some((source) => url.startsWith(source)))).toBe(false);
+  });
+
+  test('retains a dissenting vote while replacing an unavailable participant', async () => {
+    const f = fixture();
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation((url) => {
+      if (url.startsWith(f.config.sources[0])) return Promise.resolve(new Response(JSON.stringify(url.endsWith('finality_checkpoints')
+        ? { data: { finalized: { epoch: f.finality.data.finalized.epoch, root: '0x' + '99'.repeat(32) } } }
+        : { data: { root: '0x' + '99'.repeat(32) } })));
+      if (url.startsWith(f.config.sources[1])) return Promise.reject(new Error('offline'));
+      return original(url);
+    });
+    expect((await verifyCheckpoint(1, f.dependencies)).sources).toEqual(f.config.sources.slice(2, 4));
+    expect(f.fetch).toHaveBeenCalledTimes(9);
+  });
+
+  test('contradictory evidence occupies a seat and is not discarded for a reserve', async () => {
+    const f = fixture();
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation((url) => {
+      if (f.config.sources.slice(0, 2).some((source) => url.startsWith(source)) && url.endsWith('finality_checkpoints')) {
+        return Promise.resolve(new Response(JSON.stringify({ data: { finalized: {
+          epoch: f.finality.data.finalized.epoch, root: '0x' + '99'.repeat(32),
+        } } })));
+      }
+      return original(url);
+    });
+    await expect(verifyCheckpoint(1, f.dependencies)).rejects.toMatchObject({ code: 'CHECKPOINT_QUORUM_CONFLICT' });
+    expect(f.fetch).toHaveBeenCalledTimes(7);
   });
 
   test('two matching Ethereum votes tolerate one dissenting authority', async () => {
@@ -314,7 +379,7 @@ describe('checkpoint proof/finality policy', () => {
         ? { data: { finalized: { epoch: f.finality.data.finalized.epoch, root: '0x' + '99'.repeat(32) } } }
         : { data: { root: '0x' + '99'.repeat(32) } }))) : original(url));
     const result = await verifyCheckpoint(1, f.dependencies);
-    expect(result.sources).toEqual(f.config.sources.slice(1));
+    expect(result.sources).toEqual(f.config.sources.slice(1, 3));
   });
 
   test('aligned finalized history permits different latest epochs without comparing unrelated roots', async () => {
@@ -330,7 +395,7 @@ describe('checkpoint proof/finality policy', () => {
       ] } })));
       return original(url);
     });
-    await expect(verifyCheckpoint(100, f.dependencies)).resolves.toMatchObject({ sources: [...f.config.sources] });
+    await expect(verifyCheckpoint(100, f.dependencies)).resolves.toMatchObject({ sources: f.config.sources.slice(0, f.config.participants) });
   });
 
   test.each(['missing', 'conflicting', 'duplicate'])('finalized history %s never supplies a vote', async (variant) => {

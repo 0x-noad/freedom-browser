@@ -184,22 +184,39 @@ async function checkpointVote(source, slot, config, fetchImpl, now) {
 }
 
 async function checkpointQuorum(slot, config, fetchImpl, now) {
-  const results = await Promise.allSettled(config.sources.map(
-    (source) => checkpointVote(source, slot, config, fetchImpl, now)
-  ));
-  const votes = results.filter((result) => result.status === 'fulfilled').map((result) => result.value);
-  const groups = new Map();
-  for (const vote of votes) {
-    const group = groups.get(vote.root) || [];
-    group.push(vote);
-    groups.set(vote.root, group);
+  // Stable candidate order makes replacement depend on availability, never on
+  // response speed or which answer we prefer. Definitive responses occupy one of
+  // the three seats, including dissent or inconsistent evidence. Only candidates
+  // unable to supply usable evidence may be replaced, once each per lookup.
+  const results = [];
+  let next = 0;
+  let occupied = 0;
+  while (next < config.sources.length && occupied < config.participants) {
+    const candidates = config.sources.slice(next, next + config.participants - occupied);
+    next += candidates.length;
+    const batch = await Promise.allSettled(candidates.map(
+      (source) => checkpointVote(source, slot, config, fetchImpl, now)
+    ));
+    results.push(...batch);
+    occupied += batch.filter((result) => result.status === 'fulfilled' ||
+      !['CHECKPOINT_UNAVAILABLE', 'CHECKPOINT_RACE'].includes(result.reason?.code)).length;
+    const groups = new Map();
+    for (const result of results) {
+      if (result.status !== 'fulfilled') continue;
+      const vote = result.value;
+      const group = groups.get(vote.root) || [];
+      group.push(vote);
+      groups.set(vote.root, group);
+    }
+    const winner = [...groups.values()].find((group) => group.length >= config.threshold);
+    if (winner) return {
+      slot, root: winner[0].root, finalizedEpoch: winner[0].finalizedEpoch,
+      sources: winner.map((vote) => vote.source),
+    };
   }
-  const winner = [...groups.values()].find((group) => group.length >= config.threshold);
-  if (winner) return {
-    slot, root: winner[0].root, finalizedEpoch: winner[0].finalizedEpoch,
-    sources: winner.map((vote) => vote.source),
-  };
-  if (groups.size > 1 || results.some((result) => result.reason?.code === 'CHECKPOINT_QUORUM_CONFLICT')) {
+  const roots = new Set(results.filter((result) => result.status === 'fulfilled')
+    .map((result) => result.value.root));
+  if (roots.size > 1 || results.some((result) => result.reason?.code === 'CHECKPOINT_QUORUM_CONFLICT')) {
     throw checkpointError('CHECKPOINT_QUORUM_CONFLICT');
   }
   if (results.every((result) => result.reason?.code === 'CHECKPOINT_CLOCK')) {

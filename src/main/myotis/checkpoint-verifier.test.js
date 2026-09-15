@@ -24,7 +24,7 @@ function checkpoint(chainId = 1) {
     root: '0x' + '12'.repeat(32),
     slot,
     verifiedAt: NOW,
-    sources: [...config.sources],
+    sources: config.sources.slice(0, config.participants),
     finalizedEpoch: slot / config.slotsPerEpoch,
   };
 }
@@ -274,6 +274,7 @@ describe('checkpoint record validation', () => {
     [],
     [CHECKPOINT_NETWORKS[1].sources[0]],
     Array(2).fill(CHECKPOINT_NETWORKS[1].sources[0]),
+    CHECKPOINT_NETWORKS[1].sources.slice(0, 4),
     ['https://unapproved.invalid', CHECKPOINT_NETWORKS[1].sources[0]],
   ])('missing, duplicate or unapproved voters cannot authorize a record: %p', (...sources) => {
     expect(() => validateCheckpoint({ ...checkpoint(), sources }, 1, { now: NOW })).toThrow();
