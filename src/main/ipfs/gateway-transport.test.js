@@ -8,7 +8,15 @@ const {
   netGatewayFetch,
   isLoopbackHostname,
   isLoopbackGatewayUrl,
+  isOnionHostname,
+  isOnionGatewayUrl,
 } = require('./gateway-transport');
+
+// What the Tor PAC resolves an onion URL to once Arti is up. Dials in these
+// tests hand it in through the `resolveProxy` seam, because a `.onion` URL is
+// only dialled when the session proves it is proxied (see the onion block).
+const ONION_ROUTED = 'SOCKS5 127.0.0.1:9150';
+const routedProxy = () => jest.fn(async () => ONION_ROUTED);
 
 function startNetFetch(url, init = {}) {
   let request = null;
@@ -81,7 +89,11 @@ describe('gatewayFetch transport selection', () => {
       return request;
     });
 
-    const response = await gatewayFetch(url, { redirect: 'manual' }, { nodeFetch, requestImpl });
+    const response = await gatewayFetch(
+      url,
+      { redirect: 'manual' },
+      { nodeFetch, requestImpl, resolveProxy: routedProxy() }
+    );
 
     expect(response.status).toBe(204);
     expect(requestImpl).toHaveBeenCalledTimes(1);
@@ -106,6 +118,124 @@ describe('gatewayFetch transport selection', () => {
     expect(await response.text()).toBe('local');
     expect(nodeFetch).toHaveBeenCalledWith(url, { redirect: 'manual' });
     expect(requestImpl).not.toHaveBeenCalled();
+  });
+});
+
+// R2-F1: moving this path onto Chromium only stops the onion-hostname leak
+// once the session actually carries the Tor PAC. At launch it does not —
+// `startIpfs()` probes the configured gateway within ~1s while Arti is still
+// bootstrapping (seconds to ~120s) — and an unproxied `.onion` dial hands the
+// name straight to the system resolver (measured on Electron 44.3.0:
+// `resolveProxy` → `DIRECT`, dial → `net::ERR_NAME_NOT_RESOLVED` in 12ms). So
+// the dial is refused unless the session proves the URL is proxied.
+describe('an .onion gateway is only dialled when the session proxies it', () => {
+  const ONION = 'http://freedomgatewayprobe.onion:8080/ipfs/bafkqaaa';
+
+  test.each([
+    ['abc.onion', true],
+    ['ABC.ONION', true],
+    ['sub.abc.onion', true],
+    // The PAC matches a bare `onion` host too (`host === "onion"`), and a
+    // trailing root dot is the same name to Chromium and to the resolver.
+    ['onion', true],
+    ['abc.onion.', true],
+    ['abc.onion.example', false],
+    ['onionsite.example', false],
+    ['gateway.example', false],
+    ['127.0.0.1', false],
+    ['', false],
+  ])('isOnionHostname(%s) === %s', (hostname, expected) => {
+    expect(isOnionHostname(hostname)).toBe(expected);
+  });
+
+  test('a URL that cannot be parsed is not onion (it takes the ordinary path)', () => {
+    expect(isOnionGatewayUrl('not a url')).toBe(false);
+    expect(isOnionGatewayUrl(null)).toBe(false);
+    expect(isOnionGatewayUrl(ONION)).toBe(true);
+  });
+
+  // Every one of these resolutions ends up asking the system resolver for the
+  // onion name — either immediately (DIRECT) or on the proxy's first failure
+  // (a `;DIRECT` fallback chain) — so none of them may be dialled.
+  test.each([
+    ['DIRECT', 'DIRECT'],
+    ['a lower-cased DIRECT', 'direct'],
+    ['a proxy chain that can fall back to DIRECT', `${ONION_ROUTED};DIRECT`],
+    ['an empty resolution', ''],
+  ])('%s is refused before any request exists', async (_label, resolved) => {
+    const requestImpl = jest.fn();
+    const resolveProxy = jest.fn(async () => resolved);
+
+    await expect(
+      netGatewayFetch(ONION, { redirect: 'manual' }, { requestImpl, resolveProxy })
+    ).rejects.toThrow('not routed through a proxy');
+
+    expect(resolveProxy).toHaveBeenCalledWith(ONION);
+    // The point of the whole guard: Chromium is never handed the name.
+    expect(requestImpl).not.toHaveBeenCalled();
+  });
+
+  // Fail closed, like the unusable-`net` case: a session we cannot ask is not
+  // a session we can trust to proxy.
+  test('a session that cannot be asked is refused, not dialled anyway', async () => {
+    const requestImpl = jest.fn();
+    const resolveProxy = jest.fn(async () => {
+      throw new Error('session gone');
+    });
+
+    await expect(
+      netGatewayFetch(ONION, { redirect: 'manual' }, { requestImpl, resolveProxy })
+    ).rejects.toThrow('proxy route could not be resolved: session gone');
+    expect(requestImpl).not.toHaveBeenCalled();
+  });
+
+  test('with no session at all (no resolveProxy on it) the dial is refused', async () => {
+    // The default seam reads `session.defaultSession.resolveProxy`, which the
+    // Jest electron mock does not provide — the same shape as a main process
+    // whose session cannot answer.
+    await expect(netGatewayFetch(ONION, { redirect: 'manual' })).rejects.toThrow(
+      'proxy route could not be resolved'
+    );
+  });
+
+  test.each([ONION_ROUTED, 'PROXY 127.0.0.1:3128', `${ONION_ROUTED};SOCKS5 127.0.0.1:9151`])(
+    'a session that resolves %s dials the onion name itself (remote DNS at the proxy)',
+    async (resolved) => {
+      const requestImpl = jest.fn((options) => {
+        const request = new FakeClientRequest(options);
+        setImmediate(() => request.emit('response', new FakeIncomingMessage({ statusCode: 204 })));
+        return request;
+      });
+
+      const response = await netGatewayFetch(
+        ONION,
+        { redirect: 'manual' },
+        { requestImpl, resolveProxy: jest.fn(async () => resolved) }
+      );
+
+      expect(response.status).toBe(204);
+      expect(requestImpl.mock.calls[0][0].url).toBe(ONION);
+    }
+  );
+
+  // The check costs a session round-trip, so it stays on the one host class
+  // that needs it: everything else dials exactly as before.
+  test.each([
+    'http://gateway.example:8080/ipfs/bafkqaaa',
+    'https://ipfs.io/ipfs/bafkqaaa',
+    'http://192.168.1.9:8080/ipfs/bafkqaaa',
+  ])('a non-onion gateway (%s) never consults the session', async (url) => {
+    const resolveProxy = jest.fn();
+    const requestImpl = jest.fn((options) => {
+      const request = new FakeClientRequest(options);
+      setImmediate(() => request.emit('response', new FakeIncomingMessage({ statusCode: 204 })));
+      return request;
+    });
+
+    await netGatewayFetch(url, { redirect: 'manual' }, { requestImpl, resolveProxy });
+
+    expect(resolveProxy).not.toHaveBeenCalled();
+    expect(requestImpl).toHaveBeenCalledTimes(1);
   });
 });
 

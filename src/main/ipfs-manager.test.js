@@ -531,6 +531,13 @@ describe('ipfs-manager', () => {
         'ipfs',
         'External node unreachable — for Kubo, use 127.0.0.1 instead of localhost'
       );
+      // The retry notice overlays that status message in the UI, so it has to
+      // carry the hint too — otherwise arming the retry (R2-F1) would hide the
+      // one line that names the cause.
+      expect(ctx.setErrorState).toHaveBeenCalledWith(
+        'ipfs',
+        'External node unreachable — for Kubo, use 127.0.0.1 instead of localhost. Retrying…'
+      );
       await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
         status: 'error',
         error:
@@ -1769,5 +1776,171 @@ describe('external gateway transport', () => {
     const warning = ctx.log.warn.mock.calls.map((call) => call.join(' ')).join('\n');
     expect(warning).toContain('<private>');
     expect(warning).not.toContain('bafysecret');
+  });
+
+  // R2-F1: dialling through Chromium only closes the onion-hostname leak once
+  // the session carries the Tor PAC, and at launch it does not — `startIpfs()`
+  // runs within ~1s of the window opening while `tor-manager` is still waiting
+  // for Arti's SOCKS bootstrap (seconds to ~120s). Two halves, both asserted
+  // here end to end through the real transport: nothing is dialled while the
+  // session would send the onion name DIRECT, and the node completes its own
+  // start once the route lands, instead of sitting at "unreachable" (and 503ing
+  // every `ipfs://` load) for the rest of the session.
+  describe('an .onion gateway configured while Tor is still bootstrapping', () => {
+    const ONION_GATEWAY = 'http://freedomgatewayprobe.onion:8080';
+    const drainMicrotasks = async () => {
+      for (let i = 0; i < 50; i += 1) await Promise.resolve();
+    };
+
+    test('is not dialled before the PAC lands, then starts itself when it does', async () => {
+      jest.useFakeTimers();
+      const realFetch = global.fetch;
+      // Node's fetch is the transport this path must never fall back to: it
+      // ignores the session entirely, so a call here is a leak.
+      global.fetch = jest.fn();
+      try {
+        // What Chromium answers for the onion URL: DIRECT until Arti has
+        // bootstrapped and `applyOnionProxy` has installed the PAC.
+        let resolvedProxy = 'DIRECT';
+        const net = gatewayNetMock();
+        const ctx = loadIpfsManagerModule({
+          nativeAvailable: false,
+          realGatewayTransport: true,
+          electronOverrides: {
+            net,
+            session: { defaultSession: { resolveProxy: jest.fn(async () => resolvedProxy) } },
+          },
+          activeProfile: {
+            metadata: { nodes: { ipfs: { mode: 'external', externalGateway: ONION_GATEWAY } } },
+          },
+        });
+        ctx.mod.registerIpfsIpc();
+
+        await ctx.mod.startIpfs();
+
+        // The leak: no request exists, so the onion hostname never reached
+        // Chromium's resolver (nor undici's).
+        expect(net.requests).toEqual([]);
+        expect(global.fetch).not.toHaveBeenCalled();
+        await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+          status: 'error',
+          error: 'External IPFS gateway is unreachable — .onion gateways need Tor running',
+        });
+        // The endpoint is published (the toggle stays controllable) but not as
+        // one serving traffic, and the retry is armed.
+        expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', {
+          api: null,
+          gateway: null,
+          externalGateway: ONION_GATEWAY,
+          mode: 'external',
+          backend: 'external-gateway',
+        });
+        // The retry notice carries the hint: the error state overlays the
+        // status message, so a bare "Retrying…" would hide the one line saying
+        // what the node is waiting for.
+        expect(ctx.setErrorState).toHaveBeenCalledWith(
+          'ipfs',
+          'External node unreachable — .onion gateways need Tor running. Retrying…'
+        );
+        expect(jest.getTimerCount()).toBeGreaterThan(0);
+
+        // Arti finishes bootstrapping and tor-manager installs the PAC.
+        resolvedProxy = 'SOCKS5 127.0.0.1:9150';
+        // Async advance, then one more tick: the fake `net` answers on a
+        // `setImmediate` scheduled *by* the probe this advance fires, and fake
+        // timers only run an immediate on a subsequent tick.
+        await jest.advanceTimersByTimeAsync(5000);
+        await jest.advanceTimersByTimeAsync(1);
+        await drainMicrotasks();
+
+        // The armed probe dials the onion name itself (remote DNS at the
+        // proxy) and the start completes with no user action.
+        expect(net.urls()).toEqual([`${ONION_GATEWAY}${GATEWAY_PROBE_PATH}`]);
+        await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+          status: 'running',
+        });
+        expect(ctx.clearErrorState).toHaveBeenCalledWith('ipfs');
+        expect(ctx.setStatusMessage).toHaveBeenLastCalledWith(
+          'ipfs',
+          'External node: freedomgatewayprobe.onion:8080'
+        );
+        expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', {
+          api: null,
+          gateway: ONION_GATEWAY,
+          externalGateway: ONION_GATEWAY,
+          mode: 'external',
+          backend: 'external-gateway',
+        });
+
+        // And it really serves: before the fix this 503'd until the user
+        // toggled the node by hand. (Same one-tick dance as the probe — the
+        // fake `net` answers on an immediate.)
+        const responsePromise = ctx.mod.serveNativeGatewayRequest({
+          path: '/ipfs/bafy',
+          method: 'GET',
+          headers: new Headers(),
+        });
+        await jest.advanceTimersByTimeAsync(1);
+        const response = await responsePromise;
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe('external-body');
+      } finally {
+        global.fetch = realFetch;
+        jest.useRealTimers();
+      }
+    });
+  });
+
+  // The same never-came-up recovery for the everyday case the `.onion` one is
+  // an instance of: a gateway that is simply not up yet at launch (Kubo still
+  // booting). The failed start records the endpoint it attempted and keeps
+  // probing it, so the node starts itself when the gateway answers.
+  test('a gateway that is down at launch completes its start when it comes back', async () => {
+    jest.useFakeTimers();
+    const realFetch = global.fetch;
+    global.fetch = jest.fn(async () => new Response('bad gateway', { status: 502 }));
+    try {
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: {
+          metadata: { nodes: { ipfs: { mode: 'external', externalGateway: LOOPBACK_GATEWAY } } },
+        },
+      });
+      ctx.mod.registerIpfsIpc();
+
+      await ctx.mod.startIpfs();
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'error',
+      });
+
+      // The user starts their Kubo. Nothing is clicked in Freedom.
+      global.fetch = mockGatewayFetch();
+      jest.advanceTimersByTime(5000);
+      for (let i = 0; i < 50; i += 1) await Promise.resolve();
+
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'running',
+      });
+      expect(ctx.setStatusMessage).toHaveBeenLastCalledWith(
+        'ipfs',
+        'External node: 127.0.0.1:8080'
+      );
+      expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', {
+        api: null,
+        gateway: LOOPBACK_GATEWAY,
+        externalGateway: LOOPBACK_GATEWAY,
+        mode: 'external',
+        backend: 'external-gateway',
+      });
+      const response = await ctx.mod.serveNativeGatewayRequest({
+        path: '/ipfs/bafy',
+        method: 'GET',
+        headers: new Headers(),
+      });
+      expect(response.status).toBe(200);
+    } finally {
+      global.fetch = realFetch;
+      jest.useRealTimers();
+    }
   });
 });

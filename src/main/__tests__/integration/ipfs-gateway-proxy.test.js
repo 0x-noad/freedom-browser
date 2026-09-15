@@ -102,6 +102,23 @@ describeWithElectron('external IPFS gateway transport in a real Electron process
     expect(results.resolveProxy.loopbackGateway).toBe('DIRECT');
   });
 
+  // R2-F1: the gap between launch and Tor being up. `startIpfs()` probes the
+  // configured gateway within ~1s while Arti is still bootstrapping, so the
+  // session resolves the onion URL DIRECT — dialling it there hands the
+  // hostname to the system resolver, the leak this transport exists to close.
+  test('before the PAC lands, an .onion gateway is refused rather than resolved', () => {
+    expect(results.onionGatewayBeforeTor.resolveProxy).toBe('DIRECT');
+    expect(results.onionGatewayBeforeTor.transport.error).toMatch(/not routed through a proxy/);
+    // The control — the same Chromium dial with no guard — is what the leak
+    // looks like: it never reaches the origin (only Tor can resolve the name),
+    // it reaches the resolver instead. On a runner with an ordinary resolver
+    // that is `ERR_NAME_NOT_RESOLVED`; the assertion that holds either way is
+    // "the gateway was never reached".
+    expect(results.onionGatewayBeforeTor.unguarded.body).not.toBe('gateway-body');
+    expect(results.onionGatewayBeforeTor.originSeen).toEqual([]);
+    expect(results.onionGatewayBeforeTor.socksSeen).toEqual([]);
+  });
+
   test('with Tor on, a remote (.onion) gateway request goes through the proxy', () => {
     expect(results.onionGatewayViaTor).toMatchObject({ status: 200, body: 'gateway-body' });
     // The onion *name* reached the SOCKS proxy: Chromium never resolved it

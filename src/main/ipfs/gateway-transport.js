@@ -48,6 +48,21 @@
  *    `https:` (`test-harness.js`), so without that option a gateway request
  *    would be answered by the harness stub instead of the gateway. undici
  *    never saw those handlers; the option keeps the behaviour identical.
+ *
+ * WHY AN `.onion` GATEWAY IS CHECKED BEFORE IT IS DIALLED
+ *
+ * Routing through Chromium only helps once the session actually carries the
+ * PAC. At launch it does not: `startIpfs()` probes the configured gateway
+ * immediately, while `tor-manager` is still waiting for Arti's SOCKS listener
+ * to bootstrap (seconds, up to ~120s). Measured on Electron 44.3.0,
+ * `session.resolveProxy` answers `DIRECT` for the onion URL in that window and
+ * the dial fails with `net::ERR_NAME_NOT_RESOLVED` in ~12ms — i.e. Chromium
+ * handed the onion hostname to the system resolver, the exact leak this
+ * transport exists to close. So a `.onion` dial is refused outright unless the
+ * session resolves it through a proxy: no name leaves the machine, and the
+ * caller sees a failed request it can retry (`ipfs-manager.js` keeps its
+ * health check armed for exactly that, so the node completes its start once
+ * the PAC lands).
  */
 
 const LOOPBACK_IPV4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
@@ -71,6 +86,70 @@ function isLoopbackGatewayUrl(url) {
     return isLoopbackHostname(new URL(String(url)).hostname);
   } catch {
     return false;
+  }
+}
+
+// The PAC's own host test, mirrored (`dnsDomainIs(host, ".onion") || host ===
+// "onion"` in src/main/tor-proxy.js), so the two cannot disagree about what
+// counts as an onion address. A trailing root dot is stripped: `abc.onion.`
+// is the same name to Chromium and to the resolver.
+function isOnionHostname(hostname) {
+  const host = String(hostname || '')
+    .toLowerCase()
+    .replace(/\.$/, '');
+  return host === 'onion' || host.endsWith('.onion');
+}
+
+// Fail closed the other way round from `isLoopbackGatewayUrl`: an unparseable
+// URL is not onion, so it takes the ordinary path rather than being refused.
+function isOnionGatewayUrl(url) {
+  try {
+    return isOnionHostname(new URL(String(url)).hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function defaultResolveProxy(url) {
+  // `net.request` dials on `session.defaultSession` unless told otherwise, so
+  // that is the session whose proxy policy decides this request's fate.
+  const { session } = require('electron');
+  const targetSession = session?.defaultSession;
+  if (typeof targetSession?.resolveProxy !== 'function') {
+    throw new Error('session.resolveProxy is unavailable');
+  }
+  return targetSession.resolveProxy(url);
+}
+
+// Chromium answers with the PAC result list: `SOCKS5 127.0.0.1:9150`,
+// `PROXY host:port`, `DIRECT`, or a fallback chain (`SOCKS5 host:port;DIRECT`).
+// Only an all-proxy list counts as routed — a chain that can fall back to
+// DIRECT resolves the name locally the moment the proxy is unreachable, which
+// is the leak, not a degraded mode.
+function isProxiedResolution(resolved) {
+  const entries = String(resolved || '')
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (!entries.length) return false;
+  return entries.every((entry) => entry.toUpperCase() !== 'DIRECT');
+}
+
+async function assertOnionRoutable(url, deps) {
+  let resolved;
+  try {
+    resolved = await (deps.resolveProxy || defaultResolveProxy)(url);
+  } catch (err) {
+    // A session we cannot ask is a session we cannot trust to proxy: refuse
+    // rather than dial and hope.
+    throw new Error(`.onion gateway proxy route could not be resolved: ${err?.message || err}`, {
+      cause: err,
+    });
+  }
+  if (!isProxiedResolution(resolved)) {
+    throw new Error(
+      `.onion gateway is not routed through a proxy (resolveProxy: ${resolved || '(empty)'}) — not dialled, so the onion hostname is never sent to the system resolver`
+    );
   }
 }
 
@@ -130,7 +209,8 @@ function defaultNetRequest(options) {
  *
  * @param {string} url
  * @param {{method?: string, headers?: Headers, signal?: AbortSignal, redirect?: string}} init
- * @param {{requestImpl?: Function}} deps - test seam for `net.request`
+ * @param {{requestImpl?: Function, resolveProxy?: Function}} deps - test seams for
+ *   `net.request` and `session.resolveProxy`
  * @returns {Promise<Response>}
  */
 async function netGatewayFetch(url, init = {}, deps = {}) {
@@ -139,6 +219,9 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
     throw new Error(`gateway transport supports redirect: 'manual' only (got '${redirect}')`);
   }
   if (signal?.aborted) throw abortError();
+  // Refused before the request exists, so Chromium is never asked to resolve
+  // an onion name the session would send DIRECT (see the file header).
+  if (isOnionGatewayUrl(url)) await assertOnionRoutable(url, deps);
   const requestImpl = deps.requestImpl || defaultNetRequest;
 
   return new Promise((resolve, reject) => {
@@ -302,7 +385,7 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
  *
  * @param {string} url
  * @param {object} init - `fetch` init, restricted to what `netGatewayFetch` supports
- * @param {{nodeFetch?: Function, requestImpl?: Function}} deps - test seam
+ * @param {{nodeFetch?: Function, requestImpl?: Function, resolveProxy?: Function}} deps - test seam
  * @returns {Promise<Response>}
  */
 async function gatewayFetch(url, init = {}, deps = {}) {
@@ -317,4 +400,6 @@ module.exports = {
   netGatewayFetch,
   isLoopbackHostname,
   isLoopbackGatewayUrl,
+  isOnionHostname,
+  isOnionGatewayUrl,
 };

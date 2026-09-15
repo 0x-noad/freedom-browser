@@ -228,6 +228,35 @@ async function main() {
   const remoteGateway = `http://${REMOTE_GATEWAY_HOST}:${originPort}`;
   const loopbackGateway = `http://127.0.0.1:${originPort}`;
 
+  // ---- Tor NOT up yet: the launch window (R2-F1) --------------------------
+  // `startIpfs()` probes the configured gateway within ~1s of launch, while
+  // `tor-manager` is still waiting for Arti's SOCKS bootstrap (seconds to
+  // ~120s), so no PAC is on the session yet and the onion URL resolves DIRECT.
+  // The transport must refuse the dial outright: handing the name to Chromium
+  // here is handing it to the system resolver.
+  socksSeen.length = 0;
+  originSeen.length = 0;
+  const beforeTor = {
+    resolveProxy: await ses.resolveProxy(`${onionGateway}${PROBE_PATH}`),
+  };
+  try {
+    const response = await gatewayFetch(`${onionGateway}${PROBE_PATH}`, { redirect: 'manual' });
+    beforeTor.transport = { status: response.status, body: await textOf(response) };
+  } catch (err) {
+    beforeTor.transport = { error: String(err && err.message) };
+  }
+  // The control: the same Chromium dial with nothing in front of it — what
+  // this path did before. It reaches the system resolver (and, on a runner
+  // with an ordinary resolver, fails there), which is the leak itself.
+  try {
+    beforeTor.unguarded = { body: await netFetchWithDefaultCache(`${onionGateway}${PROBE_PATH}`) };
+  } catch (err) {
+    beforeTor.unguarded = { error: String(err && err.message) };
+  }
+  beforeTor.socksSeen = [...socksSeen];
+  beforeTor.originSeen = [...originSeen];
+  results.onionGatewayBeforeTor = beforeTor;
+
   // ---- Tor on: the real .onion PAC on the real session --------------------
   await applyOnionProxy(ses, `127.0.0.1:${socksPort}`);
   results.pacScript = buildOnionPacScript(`127.0.0.1:${socksPort}`);

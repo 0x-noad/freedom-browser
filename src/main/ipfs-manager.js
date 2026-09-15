@@ -21,7 +21,7 @@ const {
 // Every dial of the configured gateway goes through this one transport, so a
 // remote endpoint follows the session's proxy policy (the Tor PAC) instead of
 // undici's own socket stack, which never sees it. See ipfs/gateway-transport.js.
-const { gatewayFetch, isLoopbackHostname } = require('./ipfs/gateway-transport');
+const { gatewayFetch, isLoopbackHostname, isOnionHostname } = require('./ipfs/gateway-transport');
 const { redactForLog } = require('./private/private-log-context');
 const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
 
@@ -44,6 +44,11 @@ let healthCheckInterval = null;
 // external path is the escape hatch when the native addon cannot load
 let currentMode = MODE.BUNDLED;
 let externalGatewayUrl = null;
+// Whether `externalGatewayUrl` is the endpoint actually serving `ipfs://` right
+// now, as opposed to one external mode is only *armed* for: a gateway whose
+// start-time probe failed is recorded here too, so the health check can keep
+// probing it and finish the start when it answers. See startExternalIpfs.
+let externalGatewayServing = false;
 
 // `active_native_handles` is the count of in-flight requests (registered at start,
 // released when the response stream ends/cancels/errors) and `bytes_read` is the
@@ -151,9 +156,20 @@ function getEndpointLabel(rawUrl) {
 // the one-word cause. Say it in the status the nodes menu shows.
 const LOCALHOST_GATEWAY_HINT = ' — for Kubo, use 127.0.0.1 instead of localhost';
 
+// A `.onion` gateway is only reachable while Tor's onion routing is on: the
+// transport refuses to dial one the session would send DIRECT, rather than
+// handing the name to the system resolver (see ipfs/gateway-transport.js). At
+// launch that is the normal state for the first seconds-to-minutes, while Arti
+// bootstraps — the retry below picks the gateway up on its own, so say what is
+// being waited for instead of leaving "unreachable" unexplained.
+const ONION_GATEWAY_HINT = ' — .onion gateways need Tor running';
+
 function unreachableEndpointHint(rawUrl) {
   try {
-    return new URL(rawUrl).hostname.toLowerCase() === 'localhost' ? LOCALHOST_GATEWAY_HINT : '';
+    const hostname = new URL(rawUrl).hostname.toLowerCase();
+    if (hostname === 'localhost') return LOCALHOST_GATEWAY_HINT;
+    if (isOnionHostname(hostname)) return ONION_GATEWAY_HINT;
+    return '';
   } catch {
     return '';
   }
@@ -322,7 +338,22 @@ function startHealthCheck() {
         setErrorState('ipfs', 'External node unreachable. Retrying…');
       } else if (isHealthy && currentState === STATUS.ERROR) {
         clearErrorState('ipfs');
-        updateState(STATUS.RUNNING);
+        // Two shapes of "this endpoint is unreachable" reach this branch. A
+        // node that was serving and went soft-ERROR only has to go back to
+        // RUNNING — the registry still describes it. A node whose *start-time*
+        // probe failed never committed to serving at all (the gateway was still
+        // booting, or its `.onion` route only came up when Tor finished
+        // bootstrapping, which is seconds-to-minutes after launch), so finish
+        // that start here instead: without it external mode sat at
+        // "unreachable" for the whole session and every `ipfs://` load 503'd
+        // until the user toggled the node by hand.
+        if (externalGatewayServing) {
+          updateState(STATUS.RUNNING);
+        } else {
+          beginServingExternalGateway(probedUrl);
+          log.info('[IPFS] External gateway at', probedUrl, 'answered — external mode is serving');
+          detectExternalGatewayVersionInBackground(probedUrl);
+        }
       }
       return;
     }
@@ -346,6 +377,7 @@ function startDisabledIpfs() {
   stopHealthCheck();
   currentMode = MODE.DISABLED;
   externalGatewayUrl = null;
+  externalGatewayServing = false;
   externalGatewayVersion = null;
   clearService('ipfs');
   updateService('ipfs', {
@@ -384,6 +416,35 @@ function publishExternalIpfsMode(gateway, { serving = false } = {}) {
   });
 }
 
+// Commit to serving `ipfs://` from `url`: the endpoint answered the gateway
+// probe. Shared by the start path and by the health check's recovery branch,
+// which reaches the same state from an endpoint that was never up at start.
+function beginServingExternalGateway(url) {
+  externalGatewayUrl = url;
+  currentMode = MODE.EXTERNAL;
+  externalGatewayServing = true;
+  externalActiveRequests = 0;
+  externalBytesServed = 0;
+  externalGatewayVersion = null;
+  clearService('ipfs');
+  publishExternalIpfsMode(url, { serving: true });
+  setStatusMessage('ipfs', `External node: ${getEndpointLabel(url)}`);
+  updateState(STATUS.RUNNING);
+}
+
+// Identify the gateway in the background. The nodes menu picks it up on its
+// next stats poll. Ignored if the mode/endpoint changed meanwhile.
+function detectExternalGatewayVersionInBackground(url) {
+  detectExternalGatewayVersion(url)
+    .then((version) => {
+      if (version && currentMode === MODE.EXTERNAL && externalGatewayUrl === url) {
+        externalGatewayVersion = version;
+        log.info('[IPFS] External gateway identified as', version);
+      }
+    })
+    .catch(() => {});
+}
+
 // Route `ipfs://` / `ipns://` gateway requests to a user-provided external HTTP
 // gateway instead of the in-process native node. This is what lets IPFS work on
 // hosts where the native addon cannot load
@@ -399,37 +460,35 @@ async function startExternalIpfs(config) {
   const reachable = await probeExternalGateway(url);
   if (!reachable) {
     // The endpoint is configured but not answering (gateway not started yet,
-    // still booting). Keep the profile's external mode published so the user can
-    // start their gateway and hit the toggle again without relaunching Freedom.
+    // still booting, or — for a `.onion` gateway — its Tor route not up yet:
+    // startIpfs() runs at launch within ~1s while Arti's SOCKS bootstrap takes
+    // seconds to ~120s, and the transport refuses to dial an onion name the
+    // session would send DIRECT). Keep the profile's external mode published so
+    // the user can hit the toggle again without relaunching Freedom — and
+    // record the endpoint as the one external mode is armed for, so the soft
+    // health check below keeps probing it and completes the start on its own
+    // once it answers. Without that this state never recovered: every
+    // `ipfs://` load 503'd until the user noticed and toggled the node by hand.
+    externalGatewayUrl = url;
+    currentMode = MODE.EXTERNAL;
+    externalGatewayServing = false;
+    externalGatewayVersion = null;
     publishExternalIpfsMode(url);
     const hint = unreachableEndpointHint(url);
     updateState(STATUS.ERROR, `External IPFS gateway is unreachable${hint}`);
     setStatusMessage('ipfs', `External node unreachable${hint}`);
+    // The error state overlays the status message (service-registry), so the
+    // hint has to travel with it or an unreachable `localhost`/`.onion`
+    // endpoint loses the one line that says why.
+    setErrorState('ipfs', `External node unreachable${hint}. Retrying…`);
+    startHealthCheck();
     return;
   }
 
-  externalGatewayUrl = url;
-  currentMode = MODE.EXTERNAL;
-  externalActiveRequests = 0;
-  externalBytesServed = 0;
-  externalGatewayVersion = null;
-  clearService('ipfs');
-  publishExternalIpfsMode(url, { serving: true });
-  setStatusMessage('ipfs', `External node: ${getEndpointLabel(url)}`);
-  updateState(STATUS.RUNNING);
+  beginServingExternalGateway(url);
   startHealthCheck();
   log.info('[IPFS] Connected to external gateway at', url);
-
-  // Identify the gateway in the background. The nodes menu picks
-  // it up on its next stats poll. Ignored if the mode/endpoint changed meanwhile.
-  detectExternalGatewayVersion(url)
-    .then((version) => {
-      if (version && currentMode === MODE.EXTERNAL && externalGatewayUrl === url) {
-        externalGatewayVersion = version;
-        log.info('[IPFS] External gateway identified as', version);
-      }
-    })
-    .catch(() => {});
+  detectExternalGatewayVersionInBackground(url);
 }
 
 async function doStartIpfs() {
@@ -452,9 +511,14 @@ async function doStartIpfs() {
     return;
   }
 
-  // Native (bundled) path from here on.
+  // Native (bundled) path from here on. Any probe left armed for an external
+  // endpoint (a soft-ERROR node, or one whose start-time probe failed) is
+  // describing a backend this start is replacing: drop it here rather than
+  // only on the success path, which a missing addon never reaches.
+  stopHealthCheck();
   currentMode = MODE.BUNDLED;
   externalGatewayUrl = null;
+  externalGatewayServing = false;
 
   if (!checkBinary()) {
     updateState(STATUS.ERROR, 'freedom-ipfs native addon not built');
@@ -549,7 +613,11 @@ async function doSyncIpfsProfileMode() {
   // recovering gateway to STOPPED permanently: nothing re-arms the retry and
   // the user has to notice and toggle the node by hand. Leave that state
   // untouched (the registry already describes it) and only tear down when the
-  // config the probe was armed for is genuinely gone.
+  // config the probe was armed for is genuinely gone. R2-F1 closed the gap
+  // #351's R2-F1 left open here: a *failed start* now records its attempted
+  // endpoint and arms the same retry, so both shapes of "this endpoint is
+  // unreachable" — the soft-ERROR one and the never-came-up one — are
+  // protected by this one guard instead of only the first.
   const stillProbingConfiguredGateway =
     healthCheckInterval !== null &&
     currentMode === MODE.EXTERNAL &&
@@ -561,6 +629,7 @@ async function doSyncIpfsProfileMode() {
   stopHealthCheck();
   currentMode = MODE.BUNDLED;
   externalGatewayUrl = null;
+  externalGatewayServing = false;
   externalGatewayVersion = null;
 
   // A failure recorded against the previous config no longer describes this one.
@@ -592,6 +661,7 @@ async function doStopIpfs() {
 
   currentMode = MODE.BUNDLED;
   externalGatewayUrl = null;
+  externalGatewayServing = false;
   externalGatewayVersion = null;
   clearErrorState('ipfs');
   // Publish the profile mode to the registry BEFORE the status update
