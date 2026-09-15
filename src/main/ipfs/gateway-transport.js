@@ -438,6 +438,9 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       }
       request.end();
     } catch (err) {
+      // The request exists but was never ended: settle it, or a rejected
+      // promise leaves a half-built ClientRequest behind in Chromium.
+      abortRequest();
       fail(err);
     }
   });

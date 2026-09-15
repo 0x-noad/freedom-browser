@@ -298,6 +298,25 @@ describe('netGatewayFetch', () => {
     expect(request.sentHeaders).toEqual({ range: 'bytes=0-10' });
   });
 
+  test('aborts the request it created when a header cannot be set', async () => {
+    let request = null;
+    const requestImpl = jest.fn((options) => {
+      request = new FakeClientRequest(options);
+      request.setHeader = () => {
+        throw new TypeError('Invalid header name');
+      };
+      return request;
+    });
+
+    await expect(
+      netGatewayFetch(REMOTE, { headers: { 'bad header': 'x' } }, { requestImpl })
+    ).rejects.toThrow('Invalid header name');
+    // The only exit path that used to leave the created request neither
+    // ended nor aborted.
+    expect(request.ended).toBe(false);
+    expect(request.aborted).toBe(true);
+  });
+
   test('refuses any redirect mode but manual', async () => {
     await expect(netGatewayFetch(REMOTE, { redirect: 'follow' })).rejects.toThrow(
       /redirect: 'manual' only/
