@@ -477,6 +477,7 @@ function enterExternalStandby(url) {
 function activateExternalGateway(url) {
   externalStandby = null;
   externalStateGeneration += 1;
+  const activationGeneration = externalStateGeneration;
   externalGatewayUrl = url;
   currentMode = MODE.EXTERNAL;
   externalActiveRequests = 0;
@@ -491,10 +492,18 @@ function activateExternalGateway(url) {
   log.info('[IPFS] Connected to external gateway at', url);
 
   // Identify the gateway in the background. The nodes menu picks
-  // it up on its next stats poll. Ignored if the mode/endpoint changed meanwhile.
+  // it up on its next stats poll. Ignored if the mode/endpoint changed meanwhile
+  // — including a stop/start back onto the *same* endpoint, which mode and
+  // endpoint alone cannot tell apart, so this carries the generation counter the
+  // health probe uses for the identical blind spot.
   detectExternalGatewayVersion(url)
     .then((version) => {
-      if (version && currentMode === MODE.EXTERNAL && externalGatewayUrl === url) {
+      if (
+        version &&
+        externalStateGeneration === activationGeneration &&
+        currentMode === MODE.EXTERNAL &&
+        externalGatewayUrl === url
+      ) {
         externalGatewayVersion = version;
         log.info('[IPFS] External gateway identified as', version);
       }

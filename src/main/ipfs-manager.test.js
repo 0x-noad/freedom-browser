@@ -1249,6 +1249,75 @@ describe('ipfs-manager', () => {
         jest.useRealTimers();
       }
     });
+
+    // R1-M1: the same guard one step further, and the case only the generation
+    // counter covers. The user does not just switch the node off, they toggle it
+    // straight back on against the *same* endpoint while it is still down. The
+    // endpoint comparison and the serving-ness comparison both match the state
+    // the stale probe was issued against, so without the generation counter a
+    // verdict about the previous standby activates a gateway that is refusing
+    // connections — and the next interval demotes it to the generic soft-ERROR,
+    // losing the start path's diagnosis (localhost hint included).
+    test('a stale healthy probe cannot activate a restarted standby on the same endpoint', async () => {
+      jest.useFakeTimers();
+      const realFetch = global.fetch;
+      const activeProfile = externalProfile({ mode: 'external', externalGateway: GATEWAY });
+      try {
+        const ctx = await startWithGatewayDown(activeProfile);
+
+        // The next retry hangs rather than refusing (gateway host firewalled).
+        // Everything dialled after it still refuses — the gateway is still down.
+        let releaseProbe = null;
+        global.fetch = jest.fn(() => {
+          if (!releaseProbe) {
+            return new Promise((resolve) => {
+              releaseProbe = resolve;
+            });
+          }
+          return Promise.resolve(new Response('bad gateway', { status: 502 }));
+        });
+        jest.advanceTimersByTime(5000);
+        await Promise.resolve();
+        expect(releaseProbe).toBeInstanceOf(Function);
+
+        // The user toggles the node off and straight back on, same endpoint.
+        await ctx.mod.stopIpfs();
+        await ctx.mod.startIpfs();
+        await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+          status: 'error',
+          error: 'External IPFS gateway is unreachable',
+        });
+
+        // Only now does the probe from the *previous* standby settle — healthy.
+        releaseProbe(gatewayProbeResponse());
+        await drainMicrotasks();
+
+        // Still standby: nothing is served, and the new start's diagnosis stands.
+        await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+          status: 'error',
+          error: 'External IPFS gateway is unreachable',
+        });
+        expect(ctx.mod.getNativeDiagnostics().externalGateway).toBeUndefined();
+        const served = await ctx.mod.serveNativeGatewayRequest({
+          path: '/ipfs/bafy',
+          method: 'GET',
+          headers: new Headers(),
+        });
+        expect(served.status).toBe(503);
+
+        // And the restarted standby's own retry still brings it up, so the guard
+        // drops the stale verdict rather than the state's ability to recover.
+        global.fetch = mockGatewayFetch();
+        jest.advanceTimersByTime(5000);
+        await drainMicrotasks();
+        await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+          status: 'running',
+        });
+      } finally {
+        global.fetch = realFetch;
+        jest.useRealTimers();
+      }
+    });
   });
 
   test('external mode reports gateway telemetry (bytes streamed + active handles) via diagnostics', async () => {
@@ -1323,6 +1392,60 @@ describe('ipfs-manager', () => {
         'http://127.0.0.1:5001/api/v0/version',
         expect.objectContaining({ method: 'POST' })
       );
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  // R1-M2: the activation guard's own stale-landing case, the sibling of the
+  // health probe's. A stop and a restart onto the same endpoint leaves mode and
+  // endpoint identical, so only the generation counter separates the previous
+  // activation's in-flight version detect from the new one's.
+  test('a version detect from a previous activation cannot land on a restarted node', async () => {
+    const realFetch = global.fetch;
+    const settle = async () => {
+      for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    };
+    let releaseVersion = null;
+    global.fetch = jest.fn((url) => {
+      if (String(url).endsWith(GATEWAY_PROBE_PATH)) return Promise.resolve(gatewayProbeResponse());
+      if (String(url).includes('/api/v0/version')) {
+        // The first activation's detect hangs; every later one fails, so any
+        // version that shows up can only have come from the stale detect.
+        if (!releaseVersion) {
+          return new Promise((resolve) => {
+            releaseVersion = resolve;
+          });
+        }
+        return Promise.resolve(new Response('unavailable', { status: 503 }));
+      }
+      return Promise.resolve(new Response('external-body', { status: 200 }));
+    });
+    try {
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: {
+          metadata: {
+            nodes: { ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' } },
+          },
+        },
+      });
+      await ctx.mod.startIpfs();
+      await settle();
+      expect(releaseVersion).toBeInstanceOf(Function);
+
+      // Toggled off and straight back on against the same gateway.
+      await ctx.mod.stopIpfs();
+      await ctx.mod.startIpfs();
+      await settle();
+      expect(ctx.mod.getNativeDiagnostics().externalVersion).toBeNull();
+
+      // The previous activation's detect only settles now.
+      releaseVersion(new Response(JSON.stringify({ Version: '0.30.0' }), { status: 200 }));
+      await settle();
+
+      expect(ctx.mod.getNativeDiagnostics().externalGateway).toBe('http://127.0.0.1:8080');
+      expect(ctx.mod.getNativeDiagnostics().externalVersion).toBeNull();
     } finally {
       global.fetch = realFetch;
     }
