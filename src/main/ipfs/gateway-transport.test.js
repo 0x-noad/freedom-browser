@@ -373,6 +373,54 @@ describe('netGatewayFetch', () => {
     expect(response.headers.get('x-ipfs-path')).toBe('/ipfs/x');
   });
 
+  // An Electron IncomingMessage is an EventEmitter: an 'error' emitted on one
+  // with no listener is an uncaught main-process exception. Both responses the
+  // transport abandons (drained for a null body, destroyed after the promise
+  // already settled) have to keep one attached.
+  test('a drained null-body response tolerates a late socket error', async () => {
+    const { promise, request } = startNetFetch(REMOTE, { method: 'HEAD' });
+    const upstream = new FakeIncomingMessage({ statusCode: 200, statusMessage: 'OK' });
+    request.emit('response', upstream);
+    await promise;
+
+    expect(() => upstream.emit('error', new Error('net::ERR_CONNECTION_RESET'))).not.toThrow();
+  });
+
+  test('a response arriving after the request settled tolerates a late socket error', async () => {
+    const controller = new AbortController();
+    const { promise, request } = startNetFetch(REMOTE, { signal: controller.signal });
+    controller.abort();
+    await expect(promise).rejects.toMatchObject({ name: 'AbortError' });
+
+    const upstream = new FakeIncomingMessage({ statusCode: 200 });
+    request.emit('response', upstream);
+    expect(upstream.destroyed).toBe(true);
+    expect(() => upstream.emit('error', new Error('net::ERR_CONNECTION_RESET'))).not.toThrow();
+  });
+
+  // `new Response(…, { status })` accepts 200-599 only, so an informational
+  // status would throw a RangeError inside the 'response' handler — an uncaught
+  // main-process exception rather than a failed request. Chromium does not
+  // surface one as a final response today; this is the guard for if it ever does.
+  test.each([
+    ['101', 101, 'GET'],
+    ['103', 103, 'GET'],
+    ['103 on HEAD', 103, 'HEAD'],
+  ])(
+    'a %s final response fails the request instead of throwing',
+    async (_label, status, method) => {
+      const { promise, request } = startNetFetch(REMOTE, { method });
+      const upstream = new FakeIncomingMessage({
+        statusCode: status,
+        statusMessage: 'Early Hints',
+      });
+
+      expect(() => request.emit('response', upstream)).not.toThrow();
+      await expect(promise).rejects.toThrow(/could not be represented \(status 10[13]\)/);
+      expect(request.aborted).toBe(true);
+    }
+  );
+
   test('rejects with an AbortError when the signal fires before the response', async () => {
     const controller = new AbortController();
     const { promise, request } = startNetFetch(REMOTE, { signal: controller.signal });

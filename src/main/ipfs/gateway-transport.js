@@ -162,7 +162,29 @@ async function assertOnionRoutable(url, deps) {
 
 // Statuses the fetch spec forbids a body on. Chromium delivers no body for
 // them either, and `new Response(body, { status })` throws if one is passed.
-const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
+// The spec's list also names the informational 101/103, but they are
+// deliberately absent: `Response` only accepts 200-599, so `new Response(null,
+// { status: 101 })` throws a RangeError rather than answering. Chromium never
+// surfaces an informational status as a final response, and if it ever did the
+// out-of-range guard below turns it into a failed request instead.
+const NULL_BODY_STATUSES = new Set([204, 205, 304]);
+
+// `new Response(…, { status })` throws a RangeError outside 200-599, and these
+// constructions run inside `net.request` event handlers where a throw is an
+// uncaught main-process exception, not a failed request. Build through this so
+// any such status unwinds the promise like any other transport failure.
+function buildResponse(body, init) {
+  try {
+    return new Response(body, init);
+  } catch (err) {
+    throw new Error(
+      `gateway response could not be represented (status ${init?.status}): ${err?.message || err}`,
+      {
+        cause: err,
+      }
+    );
+  }
+}
 
 function abortError() {
   if (typeof DOMException === 'function') {
@@ -321,11 +343,22 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       abortRequest();
       detach();
       if (settled) return;
-      succeed(new Response(null, { status, headers: headersFromNetResponse(responseHeaders) }));
+      try {
+        succeed(buildResponse(null, { status, headers: headersFromNetResponse(responseHeaders) }));
+      } catch (err) {
+        fail(err);
+      }
     });
 
     request.on('response', (response) => {
+      // Every response this handler abandons (drained or destroyed) still needs
+      // an 'error' listener: it is an EventEmitter, so a socket error emitted on
+      // one with no listener is an uncaught main-process exception, not a failed
+      // request. The streaming branch below attaches its own via `fail`.
+      const ignoreErrorsOnAbandoned = () => response.on?.('error', () => {});
+
       if (settled) {
+        ignoreErrorsOnAbandoned();
         response.destroy?.();
         return;
       }
@@ -334,9 +367,17 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       const responseHeaders = headersFromNetResponse(response.headers);
 
       if (method === 'HEAD' || NULL_BODY_STATUSES.has(status)) {
+        // Drained and abandoned: nothing reads it after this, so it needs the
+        // same 'error' handling as the destroyed one above.
+        ignoreErrorsOnAbandoned();
         response.resume?.();
         detach();
-        succeed(new Response(null, { status, statusText, headers: responseHeaders }));
+        try {
+          succeed(buildResponse(null, { status, statusText, headers: responseHeaders }));
+        } catch (err) {
+          abortRequest();
+          fail(err);
+        }
         return;
       }
 
@@ -375,7 +416,14 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
         },
       });
 
-      succeed(new Response(body, { status, statusText, headers: responseHeaders }));
+      try {
+        succeed(buildResponse(body, { status, statusText, headers: responseHeaders }));
+      } catch (err) {
+        // Nobody will ever read `body`, so stop pulling from the socket rather
+        // than leaving a paused stream behind the rejected promise.
+        abortRequest();
+        fail(err);
+      }
     });
 
     request.on('error', (err) => fail(err));

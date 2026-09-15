@@ -774,6 +774,10 @@ describe('ipfs-manager', () => {
 
     expect(ctx.nativeInstances).toHaveLength(0);
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'External node not configured');
+    // The endpoint this state can inherit a "…unreachable. Retrying…" error
+    // from is gone, so nothing may be left overlaying the new status.
+    expect(ctx.clearErrorState).toHaveBeenCalledWith('ipfs');
+    expect(ctx.setErrorState).not.toHaveBeenCalled();
   });
 
   // #350: the registry mode is what tells the renderer the backend is one

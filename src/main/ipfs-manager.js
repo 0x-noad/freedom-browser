@@ -542,13 +542,17 @@ async function startExternalIpfs(config) {
     // previously-configured endpoint, which this profile no longer names.
     enterExternalStandby(null);
     updateState(STATUS.ERROR, 'External IPFS gateway is not configured');
+    // Drop any "…unreachable. Retrying…" error inherited from the endpoint the
+    // profile used to name: nothing is being retried any more. setStatusMessage
+    // below also clears it today, but this teardown owns its own state rather
+    // than riding on another call's side effect — as the serving path does.
+    clearErrorState('ipfs');
     setStatusMessage('ipfs', 'External node not configured');
     return;
   }
 
   const reachable = await probeExternalGateway(url);
   if (!reachable) {
-    // The endpoint is configured but not answering (gateway not started yet,
     // The endpoint is configured but not answering (gateway not started yet,
     // still booting, or — for a `.onion` gateway — its Tor route not up yet:
     // startIpfs() runs at launch within ~1s while Arti's SOCKS bootstrap takes

@@ -80,12 +80,16 @@ function prefetchGatewayUrl(uri) {
       }
       url = `${antApiUrl}/bzz/${afterScheme}`;
     } else {
-      // The registry publishes `ipfs.gateway` only while a gateway is actually
+      // The registry publishes `ipfs.gateway` only for a node that committed to
       // serving (see publishExternalIpfsMode in main/ipfs-manager.js) — a
-      // stopped, unreachable or not-yet-started external node reads null here,
-      // so switching IPFS off in the nodes menu also stops this speculative
-      // traffic instead of leaving a (possibly remote) gateway learning names
-      // the user resolved but never visited.
+      // stopped, disabled or never-reachable external node reads null here, so
+      // switching IPFS off in the nodes menu also stops this speculative traffic
+      // instead of leaving a (possibly remote) gateway learning names the user
+      // resolved but never visited. A gateway that goes down *after* it started
+      // serving is the one case that keeps its URL published: the health check's
+      // soft-ERROR branch deliberately keeps external mode up so it can recover
+      // in place, so prefetches keep being dialled at it (and keep failing)
+      // until it answers again or the user stops the node.
       const ipfsGatewayUrl = getIpfsGatewayUrl();
       if (!ipfsGatewayUrl) return NOOP_HANDLE;
 
