@@ -18,6 +18,10 @@ const {
   IPFS_GATEWAY_PROBE_PATH,
   isIpfsGatewayProbeResponse,
 } = require('./ipfs/ipfs-gateway-probe');
+// Every dial of the configured gateway goes through this one transport, so a
+// remote endpoint follows the session's proxy policy (the Tor PAC) instead of
+// undici's own socket stack, which never sees it. See ipfs/gateway-transport.js.
+const { gatewayFetch, isLoopbackHostname, isOnionHostname } = require('./ipfs/gateway-transport');
 const { redactForLog } = require('./private/private-log-context');
 const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
 
@@ -171,26 +175,28 @@ function getEndpointLabel(rawUrl) {
 // the one-word cause. Say it in the status the nodes menu shows.
 const LOCALHOST_GATEWAY_HINT = ' — for Kubo, use 127.0.0.1 instead of localhost';
 
+// A `.onion` gateway is only reachable while Tor's onion routing is on: the
+// transport refuses to dial one the session would send DIRECT, rather than
+// handing the name to the system resolver (see ipfs/gateway-transport.js). At
+// launch that is the normal state for the first seconds-to-minutes, while Arti
+// bootstraps — the retry below picks the gateway up on its own, so say what is
+// being waited for instead of leaving "unreachable" unexplained.
+const ONION_GATEWAY_HINT = ' — .onion gateways need Tor running';
+
 function unreachableEndpointHint(rawUrl) {
   try {
-    return new URL(rawUrl).hostname.toLowerCase() === 'localhost' ? LOCALHOST_GATEWAY_HINT : '';
+    const hostname = new URL(rawUrl).hostname.toLowerCase();
+    if (hostname === 'localhost') return LOCALHOST_GATEWAY_HINT;
+    if (isOnionHostname(hostname)) return ONION_GATEWAY_HINT;
+    return '';
   } catch {
     return '';
   }
 }
 
-// Literal IPv4 loopback only: every octet must be digits. A `127.` *prefix*
-// test would also accept a resolvable DNS name like `127.evil.example`, which
-// points wherever its owner wants — and this gate is what keeps the unsolicited
-// `:5001` RPC POST on the user's own machine.
-const LOOPBACK_IPV4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
-
-// `localhost` counts as loopback here: it resolves there, and Kubo binds its RPC
-// API to loopback by default, so it is the same machine either way.
-function isLoopbackHostname(hostname) {
-  const host = String(hostname || '').toLowerCase();
-  return host === 'localhost' || host === '[::1]' || host === '::1' || LOOPBACK_IPV4.test(host);
-}
+// `isLoopbackHostname` lives in ipfs/gateway-transport.js: the same literal
+// loopback test decides which transport dials the gateway and whether the
+// unsolicited `:5001` RPC POST below is allowed, and the two must not drift.
 
 // The user configures only the gateway (e.g. :8080), but Kubo's RPC API answers
 // POST /api/v0/version with the running version. We derive the host from the
@@ -222,7 +228,7 @@ async function detectExternalGatewayVersion(gatewayUrl, { timeoutMs = 2000 } = {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { method: 'POST', signal: controller.signal });
+    const res = await gatewayFetch(url, { method: 'POST', signal: controller.signal });
     if (!res.ok) return null;
     const data = await res.json();
     const version = typeof data?.Version === 'string' ? data.Version.trim() : '';
@@ -247,7 +253,7 @@ async function probeExternalGateway(gatewayUrl, { timeoutMs = 2000 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${gatewayUrl}${IPFS_GATEWAY_PROBE_PATH}`, {
+    const res = await gatewayFetch(`${gatewayUrl}${IPFS_GATEWAY_PROBE_PATH}`, {
       method: 'GET',
       signal: controller.signal,
       redirect: 'manual',
@@ -390,9 +396,20 @@ function startHealthCheck() {
         return;
       }
       if (!isHealthy && currentState === STATUS.RUNNING) {
-        updateState(STATUS.ERROR, 'External IPFS gateway is unreachable');
-        setErrorState('ipfs', 'External node unreachable. Retrying…');
+        // Same hint as the failed-start branch in startExternalIpfs(): losing
+        // the route mid-session (Tor stopped, Kubo's localhost subdomain
+        // redirect) reads exactly like never having had it, so the line that
+        // names the cause has to travel with this message too.
+        const hint = unreachableEndpointHint(probedUrl);
+        updateState(STATUS.ERROR, `External IPFS gateway is unreachable${hint}`);
+        setErrorState('ipfs', `External node unreachable${hint}. Retrying…`);
       } else if (isHealthy && currentState === STATUS.ERROR) {
+        // A node that was serving and went soft-ERROR only has to go back to
+        // RUNNING — the registry still describes it. The other shape of
+        // "unreachable" (a start that never committed to serving, e.g. an
+        // `.onion` gateway whose Tor route came up minutes after launch) is a
+        // standby, and the branch above finished its start through
+        // activateExternalGateway().
         clearErrorState('ipfs');
         updateState(STATUS.RUNNING);
       }
@@ -517,8 +534,19 @@ function activateExternalGateway(url) {
 async function startExternalIpfs(config) {
   const url = normalizeExternalGatewayUrl(config?.externalGateway);
   if (!url) {
+    // Nothing to serve and nothing to probe — but this is an external teardown
+    // too, so it owns its state instead of trusting that doSyncIpfsProfileMode
+    // already ran one (today it always does; a future caller reaching
+    // doStartIpfs from an armed-external state would not). enterExternalStandby
+    // drops the serving bookkeeping and disarms a probe left armed for a
+    // previously-configured endpoint, which this profile no longer names.
     enterExternalStandby(null);
     updateState(STATUS.ERROR, 'External IPFS gateway is not configured');
+    // Drop any "…unreachable. Retrying…" error inherited from the endpoint the
+    // profile used to name: nothing is being retried any more. setStatusMessage
+    // below also clears it today, but this teardown owns its own state rather
+    // than riding on another call's side effect — as the serving path does.
+    clearErrorState('ipfs');
     setStatusMessage('ipfs', 'External node not configured');
     return;
   }
@@ -526,15 +554,24 @@ async function startExternalIpfs(config) {
   const reachable = await probeExternalGateway(url);
   if (!reachable) {
     // The endpoint is configured but not answering (gateway not started yet,
-    // still booting). Keep the profile's external mode published so the user can
-    // start their gateway and hit the toggle again without relaunching Freedom,
-    // and keep the health probe armed against it so they do not have to: the
-    // standby state recovers on its own within one interval of the gateway
-    // answering, exactly as the running→error path already does (#356).
+    // still booting, or — for a `.onion` gateway — its Tor route not up yet:
+    // startIpfs() runs at launch within ~1s while Arti's SOCKS bootstrap takes
+    // seconds to ~120s, and the transport refuses to dial an onion name the
+    // session would send DIRECT). Keep the profile's external mode published so
+    // the user can start their gateway and hit the toggle again without
+    // relaunching Freedom, and keep the health probe armed against it so they do
+    // not have to: the standby state recovers on its own within one interval of
+    // the gateway answering, exactly as the running→error path already does
+    // (#356) — which is also how an `.onion` gateway finishes its start by
+    // itself once Tor's PAC lands.
     enterExternalStandby(url);
     const hint = unreachableEndpointHint(url);
     updateState(STATUS.ERROR, `External IPFS gateway is unreachable${hint}`);
     setStatusMessage('ipfs', `External node unreachable${hint}`);
+    // The error state overlays the status message (service-registry), so the
+    // hint has to travel with it or an unreachable `localhost`/`.onion`
+    // endpoint loses the one line that says why.
+    setErrorState('ipfs', `External node unreachable${hint}. Retrying…`);
     return;
   }
 
@@ -763,8 +800,11 @@ function countingGatewayStream(upstreamBody, release) {
   });
 }
 
-// Response headers that must not survive the proxy hop. undici has already
-// decoded the body per the fetch spec, so forwarding the upstream
+// Response headers that must not survive the proxy hop. Both transports
+// (undici for a loopback gateway, Chromium for a remote one — see
+// ipfs/gateway-transport.js) hand back an already-decoded body while still
+// reporting the upstream `content-encoding` and its compressed
+// `content-length`, so forwarding the upstream
 // `content-encoding` (and its compressed `content-length`) would have Chromium
 // decode the plaintext a second time — ERR_CONTENT_DECODING_FAILED or a
 // truncated page from any nginx/Caddy-fronted or public gateway. The rest are
@@ -869,7 +909,7 @@ async function serveExternalGatewayRequest({ path: gatewayPath, method, headers,
 
   const requestUrl = `${externalGatewayUrl}${gatewayPath}`;
   try {
-    const upstream = await fetch(requestUrl, {
+    const upstream = await gatewayFetch(requestUrl, {
       method: method || 'GET',
       headers,
       signal,
