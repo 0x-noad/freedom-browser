@@ -10,6 +10,7 @@ All notable changes to Freedom will be documented in this file.
   - Point a profile at your own gateway, or accept the one Freedom detects on the standard local port at launch
   - Freedom does not verify content integrity in this mode; the gateway is trusted for every page it serves
   - Address a local Kubo as `127.0.0.1`, not `localhost`: a default Kubo redirects `localhost` to its subdomain gateway, which Freedom does not follow, so it reads as unreachable — the node status now says so
+  - A gateway that is down when Freedom starts is retried in the background and starts serving on its own once it answers, instead of waiting for you to switch the node off and on; saving Settings > Nodes without changing anything keeps that retry and the unreachable diagnosis
 - Nightly builds of `main` for internal testers, on their own update channel — a nightly updates to the next nightly, stable installs are never offered one
 
 ## [0.8.5] - 2026-09-10
