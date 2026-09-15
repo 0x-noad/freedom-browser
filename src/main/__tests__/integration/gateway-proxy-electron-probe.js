@@ -27,6 +27,8 @@ const zlib = require('zlib');
 
 const { gatewayFetch } = require('../../ipfs/gateway-transport');
 const { buildOnionPacScript, applyOnionProxy, clearOnionProxy } = require('../../tor-proxy');
+const { prefetchGatewayUrl } = require('../../ens-prefetch');
+const { updateService } = require('../../service-registry');
 
 const ONION_GATEWAY_HOST = 'freedomgatewayprobe.onion';
 const REMOTE_GATEWAY_HOST = 'gateway.example.test';
@@ -35,6 +37,10 @@ const PROBE_PATH = '/ipfs/bafkqaaa';
 // changes on every hit so a cached answer is recognisable by its content.
 const IMMUTABLE_PATH = '/ipfs/bafkimmutable';
 const CONTROL_PATH = '/ipfs/bafkcontrol';
+// Same shape, but reached through `ens-prefetch.js`, which builds its own URL
+// from the registry — so this one needs a CID its validator accepts.
+const PREFETCH_CID = 'bafkreih5aznjvttude6c3wbvqeebb6rlx5wkbzyppv7garjiubll2ceym4';
+const PREFETCH_PATH = `/ipfs/${PREFETCH_CID}`;
 
 // A private profile must not leave the profile's own userData behind either,
 // so the probe runs against a throwaway one and scans it afterwards.
@@ -47,6 +53,7 @@ const originSeen = [];
 let streamSocketClosed = false;
 let immutableHits = 0;
 let controlHits = 0;
+let prefetchHits = 0;
 
 function startOrigin() {
   return new Promise((resolve) => {
@@ -70,9 +77,19 @@ function startOrigin() {
       }
       // Kubo's headers for an immutable CID, verbatim. A body that counts its
       // own hit makes a cached answer self-identifying.
-      if (req.url === IMMUTABLE_PATH || req.url === CONTROL_PATH) {
-        const hit = req.url === IMMUTABLE_PATH ? (immutableHits += 1) : (controlHits += 1);
-        const marker = req.url === IMMUTABLE_PATH ? 'nostoremarker' : 'controlmarker';
+      if (req.url === IMMUTABLE_PATH || req.url === CONTROL_PATH || req.url === PREFETCH_PATH) {
+        let hit;
+        let marker;
+        if (req.url === IMMUTABLE_PATH) {
+          hit = immutableHits += 1;
+          marker = 'nostoremarker';
+        } else if (req.url === CONTROL_PATH) {
+          hit = controlHits += 1;
+          marker = 'controlmarker';
+        } else {
+          hit = prefetchHits += 1;
+          marker = 'prefetchmarker';
+        }
         res.writeHead(200, {
           'Cache-Control': 'public, max-age=29030400, immutable',
           'Content-Type': 'text/plain',
@@ -215,6 +232,20 @@ async function setPac(targetSession, script) {
 
 async function textOf(response) {
   return response.body ? await response.text() : '';
+}
+
+function settle(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// `prefetchGatewayUrl` returns an abort handle, not a promise — it is
+// fire-and-forget by design — so its effect is observed at the origin.
+async function waitFor(predicate, timeoutMs = 5000) {
+  for (let waited = 0; waited < timeoutMs; waited += 50) {
+    if (predicate()) return true;
+    await settle(50);
+  }
+  return predicate();
 }
 
 async function main() {
@@ -400,6 +431,80 @@ async function main() {
     };
   } catch (err) {
     results.httpCache = { error: String(err && err.message) };
+  }
+
+  // ---- The ENS prefetch dials the same way (R4-F1) ------------------------
+  // `ens-prefetch.js` warms the configured gateway for a name the user has
+  // resolved but may never visit. It used a bare `net.request`, so it kept
+  // both holes this transport closes: it dialled an onion gateway whenever the
+  // session happened not to be routing it, and it wrote the warmed bytes into
+  // the profile's HTTP cache. It now goes through `gatewayFetch`, driven here
+  // exactly as the resolver drives it — through the registry, with no seams.
+  try {
+    // Every URL Chromium is *asked* to fetch on this session, whether or not
+    // it resolves. This is what makes the refusal observable: a dial that dies
+    // in the resolver reaches no server, so "nothing was recorded anywhere"
+    // looks identical to "nothing was dialled" without it.
+    const chromiumSaw = [];
+    ses.webRequest.onBeforeRequest((details, callback) => {
+      chromiumSaw.push(details.url);
+      callback({});
+    });
+
+    updateService('ipfs', { gateway: onionGateway, mode: 'external' });
+    socksSeen.length = 0;
+    originSeen.length = 0;
+    chromiumSaw.length = 0;
+
+    // Tor is still on from the block above: the warm-up reaches the gateway,
+    // over the proxy, under the onion *name* (so it works, and does not leak —
+    // nothing but the SOCKS tunnel can reach an origin by that name)…
+    prefetchGatewayUrl(`ipfs://${PREFETCH_CID}`);
+    await waitFor(() => prefetchHits >= 1);
+    // …and twice in a row means two origin hits: no cache answered the second.
+    prefetchGatewayUrl(`ipfs://${PREFETCH_CID}`);
+    await waitFor(() => prefetchHits >= 2);
+    const viaTor = {
+      originHits: prefetchHits,
+      originSeen: [...originSeen],
+      chromiumSaw: [...chromiumSaw],
+      // Chromium pools proxy tunnels, so a warm-up that reuses the tunnel the
+      // block above opened records no fresh CONNECT here. Whatever it does
+      // record must still be the onion name, never a resolved address.
+      socksSeen: [...socksSeen],
+    };
+
+    // Tor off, gateway still published (the registry keeps it for up to ~5s
+    // after `stopTor`): the dial must not happen at all.
+    await clearOnionProxy(ses);
+    socksSeen.length = 0;
+    originSeen.length = 0;
+    chromiumSaw.length = 0;
+    const withoutTor = { resolveProxy: await ses.resolveProxy(`${onionGateway}${PREFETCH_PATH}`) };
+    prefetchGatewayUrl(`ipfs://${PREFETCH_CID}`);
+    await settle(1500);
+    withoutTor.originHits = prefetchHits;
+    withoutTor.socksSeen = [...socksSeen];
+    withoutTor.originSeen = [...originSeen];
+    withoutTor.chromiumSaw = [...chromiumSaw];
+
+    // A loopback gateway is still warmed, exactly as before.
+    updateService('ipfs', { gateway: loopbackGateway, mode: 'external' });
+    originSeen.length = 0;
+    prefetchGatewayUrl(`ipfs://${PREFETCH_CID}`);
+    await waitFor(() => prefetchHits >= 3);
+
+    // The control (`controlmarker`) from the cache block above proves this
+    // scan sees a body Chromium did store, so an absent marker means absent.
+    await settle(1000);
+    results.prefetch = {
+      viaTor,
+      withoutTor,
+      loopbackOriginHits: prefetchHits,
+      onDisk: markersOnDisk(PROBE_USER_DATA, ['controlmarker', 'prefetchmarker']),
+    };
+  } catch (err) {
+    results.prefetch = { error: String(err && err.message) };
   }
 
   // ---- A plain HTTP proxy on the session (not Tor) ------------------------

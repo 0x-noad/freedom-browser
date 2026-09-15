@@ -211,6 +211,43 @@ describeWithElectron('external IPFS gateway transport in a real Electron process
     expect(results.httpCache.onDisk).toEqual(['controlmarker']);
   });
 
+  // R4-F1: the speculative warm-up in `ens-prefetch.js` dialled the same
+  // configured gateway with a bare `net.request` — no onion guard, no
+  // `no-store` — so both holes stayed open on it. Driven here through the
+  // service registry, the way the resolver drives it.
+  test('the ENS prefetch dials through the same transport', () => {
+    expect(results.prefetch.error).toBeUndefined();
+    // Works, over Tor: both warm-ups arrive at the origin under the onion
+    // name, which nothing but the SOCKS tunnel can reach. The second reaching
+    // the origin at all is the `no-store` half — the gateway serves this CID
+    // `immutable` for a year, like Kubo.
+    expect(results.prefetch.viaTor.originHits).toBe(2);
+    expect(results.prefetch.viaTor.originSeen).toEqual([
+      expect.stringMatching(/^freedomgatewayprobe\.onion:\d+\/ipfs\/bafkrei/),
+      expect.stringMatching(/^freedomgatewayprobe\.onion:\d+\/ipfs\/bafkrei/),
+    ]);
+    // Chromium pools proxy tunnels, so a reused one records no fresh CONNECT;
+    // anything it does record must still be the onion name, never an address.
+    for (const seen of results.prefetch.viaTor.socksSeen) {
+      expect(seen).toMatch(/^freedomgatewayprobe\.onion:\d+$/);
+    }
+    // Tor off, gateway still published: nothing is dialled at all. A dial that
+    // dies in the system resolver reaches no server here either, so the load-
+    // bearing assertion is `chromiumSaw` — Chromium was never asked for the
+    // name (the same list is non-empty for the warm-ups that did go out).
+    expect(results.prefetch.viaTor.chromiumSaw.length).toBeGreaterThan(0);
+    expect(results.prefetch.withoutTor.resolveProxy).toBe('DIRECT');
+    expect(results.prefetch.withoutTor.chromiumSaw).toEqual([]);
+    expect(results.prefetch.withoutTor.originHits).toBe(2);
+    expect(results.prefetch.withoutTor.socksSeen).toEqual([]);
+    expect(results.prefetch.withoutTor.originSeen).toEqual([]);
+    // A loopback gateway is still warmed.
+    expect(results.prefetch.loopbackOriginHits).toBe(3);
+    // Nothing the prefetch fetched is on disk — the control body from the
+    // cache block is, which is what makes the absence meaningful.
+    expect(results.prefetch.onDisk).toEqual(['controlmarker']);
+  });
+
   test('cancelling an in-flight load aborts it and closes the socket', () => {
     expect(results.abort).toMatchObject({
       firstChunk: 'first-chunk',

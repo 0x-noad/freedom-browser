@@ -1,14 +1,21 @@
 /**
- * Transport for the external IPFS gateway path (`ipfs-manager.js`).
+ * The one way this app dials a configured content-node endpoint: the external
+ * IPFS gateway (`ipfs-manager.js`) and the speculative gateway warm-up
+ * (`ens-prefetch.js`, for the Ant API too — it is configurable to a remote
+ * host in exactly the same way).
  *
  * WHY THIS EXISTS
  *
  * `serveExternalGatewayRequest` and the gateway probes used Node's global
  * `fetch` (undici). undici has its own socket stack, so it never sees
  * `session.setProxy` — the PAC `src/main/tor-proxy.js` installs on every
- * tracked session. Sibling paths in this repo already dial through Chromium
- * (`ens-prefetch.js`, `favicons.js` use `net.request`), so the same request
- * class took two different routes depending on which file issued it (#355).
+ * tracked session. `ens-prefetch.js` dialled the same endpoints with a bare
+ * `net.request`, so the same request class took three different routes
+ * depending on which file issued it (#355). A bare `net.request` is not
+ * equivalent to this transport: it only follows a proxy policy the session is
+ * carrying *at that moment* (an onion gateway published while Tor is stopping
+ * resolves DIRECT, leaking the name to the system resolver), and it reads and
+ * writes Chromium's on-disk HTTP cache.
  *
  * The PAC's scope is `.onion`-only (see `buildOnionPacScript`): a clearnet
  * gateway resolves DIRECT with Tor on or off, so the everyday remote gateway
@@ -259,7 +266,8 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       //    and the unreachable-status/retry path (#351) would never arm.
       //  - `ipfs://` loads from a private window come through this same
       //    handler, so storing would write visited CIDs, gateway host and page
-      //    bytes into the *default* profile's on-disk cache.
+      //    bytes into the *default* profile's on-disk cache — as would
+      //    `ens-prefetch.js`, for content the user only ever resolved.
       cache: 'no-store',
       // Straight to the network — never back into a registered `http(s)`
       // protocol handler (the test harness registers one).
