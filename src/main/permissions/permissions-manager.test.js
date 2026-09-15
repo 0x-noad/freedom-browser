@@ -488,42 +488,100 @@ describe('permissions-manager', () => {
     }
   });
 
-  test('check handler: only recorded allows pass; media checks use mediaType', async () => {
+  // #361: the check handler is boolean-only, so it answers false ONLY for a
+  // recorded deny. An undecided permission reports allowed — reporting it as
+  // denied made sites that gate on navigator.permissions.query (Google Meet)
+  // show their "blocked" state and never ask, so the prompt never fired.
+  test('check handler: only recorded denies fail; media checks use mediaType', async () => {
     load();
     const host = makeHost();
 
-    // Undecided → false (deny-by-default for synchronous checks).
-    expect(
-      session.checkHandler(null, 'notifications', 'https://example.com', {
+    const check = (permission, details = {}) =>
+      session.checkHandler(null, permission, 'https://example.com', {
         requestingUrl: 'https://example.com/page',
-      })
-    ).toBe(false);
+        ...details,
+      });
+
+    // Undecided → true, so the page proceeds to the request path (which
+    // prompts) instead of treating the site as blocked.
+    expect(check('notifications')).toBe(true);
+    expect(check('media', { mediaType: 'video' })).toBe(true);
+    expect(check('geolocation')).toBe(true);
 
     request('notifications', { host });
     await respond({ id: lastPrompt(host).id, decision: 'allow', remember: true });
     await flush();
 
-    expect(
-      session.checkHandler(null, 'notifications', 'https://example.com', {
-        requestingUrl: 'https://example.com/page',
-      })
-    ).toBe(true);
+    expect(check('notifications')).toBe(true);
     expect(session.checkHandler(null, 'pointerLock', 'https://example.com', {})).toBe(true);
+    // Non-promptable permissions stay denied regardless.
     expect(session.checkHandler(null, 'hid', 'https://example.com', {})).toBe(false);
+    expect(session.checkHandler(null, 'display-capture', 'https://example.com', {})).toBe(false);
+    // …as do origins that can never be prompted for.
+    expect(
+      session.checkHandler(null, 'notifications', 'file:///pages/settings.html', {
+        requestingUrl: 'file:///pages/settings.html',
+      })
+    ).toBe(false);
 
-    // Media check: camera allowed, mic not.
+    // A session-only deny (unremembered Block) fails the check.
+    request('geolocation', { host });
+    await respond({ id: lastPrompt(host).id, decision: 'deny', remember: false });
+    await flush();
+    expect(check('geolocation')).toBe(false);
+
+    // Media check: camera allowed, mic denied persistently.
     request('media', { host, details: { mediaTypes: ['video'] } });
     await respond({ id: lastPrompt(host).id, decision: 'allow', remember: true });
     await flush();
+    request('media', { host, details: { mediaTypes: ['audio'] } });
+    await respond({ id: lastPrompt(host).id, decision: 'deny', remember: true });
+    await flush();
+
     const details = (mediaType) => ({ requestingUrl: 'https://example.com/x', mediaType });
     expect(session.checkHandler(null, 'media', 'https://example.com', details('video'))).toBe(true);
+    // A persistent deny fails the check.
     expect(session.checkHandler(null, 'media', 'https://example.com', details('audio'))).toBe(
       false
     );
-    // No concrete device type → both must be allowed.
+    // No concrete device type → either device being denied answers the check.
     expect(session.checkHandler(null, 'media', 'https://example.com', details(undefined))).toBe(
       false
     );
+  });
+
+  test('check handler: an undecided media check passes even with no mediaType', () => {
+    load();
+    const details = (mediaType) => ({ requestingUrl: 'https://example.com/x', mediaType });
+    expect(session.checkHandler(null, 'media', 'https://example.com', details(undefined))).toBe(
+      true
+    );
+    expect(session.checkHandler(null, 'media', 'https://example.com', details('audio'))).toBe(true);
+  });
+
+  // Regression guard for #361: reporting undecided permissions as allowed in
+  // the CHECK path must not leak into the REQUEST path — an undecided media
+  // request still has to raise the anchored prompt rather than pass silently.
+  test('an undecided media request still prompts after the check-handler change', () => {
+    load();
+    const host = makeHost();
+    const guest = makeGuest('https://example.com/page', host);
+
+    expect(
+      session.checkHandler(null, 'media', 'https://example.com', {
+        requestingUrl: 'https://example.com/page',
+        mediaType: 'video',
+      })
+    ).toBe(true);
+
+    const callback = request('media', { host, guest, details: { mediaTypes: ['video', 'audio'] } });
+    expect(callback).not.toHaveBeenCalled();
+    expect(lastPrompt(host)).toMatchObject({
+      origin: 'https://example.com',
+      permission: 'media',
+      keys: ['camera', 'microphone'],
+      guestId: guest.id,
+    });
   });
 
   test('revoke IPC clears stored and session decisions', async () => {
@@ -747,11 +805,9 @@ describe('permissions-manager private windows', () => {
         requestingUrl: 'https://example.com/page',
       })
     ).toBe(true);
-    expect(
-      normalSession.checkHandler(null, 'notifications', 'https://example.com', {
-        requestingUrl: 'https://example.com/page',
-      })
-    ).toBe(false);
+    // The normal window is undecided, which the boolean-only check path
+    // reports as allowed (#361) — the request path below is what proves the
+    // private grant did not leak.
 
     // A normal window still prompts for the same origin+permission.
     const normalHost = makeHost();
@@ -820,6 +876,29 @@ describe('permissions-manager private windows', () => {
     expect(lastPrompt(host)).not.toBeNull();
   });
 
+  // #361: a deny made inside a private window fails the check in THAT
+  // partition only — a normal window that has never been asked is undecided,
+  // which the boolean-only check path reports as allowed.
+  test('a private-window deny fails the check there but not in a normal window', async () => {
+    load();
+    const host = makeHost();
+    requestOn(privateSession, 'notifications', host);
+    await respond({ id: lastPrompt(host).id, decision: 'deny', remember: true });
+    await flush();
+
+    const check = (session) =>
+      session.checkHandler(null, 'notifications', 'https://example.com', {
+        requestingUrl: 'https://example.com/page',
+      });
+    expect(check(privateSession)).toBe(false);
+    expect(check(normalSession)).toBe(true);
+
+    // …and the normal window still prompts rather than granting silently.
+    const normalHost = makeHost();
+    expect(requestOn(normalSession, 'notifications', normalHost)).not.toHaveBeenCalled();
+    expect(lastPrompt(normalHost)).not.toBeNull();
+  });
+
   // Inheritance-on-read is right when the user has NOT answered inside the
   // private window. Once they have, that answer is the more specific and
   // more recent expression of intent and must win — otherwise a normal
@@ -878,11 +957,9 @@ describe('permissions-manager private windows', () => {
     };
 
     const expectRevoked = (host) => {
-      expect(
-        privateSession.checkHandler(null, 'notifications', 'https://example.com', {
-          requestingUrl: 'https://example.com/page',
-        })
-      ).toBe(false);
+      // A revoke leaves the origin undecided, which the boolean-only check
+      // path reports as allowed (#361) — the re-prompt below is what proves
+      // the grant is gone.
       // Re-prompts rather than silently allowing.
       host.send.mockClear();
       const again = requestOn(privateSession, 'notifications', host);
