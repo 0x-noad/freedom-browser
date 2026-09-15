@@ -575,6 +575,14 @@ jobs:
   # actual BrowserWindow and reads laid-out geometry (a menu's bottom edge, the
   # chrome document's scrollHeight, where a context menu lands relative to the
   # pointer), none of which a jsdom-less unit fake can produce (#324).
+  #
+  # `permissions.spec.js` belongs to the same family and was likewise in no
+  # job's list: the anchored prompt is decided by real input and focus routing
+  # (Escape and click-away as a deny-once, a background tab's prompt held
+  # rather than dismissed, a modal <dialog> taking the Escape instead), and it
+  # drives the indicator popover the dismissal embargo is surfaced and lifted
+  # in — including the private-window scoping, which needs two real windows on
+  # two real sessions (#364, #365).
   e2e-tabs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -598,7 +606,7 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu E2E
+      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/tabs.spec.js \
@@ -606,7 +614,8 @@ jobs:
             test-e2e/menus.spec.js \
             test-e2e/chrome-popovers.spec.js \
             test-e2e/bookmarks.spec.js \
-            test-e2e/page-context-menu.spec.js
+            test-e2e/page-context-menu.spec.js \
+            test-e2e/permissions.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

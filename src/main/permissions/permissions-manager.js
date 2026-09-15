@@ -30,6 +30,17 @@
  * Swarm permission stores use, so `bzz://name.eth` and the resolved
  * hash stay distinct origins exactly like they do for wallet grants.
  *
+ * Dismissing a prompt (Esc / click-away) is a deny-once that records
+ * nothing, so the site can ask again. Chromium bounds that: after three
+ * dismissals of the same origin + permission it embargoes the pair and
+ * auto-denies without prompting. Freedom does the same (#364) — the
+ * embargo is recorded in the existing run-scoped tier (session-only in a
+ * normal window, partition-scoped in a private one), so it survives
+ * navigation but not a restart, and any revoke clears it along with the
+ * dismissal counter. Only real user dismissals count: an allow or a block
+ * resets the counter, and a request invalidated by navigation or by the
+ * window closing never touches it.
+ *
  * Prompts are queued per requesting webContents (the guest webview) —
  * one prompt in flight per tab — and identical origin+permission
  * requests from the same tab are coalesced onto one prompt. Every
@@ -47,6 +58,7 @@ const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
 const store = require('./permissions-store');
 const { normalizeOrigin } = require('../../shared/origin-utils');
+const { getPartitionForWebContents } = require('../private/private-windows');
 const { broadcastToAllWebContents } = require('../lib/broadcast-to-all-webcontents');
 
 // Auto-allowed without prompting. pointerLock/fullscreen were the status
@@ -75,6 +87,20 @@ const sessionDecisions = new Map();
 // allow/deny applies inside private windows, mirroring Chromium's
 // incognito content-settings inheritance), but nothing flows back.
 const privateDecisions = new Map();
+
+// Dismissal embargo (#364), Chromium's rule: three dismissals of the same
+// origin + permission auto-deny it from then on, without a prompt. Blocks
+// and allows are decisions, not dismissals — they reset the counter.
+const DISMISS_EMBARGO_THRESHOLD = 3;
+
+// Consecutive prompt dismissals per scope → origin → storage key.
+// Map<scopeKey, Map<origin, Map<storageKey, count>>>, where the scope key
+// is the private partition or '' for the normal profile — a private
+// window's dismissals must not embargo the origin outside it, exactly
+// like the decisions they lead to. Never persisted; the count is dropped
+// by any revoke, by an allow/block answer, and (for a private partition)
+// when the window closes.
+const dismissCounts = new Map();
 
 // Per-guest prompt queues (one prompt in flight per requesting tab):
 // Map<guestWebContentsId, {guest, host, hostId, generation, active, queue}>
@@ -200,6 +226,7 @@ function setPrivateDecision(partition, origin, key, decision) {
  * Called from the private-window close cleanup (src/main/index.js).
  */
 function clearPrivateDecisions(partition) {
+  clearPrivateDismissCounts(partition);
   return privateDecisions.delete(partition);
 }
 
@@ -238,6 +265,87 @@ function clearPrivateDecision(origin, key) {
     if (origins.size === 0) privateDecisions.delete(partition);
   }
   return removed;
+}
+
+// Dismissal counters live in the same shape as the decisions they lead to:
+// scoped to the private partition when there is one, to the profile
+// otherwise. `scopeKey` keeps the two apart in one map.
+const dismissScope = (privatePartition) => privatePartition || '';
+
+function getDismissCount(scopeKey, origin, key) {
+  return dismissCounts.get(scopeKey)?.get(origin)?.get(key) || 0;
+}
+
+/**
+ * Record one dismissal of origin+key in `scopeKey`.
+ * @returns {number} The new consecutive-dismissal count.
+ */
+function bumpDismissCount(scopeKey, origin, key) {
+  if (!dismissCounts.has(scopeKey)) dismissCounts.set(scopeKey, new Map());
+  const origins = dismissCounts.get(scopeKey);
+  if (!origins.has(origin)) origins.set(origin, new Map());
+  const keys = origins.get(origin);
+  const next = (keys.get(key) || 0) + 1;
+  keys.set(key, next);
+  return next;
+}
+
+/**
+ * Forget dismissals for origin+key in ONE scope — what an explicit allow
+ * or block means ("the user answered; start counting over").
+ */
+function clearDismissCount(scopeKey, origin, key) {
+  const origins = dismissCounts.get(scopeKey);
+  const keys = origins?.get(origin);
+  if (!keys) return;
+  keys.delete(key);
+  if (keys.size === 0) origins.delete(origin);
+  if (origins.size === 0) dismissCounts.delete(scopeKey);
+}
+
+/**
+ * Forget dismissals across EVERY scope — what a revoke means. The settings
+ * and popover revokes are profile-wide with no partition to aim at, and an
+ * embargo the user just reset must not come back on the next dismissal, so
+ * the counter goes with the decision (mirrors clearPrivateDecision).
+ *
+ * @param {string} [origin] - omit to clear every origin in every scope
+ * @param {string} [key] - omit to clear every key for `origin`
+ */
+function clearDismissCounts(origin, key) {
+  if (origin === undefined) {
+    dismissCounts.clear();
+    return;
+  }
+  for (const scopeKey of [...dismissCounts.keys()]) {
+    if (key === undefined) {
+      const origins = dismissCounts.get(scopeKey);
+      origins.delete(origin);
+      if (origins.size === 0) dismissCounts.delete(scopeKey);
+    } else {
+      clearDismissCount(scopeKey, origin, key);
+    }
+  }
+}
+
+/**
+ * Drop every dismissal counter for one private partition (window close).
+ * Its decisions go the same way via clearPrivateDecisions.
+ */
+function clearPrivateDismissCounts(partition) {
+  dismissCounts.delete(dismissScope(partition));
+}
+
+/**
+ * True when origin+key is denied because of the dismissal embargo rather
+ * than an answer the user gave. Derived from the counter, which any
+ * revoke clears — so a reset origin is never reported as embargoed.
+ */
+function isEmbargoed(origin, key, privatePartition = null) {
+  return (
+    getDismissCount(dismissScope(privatePartition), origin, key) >= DISMISS_EMBARGO_THRESHOLD &&
+    getEffectiveDecision(origin, key, privatePartition) === 'deny'
+  );
 }
 
 function clearSessionDecision(origin, key) {
@@ -542,7 +650,10 @@ function enqueuePrompt({
  * decision: 'allow' | 'deny' | 'dismiss'
  *   - allow/deny + remember      → persisted to permissions.json
  *   - allow/deny, not remembered → session-only decision
- *   - dismiss (Esc/click-away)   → denied once, nothing recorded
+ *   - dismiss (Esc/click-away)   → denied once, nothing recorded, until
+ *                                  the third consecutive dismissal of the
+ *                                  same origin+key records a run-scoped
+ *                                  deny (the embargo, #364)
  */
 function resolvePrompt({ id, decision, remember }) {
   const entry = pendingById.get(id);
@@ -567,8 +678,13 @@ function resolvePrompt({ id, decision, remember }) {
     return true;
   }
 
+  const scopeKey = dismissScope(entry.privatePartition);
+
   if (decision === 'allow' || decision === 'deny') {
     for (const key of entry.keys) {
+      // The user answered: previous dismissals stop counting toward the
+      // embargo, whichever way they answered.
+      clearDismissCount(scopeKey, entry.origin, key);
       if (entry.privatePartition) {
         // PRIVATE MODE GUARD (permissions): never persisted, "remember"
         // included — the decision lives exactly as long as the window.
@@ -591,9 +707,34 @@ function resolvePrompt({ id, decision, remember }) {
             : ' (this session)')
     );
   } else {
+    // Dismiss (Esc / click-away): still a deny-once that records nothing —
+    // until the third one in a row for the same origin+key, which records
+    // the run-scoped deny that stops the site re-raising the prompt
+    // indefinitely (#364). Chromium's embargo, minus its expiry: this tier
+    // is dropped on restart anyway (and with the private window, for a
+    // private partition), and the user can lift it from the address-bar
+    // popover, which clears the counter with it.
+    const embargoed = [];
+    for (const key of entry.keys) {
+      const dismissals = bumpDismissCount(scopeKey, entry.origin, key);
+      if (dismissals < DISMISS_EMBARGO_THRESHOLD) continue;
+      if (entry.privatePartition) {
+        setPrivateDecision(entry.privatePartition, entry.origin, key, 'deny');
+      } else {
+        setSessionDecision(entry.origin, key, 'deny');
+      }
+      embargoed.push(key);
+    }
     log.info(
       `[permissions] dismissed ${entry.keys.join('+')} prompt for ${originForLog(entry.origin, entry.privatePartition)}`
     );
+    if (embargoed.length > 0) {
+      broadcastChanged();
+      log.info(
+        `[permissions] embargoed ${embargoed.join('+')} for ${originForLog(entry.origin, entry.privatePartition)}` +
+          ` after ${DISMISS_EMBARGO_THRESHOLD} dismissals (this session)`
+      );
+    }
   }
 
   if (decision === 'allow') {
@@ -743,10 +884,24 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
 }
 
 /**
- * Merged decision view for one origin (persistent + session-only).
- * @returns {Object} Map of permission -> { decision, remembered }
+ * Merged decision view for one origin, as it applies in ONE window.
+ * An embargo (#364) is a run-scoped deny like any other, flagged so the
+ * chrome can say the site was auto-blocked rather than blocked by the user.
+ *
+ * The run-scoped tier is read from the same scope the request path answers
+ * from (`getEffectiveDecision`): a private window's own partition, the
+ * normal-profile session decisions otherwise. Reading the normal-profile
+ * tier for every window painted a normal-window "this session" deny —
+ * an embargo included — into private windows, where it does not apply and
+ * the site still prompts, and offered a Remove there that silently cleared
+ * the normal profile's decision; a private window's own embargo, held in
+ * the partition tier, showed up nowhere at all.
+ *
+ * @param {string} origin
+ * @param {string|null} [privatePartition] - the asking window's partition
+ * @returns {Object} Map of permission -> { decision, remembered, embargoed? }
  */
-function getDecisionsForOrigin(origin) {
+function getDecisionsForOrigin(origin, privatePartition = null) {
   const key = normalizeOrigin(origin);
   if (!key) return {};
 
@@ -755,10 +910,17 @@ function getDecisionsForOrigin(origin) {
   for (const [permission, decision] of Object.entries(stored)) {
     result[permission] = { decision, remembered: true };
   }
-  for (const [permission, decision] of sessionDecisions.get(key) || []) {
-    if (!result[permission]) {
-      result[permission] = { decision, remembered: false };
-    }
+  const runScoped = privatePartition
+    ? privateDecisions.get(privatePartition)?.get(key)
+    : sessionDecisions.get(key);
+  for (const [permission, decision] of runScoped || []) {
+    // Inside a private window the partition-scoped answer is the more
+    // specific one and wins over the store, exactly as
+    // `getEffectiveDecision` resolves it; a normal-window session decision
+    // never overrides a stored one.
+    if (result[permission] && !privatePartition) continue;
+    result[permission] = { decision, remembered: false };
+    if (isEmbargoed(key, permission, privatePartition)) result[permission].embargoed = true;
   }
   return result;
 }
@@ -766,13 +928,27 @@ function getDecisionsForOrigin(origin) {
 // The three revoke entry points clear the persistent store, the run-scoped
 // session decisions AND the live private-window decisions. All three tiers
 // are what "revoke" means to the user; leaving the private tier behind left
-// an open private window silently granting until it closed.
+// an open private window silently granting until it closed. They also drop
+// the dismissal counters (#364): a reset that left the count at the embargo
+// threshold would re-embargo on the site's very next dismissed prompt, so
+// "Remove" would not genuinely let the site ask again.
+//
+// They are scope-blind on purpose — that is what makes a profile-wide
+// "Revoke all" from Settings reach a still-open private window's live grant.
+// The cost is the other direction: a "Remove" clicked in a private window's
+// own popover also clears the normal profile's run-scoped decision for that
+// origin + key, so lifting a private window's embargo silently lifts the
+// normal profile's too. It only ever costs an extra prompt (nothing is
+// granted, nothing is persisted), and scoping the revoke to the asking
+// window would weaken the Settings path it exists for, so it is tracked
+// separately in #366 rather than papered over here.
 function revokeDecision(origin, permission) {
   const key = normalizeOrigin(origin);
   const removed = store.removeDecision(key, permission);
   const hadSession = getSessionDecision(key, permission) !== null;
   clearSessionDecision(key, permission);
   const hadPrivate = clearPrivateDecision(key, permission);
+  clearDismissCounts(key, permission);
   if (removed || hadSession || hadPrivate) broadcastChanged();
   return removed || hadSession || hadPrivate;
 }
@@ -783,6 +959,7 @@ function revokeOrigin(origin) {
   const hadSession = sessionDecisions.has(key);
   clearSessionDecision(key);
   const hadPrivate = clearPrivateDecision(key);
+  clearDismissCounts(key);
   if (removed || hadSession || hadPrivate) broadcastChanged();
   return removed || hadSession || hadPrivate;
 }
@@ -791,6 +968,7 @@ function revokeAll() {
   store.clearAll();
   sessionDecisions.clear();
   clearPrivateDecision();
+  clearDismissCounts();
   broadcastChanged();
   return true;
 }
@@ -815,8 +993,11 @@ function registerPermissionsIpc() {
     return store.getAllDecisions();
   });
 
-  ipcMain.handle(IPC.PERMISSIONS_GET_FOR_ORIGIN, (_event, origin) => {
-    return getDecisionsForOrigin(origin);
+  // The indicator/popover query is answered for the asking window's own
+  // scope: the sender is that window's chrome renderer, so the partition
+  // comes from the private-window registry rather than from the renderer.
+  ipcMain.handle(IPC.PERMISSIONS_GET_FOR_ORIGIN, (event, origin) => {
+    return getDecisionsForOrigin(origin, getPartitionForWebContents(event?.sender));
   });
 
   ipcMain.handle(IPC.PERMISSIONS_REVOKE, (_event, origin, permission) => {
@@ -838,10 +1019,20 @@ function registerPermissionsIpc() {
 function _resetState() {
   sessionDecisions.clear();
   privateDecisions.clear();
+  dismissCounts.clear();
   guestQueues.clear();
   hostGuests.clear();
   pendingById.clear();
   nextPromptId = 1;
+}
+
+// Test-only: read the consecutive-dismissal count behind the embargo.
+// Once an embargo lands, the recorded deny shadows the counter (the site
+// stops prompting), and every path that removes that deny also clears the
+// counter — so "an allow/block reset the count" is not observable from
+// behavior alone. This exists so those resets can be pinned directly.
+function _getDismissCount(origin, key, { privatePartition = null } = {}) {
+  return getDismissCount(dismissScope(privatePartition), normalizeOrigin(origin) || origin, key);
 }
 
 module.exports = {
@@ -853,5 +1044,7 @@ module.exports = {
   revokeDecision,
   revokeOrigin,
   revokeAll,
+  DISMISS_EMBARGO_THRESHOLD,
   _resetState,
+  _getDismissCount,
 };

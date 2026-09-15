@@ -119,6 +119,51 @@ async function answerPrompt(window, action) {
   await button.dispatchEvent('click');
 }
 
+// Open a private window via the real File-menu item and return its chrome
+// page. Resolved by URL rather than via electronApp.waitForEvent('window'):
+// webview guests surface as separate Playwright pages too, so the first
+// 'window' event after the click can be the private start page's guest.
+// (Same shape as test-e2e/private-windows.spec.js, which owns the feature.)
+async function openPrivateWindow(electronApp) {
+  const known = new Set(
+    electronApp
+      .windows()
+      .map((page) => page.url())
+      .filter((url) => url.includes('privatePartition=private-'))
+  );
+  await electronApp.evaluate(({ Menu }) => {
+    const item = Menu.getApplicationMenu()?.getMenuItemById('new-private-window');
+    if (!item) throw new Error('New Private Window menu item not found');
+    item.click();
+  });
+  let page;
+  await expect
+    .poll(
+      () => {
+        page = electronApp
+          .windows()
+          .find((p) => p.url().includes('privatePartition=private-') && !known.has(p.url()));
+        return !!page;
+      },
+      { message: 'Waiting for the private chrome window', timeout: 15_000 }
+    )
+    .toBe(true);
+  await page.waitForLoadState('domcontentloaded');
+  await page.waitForSelector('[data-test="address-input"]', { state: 'visible' });
+  return page;
+}
+
+// close() is asynchronous, so getAllWindows() still lists windows that are
+// mid-teardown; reading webContents on one of those throws.
+async function closePrivateWindows(electronApp) {
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+      if (win.webContents.getURL().includes('privatePartition=private-')) win.close();
+    }
+  });
+}
+
 test('notification request → prompt → Allow with remember persists across reload', async ({
   window,
   harness,
@@ -392,6 +437,139 @@ test('Escape dismisses the prompt as deny-once and the site can ask again', asyn
   // Nothing was remembered — the next request prompts again.
   await clickAsk(window);
   await expect(prompt).toBeVisible();
+});
+
+// #364: dismissing is a deny-once, so a page can re-raise the prompt after
+// every Escape and hold it up for as long as the tab is open. Chromium
+// bounds that with an embargo after three dismissals; so does Freedom now.
+// The two dismissals above stay a re-askable deny-once — this picks up at
+// the third.
+test('three dismissals embargo the site, and Remove from the popover lets it ask again', async ({
+  window,
+  harness,
+}) => {
+  await navigateToFixture(window, harness);
+
+  const prompt = window.locator('[data-test="permission-prompt"]');
+  const indicator = window.locator('[data-test="permission-indicator"]');
+  const resetOut = () =>
+    evalInWebview(window, "document.getElementById('out').textContent = 'none'; true");
+
+  // Three prompts, three Escapes. Each one is still a deny-once: the page
+  // is told "denied" and is asked nothing — it just asks again.
+  for (let i = 0; i < 3; i += 1) {
+    await resetOut();
+    await clickAsk(window);
+    await expect(prompt).toBeVisible();
+    await window.keyboard.press('Escape');
+    await expect(prompt).toBeHidden();
+    await expect.poll(() => readOut(window), { timeout: 5_000 }).toBe('denied');
+  }
+
+  // The fourth request is auto-denied: no prompt at all, and the page's own
+  // read of Notification.permission now says denied.
+  await resetOut();
+  await clickAsk(window);
+  await expect.poll(() => readOut(window), { timeout: 5_000 }).toBe('denied');
+  await window.waitForTimeout(500);
+  await expect(prompt).toBeHidden();
+  await expect
+    .poll(() => evalInWebview(window, 'Notification.permission'), { timeout: 5_000 })
+    .toBe('denied');
+
+  // The embargo is visible in the chrome — an auto-block the user never
+  // chose has to be discoverable, and the popover is where it is lifted.
+  await expect(indicator).toBeVisible();
+  await indicator.click();
+  await expect(window.locator('#permission-popover')).toBeVisible();
+  await expect(window.locator('.permission-popover-row-status')).toHaveText(
+    'Blocked after repeated dismissals (this session)'
+  );
+
+  // Remove → the site can ask again, and the prompt comes back.
+  await window.locator('.permission-popover-revoke').dispatchEvent('click');
+  await expect(indicator).toBeHidden();
+  await expect
+    .poll(() => evalInWebview(window, 'Notification.permission'), { timeout: 5_000 })
+    .toBe('granted');
+
+  await resetOut();
+  await clickAsk(window);
+  await expect(prompt).toBeVisible();
+});
+
+// The embargo is a run-scoped decision, so it belongs to the window that
+// made it: a normal window's embargo does not apply inside a private window
+// (which reads its own partition tier), and a private window's own embargo
+// applies nowhere else. The chrome has to say the same thing, in both
+// directions — an indicator for a block that is not in force is a lie whose
+// Remove clears the *other* scope's decision, and an in-force block with no
+// indicator cannot be discovered or lifted at all.
+test('the embargo, and its indicator, are scoped to the window that made it', async ({
+  window,
+  electronApp,
+  harness,
+}) => {
+  const resetOut = (page) =>
+    evalInWebview(page, "document.getElementById('out').textContent = 'none'; true");
+
+  // Three prompts, three Escapes — the embargo, driven in one window.
+  const dismissThrice = async (page) => {
+    const prompt = page.locator('[data-test="permission-prompt"]');
+    for (let i = 0; i < 3; i += 1) {
+      await resetOut(page);
+      await clickAsk(page);
+      await expect(prompt).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(prompt).toBeHidden();
+      await expect.poll(() => readOut(page), { timeout: 5_000 }).toBe('denied');
+    }
+  };
+
+  await navigateToFixture(window, harness);
+  await dismissThrice(window);
+  await expect(window.locator('[data-test="permission-indicator"]')).toBeVisible();
+
+  const priv = await openPrivateWindow(electronApp);
+  await navigateToFixture(priv, harness);
+
+  // The private window is not embargoed — the site still prompts there — so
+  // its chrome shows nothing.
+  await expect(priv.locator('[data-test="permission-indicator"]')).toBeHidden();
+  const privPrompt = priv.locator('[data-test="permission-prompt"]');
+  await clickAsk(priv);
+  await expect(privPrompt).toBeVisible();
+  await priv.keyboard.press('Escape');
+  await expect(privPrompt).toBeHidden();
+
+  // Two more dismissals embargo it inside the private window, and THERE the
+  // indicator and its popover row appear.
+  await resetOut(priv);
+  await clickAsk(priv);
+  await expect(privPrompt).toBeVisible();
+  await priv.keyboard.press('Escape');
+  await expect(privPrompt).toBeHidden();
+  await resetOut(priv);
+  await clickAsk(priv);
+  await expect(privPrompt).toBeVisible();
+  await priv.keyboard.press('Escape');
+  await expect(privPrompt).toBeHidden();
+
+  await resetOut(priv);
+  await clickAsk(priv);
+  await expect.poll(() => readOut(priv), { timeout: 5_000 }).toBe('denied');
+  await priv.waitForTimeout(500);
+  await expect(privPrompt).toBeHidden();
+
+  const privIndicator = priv.locator('[data-test="permission-indicator"]');
+  await expect(privIndicator).toBeVisible();
+  await privIndicator.click();
+  await expect(priv.locator('#permission-popover')).toBeVisible();
+  await expect(priv.locator('.permission-popover-row-status')).toHaveText(
+    'Blocked after repeated dismissals (this session)'
+  );
+
+  await closePrivateWindows(electronApp);
 });
 
 // #306, permission-prompt sibling: a modal <dialog> (here the bookmark

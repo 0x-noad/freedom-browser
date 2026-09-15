@@ -14,6 +14,10 @@ All notable changes to Freedom will be documented in this file.
   - Freedom does not verify content integrity in this mode; the gateway is trusted for every page it serves
   - Address a local Kubo as `127.0.0.1`, not `localhost`: a default Kubo redirects `localhost` to its subdomain gateway, which Freedom does not follow, so it reads as unreachable — the node status now says so
 - Nightly builds of `main` for internal testers, on their own update channel — a nightly updates to the next nightly, stable installs are never offered one
+- A limit on how often a site can re-ask for a permission you keep dismissing, matching Chrome
+  - Pressing Esc or clicking away still denies just that one request and records nothing, so the site can ask again
+  - After three dismissals in a row it is blocked for the rest of the session instead, so a page can no longer put the prompt back up every time you close it
+  - The block shows in the address-bar indicator as "Blocked after repeated dismissals"; Remove there lets the site ask again. It is never saved to disk, and a private window's dismissals stay in that window
 
 ### Fixed
 
