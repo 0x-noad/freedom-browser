@@ -18,6 +18,10 @@ const {
   IPFS_GATEWAY_PROBE_PATH,
   isIpfsGatewayProbeResponse,
 } = require('./ipfs/ipfs-gateway-probe');
+// Every dial of the configured gateway goes through this one transport, so a
+// remote endpoint follows the session's proxy policy (the Tor PAC) instead of
+// undici's own socket stack, which never sees it. See ipfs/gateway-transport.js.
+const { gatewayFetch, isLoopbackHostname } = require('./ipfs/gateway-transport');
 const { redactForLog } = require('./private/private-log-context');
 const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
 
@@ -155,18 +159,9 @@ function unreachableEndpointHint(rawUrl) {
   }
 }
 
-// Literal IPv4 loopback only: every octet must be digits. A `127.` *prefix*
-// test would also accept a resolvable DNS name like `127.evil.example`, which
-// points wherever its owner wants — and this gate is what keeps the unsolicited
-// `:5001` RPC POST on the user's own machine.
-const LOOPBACK_IPV4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
-
-// `localhost` counts as loopback here: it resolves there, and Kubo binds its RPC
-// API to loopback by default, so it is the same machine either way.
-function isLoopbackHostname(hostname) {
-  const host = String(hostname || '').toLowerCase();
-  return host === 'localhost' || host === '[::1]' || host === '::1' || LOOPBACK_IPV4.test(host);
-}
+// `isLoopbackHostname` lives in ipfs/gateway-transport.js: the same literal
+// loopback test decides which transport dials the gateway and whether the
+// unsolicited `:5001` RPC POST below is allowed, and the two must not drift.
 
 // The user configures only the gateway (e.g. :8080), but Kubo's RPC API answers
 // POST /api/v0/version with the running version. We derive the host from the
@@ -198,7 +193,7 @@ async function detectExternalGatewayVersion(gatewayUrl, { timeoutMs = 2000 } = {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { method: 'POST', signal: controller.signal });
+    const res = await gatewayFetch(url, { method: 'POST', signal: controller.signal });
     if (!res.ok) return null;
     const data = await res.json();
     const version = typeof data?.Version === 'string' ? data.Version.trim() : '';
@@ -223,7 +218,7 @@ async function probeExternalGateway(gatewayUrl, { timeoutMs = 2000 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${gatewayUrl}${IPFS_GATEWAY_PROBE_PATH}`, {
+    const res = await gatewayFetch(`${gatewayUrl}${IPFS_GATEWAY_PROBE_PATH}`, {
       method: 'GET',
       signal: controller.signal,
       redirect: 'manual',
@@ -657,8 +652,11 @@ function countingGatewayStream(upstreamBody, release) {
   });
 }
 
-// Response headers that must not survive the proxy hop. undici has already
-// decoded the body per the fetch spec, so forwarding the upstream
+// Response headers that must not survive the proxy hop. Both transports
+// (undici for a loopback gateway, Chromium for a remote one — see
+// ipfs/gateway-transport.js) hand back an already-decoded body while still
+// reporting the upstream `content-encoding` and its compressed
+// `content-length`, so forwarding the upstream
 // `content-encoding` (and its compressed `content-length`) would have Chromium
 // decode the plaintext a second time — ERR_CONTENT_DECODING_FAILED or a
 // truncated page from any nginx/Caddy-fronted or public gateway. The rest are
@@ -763,7 +761,7 @@ async function serveExternalGatewayRequest({ path: gatewayPath, method, headers,
 
   const requestUrl = `${externalGatewayUrl}${gatewayPath}`;
   try {
-    const upstream = await fetch(requestUrl, {
+    const upstream = await gatewayFetch(requestUrl, {
       method: method || 'GET',
       headers,
       signal,

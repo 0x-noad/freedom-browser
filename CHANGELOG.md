@@ -8,6 +8,7 @@ All notable changes to Freedom will be documented in this file.
 
 - External IPFS node mode under Settings > Nodes, for hosts where the embedded node cannot run
   - Point a profile at your own gateway, or accept the one Freedom detects on the standard local port at launch
+  - A gateway that is not on your own machine is dialled through the browser's own network stack, so it follows whatever proxy the app is using — a gateway on a `.onion` address is reached over Tor instead of being handed to your DNS resolver. Gateways on `127.0.0.1` / `localhost` are dialled directly, as before
   - Freedom does not verify content integrity in this mode; the gateway is trusted for every page it serves
   - Address a local Kubo as `127.0.0.1`, not `localhost`: a default Kubo redirects `localhost` to its subdomain gateway, which Freedom does not follow, so it reads as unreachable — the node status now says so
 - Nightly builds of `main` for internal testers, on their own update channel — a nightly updates to the next nightly, stable installs are never offered one

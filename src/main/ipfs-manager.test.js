@@ -5,6 +5,11 @@ const {
   createIpcMainMock,
   loadMainModule,
 } = require('../../test/helpers/main-process-test-utils');
+const {
+  createNetMock,
+  emitRedirect,
+  emitResponse,
+} = require('../../test/helpers/fake-electron-net');
 
 const PROFILE_IPFS_DATA_DIR = '/tmp/freedom-user-data/ipfs-data';
 const NATIVE_IPFS_DATA_DIR = path.join(PROFILE_IPFS_DATA_DIR, 'freedom-ipfs');
@@ -97,6 +102,7 @@ function loadIpfsManagerModule(options = {}) {
     app,
     ipcMain,
     BrowserWindow,
+    electronOverrides: options.electronOverrides,
     extraMocks: {
       fs: () => fsMock,
       [require.resolve('./logger')]: () => log,
@@ -119,6 +125,20 @@ function loadIpfsManagerModule(options = {}) {
       [require.resolve('./profile-paths')]: () => ({
         getIpfsDataDir: jest.fn(() => options.ipfsDataDir || PROFILE_IPFS_DATA_DIR),
       }),
+      // The gateway transport dials a loopback gateway with Node's `fetch` and
+      // a remote one through Chromium, so the session proxy (the Tor PAC)
+      // applies — see ipfs/gateway-transport.js and its own suite. Tests here
+      // drive one mocked `global.fetch` whatever the endpoint looks like;
+      // `realGatewayTransport: true` opts into the real dispatcher for the
+      // tests that assert which transport an endpoint actually reaches.
+      // Registered either way: a `jest.doMock` from an earlier load survives
+      // `jest.resetModules()`, so the opt-in has to re-register the real module
+      // rather than simply skip mocking it.
+      [require.resolve('./ipfs/gateway-transport')]: () => {
+        const actual = jest.requireActual('./ipfs/gateway-transport');
+        if (options.realGatewayTransport) return actual;
+        return { ...actual, gatewayFetch: (url, init) => fetch(url, init) };
+      },
       [require.resolve('./profile-resolver')]: () => ({
         getActiveProfile: jest.fn(() => options.activeProfile || null),
       }),
@@ -309,9 +329,10 @@ describe('ipfs-manager', () => {
     // Make the stop hang so a start can be requested while the node is STOPPING.
     let releaseStop;
     ctx.nativeInstances[0].stop.mockImplementation(
-      () => new Promise((resolve) => {
-        releaseStop = resolve;
-      })
+      () =>
+        new Promise((resolve) => {
+          releaseStop = resolve;
+        })
     );
 
     const stopResult = ctx.ipcMain.invoke(IPC.IPFS_STOP);
@@ -512,7 +533,8 @@ describe('ipfs-manager', () => {
       );
       await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
         status: 'error',
-        error: 'External IPFS gateway is unreachable — for Kubo, use 127.0.0.1 instead of localhost',
+        error:
+          'External IPFS gateway is unreachable — for Kubo, use 127.0.0.1 instead of localhost',
       });
     } finally {
       global.fetch = realFetch;
@@ -1447,5 +1469,297 @@ describe('ipfs-manager', () => {
     // userinfo is rejected here instead of failing every request later.
     expect(ctx.mod.normalizeExternalGatewayUrl('http://user:pass@127.0.0.1:8080')).toBeNull();
     expect(ctx.mod.normalizeExternalGatewayUrl('http://user@127.0.0.1:8080')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #355 — which transport dials the configured gateway.
+//
+// `serveExternalGatewayRequest` and the probes used Node's global `fetch`
+// (undici), which has its own socket stack and never sees `session.setProxy` —
+// the PAC `src/main/tor-proxy.js` installs. A remote gateway now goes through
+// Chromium (`ipfs/gateway-transport.js`), so the session's proxy policy
+// applies; a loopback gateway keeps the transport it always had. These tests
+// use the *real* dispatcher (`realGatewayTransport: true`) with a fake
+// Electron `net`, so they fail if the split regresses in either direction.
+//
+// Everything #351 hardened on this path is asserted again here *through the
+// new transport*: `redirect: 'manual'` plus the `./`-prefixed gateway-namespace
+// `Location` rewrite, hop-by-hop / content-encoding / content-length stripping,
+// the byte-counting stream and its in-flight handle, abort/cancel semantics,
+// and the private-window log redaction.
+// ---------------------------------------------------------------------------
+describe('external gateway transport', () => {
+  const REMOTE_GATEWAY = 'http://gateway.example:8080';
+  const LOOPBACK_GATEWAY = 'http://127.0.0.1:8080';
+
+  afterEach(async () => {
+    for (const ctx of loadedContexts.splice(0)) {
+      await ctx.mod.stopIpfs();
+    }
+    jest.clearAllMocks();
+    jest.restoreAllMocks();
+  });
+
+  // A fake Electron `net` that answers the gateway probe like a real gateway
+  // and delegates every other request to `handler`.
+  function gatewayNetMock(handler) {
+    return createNetMock((request, options) => {
+      if (String(options.url).endsWith(GATEWAY_PROBE_PATH)) {
+        emitResponse(request, { status: 200, headers: { 'x-ipfs-path': GATEWAY_PROBE_PATH } });
+        return;
+      }
+      if (handler) {
+        handler(request, options);
+        return;
+      }
+      emitResponse(request, { status: 200, chunks: ['external-body'] });
+    });
+  }
+
+  function loadWithRemoteGateway({ net, gateway = REMOTE_GATEWAY } = {}) {
+    return loadIpfsManagerModule({
+      nativeAvailable: false,
+      realGatewayTransport: true,
+      electronOverrides: { net },
+      activeProfile: {
+        metadata: { nodes: { ipfs: { mode: 'external', externalGateway: gateway } } },
+      },
+    });
+  }
+
+  test('a remote gateway is probed and served through Chromium, never Node fetch', async () => {
+    const realFetch = global.fetch;
+    global.fetch = jest.fn();
+    const net = gatewayNetMock();
+    try {
+      const ctx = loadWithRemoteGateway({ net });
+      await ctx.mod.startIpfs();
+
+      const response = await ctx.mod.serveNativeGatewayRequest({
+        path: '/ipfs/bafy',
+        method: 'GET',
+        headers: new Headers({ range: 'bytes=0-5' }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe('external-body');
+      expect(net.urls()).toEqual([
+        `${REMOTE_GATEWAY}${GATEWAY_PROBE_PATH}`,
+        `${REMOTE_GATEWAY}/ipfs/bafy`,
+      ]);
+      // The request headers the protocol handler sanitized still travel.
+      expect(net.requests[1].sentHeaders).toEqual({ range: 'bytes=0-5' });
+      // undici — the transport that ignores the session proxy — is untouched.
+      expect(global.fetch).not.toHaveBeenCalled();
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('a loopback gateway is unaffected and stays on Node fetch', async () => {
+    const realFetch = global.fetch;
+    global.fetch = mockGatewayFetch();
+    const net = gatewayNetMock();
+    try {
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        realGatewayTransport: true,
+        electronOverrides: { net },
+        activeProfile: {
+          metadata: {
+            nodes: { ipfs: { mode: 'external', externalGateway: LOOPBACK_GATEWAY } },
+          },
+        },
+      });
+      await ctx.mod.startIpfs();
+
+      const response = await ctx.mod.serveNativeGatewayRequest({
+        path: '/ipfs/bafy',
+        method: 'GET',
+        headers: new Headers(),
+      });
+
+      expect(await response.text()).toBe('external-body');
+      expect(global.fetch).toHaveBeenCalledWith(
+        `${LOOPBACK_GATEWAY}/ipfs/bafy`,
+        expect.objectContaining({ method: 'GET', redirect: 'manual' })
+      );
+      expect(net.request).not.toHaveBeenCalled();
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('a remote gateway request fails closed when Electron net is unavailable', async () => {
+    const realFetch = global.fetch;
+    global.fetch = mockGatewayFetch();
+    try {
+      // No `net` on the electron mock at all — the transport must not quietly
+      // fall back to the socket stack that bypasses the proxy.
+      const ctx = loadWithRemoteGateway({ net: undefined });
+      await ctx.mod.startIpfs();
+
+      expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'External node unreachable');
+      expect(global.fetch).not.toHaveBeenCalled();
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('keeps redirect: manual and the ./-prefixed Location rewrite over Chromium', async () => {
+    const net = gatewayNetMock((request, options) => {
+      // Kubo's canonical directory redirect, written in the gateway's own path
+      // space. Chromium resolves it against `ipfs://…`, so it has to come back
+      // as a relative reference or the navigation doubles the path.
+      if (String(options.url).endsWith('/ipfs/bafydir/docs')) {
+        emitRedirect(request, { status: 301, location: '/ipfs/bafydir/docs/' });
+        return;
+      }
+      emitResponse(request, { status: 200, chunks: ['not-followed'] });
+    });
+    const ctx = loadWithRemoteGateway({ net });
+    await ctx.mod.startIpfs();
+
+    const response = await ctx.mod.serveNativeGatewayRequest({
+      path: '/ipfs/bafydir/docs',
+      method: 'GET',
+      headers: new Headers(),
+    });
+
+    expect(response.status).toBe(301);
+    expect(response.headers.get('location')).toBe('./docs/');
+    // The hop is reported, never taken: no second request, and the first one
+    // was torn down rather than left following the redirect.
+    expect(net.urls()).toEqual([
+      `${REMOTE_GATEWAY}${GATEWAY_PROBE_PATH}`,
+      `${REMOTE_GATEWAY}/ipfs/bafydir/docs`,
+    ]);
+    expect(net.requests[1].aborted).toBe(true);
+  });
+
+  test('strips content-encoding/content-length and hop-by-hop headers over Chromium', async () => {
+    const net = gatewayNetMock((request) =>
+      emitResponse(request, {
+        status: 200,
+        headers: {
+          // Chromium decodes the body but still reports the upstream encoding
+          // and its compressed length (measured) — forwarding either would have
+          // Chromium decode the plaintext a second time.
+          'content-encoding': 'gzip',
+          'content-length': '41',
+          'transfer-encoding': 'chunked',
+          connection: 'keep-alive',
+          'keep-alive': 'timeout=5',
+          'content-type': 'text/plain',
+          'x-ipfs-path': '/ipfs/bafy',
+        },
+        chunks: ['plaintext'],
+      })
+    );
+    const ctx = loadWithRemoteGateway({ net });
+    await ctx.mod.startIpfs();
+
+    const response = await ctx.mod.serveNativeGatewayRequest({
+      path: '/ipfs/bafy',
+      method: 'GET',
+      headers: new Headers(),
+    });
+
+    expect(await response.text()).toBe('plaintext');
+    for (const dropped of [
+      'content-encoding',
+      'content-length',
+      'transfer-encoding',
+      'connection',
+      'keep-alive',
+    ]) {
+      expect(response.headers.get(dropped)).toBeNull();
+    }
+    expect(response.headers.get('content-type')).toBe('text/plain');
+    expect(response.headers.get('x-ipfs-path')).toBe('/ipfs/bafy');
+  });
+
+  test('counts the bytes it streams from a remote gateway and releases the handle', async () => {
+    const net = gatewayNetMock((request) =>
+      emitResponse(request, { status: 200, chunks: ['abcde', 'fghij', 'klm'] })
+    );
+    const ctx = loadWithRemoteGateway({ net });
+    await ctx.mod.startIpfs();
+
+    const response = await ctx.mod.serveNativeGatewayRequest({
+      path: '/ipfs/bafy',
+      method: 'GET',
+      headers: new Headers(),
+    });
+    expect(await response.text()).toBe('abcdefghijklm');
+
+    const stats = JSON.parse(ctx.mod.getNativeDiagnostics().nativeGatewayStats);
+    expect(stats).toEqual({ active_native_handles: 0, bytes_read: 13 });
+    expect(ctx.mod.getNativeDiagnostics().externalGateway).toBe(REMOTE_GATEWAY);
+  });
+
+  test('an aborted ipfs:// load tears down the Chromium request and releases the handle', async () => {
+    const net = gatewayNetMock((request) =>
+      // Headers, one chunk, then nothing — a transfer still in flight.
+      emitResponse(request, { status: 200, chunks: ['first'], end: false })
+    );
+    const ctx = loadWithRemoteGateway({ net });
+    await ctx.mod.startIpfs();
+
+    const controller = new AbortController();
+    const response = await ctx.mod.serveNativeGatewayRequest({
+      path: '/ipfs/bafy',
+      method: 'GET',
+      headers: new Headers(),
+      signal: controller.signal,
+    });
+    const reader = response.body.getReader();
+    expect(Buffer.from((await reader.read()).value).toString()).toBe('first');
+    expect(
+      JSON.parse(ctx.mod.getNativeDiagnostics().nativeGatewayStats).active_native_handles
+    ).toBe(1);
+
+    controller.abort();
+
+    await expect(reader.read()).rejects.toMatchObject({ name: 'AbortError' });
+    expect(net.requests[1].aborted).toBe(true);
+    expect(
+      JSON.parse(ctx.mod.getNativeDiagnostics().nativeGatewayStats).active_native_handles
+    ).toBe(0);
+  });
+
+  test('a remote gateway that never answers is abandoned when the probe times out', async () => {
+    const net = createNetMock(); // answers nothing, ever
+    const ctx = loadWithRemoteGateway({ net });
+
+    await expect(ctx.mod.probeExternalGateway(REMOTE_GATEWAY, { timeoutMs: 20 })).resolves.toBe(
+      false
+    );
+    expect(net.requests[0].aborted).toBe(true);
+  });
+
+  test('redacts the requested path in a private window when a remote request fails', async () => {
+    const net = gatewayNetMock((request) =>
+      request.emit('error', new Error('net::ERR_CONNECTION_REFUSED'))
+    );
+    const ctx = loadWithRemoteGateway({ net });
+    await ctx.mod.startIpfs();
+
+    // Required after the module load: `loadMainModule` resets the registry, so
+    // the manager's own instance of the context is the one that counts.
+    const { runWithPrivateLogContext } = require('./private/private-log-context');
+    const response = await runWithPrivateLogContext(true, () =>
+      ctx.mod.serveNativeGatewayRequest({
+        path: '/ipfs/bafysecret',
+        method: 'GET',
+        headers: new Headers(),
+      })
+    );
+
+    expect(response.status).toBe(502);
+    const warning = ctx.log.warn.mock.calls.map((call) => call.join(' ')).join('\n');
+    expect(warning).toContain('<private>');
+    expect(warning).not.toContain('bafysecret');
   });
 });
