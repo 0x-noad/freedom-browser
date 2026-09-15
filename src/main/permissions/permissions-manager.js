@@ -58,6 +58,7 @@ const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
 const store = require('./permissions-store');
 const { normalizeOrigin } = require('../../shared/origin-utils');
+const { getPartitionForWebContents } = require('../private/private-windows');
 const { broadcastToAllWebContents } = require('../lib/broadcast-to-all-webcontents');
 
 // Auto-allowed without prompting. pointerLock/fullscreen were the status
@@ -883,12 +884,24 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
 }
 
 /**
- * Merged decision view for one origin (persistent + session-only).
- * An embargo (#364) is a session-only deny like any other, flagged so the
+ * Merged decision view for one origin, as it applies in ONE window.
+ * An embargo (#364) is a run-scoped deny like any other, flagged so the
  * chrome can say the site was auto-blocked rather than blocked by the user.
+ *
+ * The run-scoped tier is read from the same scope the request path answers
+ * from (`getEffectiveDecision`): a private window's own partition, the
+ * normal-profile session decisions otherwise. Reading the normal-profile
+ * tier for every window painted a normal-window "this session" deny —
+ * an embargo included — into private windows, where it does not apply and
+ * the site still prompts, and offered a Remove there that silently cleared
+ * the normal profile's decision; a private window's own embargo, held in
+ * the partition tier, showed up nowhere at all.
+ *
+ * @param {string} origin
+ * @param {string|null} [privatePartition] - the asking window's partition
  * @returns {Object} Map of permission -> { decision, remembered, embargoed? }
  */
-function getDecisionsForOrigin(origin) {
+function getDecisionsForOrigin(origin, privatePartition = null) {
   const key = normalizeOrigin(origin);
   if (!key) return {};
 
@@ -897,11 +910,17 @@ function getDecisionsForOrigin(origin) {
   for (const [permission, decision] of Object.entries(stored)) {
     result[permission] = { decision, remembered: true };
   }
-  for (const [permission, decision] of sessionDecisions.get(key) || []) {
-    if (!result[permission]) {
-      result[permission] = { decision, remembered: false };
-      if (isEmbargoed(key, permission)) result[permission].embargoed = true;
-    }
+  const runScoped = privatePartition
+    ? privateDecisions.get(privatePartition)?.get(key)
+    : sessionDecisions.get(key);
+  for (const [permission, decision] of runScoped || []) {
+    // Inside a private window the partition-scoped answer is the more
+    // specific one and wins over the store, exactly as
+    // `getEffectiveDecision` resolves it; a normal-window session decision
+    // never overrides a stored one.
+    if (result[permission] && !privatePartition) continue;
+    result[permission] = { decision, remembered: false };
+    if (isEmbargoed(key, permission, privatePartition)) result[permission].embargoed = true;
   }
   return result;
 }
@@ -913,6 +932,16 @@ function getDecisionsForOrigin(origin) {
 // the dismissal counters (#364): a reset that left the count at the embargo
 // threshold would re-embargo on the site's very next dismissed prompt, so
 // "Remove" would not genuinely let the site ask again.
+//
+// They are scope-blind on purpose — that is what makes a profile-wide
+// "Revoke all" from Settings reach a still-open private window's live grant.
+// The cost is the other direction: a "Remove" clicked in a private window's
+// own popover also clears the normal profile's run-scoped decision for that
+// origin + key, so lifting a private window's embargo silently lifts the
+// normal profile's too. It only ever costs an extra prompt (nothing is
+// granted, nothing is persisted), and scoping the revoke to the asking
+// window would weaken the Settings path it exists for, so it is tracked
+// separately in #366 rather than papered over here.
 function revokeDecision(origin, permission) {
   const key = normalizeOrigin(origin);
   const removed = store.removeDecision(key, permission);
@@ -964,8 +993,11 @@ function registerPermissionsIpc() {
     return store.getAllDecisions();
   });
 
-  ipcMain.handle(IPC.PERMISSIONS_GET_FOR_ORIGIN, (_event, origin) => {
-    return getDecisionsForOrigin(origin);
+  // The indicator/popover query is answered for the asking window's own
+  // scope: the sender is that window's chrome renderer, so the partition
+  // comes from the private-window registry rather than from the renderer.
+  ipcMain.handle(IPC.PERMISSIONS_GET_FOR_ORIGIN, (event, origin) => {
+    return getDecisionsForOrigin(origin, getPartitionForWebContents(event?.sender));
   });
 
   ipcMain.handle(IPC.PERMISSIONS_REVOKE, (_event, origin, permission) => {

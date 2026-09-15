@@ -908,6 +908,12 @@ describe('permissions-manager private windows', () => {
       },
       extraMocks: {
         [require.resolve('../logger')]: () => log,
+        // The indicator query resolves the asking window's scope through the
+        // private-window registry (BrowserWindow identity). These suites run
+        // no real windows, so senders name their partition directly.
+        [require.resolve('../private/private-windows')]: () => ({
+          getPartitionForWebContents: (webContents) => webContents?.privatePartition || null,
+        }),
       },
     });
     normalSession = makeFakeSession();
@@ -932,6 +938,14 @@ describe('permissions-manager private windows', () => {
   };
 
   const respond = (response) => ctx.ipcMain.invoke(IPC.PERMISSIONS_PROMPT_RESPONSE, response);
+
+  // The address-bar indicator/popover query, asked by ONE window's chrome:
+  // `partition` names a private window's scope, null a normal window's.
+  const decisionsIn = (partition, origin = 'https://example.com') =>
+    ctx.ipcMain.handlers.get(IPC.PERMISSIONS_GET_FOR_ORIGIN)(
+      { sender: { privatePartition: partition } },
+      origin
+    );
 
   beforeEach(() => {
     userDataDir = createTempUserDataDir();
@@ -1244,11 +1258,20 @@ describe('permissions-manager private windows', () => {
         })
       ).toBe(false);
 
+      // …and it is visible where it applies: an auto-block the user never
+      // chose is only discoverable and liftable from that window's own
+      // indicator popover (#365).
+      expect(await decisionsIn(PARTITION)).toEqual({
+        notifications: { decision: 'deny', remembered: false, embargoed: true },
+      });
+
       // …and nowhere else. Nothing in permissions.json, nothing in the
-      // normal-window session tier: a normal window still prompts.
+      // normal-window session tier, nothing in a normal window's chrome:
+      // a normal window still prompts.
       const storeCtx = loadMainModule(require.resolve('./permissions-store'), { userDataDir });
       expect(storeCtx.mod.getAllDecisions()).toEqual({});
       expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+      expect(await decisionsIn(null)).toEqual({});
       const normalHost = makeHost();
       expect(requestOn(normalSession, 'notifications', normalHost)).not.toHaveBeenCalled();
       expect(lastPrompt(normalHost)).not.toBeNull();
@@ -1276,6 +1299,22 @@ describe('permissions-manager private windows', () => {
       expect(lastPrompt(privateHost)).not.toBeNull();
     });
 
+    // #365: and the private window's chrome must not claim otherwise. The
+    // embargo does not apply there — the site still prompts — so an
+    // indicator and a "Blocked after repeated dismissals" row would describe
+    // a block that is not in force, with a Remove that silently cleared the
+    // normal profile's embargo instead.
+    test('a normal-profile embargo is not painted into a private window', async () => {
+      load();
+      const normalHost = makeHost();
+      for (let i = 0; i < 3; i += 1) expect(await dismissOn(normalSession, normalHost)).toBe(true);
+
+      expect(await decisionsIn(null)).toEqual({
+        notifications: { decision: 'deny', remembered: false, embargoed: true },
+      });
+      expect(await decisionsIn(PARTITION)).toEqual({});
+    });
+
     test('closing the window drops the embargo and its dismissal counter', async () => {
       load();
       const host = makeHost();
@@ -1292,6 +1331,34 @@ describe('permissions-manager private windows', () => {
       const again = requestOn(privateSession, 'notifications', host);
       expect(again).not.toHaveBeenCalled();
       expect(lastPrompt(host)).not.toBeNull();
+    });
+  });
+
+  // #365: the popover describes what applies in THIS window. A private-window
+  // answer wins over the profile store inside that window (the same way
+  // getEffectiveDecision resolves it), so that is what its chrome lists —
+  // while the normal window keeps showing the stored decision.
+  test('a private-window decision is what that window lists, not the stored one', async () => {
+    load();
+    const host = makeHost();
+
+    // Blocked inside the private window first, then allowed and remembered
+    // in a normal one — the order getEffectiveDecision's precedence exists
+    // for (a later profile-level allow must not override the answer the user
+    // gave in a still-open private window).
+    requestOn(privateSession, 'notifications', host);
+    await respond({ id: lastPrompt(host).id, decision: 'deny', remember: true });
+    await flush();
+
+    requestOn(normalSession, 'notifications', host);
+    await respond({ id: lastPrompt(host).id, decision: 'allow', remember: true });
+    await flush();
+
+    expect(await decisionsIn(null)).toEqual({
+      notifications: { decision: 'allow', remembered: true },
+    });
+    expect(await decisionsIn(PARTITION)).toEqual({
+      notifications: { decision: 'deny', remembered: false },
     });
   });
 
