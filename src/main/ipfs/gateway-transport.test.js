@@ -218,6 +218,32 @@ describe('an .onion gateway is only dialled when the session proxies it', () => 
     }
   );
 
+  // R3-F1: that session round-trip is awaited, so a caller's deadline (the
+  // gateway probe's 2s timer) can land while `resolveProxy` is in flight. An
+  // already-aborted signal never fires `addEventListener('abort')`, so dialling
+  // at that point would create a request nothing can cancel and leave the
+  // promise pending until the network settled it — with the probe's caller
+  // (startExternalIpfs, inside the serialized op queue) stalled behind it.
+  test('an abort that lands while the proxy is resolving is honoured, not dialled', async () => {
+    const controller = new AbortController();
+    const requestImpl = jest.fn();
+    const resolveProxy = jest.fn(async () => {
+      controller.abort();
+      return ONION_ROUTED;
+    });
+
+    await expect(
+      netGatewayFetch(
+        ONION,
+        { redirect: 'manual', signal: controller.signal },
+        { requestImpl, resolveProxy }
+      )
+    ).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(resolveProxy).toHaveBeenCalledWith(ONION);
+    expect(requestImpl).not.toHaveBeenCalled();
+  });
+
   // The check costs a session round-trip, so it stays on the one host class
   // that needs it: everything else dials exactly as before.
   test.each([

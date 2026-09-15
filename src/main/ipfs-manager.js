@@ -334,8 +334,13 @@ function startHealthCheck() {
       // applies below.
       if (currentMode !== MODE.EXTERNAL || externalGatewayUrl !== probedUrl) return;
       if (!isHealthy && currentState === STATUS.RUNNING) {
-        updateState(STATUS.ERROR, 'External IPFS gateway is unreachable');
-        setErrorState('ipfs', 'External node unreachable. Retrying…');
+        // Same hint as the failed-start branch in startExternalIpfs(): losing
+        // the route mid-session (Tor stopped, Kubo's localhost subdomain
+        // redirect) reads exactly like never having had it, so the line that
+        // names the cause has to travel with this message too.
+        const hint = unreachableEndpointHint(probedUrl);
+        updateState(STATUS.ERROR, `External IPFS gateway is unreachable${hint}`);
+        setErrorState('ipfs', `External node unreachable${hint}. Retrying…`);
       } else if (isHealthy && currentState === STATUS.ERROR) {
         clearErrorState('ipfs');
         // Two shapes of "this endpoint is unreachable" reach this branch. A
@@ -451,6 +456,19 @@ function detectExternalGatewayVersionInBackground(url) {
 async function startExternalIpfs(config) {
   const url = normalizeExternalGatewayUrl(config?.externalGateway);
   if (!url) {
+    // This is an external teardown too, so it owns its state instead of
+    // trusting that doSyncIpfsProfileMode already ran one (today it always
+    // does; a future caller reaching doStartIpfs from an armed-external state
+    // would not). A probe left armed for a previously-configured endpoint is
+    // describing something this profile no longer names: it would keep GETting
+    // the old gateway every 5s, and its recovery branch could resurrect that
+    // endpoint through beginServingExternalGateway(). Same drop the native
+    // path below performs for the same reason.
+    stopHealthCheck();
+    currentMode = MODE.EXTERNAL;
+    externalGatewayUrl = null;
+    externalGatewayServing = false;
+    externalGatewayVersion = null;
     publishExternalIpfsMode(null);
     updateState(STATUS.ERROR, 'External IPFS gateway is not configured');
     setStatusMessage('ipfs', 'External node not configured');

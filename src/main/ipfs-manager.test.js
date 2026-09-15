@@ -570,6 +570,50 @@ describe('ipfs-manager', () => {
     }
   });
 
+  // R3-F2: losing the route mid-session reads exactly like never having had it
+  // (Tor toggled off, every probe refused by the transport), so the soft health
+  // check's notice has to name the cause the same way the failed-start branch
+  // does — otherwise the nodes menu shows a bare "unreachable" for the same
+  // condition it explains at launch.
+  test('a serving gateway that goes unreachable keeps the endpoint hint', async () => {
+    jest.useFakeTimers();
+    const realFetch = global.fetch;
+    const gateway = 'http://freedomgatewayprobe.onion:8080';
+    try {
+      global.fetch = mockGatewayFetch();
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: {
+          metadata: { nodes: { ipfs: { mode: 'external', externalGateway: gateway } } },
+        },
+      });
+      ctx.mod.registerIpfsIpc();
+      await ctx.mod.startIpfs();
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'running',
+      });
+
+      // Tor stops: the route is gone and the gateway stops answering.
+      global.fetch = jest.fn(async () => {
+        throw new Error('.onion gateway is not routed through a proxy');
+      });
+      jest.advanceTimersByTime(5000);
+      for (let i = 0; i < 50; i += 1) await Promise.resolve();
+
+      expect(ctx.setErrorState).toHaveBeenLastCalledWith(
+        'ipfs',
+        'External node unreachable — .onion gateways need Tor running. Retrying…'
+      );
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'error',
+        error: 'External IPFS gateway is unreachable — .onion gateways need Tor running',
+      });
+    } finally {
+      global.fetch = realFetch;
+      jest.useRealTimers();
+    }
+  });
+
   // The user configures a gateway, never an RPC API. `:5001` on a remote or LAN
   // host is somebody else's port (and Kubo's own :5001 is its admin RPC), so
   // version detection is loopback-only.
@@ -1008,6 +1052,43 @@ describe('ipfs-manager', () => {
           status: 'running',
         });
         expect(ctx.clearErrorState).toHaveBeenLastCalledWith('ipfs');
+      } finally {
+        global.fetch = realFetch;
+        jest.useRealTimers();
+      }
+    });
+
+    // R3-F3: the not-configured branch is an external teardown too. Today every
+    // route to it runs a sync first, which tears the old probe down; this drives
+    // doStartIpfs straight from an armed-external state so the branch has to
+    // enforce its own state rather than inherit one.
+    test('starting into a not-configured external profile drops the armed probe', async () => {
+      jest.useFakeTimers();
+      const realFetch = global.fetch;
+      const gateway = 'http://127.0.0.1:8080';
+      const activeProfile = {
+        metadata: { nodes: { ipfs: { mode: 'external', externalGateway: gateway } } },
+      };
+      try {
+        const ctx = await startThenFailExternal(activeProfile);
+
+        // The endpoint is cleared out of the profile, and the node is started
+        // again with no sync in between.
+        activeProfile.metadata.nodes.ipfs = { mode: 'external' };
+        await ctx.mod.startIpfs();
+        global.fetch.mockClear();
+
+        expect(ctx.setStatusMessage).toHaveBeenLastCalledWith(
+          'ipfs',
+          'External node not configured'
+        );
+        // Nothing is left probing the endpoint the profile no longer names — so
+        // the health check's recovery branch cannot resurrect it either.
+        jest.advanceTimersByTime(15000);
+        await drainMicrotasks();
+        expect(probeCallsTo(global.fetch, gateway)).toBe(0);
+        expect(jest.getTimerCount()).toBe(0);
+        expect(ctx.mod.getNativeDiagnostics().externalGateway).toBeNull();
       } finally {
         global.fetch = realFetch;
         jest.useRealTimers();

@@ -229,6 +229,18 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
     let bodyController = null;
     let onAbort = null;
 
+    // Re-checked here, not just on entry: `assertOnionRoutable` awaits
+    // `session.resolveProxy`, so the caller's deadline (the probe's 2s timer)
+    // can land while that is in flight. `addEventListener('abort')` never
+    // fires for a signal that already aborted, so creating the request now
+    // would dial the gateway *after* the abort with nothing left able to
+    // cancel it — the returned promise would then hang until the network
+    // settled it, stalling whoever awaited it.
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+
     const request = requestImpl({
       method,
       url,
