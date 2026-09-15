@@ -17,9 +17,12 @@
  * Results are printed as one JSON line prefixed with `PROBE-RESULT `.
  */
 
-const { app, session } = require('electron');
+const { app, net: electronNet, session } = require('electron');
+const fs = require('fs');
 const http = require('http');
 const net = require('net');
+const os = require('os');
+const path = require('path');
 const zlib = require('zlib');
 
 const { gatewayFetch } = require('../../ipfs/gateway-transport');
@@ -28,11 +31,22 @@ const { buildOnionPacScript, applyOnionProxy, clearOnionProxy } = require('../..
 const ONION_GATEWAY_HOST = 'freedomgatewayprobe.onion';
 const REMOTE_GATEWAY_HOST = 'gateway.example.test';
 const PROBE_PATH = '/ipfs/bafkqaaa';
+// Served with Kubo's own immutable-CID caching headers, and with a body that
+// changes on every hit so a cached answer is recognisable by its content.
+const IMMUTABLE_PATH = '/ipfs/bafkimmutable';
+const CONTROL_PATH = '/ipfs/bafkcontrol';
+
+// A private profile must not leave the profile's own userData behind either,
+// so the probe runs against a throwaway one and scans it afterwards.
+const PROBE_USER_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-gateway-probe-'));
+app.setPath('userData', PROBE_USER_DATA);
 
 const socksSeen = [];
 const httpProxySeen = [];
 const originSeen = [];
 let streamSocketClosed = false;
+let immutableHits = 0;
+let controlHits = 0;
 
 function startOrigin() {
   return new Promise((resolve) => {
@@ -52,6 +66,19 @@ function startOrigin() {
           'X-Ipfs-Path': '/ipfs/bafygz',
         });
         res.end(body);
+        return;
+      }
+      // Kubo's headers for an immutable CID, verbatim. A body that counts its
+      // own hit makes a cached answer self-identifying.
+      if (req.url === IMMUTABLE_PATH || req.url === CONTROL_PATH) {
+        const hit = req.url === IMMUTABLE_PATH ? (immutableHits += 1) : (controlHits += 1);
+        const marker = req.url === IMMUTABLE_PATH ? 'nostoremarker' : 'controlmarker';
+        res.writeHead(200, {
+          'Cache-Control': 'public, max-age=29030400, immutable',
+          'Content-Type': 'text/plain',
+          'X-Ipfs-Path': req.url,
+        });
+        res.end(`${marker}-hit-${hit}`);
         return;
       }
       if (req.url === '/ipfs/bafystream') {
@@ -116,6 +143,64 @@ function startHttpProxy() {
     });
     server.listen(0, '127.0.0.1', () => resolve(server.address().port));
   });
+}
+
+// The same request the transport makes, minus `cache: 'no-store'` — the
+// control that shows Chromium really does cache this response shape, so "the
+// transport hit the origin twice" is a fact about the option and not about the
+// probe's environment.
+function netFetchWithDefaultCache(url) {
+  return new Promise((resolve, reject) => {
+    const request = electronNet.request({
+      method: 'GET',
+      url,
+      redirect: 'manual',
+      credentials: 'omit',
+      useSessionCookies: false,
+      bypassCustomProtocolHandlers: true,
+    });
+    request.on('response', (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      response.on('error', reject);
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+// Does any file under the profile contain these bytes? Chromium's disk cache
+// stores the response body (and the URL) verbatim for an uncompressed entry.
+function markersOnDisk(dir, markers) {
+  const found = new Set();
+  const walk = (current) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      try {
+        if (fs.statSync(full).size > 32 * 1024 * 1024) continue;
+        const bytes = fs.readFileSync(full);
+        for (const marker of markers) {
+          if (bytes.includes(marker)) found.add(marker);
+        }
+      } catch {
+        /* a file Chromium is holding open/rotating is not evidence either way */
+      }
+    }
+  };
+  walk(dir);
+  return [...found];
 }
 
 async function setPac(targetSession, script) {
@@ -253,6 +338,41 @@ async function main() {
     results.abort = { error: String(err && err.message) };
   }
 
+  // ---- The HTTP cache must not answer, or record, a gateway request -------
+  // Kubo marks every `/ipfs/<cid>` immutable for a year, so a cached answer
+  // would keep reporting a dead gateway healthy (and would write the visited
+  // CID plus the page bytes into the default profile's on-disk cache, private
+  // windows included).
+  try {
+    const first = await gatewayFetch(`${onionGateway}${IMMUTABLE_PATH}`, { redirect: 'manual' });
+    const firstBody = await textOf(first);
+    const second = await gatewayFetch(`${onionGateway}${IMMUTABLE_PATH}`, { redirect: 'manual' });
+    const secondBody = await textOf(second);
+
+    const controlFirst = await netFetchWithDefaultCache(`${onionGateway}${CONTROL_PATH}`);
+    const controlSecond = await netFetchWithDefaultCache(`${onionGateway}${CONTROL_PATH}`);
+
+    // Wait for the control entry to reach disk before concluding anything
+    // about what is *not* there — a scan that finds neither proves nothing.
+    let onDisk = [];
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      onDisk = markersOnDisk(PROBE_USER_DATA, ['controlmarker', 'nostoremarker']);
+      if (onDisk.includes('controlmarker')) break;
+    }
+    // One more settle, so a late no-store write would still be caught.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    onDisk = markersOnDisk(PROBE_USER_DATA, ['controlmarker', 'nostoremarker']);
+
+    results.httpCache = {
+      transport: { firstBody, secondBody, originHits: immutableHits },
+      control: { firstBody: controlFirst, secondBody: controlSecond, originHits: controlHits },
+      onDisk,
+    };
+  } catch (err) {
+    results.httpCache = { error: String(err && err.message) };
+  }
+
   // ---- A plain HTTP proxy on the session (not Tor) ------------------------
   await setPac(
     ses,
@@ -283,6 +403,11 @@ async function main() {
   }
 
   await clearOnionProxy(ses);
+  try {
+    fs.rmSync(PROBE_USER_DATA, { recursive: true, force: true });
+  } catch {
+    /* a profile Chromium still holds open is cleaned up with the temp dir */
+  }
   process.stdout.write(`PROBE-RESULT ${JSON.stringify(results)}\n`);
   app.exit(0);
 }

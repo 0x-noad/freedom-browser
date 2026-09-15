@@ -1550,6 +1550,14 @@ describe('external gateway transport', () => {
       ]);
       // The request headers the protocol handler sanitized still travel.
       expect(net.requests[1].sentHeaders).toEqual({ range: 'bytes=0-5' });
+      // Neither the probe nor the content fetch may touch Chromium's HTTP
+      // cache: a cached probe answer (Kubo serves `/ipfs/<cid>` `immutable,
+      // max-age=29030400`) would report a dead gateway healthy forever, and a
+      // stored body would leave private-window CIDs and page bytes in the
+      // default profile's on-disk cache. undici cached neither.
+      for (const request of net.requests) {
+        expect(request.options.cache).toBe('no-store');
+      }
       // undici — the transport that ignores the session proxy — is untouched.
       expect(global.fetch).not.toHaveBeenCalled();
     } finally {

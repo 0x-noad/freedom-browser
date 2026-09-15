@@ -170,6 +170,30 @@ describeWithElectron('external IPFS gateway transport in a real Electron process
     expect(Number(results.contentEncoding.contentLength)).toBeLessThan(4096);
   });
 
+  // Chromium has an HTTP cache; undici did not. Kubo serves every
+  // `/ipfs/<cid>` (the reachability probe's `bafkqaaa` included) as immutable
+  // for a year, so without `cache: 'no-store'` a dead gateway reads healthy
+  // forever and every visited CID lands in the profile's on-disk cache.
+  test('gateway requests neither read from nor write to the HTTP cache', () => {
+    expect(results.httpCache.error).toBeUndefined();
+    // Both loads reached the origin, and the second saw the *second* body.
+    expect(results.httpCache.transport).toMatchObject({
+      firstBody: 'nostoremarker-hit-1',
+      secondBody: 'nostoremarker-hit-2',
+      originHits: 2,
+    });
+    // Control: the identical request without the option is answered from the
+    // cache on its second run — so the assertion above is about `no-store`,
+    // not about a headless Chromium that happens not to cache.
+    expect(results.httpCache.control).toMatchObject({
+      firstBody: 'controlmarker-hit-1',
+      secondBody: 'controlmarker-hit-1',
+      originHits: 1,
+    });
+    // …and on disk: the control body is there, the gateway body is not.
+    expect(results.httpCache.onDisk).toEqual(['controlmarker']);
+  });
+
   test('cancelling an in-flight load aborts it and closes the socket', () => {
     expect(results.abort).toMatchObject({
       firstChunk: 'first-chunk',

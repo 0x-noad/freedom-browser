@@ -37,6 +37,12 @@
  *    stays load-bearing after the transport change.
  *  - A PAC that proxies everything is bypassed for loopback hosts, so a
  *    loopback gateway is unaffected by any proxy policy either way.
+ *  - Chromium's HTTP cache is on by default for `net.request` and undici had
+ *    none, so the transport change silently added one: re-measured on Electron
+ *    44.3.0 (`ipfs-gateway-proxy.test.js`), a second load of a
+ *    `max-age=29030400, immutable` gateway URL never reaches the origin and
+ *    its body is written into the profile's `Cache_Data`. `cache: 'no-store'`
+ *    is what keeps this path cacheless — see the note on the option below.
  *  - `net.request` reaches registered custom protocol handlers unless
  *    `bypassCustomProtocolHandlers` is set. The test harness owns `http:` and
  *    `https:` (`test-harness.js`), so without that option a gateway request
@@ -149,6 +155,17 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       // undici sent (nothing) on this path.
       credentials: 'omit',
       useSessionCookies: false,
+      // Neither read from nor written to Chromium's HTTP cache — undici had no
+      // cache at all, and both halves of that matter here:
+      //  - Kubo serves every `/ipfs/<cid>` (the reachability probe's
+      //    `bafkqaaa` included) with `Cache-Control: public, max-age=29030400,
+      //    immutable`, so a cached 200 would answer `probeExternalGateway`
+      //    forever — a dead remote gateway would read healthy across restarts
+      //    and the unreachable-status/retry path (#351) would never arm.
+      //  - `ipfs://` loads from a private window come through this same
+      //    handler, so storing would write visited CIDs, gateway host and page
+      //    bytes into the *default* profile's on-disk cache.
+      cache: 'no-store',
       // Straight to the network — never back into a registered `http(s)`
       // protocol handler (the test harness registers one).
       bypassCustomProtocolHandlers: true,

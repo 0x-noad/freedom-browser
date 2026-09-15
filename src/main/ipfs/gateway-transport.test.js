@@ -123,6 +123,11 @@ describe('netGatewayFetch', () => {
       // policy: no cookies, no stored credentials.
       credentials: 'omit',
       useSessionCookies: false,
+      // undici had no HTTP cache; Chromium's default one would both answer the
+      // reachability probe from a stale 200 (Kubo marks `/ipfs/<cid>`
+      // `immutable, max-age=29030400`) and write private-window `ipfs://`
+      // bytes into the default profile's on-disk cache.
+      cache: 'no-store',
       // Straight to the network, never into a registered http(s) protocol
       // handler (the e2e harness registers one).
       bypassCustomProtocolHandlers: true,
