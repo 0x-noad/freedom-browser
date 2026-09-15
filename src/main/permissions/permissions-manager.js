@@ -11,6 +11,12 @@
  *                                          requesting window's renderer
  *   anything else                        → denied (deny-by-default keeps)
  *
+ * That flow is the REQUEST path. The synchronous CHECK path
+ * (`navigator.permissions.query`, `Notification.permission`) is boolean-only
+ * in Electron, so it cannot report Chrome's "prompt" state: it answers false
+ * only for a recorded deny and reports an undecided permission as allowed —
+ * see the check handler for why (#361).
+ *
  * `pointerLock` and `fullscreen` stay auto-allowed (status quo). `hid`
  * is deliberately NOT promptable: Ledger hardware-wallet support drives
  * HID through its own connect flow, so web-page HID requests keep the
@@ -679,24 +685,40 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
       return true;
     }
 
-    // Checks are synchronous, so only recorded allows pass. An undecided
-    // permission reports "denied" — the request path still prompts when
-    // the page actually asks.
+    // Checks (navigator.permissions.query, Notification.permission,
+    // enumerateDevices labels) are synchronous and boolean-only: Electron
+    // maps false to PermissionStatus::DENIED and offers no way to say
+    // "prompt" the way Chrome does (electron/electron#19891). An undecided
+    // permission therefore has to report as one of granted/denied, and
+    // "denied" is the worse lie (#361): sites that consult the Permissions
+    // API before they ask — Google Meet's pre-join screen — read it as a
+    // hard block, show their "access is blocked" state and never call
+    // getUserMedia, so Freedom's own per-site prompt never fires and the
+    // user has nothing to click. So only a RECORDED deny (persistent,
+    // session-only, or private-window — i.e. the user already said no)
+    // answers false here; undecided reports allowed, which is also
+    // Electron's own default when no check handler is installed.
+    //
+    // This does not widen what a site actually gets. The request path is
+    // unchanged: an undecided request still raises the anchored prompt,
+    // a Block there still denies, and a recorded deny is still silently
+    // refused both here and there.
     let keys;
     if (permission === 'media') {
       const key = MEDIA_TYPE_KEYS[details?.mediaType];
-      // A media *check* without a concrete device type passes only when
-      // both devices are allowed.
+      // A media *check* without a concrete device type covers both devices,
+      // so a recorded deny on either one answers the check.
       keys = key ? [key] : ['camera', 'microphone'];
     } else {
       keys = permissionKeysForRequest(permission, details);
     }
+    // Non-promptable permissions (hid, display-capture, …) stay denied.
     if (!keys) return false;
 
     const origin = originForRequest(webContents, details, requestingOrigin);
     if (!origin) return false;
 
-    return keys.every((key) => getEffectiveDecision(origin, key, privatePartition) === 'allow');
+    return keys.every((key) => getEffectiveDecision(origin, key, privatePartition) !== 'deny');
   });
 }
 
