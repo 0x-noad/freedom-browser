@@ -291,6 +291,212 @@ describe('permissions-manager', () => {
     expect(lastPrompt(host)).not.toBeNull();
   });
 
+  // #364: dismissal embargo (Chromium parity). A dismiss stays a deny-once
+  // that records nothing for the first two — the site can ask again — but
+  // the third in a row records a session-only deny, so a page cannot hold
+  // the prompt up forever by re-asking after every Escape.
+  describe('dismissal embargo', () => {
+    const ORIGIN = 'https://example.com';
+
+    const checkNotifications = () =>
+      session.checkHandler(null, 'notifications', ORIGIN, {
+        requestingUrl: 'https://example.com/page',
+      });
+
+    // Ask, then dismiss the prompt that appears. Returns false when no
+    // prompt was raised (the request was answered silently instead).
+    const askAndDismiss = async (host, { permission = 'notifications', guest } = {}) => {
+      host.send.mockClear();
+      const callback = request(permission, { host, guest });
+      const prompt = lastPrompt(host);
+      if (!prompt) return false;
+      await respond({ id: prompt.id, decision: 'dismiss' });
+      await flush();
+      expect(callback).toHaveBeenCalledWith(false);
+      return true;
+    };
+
+    test('the third dismissal embargoes: the next request is denied with no prompt', async () => {
+      load();
+      const host = makeHost();
+
+      // Dismissals one and two keep the status quo — nothing recorded, the
+      // site is asked again (the deny-once contract the e2e spec pins).
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+      expect(checkNotifications()).toBe(true);
+
+      // The third records the embargo as a session-only deny.
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({
+        notifications: { decision: 'deny', remembered: false, embargoed: true },
+      });
+
+      // The fourth request is denied outright — no prompt is enqueued, and
+      // the check path reports denied so the page reads "denied".
+      host.send.mockClear();
+      const fourth = request('notifications', { host });
+      expect(fourth).toHaveBeenCalledWith(false);
+      expect(promptCount(host)).toBe(0);
+      expect(checkNotifications()).toBe(false);
+
+      // Nothing was persisted: the embargo dies with the run.
+      const storeCtx = loadMainModule(require.resolve('./permissions-store'), { userDataDir });
+      expect(storeCtx.mod.getAllDecisions()).toEqual({});
+    });
+
+    test('an allow resets the counter; a block neither counts nor carries one over', async () => {
+      load();
+      const host = makeHost();
+      const count = () => ctx.mod._getDismissCount(ORIGIN, 'notifications');
+
+      await askAndDismiss(host);
+      await askAndDismiss(host);
+      expect(count()).toBe(2);
+
+      // The user finally answers: Allow. Two dismissals ago is not two
+      // dismissals away from an embargo any more.
+      request('notifications', { host });
+      await respond({ id: lastPrompt(host).id, decision: 'allow', remember: false });
+      await flush();
+      expect(count()).toBe(0);
+
+      // Same for a Block: it is a decision, not a dismissal — it must not
+      // add to the count, nor leave an earlier one standing.
+      ctx.mod.revokeDecision(ORIGIN, 'notifications');
+      await askAndDismiss(host);
+      await askAndDismiss(host);
+      expect(count()).toBe(2);
+      request('notifications', { host });
+      await respond({ id: lastPrompt(host).id, decision: 'deny', remember: false });
+      await flush();
+      expect(count()).toBe(0);
+
+      // Three blocks in a row are three decisions, not three dismissals.
+      ctx.mod.revokeDecision(ORIGIN, 'notifications');
+      for (let i = 0; i < 3; i += 1) {
+        request('notifications', { host });
+        await respond({ id: lastPrompt(host).id, decision: 'deny', remember: false });
+        await flush();
+        ctx.mod.revokeDecision(ORIGIN, 'notifications');
+      }
+      expect(count()).toBe(0);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+    });
+
+    test('requests invalidated by navigation or a closing window are not dismissals', async () => {
+      load();
+      const host = makeHost();
+      const count = () => ctx.mod._getDismissCount(ORIGIN, 'notifications');
+
+      // Four documents in a row ask and are navigated away from before the
+      // user answers. None of that is a user dismissal.
+      for (let i = 0; i < 4; i += 1) {
+        const guest = makeGuest('https://example.com/page', host);
+        const callback = request('notifications', { host, guest });
+        expect(lastPrompt(host)).not.toBeNull();
+        guest.navigate('https://example.com/elsewhere');
+        expect(callback).toHaveBeenCalledWith(false);
+      }
+      expect(count()).toBe(0);
+
+      // Same for the window closing on a pending prompt.
+      const closingHost = makeHost();
+      const guest = makeGuest('https://example.com/page', closingHost);
+      request('notifications', { host: closingHost, guest });
+      closingHost.destroy();
+      expect(count()).toBe(0);
+
+      // So the site is still asked, and is still three real dismissals
+      // away from the embargo.
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(count()).toBe(2);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+    });
+
+    test('revokeDecision clears the counter as well as the deny, so the site can ask again', async () => {
+      load();
+      const host = makeHost();
+
+      for (let i = 0; i < 3; i += 1) await askAndDismiss(host);
+      host.send.mockClear();
+      expect(request('notifications', { host })).toHaveBeenCalledWith(false);
+      expect(promptCount(host)).toBe(0);
+
+      expect(ctx.mod.revokeDecision(ORIGIN, 'notifications')).toBe(true);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+      expect(ctx.mod._getDismissCount(ORIGIN, 'notifications')).toBe(0);
+
+      // Asking prompts again — and the next dismissal is the first of a
+      // fresh three, not the fourth of the old run (which would re-embargo
+      // the origin immediately and make "Remove" meaningless).
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+    });
+
+    test('revokeOrigin and revokeAll clear the counter too', async () => {
+      load();
+      const host = makeHost();
+
+      for (let i = 0; i < 3; i += 1) await askAndDismiss(host);
+      expect(ctx.mod.revokeOrigin(ORIGIN)).toBe(true);
+      expect(ctx.mod._getDismissCount(ORIGIN, 'notifications')).toBe(0);
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+
+      for (let i = 0; i < 2; i += 1) await askAndDismiss(host);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toMatchObject({
+        notifications: { embargoed: true },
+      });
+      expect(ctx.mod.revokeAll()).toBe(true);
+      expect(ctx.mod._getDismissCount(ORIGIN, 'notifications')).toBe(0);
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+    });
+
+    test('the embargo is per permission key: dismissing one leaves the others askable', async () => {
+      load();
+      const host = makeHost();
+
+      for (let i = 0; i < 3; i += 1) await askAndDismiss(host, { permission: 'geolocation' });
+      host.send.mockClear();
+      expect(request('geolocation', { host })).toHaveBeenCalledWith(false);
+      expect(promptCount(host)).toBe(0);
+
+      // Notifications were never dismissed — still prompted for.
+      const callback = request('notifications', { host });
+      expect(callback).not.toHaveBeenCalled();
+      expect(lastPrompt(host).keys).toEqual(['notifications']);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({
+        geolocation: { decision: 'deny', remembered: false, embargoed: true },
+      });
+    });
+
+    test('dismissals are per origin', async () => {
+      load();
+      const host = makeHost();
+      const other = 'https://other.example';
+
+      for (let i = 0; i < 2; i += 1) await askAndDismiss(host);
+      host.send.mockClear();
+      const callback = request('notifications', { host, url: `${other}/page` });
+      await respond({ id: lastPrompt(host).id, decision: 'dismiss' });
+      await flush();
+      expect(callback).toHaveBeenCalledWith(false);
+
+      // example.com is at two, other.example at one — neither embargoed.
+      expect(ctx.mod._getDismissCount(ORIGIN, 'notifications')).toBe(2);
+      expect(ctx.mod._getDismissCount(other, 'notifications')).toBe(1);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+      expect(ctx.mod.getDecisionsForOrigin(other)).toEqual({});
+    });
+  });
+
   test('one prompt at a time per tab; the queue advances on response', async () => {
     load();
     const host = makeHost();
@@ -1001,6 +1207,91 @@ describe('permissions-manager private windows', () => {
           requestingUrl: 'https://example.com/page',
         })
       ).toBe(true);
+    });
+  });
+
+  // #364: the dismissal embargo is a decision like any other private-window
+  // decision — partition-scoped, never persisted, gone when the window is.
+  describe('dismissal embargo in a private window', () => {
+    const ORIGIN = 'https://example.com';
+
+    const dismissOn = async (session, host) => {
+      host.send.mockClear();
+      const callback = requestOn(session, 'notifications', host);
+      const prompt = lastPrompt(host);
+      if (!prompt) return false;
+      await respond({ id: prompt.id, decision: 'dismiss' });
+      await flush();
+      expect(callback).toHaveBeenCalledWith(false);
+      return true;
+    };
+
+    test('embargoes the partition only — not the store, not normal windows', async () => {
+      load();
+      const privateHost = makeHost();
+
+      for (let i = 0; i < 3; i += 1)
+        expect(await dismissOn(privateSession, privateHost)).toBe(true);
+
+      // Denied silently inside the private window…
+      privateHost.send.mockClear();
+      const embargoed = requestOn(privateSession, 'notifications', privateHost);
+      expect(embargoed).toHaveBeenCalledWith(false);
+      expect(lastPrompt(privateHost)).toBeNull();
+      expect(
+        privateSession.checkHandler(null, 'notifications', ORIGIN, {
+          requestingUrl: 'https://example.com/page',
+        })
+      ).toBe(false);
+
+      // …and nowhere else. Nothing in permissions.json, nothing in the
+      // normal-window session tier: a normal window still prompts.
+      const storeCtx = loadMainModule(require.resolve('./permissions-store'), { userDataDir });
+      expect(storeCtx.mod.getAllDecisions()).toEqual({});
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+      const normalHost = makeHost();
+      expect(requestOn(normalSession, 'notifications', normalHost)).not.toHaveBeenCalled();
+      expect(lastPrompt(normalHost)).not.toBeNull();
+      expect(
+        normalSession.checkHandler(null, 'notifications', ORIGIN, {
+          requestingUrl: 'https://example.com/page',
+        })
+      ).toBe(true);
+
+      // The origin a private window prompted for stays out of the
+      // persistent log, embargo line included (PRIVATE MODE GUARD).
+      const lines = log.info.mock.calls.map((call) => call.join(' ')).join('\n');
+      expect(lines).toContain('embargoed notifications');
+      expect(lines).not.toContain('example.com');
+    });
+
+    test('normal-window dismissals do not embargo the same origin in a private window', async () => {
+      load();
+      const normalHost = makeHost();
+      for (let i = 0; i < 3; i += 1) expect(await dismissOn(normalSession, normalHost)).toBe(true);
+
+      const privateHost = makeHost();
+      const callback = requestOn(privateSession, 'notifications', privateHost);
+      expect(callback).not.toHaveBeenCalled();
+      expect(lastPrompt(privateHost)).not.toBeNull();
+    });
+
+    test('closing the window drops the embargo and its dismissal counter', async () => {
+      load();
+      const host = makeHost();
+      for (let i = 0; i < 3; i += 1) expect(await dismissOn(privateSession, host)).toBe(true);
+
+      expect(ctx.mod.clearPrivateDecisions(PARTITION)).toBe(true);
+      expect(
+        ctx.mod._getDismissCount(ORIGIN, 'notifications', { privatePartition: PARTITION })
+      ).toBe(0);
+
+      // A fresh private window on that partition asks again, and is a full
+      // three dismissals away from the next embargo.
+      expect(await dismissOn(privateSession, host)).toBe(true);
+      const again = requestOn(privateSession, 'notifications', host);
+      expect(again).not.toHaveBeenCalled();
+      expect(lastPrompt(host)).not.toBeNull();
     });
   });
 

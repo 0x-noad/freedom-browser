@@ -394,6 +394,65 @@ test('Escape dismisses the prompt as deny-once and the site can ask again', asyn
   await expect(prompt).toBeVisible();
 });
 
+// #364: dismissing is a deny-once, so a page can re-raise the prompt after
+// every Escape and hold it up for as long as the tab is open. Chromium
+// bounds that with an embargo after three dismissals; so does Freedom now.
+// The two dismissals above stay a re-askable deny-once — this picks up at
+// the third.
+test('three dismissals embargo the site, and Remove from the popover lets it ask again', async ({
+  window,
+  harness,
+}) => {
+  await navigateToFixture(window, harness);
+
+  const prompt = window.locator('[data-test="permission-prompt"]');
+  const indicator = window.locator('[data-test="permission-indicator"]');
+  const resetOut = () =>
+    evalInWebview(window, "document.getElementById('out').textContent = 'none'; true");
+
+  // Three prompts, three Escapes. Each one is still a deny-once: the page
+  // is told "denied" and is asked nothing — it just asks again.
+  for (let i = 0; i < 3; i += 1) {
+    await resetOut();
+    await clickAsk(window);
+    await expect(prompt).toBeVisible();
+    await window.keyboard.press('Escape');
+    await expect(prompt).toBeHidden();
+    await expect.poll(() => readOut(window), { timeout: 5_000 }).toBe('denied');
+  }
+
+  // The fourth request is auto-denied: no prompt at all, and the page's own
+  // read of Notification.permission now says denied.
+  await resetOut();
+  await clickAsk(window);
+  await expect.poll(() => readOut(window), { timeout: 5_000 }).toBe('denied');
+  await window.waitForTimeout(500);
+  await expect(prompt).toBeHidden();
+  await expect
+    .poll(() => evalInWebview(window, 'Notification.permission'), { timeout: 5_000 })
+    .toBe('denied');
+
+  // The embargo is visible in the chrome — an auto-block the user never
+  // chose has to be discoverable, and the popover is where it is lifted.
+  await expect(indicator).toBeVisible();
+  await indicator.click();
+  await expect(window.locator('#permission-popover')).toBeVisible();
+  await expect(window.locator('.permission-popover-row-status')).toHaveText(
+    'Blocked after repeated dismissals (this session)'
+  );
+
+  // Remove → the site can ask again, and the prompt comes back.
+  await window.locator('.permission-popover-revoke').dispatchEvent('click');
+  await expect(indicator).toBeHidden();
+  await expect
+    .poll(() => evalInWebview(window, 'Notification.permission'), { timeout: 5_000 })
+    .toBe('granted');
+
+  await resetOut();
+  await clickAsk(window);
+  await expect(prompt).toBeVisible();
+});
+
 // #306, permission-prompt sibling: a modal <dialog> (here the bookmark
 // editor) is the top layer — everything behind it, including a prompt the
 // page raised in the meantime, is inert and un-answerable. So the prompt's
