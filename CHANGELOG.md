@@ -13,6 +13,7 @@ All notable changes to Freedom will be documented in this file.
   - Nothing fetched from an external gateway is written to, or served from, the browser's HTTP cache: private-window `ipfs://` browsing leaves no page bytes or visited CIDs on disk, and a gateway that goes down is reported unreachable instead of being answered from a year-long cached copy
   - Freedom does not verify content integrity in this mode; the gateway is trusted for every page it serves
   - Address a local Kubo as `127.0.0.1`, not `localhost`: a default Kubo redirects `localhost` to its subdomain gateway, which Freedom does not follow, so it reads as unreachable — the node status now says so
+  - A gateway that is down when Freedom starts is retried in the background and starts serving on its own once it answers, instead of waiting for you to switch the node off and on; saving Settings > Nodes without changing anything keeps that retry and the unreachable diagnosis
 - Nightly builds of `main` for internal testers, on their own update channel — a nightly updates to the next nightly, stable installs are never offered one
 
 ## [0.8.5] - 2026-09-10

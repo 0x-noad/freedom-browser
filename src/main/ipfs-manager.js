@@ -44,11 +44,30 @@ let healthCheckInterval = null;
 // external path is the escape hatch when the native addon cannot load
 let currentMode = MODE.BUNDLED;
 let externalGatewayUrl = null;
-// Whether `externalGatewayUrl` is the endpoint actually serving `ipfs://` right
-// now, as opposed to one external mode is only *armed* for: a gateway whose
-// start-time probe failed is recorded here too, so the health check can keep
-// probing it and finish the start when it answers. See startExternalIpfs.
-let externalGatewayServing = false;
+
+// The explicit "configured but not serving" state of external mode (#356): the
+// profile names an external gateway, a start dialled it and it did not answer
+// (or the profile names no endpoint at all), so nothing is being served — but
+// the manager stays responsible for that endpoint and keeps the same 5s health
+// probe armed against it, so the node recovers by itself when the gateway comes
+// up. `null` means "not in that state"; `{ url }` carries the endpoint the
+// failed start dialled, or `null` when none is configured (nothing to probe, so
+// no retry is armed — only a config change can resolve that one).
+//
+// Deliberately NOT recorded in `currentMode`/`externalGatewayUrl`: those two
+// mean "this backend / this endpoint is serving `ipfs://` right now" — the same
+// split the registry draws between `gateway` and `externalGateway` (see
+// publishExternalIpfsMode) — and `serveExternalGatewayRequest` and
+// `getNativeDiagnostics` read them. A node that never came up must not describe
+// itself through either.
+let externalStandby = null;
+
+// Bumped on every external-state transition (activate / standby / teardown) so
+// a probe still in flight can tell its verdict is about a state that has since
+// been replaced — including a replacement that happens to name the same
+// endpoint (stop → start onto the same gateway), which the endpoint comparison
+// alone cannot see.
+let externalStateGeneration = 0;
 
 // `active_native_handles` is the count of in-flight requests (registered at start,
 // released when the response stream ends/cancels/errors) and `bytes_read` is the
@@ -296,6 +315,35 @@ function stopHealthCheck() {
   healthCheckInterval = null;
 }
 
+// Is this manager on the external backend at all — serving it (RUNNING, or the
+// soft ERROR a running node drops into when the gateway stops answering) or
+// standing by for it (a start that never reached it)?
+function isOnExternalBackend() {
+  return currentMode === MODE.EXTERNAL || externalStandby !== null;
+}
+
+// The single external endpoint this manager is currently responsible for: the
+// one being served, or the one a standby retry is armed against. Null when
+// neither applies. The health probe and the profile-sync guard both key on it,
+// so the two states cannot drift apart.
+function externalProbeTarget() {
+  if (currentMode === MODE.EXTERNAL) return externalGatewayUrl;
+  return externalStandby ? externalStandby.url : null;
+}
+
+// Leave the external backend entirely: drop the serving bookkeeping, the
+// standby endpoint, and the retry probe armed for either. Every path that stops
+// being responsible for the configured gateway goes through here, so no probe
+// can outlive the endpoint it was armed for.
+function clearExternalGatewayState() {
+  stopHealthCheck();
+  externalStandby = null;
+  externalStateGeneration += 1;
+  currentMode = MODE.BUNDLED;
+  externalGatewayUrl = null;
+  externalGatewayVersion = null;
+}
+
 function handleNativeNodeFailure(reason, node = activeNode) {
   if (node && activeNode && node !== activeNode) return;
   if (![STATUS.STARTING, STATUS.RUNNING].includes(currentState)) return;
@@ -319,20 +367,34 @@ function handleNativeNodeFailure(reason, node = activeNode) {
 function startHealthCheck() {
   if (healthCheckInterval) clearInterval(healthCheckInterval);
   healthCheckInterval = setInterval(async () => {
-    if (currentMode === MODE.EXTERNAL) {
+    if (isOnExternalBackend()) {
       // Soft health: an external gateway (e.g. Kubo) may briefly stop answering
       // while busy, so surface the outage without tearing down external mode and
-      // recover automatically when it responds again.
-      const probedUrl = externalGatewayUrl;
+      // recover automatically when it responds again. The same probe drives the
+      // standby state (#356), where the gateway was already down at start: there
+      // is nothing to tear down, only the endpoint to keep trying.
+      const probedGeneration = externalStateGeneration;
+      const probedUrl = externalProbeTarget();
+      const wasServing = currentMode === MODE.EXTERNAL;
       const isHealthy = await probeExternalGateway(probedUrl);
       // The probe can hang for its full 2s timeout, and the user can stop the
       // node, switch profiles or restart into the native backend meanwhile. A
       // verdict about an endpoint that is no longer the one being served must
       // not be applied: a stale `false` landing on a healthy native node would
       // set an ERROR the native health path never clears (every ipfs:// load
-      // 503s until the user toggles off/on). Same guard the version probe
-      // applies below.
-      if (currentMode !== MODE.EXTERNAL || externalGatewayUrl !== probedUrl) return;
+      // 503s until the user toggles off/on), and a stale `true` would promote a
+      // standby the user has since switched away from. Same guard the version
+      // probe applies below, plus the generation so a restart onto the *same*
+      // endpoint is still recognized as a different state.
+      const isServing = currentMode === MODE.EXTERNAL;
+      if (externalStateGeneration !== probedGeneration) return;
+      if (externalProbeTarget() !== probedUrl || isServing !== wasServing) return;
+      if (!wasServing) {
+        // Standby: the gateway that was down at start is answering now. Bring it
+        // up through the same activation the start path uses.
+        if (isHealthy && currentState === STATUS.ERROR) activateExternalGateway(probedUrl);
+        return;
+      }
       if (!isHealthy && currentState === STATUS.RUNNING) {
         // Same hint as the failed-start branch in startExternalIpfs(): losing
         // the route mid-session (Tor stopped, Kubo's localhost subdomain
@@ -342,23 +404,14 @@ function startHealthCheck() {
         updateState(STATUS.ERROR, `External IPFS gateway is unreachable${hint}`);
         setErrorState('ipfs', `External node unreachable${hint}. Retrying…`);
       } else if (isHealthy && currentState === STATUS.ERROR) {
+        // A node that was serving and went soft-ERROR only has to go back to
+        // RUNNING — the registry still describes it. The other shape of
+        // "unreachable" (a start that never committed to serving, e.g. an
+        // `.onion` gateway whose Tor route came up minutes after launch) is a
+        // standby, and the branch above finished its start through
+        // activateExternalGateway().
         clearErrorState('ipfs');
-        // Two shapes of "this endpoint is unreachable" reach this branch. A
-        // node that was serving and went soft-ERROR only has to go back to
-        // RUNNING — the registry still describes it. A node whose *start-time*
-        // probe failed never committed to serving at all (the gateway was still
-        // booting, or its `.onion` route only came up when Tor finished
-        // bootstrapping, which is seconds-to-minutes after launch), so finish
-        // that start here instead: without it external mode sat at
-        // "unreachable" for the whole session and every `ipfs://` load 503'd
-        // until the user toggled the node by hand.
-        if (externalGatewayServing) {
-          updateState(STATUS.RUNNING);
-        } else {
-          beginServingExternalGateway(probedUrl);
-          log.info('[IPFS] External gateway at', probedUrl, 'answered — external mode is serving');
-          detectExternalGatewayVersionInBackground(probedUrl);
-        }
+        updateState(STATUS.RUNNING);
       }
       return;
     }
@@ -376,14 +429,11 @@ function checkBinary() {
 }
 
 function startDisabledIpfs() {
-  // Reachable from a soft-ERROR external node, whose health check is still
-  // running (the soft path deliberately keeps probing so it can recover). It
-  // must not outlive the endpoint it was armed for.
-  stopHealthCheck();
+  // Reachable from a soft-ERROR external node or from a standby one, both of
+  // which still have their health check running (both deliberately keep probing
+  // so they can recover). It must not outlive the endpoint it was armed for.
+  clearExternalGatewayState();
   currentMode = MODE.DISABLED;
-  externalGatewayUrl = null;
-  externalGatewayServing = false;
-  externalGatewayVersion = null;
   clearService('ipfs');
   updateService('ipfs', {
     api: null,
@@ -421,28 +471,56 @@ function publishExternalIpfsMode(gateway, { serving = false } = {}) {
   });
 }
 
-// Commit to serving `ipfs://` from `url`: the endpoint answered the gateway
-// probe. Shared by the start path and by the health check's recovery branch,
-// which reaches the same state from an endpoint that was never up at start.
-function beginServingExternalGateway(url) {
+// Enter the standby state: external mode is what the profile asks for, but
+// nothing is being served. `url` is the endpoint a start dialled and could not
+// reach, or null when the profile names none. The retry probe is armed for the
+// former (the gateway can come up on its own) and not for the latter (only a
+// config change can resolve it, and that arrives through syncProfileMode).
+// Any serving bookkeeping left by an earlier run is dropped first — a soft-ERROR
+// external node can be restarted straight into this path.
+function enterExternalStandby(url) {
+  clearExternalGatewayState();
+  externalStandby = { url };
+  externalStateGeneration += 1;
+  // Publish the profile's external mode before the status update, as every other
+  // path does, so the renderer never sees a new status against a stale mode.
+  publishExternalIpfsMode(url);
+  if (url) startHealthCheck();
+}
+
+// The external gateway answered: serve `ipfs://` from it. Shared by the start
+// path and by the standby retry, so a gateway that was down at launch comes up
+// exactly the way one started against a live gateway does.
+function activateExternalGateway(url) {
+  externalStandby = null;
+  externalStateGeneration += 1;
+  const activationGeneration = externalStateGeneration;
   externalGatewayUrl = url;
   currentMode = MODE.EXTERNAL;
-  externalGatewayServing = true;
   externalActiveRequests = 0;
   externalBytesServed = 0;
   externalGatewayVersion = null;
   clearService('ipfs');
   publishExternalIpfsMode(url, { serving: true });
+  clearErrorState('ipfs');
   setStatusMessage('ipfs', `External node: ${getEndpointLabel(url)}`);
   updateState(STATUS.RUNNING);
-}
+  startHealthCheck();
+  log.info('[IPFS] Connected to external gateway at', url);
 
-// Identify the gateway in the background. The nodes menu picks it up on its
-// next stats poll. Ignored if the mode/endpoint changed meanwhile.
-function detectExternalGatewayVersionInBackground(url) {
+  // Identify the gateway in the background. The nodes menu picks
+  // it up on its next stats poll. Ignored if the mode/endpoint changed meanwhile
+  // — including a stop/start back onto the *same* endpoint, which mode and
+  // endpoint alone cannot tell apart, so this carries the generation counter the
+  // health probe uses for the identical blind spot.
   detectExternalGatewayVersion(url)
     .then((version) => {
-      if (version && currentMode === MODE.EXTERNAL && externalGatewayUrl === url) {
+      if (
+        version &&
+        externalStateGeneration === activationGeneration &&
+        currentMode === MODE.EXTERNAL &&
+        externalGatewayUrl === url
+      ) {
         externalGatewayVersion = version;
         log.info('[IPFS] External gateway identified as', version);
       }
@@ -456,20 +534,13 @@ function detectExternalGatewayVersionInBackground(url) {
 async function startExternalIpfs(config) {
   const url = normalizeExternalGatewayUrl(config?.externalGateway);
   if (!url) {
-    // This is an external teardown too, so it owns its state instead of
-    // trusting that doSyncIpfsProfileMode already ran one (today it always
-    // does; a future caller reaching doStartIpfs from an armed-external state
-    // would not). A probe left armed for a previously-configured endpoint is
-    // describing something this profile no longer names: it would keep GETting
-    // the old gateway every 5s, and its recovery branch could resurrect that
-    // endpoint through beginServingExternalGateway(). Same drop the native
-    // path below performs for the same reason.
-    stopHealthCheck();
-    currentMode = MODE.EXTERNAL;
-    externalGatewayUrl = null;
-    externalGatewayServing = false;
-    externalGatewayVersion = null;
-    publishExternalIpfsMode(null);
+    // Nothing to serve and nothing to probe — but this is an external teardown
+    // too, so it owns its state instead of trusting that doSyncIpfsProfileMode
+    // already ran one (today it always does; a future caller reaching
+    // doStartIpfs from an armed-external state would not). enterExternalStandby
+    // drops the serving bookkeeping and disarms a probe left armed for a
+    // previously-configured endpoint, which this profile no longer names.
+    enterExternalStandby(null);
     updateState(STATUS.ERROR, 'External IPFS gateway is not configured');
     setStatusMessage('ipfs', 'External node not configured');
     return;
@@ -478,20 +549,18 @@ async function startExternalIpfs(config) {
   const reachable = await probeExternalGateway(url);
   if (!reachable) {
     // The endpoint is configured but not answering (gateway not started yet,
+    // The endpoint is configured but not answering (gateway not started yet,
     // still booting, or — for a `.onion` gateway — its Tor route not up yet:
     // startIpfs() runs at launch within ~1s while Arti's SOCKS bootstrap takes
     // seconds to ~120s, and the transport refuses to dial an onion name the
     // session would send DIRECT). Keep the profile's external mode published so
-    // the user can hit the toggle again without relaunching Freedom — and
-    // record the endpoint as the one external mode is armed for, so the soft
-    // health check below keeps probing it and completes the start on its own
-    // once it answers. Without that this state never recovered: every
-    // `ipfs://` load 503'd until the user noticed and toggled the node by hand.
-    externalGatewayUrl = url;
-    currentMode = MODE.EXTERNAL;
-    externalGatewayServing = false;
-    externalGatewayVersion = null;
-    publishExternalIpfsMode(url);
+    // the user can start their gateway and hit the toggle again without
+    // relaunching Freedom, and keep the health probe armed against it so they do
+    // not have to: the standby state recovers on its own within one interval of
+    // the gateway answering, exactly as the running→error path already does
+    // (#356) — which is also how an `.onion` gateway finishes its start by
+    // itself once Tor's PAC lands.
+    enterExternalStandby(url);
     const hint = unreachableEndpointHint(url);
     updateState(STATUS.ERROR, `External IPFS gateway is unreachable${hint}`);
     setStatusMessage('ipfs', `External node unreachable${hint}`);
@@ -499,14 +568,10 @@ async function startExternalIpfs(config) {
     // hint has to travel with it or an unreachable `localhost`/`.onion`
     // endpoint loses the one line that says why.
     setErrorState('ipfs', `External node unreachable${hint}. Retrying…`);
-    startHealthCheck();
     return;
   }
 
-  beginServingExternalGateway(url);
-  startHealthCheck();
-  log.info('[IPFS] Connected to external gateway at', url);
-  detectExternalGatewayVersionInBackground(url);
+  activateExternalGateway(url);
 }
 
 async function doStartIpfs() {
@@ -529,14 +594,11 @@ async function doStartIpfs() {
     return;
   }
 
-  // Native (bundled) path from here on. Any probe left armed for an external
-  // endpoint (a soft-ERROR node, or one whose start-time probe failed) is
-  // describing a backend this start is replacing: drop it here rather than
-  // only on the success path, which a missing addon never reaches.
-  stopHealthCheck();
-  currentMode = MODE.BUNDLED;
-  externalGatewayUrl = null;
-  externalGatewayServing = false;
+  // Native (bundled) path from here on. A start requested straight out of an
+  // external soft-ERROR or standby state (the profile switched to managed while
+  // the node sat unreachable) has to disarm that retry here too, or it keeps
+  // probing the old gateway behind a managed node.
+  clearExternalGatewayState();
 
   if (!checkBinary()) {
     updateState(STATUS.ERROR, 'freedom-ipfs native addon not built');
@@ -631,24 +693,21 @@ async function doSyncIpfsProfileMode() {
   // recovering gateway to STOPPED permanently: nothing re-arms the retry and
   // the user has to notice and toggle the node by hand. Leave that state
   // untouched (the registry already describes it) and only tear down when the
-  // config the probe was armed for is genuinely gone. R2-F1 closed the gap
-  // #351's R2-F1 left open here: a *failed start* now records its attempted
-  // endpoint and arms the same retry, so both shapes of "this endpoint is
-  // unreachable" — the soft-ERROR one and the never-came-up one — are
-  // protected by this one guard instead of only the first.
-  const stillProbingConfiguredGateway =
-    healthCheckInterval !== null &&
-    currentMode === MODE.EXTERNAL &&
-    externalGatewayUrl !== null &&
+  // config the probe was armed for is genuinely gone.
+  //
+  // #356: keyed on the endpoint this manager is responsible for, not on the
+  // armed interval, so it covers both shapes of "this gateway is unreachable" —
+  // the soft ERROR a *running* node drops into, and the standby a *failed start*
+  // leaves behind. Keying on `healthCheckInterval !== null` silently skipped the
+  // second (which arms no interval when no endpoint is configured at all) and
+  // wiped its diagnosis, including the localhost hint only the start path emits.
+  const stillOnConfiguredExternalGateway =
+    isOnExternalBackend() &&
     isExternalIpfsConfig(config) &&
-    normalizeExternalGatewayUrl(config.externalGateway) === externalGatewayUrl;
-  if (stillProbingConfiguredGateway) return;
+    normalizeExternalGatewayUrl(config.externalGateway) === externalProbeTarget();
+  if (stillOnConfiguredExternalGateway) return;
 
-  stopHealthCheck();
-  currentMode = MODE.BUNDLED;
-  externalGatewayUrl = null;
-  externalGatewayServing = false;
-  externalGatewayVersion = null;
+  clearExternalGatewayState();
 
   // A failure recorded against the previous config no longer describes this one.
   const hadError = currentState === STATUS.ERROR;
@@ -677,10 +736,7 @@ async function doStopIpfs() {
     }
   }
 
-  currentMode = MODE.BUNDLED;
-  externalGatewayUrl = null;
-  externalGatewayServing = false;
-  externalGatewayVersion = null;
+  clearExternalGatewayState();
   clearErrorState('ipfs');
   // Publish the profile mode to the registry BEFORE the status update
   publishStoppedIpfsMode();
