@@ -24,8 +24,8 @@ Source builds (`npm start`) use a different, per-checkout port range; see [Confi
 
 Freedom manages nodes per browser profile:
 
-1. **Independent Managed Nodes**: By default, each profile has separate Ant, native IPFS, Myotis, Radicle, and Tor data. Ant and Tor use profile-specific non-default ports; IPFS, Myotis, and Radicle run as embedded native clients without loopback API or gateway ports.
-2. **Explicit External Nodes**: Profiles can opt into an external Swarm endpoint or an external Tor SOCKS5 endpoint under **Settings → Nodes**. External node identity, storage, or circuit state is shared outside that profile. IPFS, Myotis, and Radicle always use their embedded native clients.
+1. **Independent Managed Nodes**: By default, each profile has separate Ant, native IPFS, Myotis, Radicle, and Tor data. Ant and Tor use profile-specific non-default ports; IPFS, Myotis, and Radicle run as embedded native clients without loopback API or gateway ports of their own.
+2. **Explicit External Nodes**: Profiles can opt into an external Swarm endpoint, an external IPFS gateway, or an external Tor SOCKS5 endpoint under **Settings → Nodes**. External node identity, storage, or circuit state is shared outside that profile. Myotis and Radicle always use their embedded native clients. An external IPFS gateway serves `ipfs://` and `ipns://` content unverified: Freedom does not check the returned bytes against the CID in this mode, so the gateway is trusted for everything it serves.
 3. **Port Conflict Handling**: If a managed Ant or Tor profile port is busy, Freedom picks a free profile port and persists the reassignment.
 4. **Visual Feedback**: The Nodes panel and profile settings show whether a node is managed, external/shared, or disabled.
 
@@ -58,6 +58,7 @@ launching can use `open -n -a Freedom --args --profile=<id>`.
 - **Independent Toggle**: Start and stop IPFS separately from Swarm.
 - **Native Transport**: Uses the embedded `freedom-ipfs` native addon instead of a loopback Kubo process.
 - **Live Diagnostics**: View native gateway stats and request progress while IPFS/IPNS pages load.
+- **External Gateway Mode**: For hosts where the native addon cannot load, a profile can point IPFS at an external HTTP gateway (e.g. a local Kubo on `:8080`) under **Settings → Nodes**. Freedom does not verify content integrity in this mode — the gateway is trusted for every `ipfs://` page it serves, so prefer a gateway you run yourself. Address a local Kubo as `http://127.0.0.1:8080`, not `http://localhost:8080`: a default-config Kubo redirects `localhost` requests to its subdomain gateway (`<cid>.ipfs.localhost`), which Freedom deliberately does not follow, so the node reads as unreachable. The gateway's version is detected (and shown in the nodes menu) only for a loopback endpoint, where Kubo's RPC API conventionally sits on `:5001`; a remote gateway is never probed on a port you did not configure.
 
 ## Integrated Myotis Light Client (Experimental)
 
@@ -279,7 +280,7 @@ Access built-in browser pages using the `freedom://` protocol:
 - **Chains and RPC Providers**: Configure chain endpoints, keyed providers, and ENS verification behavior.
 - **Experimental**: Enable Identity & Wallet (Beta), Show IPFS load progress in the status bar, Swarm node mode, Enable Tor (.onion access) (Beta), and Start Tor when Freedom opens. The Tor rows are hidden on builds that bundle no Arti binary — a source build that skipped `npm run tor:download`, or a Windows release cut before Windows Arti bundling landed (see the Tor section above). Radicle is no longer experimental — it is configured under **Settings → Nodes** and **Settings → Startup**.
 - **Auto-Updates**: Toggle automatic update checks (enabled by default).
-- **Protocol Icons**: Address bar shows Swarm (hexagon), IPFS (cube), onchain app (Ethereum diamond), Radicle (seedling), or HTTP (globe) icon based on current protocol. When a page also has a resolution/provenance trust status (a resolved Ethereum name, or a `web3://` app whose retrieval was verified), the trust shield takes that slot instead — so onchain apps normally show the shield and fall back to the diamond only when no provenance is available.
+- **Protocol Icons**: Address bar shows Swarm (hexagon), IPFS (cube), onchain app (Ethereum diamond), Radicle (seedling), or HTTP (globe) icon based on current protocol. When a page also has a resolution/provenance trust status (a resolved Ethereum name, or a `web3://` app whose retrieval was verified), the trust shield takes that slot instead — so onchain apps normally show the shield and fall back to the diamond only when no provenance is available. The shield reports how the _name_ resolved, not how the content was retrieved: on an `ipfs://` page served through an external gateway (see Smart Node Connection) the name is still verified, but the bytes behind it are not.
 - **Hamburger Menu**: Access browser features (Profile submenu, New Tab, New Window, New Private Window, History, Zoom, Print, Developer Tools, Settings, About Freedom, Check for Updates…).
 
 ## Error Handling
