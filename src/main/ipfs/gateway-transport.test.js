@@ -131,6 +131,12 @@ describe('netGatewayFetch', () => {
     expect(request.ended).toBe(true);
   });
 
+  test('forwards a plain-object headers bag too, rather than sending none', () => {
+    const { request } = startNetFetch(REMOTE, { headers: { range: 'bytes=0-10' } });
+
+    expect(request.sentHeaders).toEqual({ range: 'bytes=0-10' });
+  });
+
   test('refuses any redirect mode but manual', async () => {
     await expect(netGatewayFetch(REMOTE, { redirect: 'follow' })).rejects.toThrow(
       /redirect: 'manual' only/

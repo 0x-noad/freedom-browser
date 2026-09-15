@@ -261,7 +261,11 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
     request.on('error', (err) => fail(err));
 
     try {
-      for (const [name, value] of headers?.entries?.() || []) {
+      // `Headers` on this path, but a plain object must not silently send
+      // nothing if a future caller passes one.
+      const entries =
+        typeof headers?.entries === 'function' ? headers.entries() : Object.entries(headers || {});
+      for (const [name, value] of entries) {
         request.setHeader(name, value);
       }
       request.end();
