@@ -21,6 +21,38 @@ const FIXTURE_BODY = [
   '</script>',
 ].join('\n');
 
+// #361: a page that gates its request on the Permissions API the way Google
+// Meet's pre-join screen does — it queries first and only asks when the state
+// is not already "denied". Electron's check handler is boolean-only, so an
+// undecided permission reporting "denied" left this shape permanently stuck:
+// the page never called requestPermission(), so Freedom's own prompt never
+// fired and there was nothing for the user to click.
+const GATED_FIXTURE_BODY = [
+  '<!doctype html><title>permission gate fixture</title>',
+  '<button id="ask">ask</button><div id="out">none</div><div id="state">pending</div>',
+  '<script>',
+  '  const out = document.getElementById("out");',
+  '  const stateOut = document.getElementById("state");',
+  '  async function readState() {',
+  '    try {',
+  '      return (await navigator.permissions.query({ name: "notifications" })).state;',
+  '    } catch (err) {',
+  '      return "query-threw:" + err.message;',
+  '    }',
+  '  }',
+  '  readState().then((state) => { stateOut.textContent = state; });',
+  '  document.getElementById("ask").addEventListener("click", async () => {',
+  '    const state = await readState();',
+  '    stateOut.textContent = state;',
+  '    if (state === "denied") {',
+  '      out.textContent = "blocked-without-asking";',
+  '      return;',
+  '    }',
+  '    out.textContent = await Notification.requestPermission();',
+  '  });',
+  '</script>',
+].join('\n');
+
 // Run a script inside the active webview and return its result.
 async function evalInWebview(window, script) {
   return window.evaluate(async (code) => {
@@ -54,8 +86,8 @@ async function evalInWebviewAt(window, index, script) {
   );
 }
 
-async function navigateToFixture(window, harness) {
-  await harness.setContentFixture(`bzz://${SAMPLE_BZZ_HASH}/`, { body: FIXTURE_BODY });
+async function navigateToFixture(window, harness, body = FIXTURE_BODY) {
+  await harness.setContentFixture(`bzz://${SAMPLE_BZZ_HASH}/`, { body });
 
   const input = window.locator('[data-test="address-input"]');
   await input.click();
@@ -148,6 +180,60 @@ test('Block with remember denies silently on the next request', async ({ window,
   await evalInWebview(window, "document.getElementById('out').textContent = 'none'; true");
   await clickAsk(window);
   await expect.poll(() => readOut(window), { timeout: 5_000 }).toBe('denied');
+  await expect(prompt).toBeHidden();
+});
+
+// #361 regression: the page consults navigator.permissions.query before it
+// asks. An undecided permission must NOT read as "denied", or the page short-
+// circuits and Freedom's prompt never fires. A recorded Block still reads as
+// "denied" — that is what the boolean check handler is reserved for.
+test('a page that gates on permissions.query still reaches the prompt, and Block still blocks it', async ({
+  window,
+  harness,
+}) => {
+  await navigateToFixture(window, harness, GATED_FIXTURE_BODY);
+
+  const prompt = window.locator('[data-test="permission-prompt"]');
+  // What the page's own gate last read…
+  const readState = () =>
+    evalInWebview(window, "document.getElementById('state')?.textContent || null");
+  // …and a fresh read, for the state after a decision lands.
+  const queryState = () =>
+    evalInWebview(
+      window,
+      "navigator.permissions.query({ name: 'notifications' }).then((status) => status.state)"
+    );
+
+  // Before any decision: not "denied" (Electron cannot say "prompt", so the
+  // undecided state reports as granted — either is fine, blocked is not).
+  await expect.poll(readState, { timeout: 10_000 }).not.toBe('pending');
+  expect(['granted', 'prompt']).toContain(await readState());
+  expect(['granted', 'prompt']).toContain(await queryState());
+  await expect(prompt).toBeHidden();
+
+  // So the page goes on to ask, and Freedom's own anchored prompt appears.
+  await clickAsk(window);
+  await expect(prompt).toBeVisible();
+  await expect(window.locator('[data-test="permission-prompt-origin"]')).toHaveText(
+    `bzz://${SAMPLE_BZZ_HASH}`
+  );
+
+  // Block + remember: the page's own read now says denied.
+  await expect(window.locator('[data-test="permission-remember"]')).toBeChecked();
+  await answerPrompt(window, 'block');
+  await expect(prompt).toBeHidden();
+  await expect.poll(() => readOut(window), { timeout: 5_000 }).toBe('denied');
+  await expect.poll(queryState, { timeout: 5_000 }).toBe('denied');
+  await expect
+    .poll(() => evalInWebview(window, 'Notification.permission'), { timeout: 5_000 })
+    .toBe('denied');
+
+  // …so the gate now short-circuits, and no prompt is raised.
+  await evalInWebview(window, "document.getElementById('out').textContent = 'none'; true");
+  await clickAsk(window);
+  await expect.poll(() => readOut(window), { timeout: 5_000 }).toBe('blocked-without-asking');
+  expect(await readState()).toBe('denied');
+  await window.waitForTimeout(500);
   await expect(prompt).toBeHidden();
 });
 
