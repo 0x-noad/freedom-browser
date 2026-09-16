@@ -8,66 +8,18 @@
 // session permission handlers in src/main/permissions/permissions-manager.js.
 
 const { test, expect, SAMPLE_BZZ_HASH } = require('./fixtures');
-
-const FIXTURE_BODY = [
-  '<!doctype html><title>permission fixture</title>',
-  '<button id="ask">ask</button><div id="out">none</div>',
-  '<script>',
-  "  document.getElementById('ask').addEventListener('click', () => {",
-  '    Notification.requestPermission().then((result) => {',
-  "      document.getElementById('out').textContent = result;",
-  '    });',
-  '  });',
-  '</script>',
-].join('\n');
-
-// #361: a page that gates its request on the Permissions API the way Google
-// Meet's pre-join screen does — it queries first and only asks when the state
-// is not already "denied". Electron's check handler is boolean-only, so an
-// undecided permission reporting "denied" left this shape permanently stuck:
-// the page never called requestPermission(), so Freedom's own prompt never
-// fired and there was nothing for the user to click.
-const GATED_FIXTURE_BODY = [
-  '<!doctype html><title>permission gate fixture</title>',
-  '<button id="ask">ask</button><div id="out">none</div><div id="state">pending</div>',
-  '<script>',
-  '  const out = document.getElementById("out");',
-  '  const stateOut = document.getElementById("state");',
-  '  async function readState() {',
-  '    try {',
-  '      return (await navigator.permissions.query({ name: "notifications" })).state;',
-  '    } catch (err) {',
-  '      return "query-threw:" + err.message;',
-  '    }',
-  '  }',
-  '  readState().then((state) => { stateOut.textContent = state; });',
-  '  document.getElementById("ask").addEventListener("click", async () => {',
-  '    const state = await readState();',
-  '    stateOut.textContent = state;',
-  '    if (state === "denied") {',
-  '      out.textContent = "blocked-without-asking";',
-  '      return;',
-  '    }',
-  '    out.textContent = await Notification.requestPermission();',
-  '  });',
-  '</script>',
-].join('\n');
-
-// Run a script inside the active webview and return its result.
-async function evalInWebview(window, script) {
-  return window.evaluate(async (code) => {
-    const wv = document.querySelector('webview:not(.hidden)');
-    if (!wv || typeof wv.executeJavaScript !== 'function') return null;
-    try {
-      return await wv.executeJavaScript(code);
-    } catch {
-      return null;
-    }
-  }, script);
-}
-
-const readOut = (window) =>
-  evalInWebview(window, "document.getElementById('out')?.textContent || null");
+// The fixture pages and the helpers that drive them are shared with
+// test-e2e/packaged/permissions.spec.js, which re-checks #361/#364 against a
+// release artifact — see that file's header.
+const {
+  FIXTURE_BODY,
+  GATED_FIXTURE_BODY,
+  evalInWebview,
+  readOut,
+  clickAsk,
+  answerPrompt,
+  gotoPermissionFixture,
+} = require('./permission-fixtures');
 
 // Same as evalInWebview, but targets a webview by index so a spec can
 // drive a BACKGROUND tab (whose webview carries `.hidden`).
@@ -88,35 +40,7 @@ async function evalInWebviewAt(window, index, script) {
 
 async function navigateToFixture(window, harness, body = FIXTURE_BODY) {
   await harness.setContentFixture(`bzz://${SAMPLE_BZZ_HASH}/`, { body });
-
-  const input = window.locator('[data-test="address-input"]');
-  await input.click();
-  await input.fill(`bzz://${SAMPLE_BZZ_HASH}`);
-  await input.press('Enter');
-
-  await expect
-    .poll(() => readOut(window), {
-      message: 'Waiting for the permission fixture page to load',
-      timeout: 10_000,
-    })
-    .toBe('none');
-}
-
-const clickAsk = (window) =>
-  evalInWebview(window, "document.getElementById('ask').click(); true");
-
-// Answer the prompt via a DOM click event instead of a synthesized mouse
-// click. Right after the guest <webview> attaches (which is exactly when a
-// page requests a permission), Chromium's browser-side input routing can
-// still send pointer events at the prompt's coordinates into the guest
-// surface instead of the chrome renderer, silently swallowing the click
-// even though DOM hit-testing resolves the button. These specs verify the
-// decision matrix, not compositor input routing, so deliver the click as
-// a DOM event directly.
-async function answerPrompt(window, action) {
-  const button = window.locator(`[data-test="permission-${action}"]`);
-  await expect(button).toBeVisible();
-  await button.dispatchEvent('click');
+  await gotoPermissionFixture(window);
 }
 
 // Open a private window via the real File-menu item and return its chrome
