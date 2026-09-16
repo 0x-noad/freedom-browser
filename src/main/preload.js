@@ -70,8 +70,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // New bar order after a drag, as the full list of targets (#307).
   reorderBookmarks: (targets) => ipcRenderer.invoke('bookmarks:reorder', targets),
   resolveEns: (name) => ipcRenderer.invoke('ens:resolve', { name }),
-  resolveEnsAddress: (name) => ipcRenderer.invoke('ens:resolve-address', { name }),
-  resolveEnsReverse: (address) => ipcRenderer.invoke('ens:resolve-reverse', { address }),
+  resolveEnsAddress: (name, chainId = 1) => ipcRenderer.invoke('ens:resolve-address', { name, chainId }),
+  resolveEnsReverse: (address, chainId = 1) => ipcRenderer.invoke('ens:resolve-reverse', { address, chainId }),
   invalidateEnsContent: (name) => ipcRenderer.invoke('ens:invalidate-content', { name }),
   getOnchainAppProvenance: (webContentsId, url) =>
     ipcRenderer.invoke('onchain-app:get-provenance', { webContentsId, url }),
@@ -644,8 +644,17 @@ contextBridge.exposeInMainWorld('sitePermissions', {
     return () => ipcRenderer.removeListener('permissions:changed', handler);
   },
   getForOrigin: (origin) => ipcRenderer.invoke('permissions:get-for-origin', origin),
-  revoke: (origin, permission) => ipcRenderer.invoke('permissions:revoke', origin, permission),
-  revokeOrigin: (origin) => ipcRenderer.invoke('permissions:revoke-origin', origin),
+  // The address-bar popover lists what applies in THIS window, so its Remove
+  // is window-scoped: it lifts the asking window's own run-scoped decision
+  // (a private window's partition tier, a normal window's session tier) plus
+  // the shared stored one — never the other scope's (#366). Settings > Site
+  // Permissions goes through webview-preload.js without this marker and stays
+  // profile-wide. Main resolves WHICH window from the IPC sender, never from
+  // here.
+  revoke: (origin, permission) =>
+    ipcRenderer.invoke('permissions:revoke', origin, permission, { scope: 'window' }),
+  revokeOrigin: (origin) =>
+    ipcRenderer.invoke('permissions:revoke-origin', origin, { scope: 'window' }),
 });
 
 contextBridge.exposeInMainWorld('dappPermissions', {

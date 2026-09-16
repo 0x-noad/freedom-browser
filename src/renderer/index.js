@@ -126,6 +126,9 @@ window.serviceRegistry?.getRegistry?.().then((registry) => {
   if (registry) {
     pushDebug(`[ServiceRegistry] Initial state: ${JSON.stringify(registry)}`);
     updateRegistry(registry);
+    // A profile already on an external IPFS gateway must have a usable toggle
+    // from the first paint, not only after the next registry broadcast.
+    updateIpfsToggleState();
   }
 });
 
@@ -305,6 +308,15 @@ function initExternalNodeCandidatesModal() {
       }
 
       details.append(name, endpoints);
+      // What the user gives up by choosing the external node (IPFS: content is
+      // no longer verified by Freedom). Supplied per candidate by the main
+      // process, so the prompt and the message-box fallback say the same thing.
+      if (candidate.trustNote) {
+        const trustNote = document.createElement('p');
+        trustNote.className = 'external-node-trust-note';
+        trustNote.textContent = candidate.trustNote;
+        details.append(trustNote);
+      }
       row.append(details, choice);
       list.append(row);
     }

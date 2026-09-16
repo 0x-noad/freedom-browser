@@ -141,8 +141,8 @@ describe('preload', () => {
       [exposures.electronAPI, 'removeBookmark', ['https://example.com'], IPC.BOOKMARKS_REMOVE, ['https://example.com']],
       [exposures.electronAPI, 'reorderBookmarks', [['https://b.example', 'https://a.example']], IPC.BOOKMARKS_REORDER, [['https://b.example', 'https://a.example']]],
       [exposures.electronAPI, 'resolveEns', ['myname.box'], IPC.ENS_RESOLVE, [{ name: 'myname.box' }]],
-      [exposures.electronAPI, 'resolveEnsAddress', ['vitalik.eth'], IPC.ENS_RESOLVE_ADDRESS, [{ name: 'vitalik.eth' }]],
-      [exposures.electronAPI, 'resolveEnsReverse', ['0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'], IPC.ENS_RESOLVE_REVERSE, [{ address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' }]],
+      [exposures.electronAPI, 'resolveEnsAddress', ['vitalik.eth'], IPC.ENS_RESOLVE_ADDRESS, [{ name: 'vitalik.eth', chainId: 1 }]],
+      [exposures.electronAPI, 'resolveEnsReverse', ['0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'], IPC.ENS_RESOLVE_REVERSE, [{ address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045', chainId: 1 }]],
       [exposures.electronAPI, 'getHistory', [{ limit: 10 }], IPC.HISTORY_GET, [{ limit: 10 }]],
       [exposures.electronAPI, 'addHistory', [{ url: 'https://example.com' }], IPC.HISTORY_ADD, [{ url: 'https://example.com' }]],
       [exposures.electronAPI, 'removeHistory', [7], IPC.HISTORY_REMOVE, [7]],
@@ -196,8 +196,10 @@ describe('preload', () => {
       [exposures.swarmFeedStore, 'ensureEthereumWalletIdentity', ['origin.eth', 2, { activate: true }], IPC.SWARM_ENSURE_ETHEREUM_WALLET_IDENTITY, ['origin.eth', 2, { activate: true }]],
       [exposures.sitePermissions, 'respondToPrompt', [{ id: 1, decision: 'allow', remember: true }], IPC.PERMISSIONS_PROMPT_RESPONSE, [{ id: 1, decision: 'allow', remember: true }]],
       [exposures.sitePermissions, 'getForOrigin', ['https://example.com'], IPC.PERMISSIONS_GET_FOR_ORIGIN, ['https://example.com']],
-      [exposures.sitePermissions, 'revoke', ['https://example.com', 'camera'], IPC.PERMISSIONS_REVOKE, ['https://example.com', 'camera']],
-      [exposures.sitePermissions, 'revokeOrigin', ['https://example.com'], IPC.PERMISSIONS_REVOKE_ORIGIN, ['https://example.com']],
+      // #366: the chrome popover's Remove is window-scoped — main reads the
+      // marker here and resolves the window itself from the IPC sender.
+      [exposures.sitePermissions, 'revoke', ['https://example.com', 'camera'], IPC.PERMISSIONS_REVOKE, ['https://example.com', 'camera', { scope: 'window' }]],
+      [exposures.sitePermissions, 'revokeOrigin', ['https://example.com'], IPC.PERMISSIONS_REVOKE_ORIGIN, ['https://example.com', { scope: 'window' }]],
       [exposures.payments, 'getRecent', [{ limit: 10 }], IPC.PAYMENTS_GET_RECENT, [{ limit: 10 }]],
       [exposures.payments, 'getById', [7], IPC.PAYMENTS_GET_BY_ID, [7]],
       [exposures.payments, 'getCount', [{ kind: 'x402' }], IPC.PAYMENTS_GET_COUNT, [{ kind: 'x402' }]],

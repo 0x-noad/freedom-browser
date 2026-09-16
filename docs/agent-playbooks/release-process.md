@@ -217,8 +217,8 @@ What `.github/workflows/release.yml` then does:
 | Job                 | Runner             | Output                                                                                                                     |
 | ------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------- |
 | `mac-arm64`         | `macos-14`         | signed + notarized `.dmg` / `-mac.zip`, `latest-mac.yml`                                                                   |
-| `linux-x64`         | `ubuntu-latest`    | `Freedom-<v>.AppImage`, `freedom-browser_<v>_amd64.deb`, `latest-linux.yml`                                                |
-| `linux-arm64`       | `ubuntu-24.04-arm` | `Freedom-<v>-arm64.AppImage`, `freedom-browser_<v>_arm64.deb`, `latest-linux-arm64.yml`                                    |
+| `linux-x64`         | `ubuntu-latest`    | `Freedom-<v>.AppImage`, `freedom-browser_<v>_amd64.deb`, `freedom-browser-<v>.pacman`, `latest-linux.yml`                  |
+| `linux-arm64`       | `ubuntu-24.04-arm` | `Freedom-<v>-arm64.AppImage`, `freedom-browser_<v>_arm64.deb`, `freedom-browser-<v>-aarch64.pacman`, `latest-linux-arm64.yml` |
 | `windows-x64`       | `windows-latest`   | `Freedom-Setup-<v>.exe`, `Freedom-<v>-win.zip`, `latest-win-x64.yml` (unsigned)                                            |
 | `smoke-mac-arm64`   | `macos-14`         | §6 steps 1/2/6 against the app from the `.dmg` and from the `-mac.zip`                                                     |
 | `smoke-linux-x64`   | `ubuntu-latest`    | §6 steps 1/2/6 against the installed `.deb` and the extracted AppImage                                                     |
@@ -231,6 +231,10 @@ What `.github/workflows/release.yml` then does:
 - A failed leg means no release. Fix the cause, then "Re-run failed jobs" on that run: the successful legs' artifacts are kept and the `release` job runs again. If the fix needs a code change, it lands on the release branch as a PR and the next candidate (`rc.N+1`) picks it up; never move a tag.
 - Re-running onto a tag whose release is already published fails on purpose rather than overwriting files people may have downloaded.
 - Expect 20–30 minutes per run, plus a few minutes for the smoke job that follows each build. macOS takes longest (two notarizations: electron-builder staples the `.app`, a dedicated step then notarizes and staples the `.dmg` and refreshes its hash in `latest-mac.yml`). Arti (Tor) is compiled from crates.io on the macOS, Linux and Windows x64 runners; that step took 8m30s on the Windows runner in the 2026-09-09 dispatch that first exercised it (17m for the whole `windows-x64` job, against its 90-minute limit).
+
+**The Linux `.pacman` name, and where it comes from.** electron-builder's fpm target expands `${name}-${version}-${arch}.${ext}` for `pacman` and drops the `-${arch}` half on the default architecture, and `${name}` is the package `name`, not the product name — so x64 is `freedom-browser-<version>.pacman` and arm64 is `freedom-browser-<version>-aarch64.pacman` — not `-arm64`, because `builder-util`'s `getArtifactArchName` maps `arm64` to `aarch64` for the `pacman` extension the same way it does for `rpm` (`app-builder-lib/out/targets/FpmTarget.js`, `builder-util/out/arch.js`; `build.linux.artifactName` is unset, and setting it would rename the AppImage and the deb with it). The version _inside_ the package is not the same string either: fpm rejects a hyphen in `pkgver`, so electron-builder replaces every `-` with `_`, and fpm then appends its default iteration, so a `0.8.6-dev` build records `pkgver = 0.8.6_dev-1` in a file still named `…-0.8.6-dev.pacman`. `build.pacman.depends` **replaces** electron-builder's default dependency list rather than merging with it, which is the reason it is set at all: the default names `http-parser`, which is not in the official Arch repositories, so the package would refuse to install. Keep the override in step with what Electron actually needs — `gtk3`, `libnotify`, `nss`, `libxss`, `libxtst`, `xdg-utils`, `at-spi2-core`, `alsa-lib`, `libsecret` (the last one mirrors the deb default's `libsecret-1-0`: without it Chromium's `safeStorage` silently falls back to its hardcoded-key `basic_text` backend instead of the keyring, which is what quick-unlock's stored credential is encrypted with). `build.pacman.synopsis` is set because fpm's `pacman.erb` writes `pkgdesc` from only the first line of the `--description` electron-builder passes, and that line _is_ the synopsis — leaving it unset ships a package whose `pacman -Qi` description reads `None`.
+
+**Arch does get in-app updates.** `.pacman` is an auto-update target: `FpmTarget.supportsAutoUpdate()` lists it beside `deb` and `rpm`, so the package carries `resources/app-update.yml` and a `resources/package-type` file reading `pacman`, and electron-builder writes a `.pacman` entry into `<channel>-linux[-arm64].yml` next to the AppImage and deb entries. electron-updater reads that `package-type` at startup and picks its `PacmanUpdater`, which downloads the `.pacman` and runs `pacman -U --noconfirm <file>` through `pkexec`/`sudo`. That only works once §7 has uploaded the `.pacman` files alongside the manifests; a build whose `.pacman` was never published leaves Arch users installing the next release's package by hand (`sudo pacman -U <file>`).
 
 Windows arm64 is intentionally not built (never shipped on `freedom.baby`, no Myotis addon), so no Windows ARM64 artifact bundles Tor either — it would need the same Arti build step on an ARM64 Windows runner. No Windows code-signing certificate exists, so the installer is unsigned and SmartScreen prompts on first run. The installer is named `Freedom-Setup-<v>.exe` (`build.nsis.artifactName`), not electron-builder's default with spaces, because GitHub rewrites spaces in release-asset names to dots, which would break the `url:` in `latest-win-x64.yml`.
 
@@ -246,6 +250,7 @@ CI now launches every artifact it packages (steps 1, 2, 3, 5 and 6 below), but o
 - Platform-specific code paths the specs do not exercise (native menus, system trust store, default-browser and URL-scheme hooks, file dialogs)
 - Real-network retrieval over the bundled nodes (`bzz://`, `ipfs://`, `rad://`, onion) — CI asserts the nodes start, not that they fetch
 - Upgrade in place from the previous final with a real profile
+- Installing the `.pacman` at all: no GitHub-hosted runner has `pacman`, so no smoke leg touches that artifact. `sudo pacman -U` on a real Arch Linux or Omarchy system is the only check it gets
 
 Test the **candidate** pre-releases in full; re-check the **final** draft in short form (launch + version on each platform), since it is the same tree plus the version and changelog commits.
 
@@ -283,7 +288,7 @@ Run the checklist twice per candidate where it matters: as a fresh install (empt
 
 ### Test environments
 
-- **Linux**: a VM or bare-metal Linux machine matching the target arch. `Freedom-<version>.AppImage` runs without install (`chmod +x` then double-click or launch from a terminal); `freedom-browser_<version>_amd64.deb` installs via `sudo apt install ./freedom-browser_<version>_amd64.deb`. Repeat for the arm64 artifacts on an arm64 Linux instance (e.g. a Raspberry Pi or a UTM arm64 VM on Apple Silicon).
+- **Linux**: a VM or bare-metal Linux machine matching the target arch. `Freedom-<version>.AppImage` runs without install (`chmod +x` then double-click or launch from a terminal); `freedom-browser_<version>_amd64.deb` installs via `sudo apt install ./freedom-browser_<version>_amd64.deb`; on Arch Linux or Omarchy, `freedom-browser-<version>.pacman` installs via `sudo pacman -U ./freedom-browser-<version>.pacman`. Repeat for the arm64 artifacts on an arm64 Linux instance (e.g. a Raspberry Pi or a UTM arm64 VM on Apple Silicon).
 - **Windows**: a Windows VM (UTM, Parallels, VMware Fusion) or a separate Windows host. The NSIS installer (`Freedom-Setup-<version>.exe`) runs unprivileged; the portable `Freedom-<version>-win.zip` extracts and runs without install. The installer is unsigned (no Windows certificate exists), so SmartScreen shows "Windows protected your PC" — More info → Run anyway is the expected path; outright "blocked by your administrator" is not.
 - **macOS**: any Apple Silicon Mac — install the `.dmg` and run the same checklist. The workflow already ran `spctl` / `stapler` on the runner; on the test Mac just confirm the app opens with no Gatekeeper warning.
 
@@ -366,6 +371,85 @@ Why a `-dev` suffix rather than a bare `<next>`:
 - Per semver, `<next>-dev` sorts strictly below `<next>`, so the eventual release will always look like an upgrade to a dev install (never a downgrade).
 - Note: a `-dev` suffix does **not** rescue dev installs from missing a hotfix on the previous line. By semver, `0.8.0-dev > 0.7.1` (major/minor/patch dominate; pre-release tags only break ties within the same triple). This is acceptable here because dev builds are run by developers from source, not via `electron-updater`. If you ever hand pre-release builds to non-developer testers, revisit this.
 
+## Nightly builds
+
+Nightly builds exist so internal testers can run what is on `main` without building it themselves, and so the packaging path is exercised between releases instead of only on a release branch. They are **not** part of the release process above: nothing in §0–§9 changes, `freedom.baby/downloads` and the `latest` update channel are untouched, and a nightly is never promoted into a release.
+
+### What runs, when
+
+`.github/workflows/release.yml` also runs on a schedule, `23 3 * * *` — **03:23 UTC, 05:23 CEST / 04:23 CET**. The schedule only fires on `main` (GitHub runs scheduled workflows from the default branch).
+
+| Job              | What it does on a nightly run                                                                                       |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `plan`           | Decides nightly / publish / version / skip. Every other job reads its outputs.                                      |
+| build jobs       | The same four builds a tag push makes — macOS signed and notarized, Linux x64/arm64, Windows x64 — all bundling Tor |
+| smoke jobs       | The same §6 steps 1/2/6 against every artifact, asserting the nightly version                                       |
+| `e2e-full`       | The whole Playwright `harness` project (CI runs curated per-job spec lists and leaves about 26 specs unrun)         |
+| `nightly`        | Publishes the artifacts to the rolling `nightly` pre-release                                                        |
+| `nightly-failed` | Comments on (or opens) one `Nightly build failed` issue labelled `nightly`                                          |
+
+A scheduled run whose head commit is already published as the current nightly skips every job: `plan` compares `github.sha` with the `commit: <sha>` line in the existing release's notes, so a day with no merges costs one runner minute instead of four builds. `e2e-full` deliberately does **not** gate publishing — a red full suite is a signal to act on in the morning, not a reason to withhold a build from testers.
+
+The build takes as long as a release build (20–30 minutes, macOS longest because of the two notarizations).
+
+### Triggering one by hand
+
+Actions → "Release" → Run workflow, from any branch:
+
+- **`nightly`** — build as a nightly: stamp a nightly version and publish on the nightly update channel. On its own this only uploads workflow artifacts, exactly like any other dispatch run.
+- **`publish_nightly`** — also publish to the rolling `nightly` pre-release and move the `nightly` tag. Needs `nightly` ticked too.
+- `signed` and `bundle_tor` still apply; leave them on for anything a tester will install.
+
+A manual nightly never skips: ticking the box is someone asking for this exact build.
+
+### The version, the tag and the release
+
+The version is the `package.json` version with any pre-release suffix dropped, plus the date and the short commit:
+
+```
+0.8.6-dev  →  0.8.6-nightly.20260914.abc1234
+```
+
+Valid semver that sorts **below** `0.8.6`, so a nightly never looks newer than the stable build of the same version, and each night's build sorts above the previous one. The `plan` job computes it; each build job stamps it with `npm version --no-git-tag-version` before packaging. `main`'s committed version is never changed.
+
+There is one nightly tag and one nightly release, both called `nightly`, both rolling: the `nightly` job force-moves the tag to the built commit, then deletes the previous release object and creates a fresh one on it with the new assets and notes (the version, the `commit: <sha>` line the next run's skip check reads, and the merge commits since the previous nightly). Recreating rather than editing is what keeps the release page's "released this <date>" current — GitHub sets that once at first publish and never on edit. The page is empty for the minute or two the upload takes; an updater check in that window gets a 404 and retries on its next interval.
+
+```
+https://github.com/solardev-xyz/freedom-browser/releases/tag/nightly
+```
+
+It is flagged "Pre-release", so it stays out of "Latest release" and no download link on `freedom.baby` points at it.
+
+### The update channel
+
+Nightly artifacts are built on the `nightly` channel against the rolling release's download URL, not on `latest` against `freedom.baby/downloads`. The workflow sets `FREEDOM_UPDATE_CHANNEL` / `FREEDOM_UPDATE_URL`; `scripts/build.js` turns them into `-c.publish.channel` / `-c.publish.url` (see `scripts/publish-channel.js`), so `app-update.yml` inside the packaged app points at the nightly feed and electron-builder writes `nightly-mac.yml`, `nightly-linux.yml`, `nightly-linux-arm64.yml` and `nightly-win-x64.yml` next to the artifacts.
+
+The consequence, which is the whole point:
+
+- a nightly install auto-updates to the next nightly, because that is the only channel it reads;
+- a stable install reads `latest*` on `freedom.baby` and is never offered a nightly;
+- nothing a nightly run does writes to `freedom.baby` at all.
+
+To leave the nightly channel, uninstall and install a release — there is no in-app path from nightly back to stable.
+
+### Installing one
+
+Same artifacts as a release, from the `nightly` release page: the signed and notarized macOS `.dmg`, the Linux `.AppImage` / `.deb` / `.pacman` for x64 and arm64, and the unsigned Windows `Freedom-Setup-<version>.exe` or portable `-win.zip` (SmartScreen prompts; More info → Run anyway).
+
+**Internal testing only.** A nightly is whatever was on `main` at 03:23 UTC. It has passed the packaged smoke tests and nothing else — no §6 pass, no manual checklist, no changelog. Do not hand it to users.
+
+Run it against a scratch profile, for the same reason a release candidate gets one (§6, "Use a separate profile"): a nightly shares its app id and profile directory with an installed stable Freedom, so a half-finished migration on `main` would otherwise touch real data.
+
+```
+FREEDOM_TEST_USER_DATA="$HOME/freedom-nightly" /Applications/Freedom.app/Contents/MacOS/Freedom
+```
+
+### Next step: a merge queue
+
+Nightlies are only as useful as `main` is green. The recommended next step is to turn on a **GitHub merge queue** for `main`: CI then runs on the merged result of a batch of pull requests before any of them land, which both keeps a broken combination out of `main` (and out of the next nightly) and removes the "branch must be up to date" churn of re-running CI on every PR after every merge.
+
+That is a repository **settings** change (Settings → Branches → branch protection rule for `main` → "Require merge queue"), not a workflow change, so it is deliberately not part of this change and needs an admin to enable it.
+
 ## Appendix A: building locally (fallback)
 
 Use this only when the workflow cannot be used — for instance to debug a packaging problem the runner logs do not explain, or if GitHub Actions is down. Everything here reads the version from `package.json`; run it from the release branch.
@@ -410,7 +494,7 @@ npm run dist:linux:x64:docker
 npm run dist:linux:arm64:docker
 ```
 
-Both run `electron-builder` inside a Linux container and download the matching Radicle addon for the target arch.
+Both run `electron-builder` inside a Linux container and download the matching Radicle addon for the target arch. Each invocation produces the `.AppImage`, the `.deb` and the `.pacman` for that arch. The container installs `libarchive-tools` alongside `fpm` for the same reason the release workflow's Linux legs do — fpm writes a pacman package's `.MTREE` manifest by shelling out to `bsdtar --format=mtree`, which `node:24-trixie` does not ship, and a missing one fails the build at the pacman step with a bare `/bin/sh failed (exit code 127)`.
 
 ### Windows
 
@@ -457,7 +541,7 @@ Each packaged app carries only the prebuild for its own target: the `mac`/`linux
 - **Guards**: the tag must match `package.json`; a release lookup that fails for a transient API reason fails the run instead of creating a duplicate draft; more than one release on a tag aborts; re-running onto a published release aborts.
 - **Ordering inside a run**: create draft → upload every asset → (candidates only) flip to published pre-release. Watchers never see an empty release.
 - **Re-runs**: "Re-run failed jobs" keeps the successful legs' artifacts and re-runs `release`. "Re-run all jobs" rebuilds everything, including a fresh macOS signature and notarization — the bytes and hashes change, which is fine for a draft and forbidden for a published release (the guard above).
-- **Update channel**: `build.publish.channel` is pinned to `latest` in `package.json`; without it electron-builder derives the channel from the version's pre-release suffix and would name the manifest `rc-mac.yml`. `scripts/build.js` pins the Windows channel to `latest-win-x64` on the command line.
+- **Update channel**: `build.publish.channel` is pinned to `latest` in `package.json`; without it electron-builder derives the channel from the version's pre-release suffix and would name the manifest `rc-mac.yml`. `scripts/build.js` pins the Windows channel to `latest-win-x64` on the command line (`FREEDOM_UPDATE_CHANNEL` / `FREEDOM_UPDATE_URL` override both channel and feed — that is how nightlies stay off `latest`; see "Nightly builds").
 - **Known first-run fixes** worth remembering when a leg breaks: the adblock list download uses a retrying `https` client because the EasyList server drops connections; the Ant and IPFS fetch scripts extract archives with Windows' own bsdtar and relative paths because the Windows job runs in Git Bash, where GNU tar misreads `D:\...` as a remote host.
 - **Smoke gate**: `smoke-linux` (a matrix over x64/arm64), `smoke-mac-arm64` and `smoke-windows-x64` each run after their build job and before `release` (§6). They need no secrets and rebuild nothing — `npm ci --ignore-scripts`, then Playwright against the run's own artifacts. A failure in any of them blocks the release job; each uploads its Playwright traces as `smoke-<platform>-report` (deliberately not matching the `freedom-*` pattern the `release` job downloads, so traces can never become release assets). The mac job reads the signing state off the artifact name it downloaded (`freedom-mac-arm64-signed` / `-unsigned`) and only assesses Gatekeeper when there is a signature to assess, so an unsigned dispatch run still passes.
 - **Cost**: the repo is public, so runner minutes are free. A full run is four parallel build jobs of 10–25 minutes, plus a smoke job per platform of a few minutes each (also in parallel, each waiting only on its platform's build job (the two Linux smoke legs wait on the whole Linux build matrix, since `needs` cannot target one matrix leg)).

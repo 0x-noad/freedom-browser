@@ -43,8 +43,8 @@
     "dist:mac:notary-status": "dotenv -- node scripts/macos-notary.js status",
     "dist:mac:notary-log": "dotenv -- node scripts/macos-notary.js log",
     "dist:mac:staple-notary": "dotenv -- node scripts/macos-notary.js staple",
-    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --arm64\"",
-    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --x64\"",
+    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --arm64\"",
+    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --x64\"",
     "adblock:download": "node scripts/fetch-adblock-lists.js",
     "ant:download": "node scripts/fetch-ant.js",
     "myotis:build-supervisor": "node scripts/build-myotis-supervisor.js",
@@ -103,7 +103,9 @@
       "sign": "./scripts/sign-myotis-helper.js",
       "gatekeeperAssess": false,
       "extendInfo": {
-        "LSMultipleInstancesProhibited": false
+        "LSMultipleInstancesProhibited": false,
+        "NSCameraUsageDescription": "Freedom needs camera access so websites you allow can use it for video calls.",
+        "NSMicrophoneUsageDescription": "Freedom needs microphone access so websites you allow can use it for video calls."
       },
       "entitlements": "config/entitlements.mac.plist",
       "entitlementsInherit": "config/entitlements.mac.plist",
@@ -135,7 +137,8 @@
     "linux": {
       "target": [
         "deb",
-        "AppImage"
+        "AppImage",
+        "pacman"
       ],
       "icon": "assets/icons",
       "category": "Network;WebBrowser",
@@ -168,6 +171,20 @@
             "**/*"
           ]
         }
+      ]
+    },
+    "pacman": {
+      "synopsis": "A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols",
+      "depends": [
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libxss",
+        "libxtst",
+        "xdg-utils",
+        "at-spi2-core",
+        "alsa-lib",
+        "libsecret"
       ]
     },
     "nsis": {
@@ -296,7 +313,7 @@
     "better-sqlite3": "^13.0.3",
     "electron-log": "^5.4.4",
     "electron-updater": "^6.8.3",
-    "ethers": "^6.16.0",
+    "ethers": "^6.17.0",
     "micro-key-producer": "^0.10.0",
     "proper-lockfile": "^4.1.2",
     "qrcode": "^1.5.4"
