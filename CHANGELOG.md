@@ -18,6 +18,8 @@ All notable changes to Freedom will be documented in this file.
   - Pressing Esc or clicking away still denies just that one request and records nothing, so the site can ask again
   - After three dismissals in a row it is blocked for the rest of the session instead, so a page can no longer put the prompt back up every time you close it
   - The block shows in the address-bar indicator as "Blocked after repeated dismissals"; Remove there lets the site ask again. It is never saved to disk, and a private window's dismissals stay in that window
+- Linux pacman distribution target for Arch Linux and Omarchy users, next to the existing AppImage and deb, for x64 and arm64
+  - Install it with `sudo pacman -U <file>`; in-app updates work from there on, the same as they do for the deb, asking for your password when the new package is installed
 
 ### Fixed
 
@@ -26,6 +28,9 @@ All notable changes to Freedom will be documented in this file.
   - On sites that gate content — a paywall, a paid session, a rate limit, a login — that second anonymous request could be refused, logged as a failed visit, or counted against your quota
   - Freedom now uses the icon address the page itself already reported while loading, and fetches only the icon. Icons that a page does not declare are still looked for at the site's `/favicon.ico`, as before
   - The icon is still fetched without your cookies or session, and a `.onion` site's icon still goes over Tor. Private windows still fetch and cache no icons at all
+- The Nodes menu no longer shows a Tor version while Tor is off
+  - A stopped Tor still carried a `Version: Arti <n>` row beneath its toggle — the one section in that menu with anything under an off node, where Swarm, IPFS, Ethereum, Gnosis and Radicle all show nothing until they are running
+  - A running Tor is unchanged: the SOCKS endpoint and the version read as before, and a start that fails still says why
 - `Ctrl+W` on Windows and Linux closes the active tab instead of the whole window
   - The File menu carried the shortcut twice — on Close Tab, and invisibly on Close Window — and Windows and Linux gave it to Close Window, so one keystroke closed every tab in the window at once. It only looked right with a single tab open, where closing the tab closes the window anyway
   - Closing the last tab still closes the window, and `Cmd+W` on macOS is unchanged

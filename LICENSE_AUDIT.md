@@ -43,7 +43,7 @@ It has been deleted, along with two other unreferenced vendor files that came in
 
 Freedom Browser is distributed as:
 
-- **Electron desktop application** (DMG for macOS, DEB and AppImage for Linux, NSIS installer and portable zip for Windows)
+- **Electron desktop application** (DMG for macOS, DEB, AppImage and pacman for Linux, NSIS installer and portable zip for Windows)
 - **Bundled node_modules** in `app.asar`
 - **Committed vendor bundles** under `src/renderer/vendor/`, shipped inside `app.asar` by the `src/**/*` files pattern
 - **Native addons** unpacked from asar, shipped under `resources/`:
@@ -104,11 +104,11 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Myotis (Native Wallet-Engine Addon) — _new in 0.8.5_
 
 - **Source:** https://github.com/biafra23/myotis
-- **Version:** `v0.1.7` (pin: `scripts/fetch-myotis.js` `PINNED_RELEASE_TAG`)
+- **Version:** `v0.1.10` (pin: `scripts/myotis-release.json` `releaseTag`)
 - **License:** **Apache-2.0** (single-licensed, not dual)
 - **Risk:** **Yellow**
 - **Integration:** Native addon (`myotis-node.node`), run out-of-process under Freedom's own supervisor
-- **Action Required:** Apache-2.0 **section 4(d)** — upstream ships a `NOTICE` file, so its attribution text must be reproduced verbatim in any redistribution. Copyright 2026 Dirk Jäckel. Reproduced in `NOTICES` ✔. **Re-read the upstream `NOTICE` on every version bump.**
+- **Action Required:** Apache-2.0 **section 4(d)** — upstream ships a `NOTICE` file, so its attribution text must be reproduced verbatim in any redistribution. Copyright 2026 Dirk Jäckel. Reproduced in `NOTICES` ✔. **Re-read the upstream `NOTICE` on every version bump.** Checked at v0.1.10 (`7c962968`): unchanged; the existing attribution still matches.
 
 ### Arti (Tor Client) — _new in 0.8.5_
 
