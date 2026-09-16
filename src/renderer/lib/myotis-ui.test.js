@@ -596,7 +596,7 @@ describe('myotis-ui', () => {
   });
 
   test('slow recovery notice stays dismissed across automatic attempts but a failure is still announced', async () => {
-    const ctx = await loadMyotisUi({ menuOpen: false }); ctx.mod.initMyotisUi(); await flushMicrotasks();
+    const ctx = await loadMyotisUi({ antMenuOpen: false }); ctx.mod.initMyotisUi(); await flushMicrotasks();
     const status = recoveryStatus(1, { state: 'recovering', recovery: {
       phase: 'checking', attempt: 1, canRetry: false, takingLonger: true,
     } });

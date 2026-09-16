@@ -26,7 +26,7 @@ function runChild(host = process, loadAddon = require) {
     stopping = true;
     // This may block or leave native workers alive. Parent enforces the grace
     // deadline externally and waits for OS exit, never for this acknowledgement.
-    try { if (handle > 0) addon.stop(handle); } catch { /* Parent owns termination. */ }
+    try { if (Number.isSafeInteger(handle) && handle > 0) addon.stop(handle); } catch { /* Parent owns termination. */ }
     host.exit(0);
   }
   host.on('disconnect', stop);
@@ -61,6 +61,9 @@ function runChild(host = process, loadAddon = require) {
         } else {
           handle = addon.create(message.network, message.dataDir);
         }
+        // A non-integer handle (undefined, NaN, a string) passes neither the
+        // -3 comparison nor `< 1`, so validate the type before either check.
+        if (!Number.isSafeInteger(handle)) throw new Error('create');
         if (handle === -3) { failure = 'anchor-mismatch'; throw new Error('anchor mismatch'); }
         if (handle < 1) throw new Error('create');
         failure = 'start';

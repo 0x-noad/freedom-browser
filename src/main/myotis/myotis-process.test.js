@@ -239,6 +239,49 @@ describe('MyotisProcess', () => {
     expect(events.some((event) => event.event === 'unavailable')).toBe(false);
   });
 
+  // Only a receipt from this generation, whose bounded fields all parse, may
+  // classify an exit as verified. Everything else quarantines the directory.
+  test.each([
+    ['another generation', { generation: 'other' }],
+    ['a non-boolean forced flag', { forced: 'no' }],
+    ['a missing forced flag', { forced: undefined }],
+    ['a fractional child exit code', { exitCode: 1.5 }],
+    ['a child exit code above the 32-bit range', { exitCode: 0x100000000 }],
+    ['a child exit code below -1', { exitCode: -2 }],
+    ['a missing child exit code', { exitCode: undefined }],
+    ['a negative signal', { signal: -1 }],
+    ['a signal above the platform range', { signal: 129 }],
+    ['a missing signal', { signal: undefined }],
+  ])('a reaped receipt with %s leaves the exit unconfirmed', async (_label, change) => {
+    ready();
+    receipt('reaped', { exitCode: 0, signal: 0, forced: false, ...change });
+    child.stdout.emit('end');
+    child.emit('exit', 0, null);
+    expect(processClient.exited).toBe(false);
+    const events = callbacks.onLifecycle.mock.calls.map(([event]) => event);
+    expect(events.find((event) => event.event === 'supervisor-exit')).toMatchObject({
+      classification: 'unconfirmed',
+    });
+    jest.advanceTimersByTime(5000);
+    await expect(processClient.stop()).resolves.toBe(false);
+    expect(callbacks.onExit).not.toHaveBeenCalled();
+  });
+
+  test('an oversized receipt stream is refused even when it would otherwise parse', async () => {
+    ready();
+    // Well-formed apart from its size: only the 1 KiB stream cap rejects it.
+    receipt('reaped', { exitCode: 0, signal: 0, forced: false, pad: 'a'.repeat(1024) });
+    child.stdout.emit('end');
+    child.emit('exit', 0, null);
+    expect(processClient.exited).toBe(false);
+    const events = callbacks.onLifecycle.mock.calls.map(([event]) => event);
+    expect(events.find((event) => event.event === 'supervisor-exit')).toMatchObject({
+      classification: 'unconfirmed', receipt: 'invalid',
+    });
+    jest.advanceTimersByTime(5000);
+    await expect(processClient.stop()).resolves.toBe(false);
+  });
+
   test('supervisor loss without terminal proof never authorizes data reuse', async () => {
     ready();
     child.emit('exit', null, 'SIGKILL'); child.stdout.emit('end');

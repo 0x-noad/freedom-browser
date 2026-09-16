@@ -255,7 +255,8 @@ jobs:
   # out first attempt still preserves its cleanly-stopped partial sync; a
   # re-run continues from that snapshot instead of starting from zero.
   #
-  # v0.1.9 fixes the historical catch-up stall. Run the live spec normally;
+  # The pinned v0.1.10 release carries the catch-up stall fix that first landed
+  # in v0.1.9 (observed as of 2026-09). Run the live spec normally;
   # stale anchors fail explicitly and never receive automatic risk consent.
   myotis-native-e2e:
     # Live peers and expiring trust anchors need an explicit qualification run.

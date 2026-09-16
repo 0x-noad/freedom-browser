@@ -9,8 +9,9 @@ the recorded finite campaign; the remaining product gates still apply.
 
 ## Current checkpoint-recovery integration
 
-The current integration uses Myotis v0.1.9 / ABI 25 with Freedom's versioned
-checkpoint-import extension. A stale anchor starts automatic Colibri checkpoint
+The current integration uses the official Myotis v0.1.10 release addon (ABI 26),
+whose bytes are checksum-pinned in `scripts/myotis-release.json`; Freedom ships
+no patched or locally built extension. A stale anchor starts automatic Colibri checkpoint
 verification and a guarded native-generation replacement. It does not show the
 previous stale-anchor consent dialog or call `acceptStaleAnchor`. The supervisor
 must still establish the old child's exit before the manager switches to a fresh
@@ -22,8 +23,9 @@ guard is checked on every state load and replacement.
 
 The complete [recovery contract](myotis-process-isolation.md#automatic-stale-checkpoint-recovery)
 contains the trust-source policy, attempt/deadline limits, immutable state layout,
-and retry/cancellation behavior. The [native extension documentation](../scripts/myotis-native/README.md)
-describes the pinned source build and capability checks. Historical campaigns
+and retry/cancellation behavior. The [build and signing contract](myotis-process-isolation.md#build-and-signing)
+describes the pinned release addon and its capability checks; `scripts/fetch-myotis.js`
+downloads and verifies it against the committed hashes. Historical campaigns
 below retain their original revision, runtime and evidence limits; an ABI22
 fixture pass does not establish checkpoint-import behavior.
 

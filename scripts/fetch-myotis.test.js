@@ -1,7 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { release, sha256, selectedTargets, verifyBytes, validateInstalledAddon, download } = require('./fetch-myotis');
+const { release, sha256, selectedTargets, verifyBytes, validateInstalledAddon, download, pruneLeftoverAddons } = require('./fetch-myotis');
 
 test('selects official assets for all five targets, including cross-target downloads', () => {
   expect(release.abi).toBe(26);
@@ -20,6 +20,16 @@ test('changed addon bytes fail the committed checksum, regardless of local build
   fs.writeFileSync(path.join(dir, 'myotis-build.json'), JSON.stringify({ addonSha256: sha256(bytes) }));
   expect(validateInstalledAddon(dir)).toContain('checksum');
   expect(validateInstalledAddon(path.join(root, 'win-x64'))).toContain('missing');
+});
+
+test('removes replaced and abandoned addon copies without touching the installed one', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myotis-prune-'));
+  const uuid = '9f3b1c2d-4e5a-4b6c-8d7e-0f1a2b3c4d5e';
+  const keep = ['myotis-node.node', 'myotis-build.json', 'myotis-node.candidate.node', 'notes.previous-1'];
+  const remove = [`myotis-node.candidate-${uuid}.node`, `myotis-node.node.previous-${uuid}`];
+  for (const name of [...keep, ...remove]) fs.writeFileSync(path.join(dir, name), 'bytes');
+  pruneLeftoverAddons(dir);
+  expect(fs.readdirSync(dir).sort()).toEqual(keep.sort());
 });
 
 test('refuses HTTP redirects before requesting their content', async () => {

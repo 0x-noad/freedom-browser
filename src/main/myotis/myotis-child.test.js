@@ -105,6 +105,15 @@ test('refuses an unsupported addon instead of falling back to its embedded check
 });
 
 
+test.each([undefined, null, NaN, '7', 7.5, {}])('refuses a non-integer native handle instead of starting it: %s', (handle) => {
+  const ctx = setup();
+  ctx.addon.create.mockReturnValue(handle);
+  ctx.start();
+  expect(ctx.addon.start).not.toHaveBeenCalled();
+  expect(ctx.addon.stop).not.toHaveBeenCalled();
+  expect(ctx.host.send).toHaveBeenCalledWith({ generation: 'current', type: 'started', ok: false, failure: 'create' });
+});
+
 test.each([false, true])('reports native ANCHOR_MISMATCH without starting or falling back (checkpoint=%s)', (withCheckpoint) => {
   const ctx = setup();
   ctx.addon.create.mockReturnValue(-3);

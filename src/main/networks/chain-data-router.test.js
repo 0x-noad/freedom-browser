@@ -415,6 +415,22 @@ describe('chain-data-router', () => {
     );
   });
 
+  test.each([
+    ['a decimal string', '21000'],
+    ['a hex string', '0x5208'],
+    ['a fractional number', 21000.5],
+    ['a number beyond the safe range', 2 ** 53],
+    ['a negative number', -1],
+  ])('refuses %s gas estimate from Myotis and uses another source', async (_label, gas) => {
+    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas });
+    mockRequestViaColibri.mockResolvedValue('0x5208');
+
+    await expect(request(1, 'eth_estimateGas', [{ to: '0xabc' }])).resolves.toMatchObject({
+      result: '0x5208',
+      source: 'colibri',
+    });
+  });
+
   test('executes the standardized "input" calldata alias on the Myotis path', async () => {
     mockMyotis.ethCall.mockResolvedValue({ resultHex: '0x2a' });
 

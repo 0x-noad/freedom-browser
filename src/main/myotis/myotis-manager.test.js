@@ -20,13 +20,16 @@ describe('myotis-manager', () => {
       replaceCheckpoint: jest.fn(async (baseDir, _chainId, checkpoint) => ({ dataDir: path.join(baseDir, 'recovered'), origin: 'verified', checkpoint })),
     };
     const status = { running: true, paused: false, beaconState: 'SYNCED', elReaderAvailable: true, elHunting: false, snapPeers: 2 };
+    // Tests that need to act inside the spawn window replace the resolved start
+    // promise with one they release themselves.
+    let startGate = null;
     class MockProcess {
       constructor(options) {
         this.options = options;
         this.checkpointSupported = true;
         this.accepting = true;
         this.exited = false;
-        this.startPromise = Promise.resolve(true);
+        this.startPromise = startGate ? new Promise((resolve) => { startGate.release = resolve; }) : Promise.resolve(true);
         this.request = jest.fn(async (op) => {
           if (op === 'status') { options.onStatus(status); return status; }
           return { result: op };
@@ -66,7 +69,9 @@ describe('myotis-manager', () => {
         }),
       },
     });
-    return { mod, clients, dataDir, ipcMain, status, event, win, dialog, acquireCheckpoint, store, profile, existsSync, clipboard };
+    const gateStart = () => (startGate = {});
+    return { mod, clients, dataDir, ipcMain, status, event, win, dialog, acquireCheckpoint, store, profile, existsSync, clipboard,
+      gateStart, releaseStart: (value) => startGate.release(value) };
   }
 
   test('keeps independent chain processes and profile directories', async () => {
@@ -596,6 +601,63 @@ describe('myotis-manager', () => {
     await expect(handler(ctx.event, 100)).rejects.toThrow('Nodes menu');
     expect(ctx.dialog.showMessageBox).not.toHaveBeenCalled();
     expect(ctx.store.repairState).not.toHaveBeenCalled();
+  });
+
+  // The authenticated checkpoint binds the finalized root at exactly its anchor
+  // slot. Nothing below may be served as a verified read.
+  async function resumed(change) {
+    const ctx = loadManager();
+    ctx.store.loadOrCreateState.mockResolvedValue({ origin: 'verified', checkpoint, dataDir: '/owned-generation' });
+    await ctx.mod.startMyotis({ chainId: 100 });
+    ctx.clients[0].options.onStatus({
+      ...ctx.status, beaconState: 'SYNCED',
+      finalizedSlot: checkpoint.slot, finalizedRootHex: checkpoint.root.slice(2), ...change,
+    });
+    return ctx;
+  }
+
+  test.each([
+    ['a finalized head below the anchor', { finalizedSlot: checkpoint.slot - 32 }],
+    ['an absent finalized root', { finalizedRootHex: undefined }],
+    ['a malformed finalized root', { finalizedRootHex: 'zz'.repeat(32) }],
+    ['a non-integer finalized slot', { finalizedSlot: String(checkpoint.slot) }],
+    ['a missing finalized slot', { finalizedSlot: undefined }],
+  ])('never reports readiness for %s', async (_label, change) => {
+    const ctx = await resumed(change);
+    expect(ctx.mod.isReady(100)).toBe(false);
+    await expect(ctx.mod.getAccount('0xabc', 100)).rejects.toThrow('not ready');
+    await ctx.mod.stopMyotis(100);
+  });
+
+  test('a finalized head past the anchor slot is served without rebinding its root', async () => {
+    const ctx = await resumed({ finalizedSlot: checkpoint.slot + 32, finalizedRootHex: 'cd'.repeat(32) });
+    expect(ctx.mod.isReady(100)).toBe(true);
+    await ctx.mod.stopMyotis(100);
+  });
+
+  test('a divergent finalized root at the anchor slot blocks recovery instead of serving reads', async () => {
+    const ctx = await resumed({ finalizedRootHex: 'cd'.repeat(32) });
+    expect(ctx.mod.publicStatus(100)).toMatchObject({ state: 'recovery-blocked', recovery: { phase: 'blocked', reason: 'mismatch' } });
+    expect(ctx.mod.isReady(100)).toBe(false);
+    await expect(ctx.mod.getAccount('0xabc', 100)).rejects.toThrow('not ready');
+    await jest.advanceTimersByTimeAsync(120000);
+    expect(ctx.acquireCheckpoint).not.toHaveBeenCalled();
+    expect(ctx.store.replaceCheckpoint).not.toHaveBeenCalled();
+    await ctx.mod.stopMyotis(100);
+  });
+
+  test('a profile change during the spawn window stops the orphaned native child', async () => {
+    const ctx = loadManager();
+    ctx.gateStart();
+    const starting = ctx.mod.startMyotis({ chainId: 100 });
+    await flush();
+    expect(ctx.clients).toHaveLength(1);
+    expect(ctx.clients[0].stop).not.toHaveBeenCalled();
+    ctx.profile.id = 'another-profile';
+    ctx.releaseStart(true);
+    await expect(starting).resolves.toBe(false);
+    expect(ctx.clients[0].stop).toHaveBeenCalledTimes(1);
+    expect(ctx.mod.isReady(100)).toBe(false);
   });
 
   test('ownership help copies only bounded support details on explicit action', async () => {

@@ -155,6 +155,19 @@ describe('checkpoint generation store on the real filesystem', () => {
     expect((await loadOrCreateState(baseDir, chainId)).generation).toBe(current.generation);
   });
 
+  test.each([25, 27, '26', null])('a generation recorded against native checkpoint API %s is never resumed', async (api) => {
+    const created = await replaceCheckpoint(baseDir, 1, checkpoint());
+    const anchorPath = path.join(created.dataDir, 'anchor.json');
+    const record = await readJson(anchorPath);
+    await writeJson(anchorPath, { ...record, nativeCheckpointApi: api });
+    const stored = await fs.readFile(anchorPath);
+    await expect(loadOrCreateState(baseDir, 1)).rejects.toMatchObject(STORAGE_ERROR);
+    // The pointer still names the refused generation; nothing is rewritten.
+    expect(await fs.readFile(anchorPath)).toEqual(stored);
+    expect(JSON.parse(await fs.readFile(path.join(baseDir, 'verified-sync.json'), 'utf8')).generation)
+      .toBe(created.generation);
+  });
+
   test('native marker must match the authenticated anchor and is never rewritten', async () => {
     const current = await replaceCheckpoint(baseDir, 1, checkpoint());
     const marker = path.join(current.dataDir, 'sync-anchor.json');

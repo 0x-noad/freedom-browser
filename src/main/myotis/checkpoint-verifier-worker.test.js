@@ -187,6 +187,30 @@ describe('checkpoint proof/finality policy', () => {
     expect(f.fetch).toHaveBeenCalledTimes(1);
   });
 
+  test('quorum evidence refused during interception is never verified as success', async () => {
+    const f = fixture();
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation(async (url) => {
+      if (url !== f.config.prover && !url.endsWith('finality_checkpoints')) {
+        return new Response(JSON.stringify({ execution_optimistic: true, data: { root: headerRoot(f.header) } }));
+      }
+      return original(url);
+    });
+    // A future runtime could swallow the interception failure and still report
+    // a verified proof; the recorded transport error must still decide.
+    f.runtime.Colibri.prototype.verifyProof = async function verifyProof() {
+      try {
+        await f.clientConfig.fetch(`${f.config.source}/eth/v1/beacon/blocks/${f.slot}/root`);
+      } catch {
+        /* swallowed by the runtime */
+      }
+      return { number: '0x1' };
+    };
+    await expect(verifyCheckpoint(1, f.dependencies)).rejects.toMatchObject({
+      code: 'CHECKPOINT_QUORUM_CONFLICT',
+    });
+  });
+
   test('a runtime without the required decoder is incompatible before any request', async () => {
     const f = fixture();
     f.runtime.decode_proof = undefined;

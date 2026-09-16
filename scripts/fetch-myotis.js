@@ -74,6 +74,23 @@ async function fetchAsset(asset) {
   }
 }
 
+// A replaced or half-installed addon copy would otherwise be left behind on
+// every re-run or failed verification. Removal is best effort: a copy still
+// mapped by a running process cannot be deleted on Windows and is retried on
+// the next run. Only this script's own temporary names are considered.
+const LEFTOVER = /^myotis-node\.(candidate-[0-9a-f-]+\.node|node\.previous-[0-9a-f-]+)$/;
+
+function pruneLeftoverAddons(directory) {
+  for (const name of fs.readdirSync(directory)) {
+    if (!LEFTOVER.test(name)) continue;
+    try {
+      fs.rmSync(path.join(directory, name), { force: true });
+    } catch {
+      /* still mapped by a running process; retried on the next run */
+    }
+  }
+}
+
 async function main() {
   for (const key of ['MYOTIS_REPO', 'MYOTIS_RELEASE_TAG']) {
     if (process.env[key]) throw new Error(`${key} overrides are incompatible with the pinned official release`);
@@ -86,16 +103,29 @@ async function main() {
     verifyBytes(target, bytes);
     const directory = path.join(OUTPUT_DIR, target.dir);
     fs.mkdirSync(directory, { recursive: true });
+    pruneLeftoverAddons(directory);
     const candidate = path.join(directory, `myotis-node.candidate-${crypto.randomUUID()}.node`);
     fs.writeFileSync(candidate, bytes, { flag: 'wx' });
-    if (target.runtime === `${process.platform}-${process.arch}`) {
-      execFileSync(process.execPath, [path.join(__dirname, 'verify-myotis-checkpoint-addon.js'), candidate], {
-        stdio: 'inherit', timeout: 30000,
-      });
-    }
     const installed = path.join(directory, 'myotis-node.node');
-    if (fs.existsSync(installed)) fs.renameSync(installed, `${installed}.previous-${crypto.randomUUID()}`);
-    fs.renameSync(candidate, installed);
+    let displaced = null;
+    try {
+      if (target.runtime === `${process.platform}-${process.arch}`) {
+        execFileSync(process.execPath, [path.join(__dirname, 'verify-myotis-checkpoint-addon.js'), candidate], {
+          stdio: 'inherit', timeout: 30000,
+        });
+      }
+      // The displaced copy keeps a temporary name because a loaded addon can be
+      // renamed but not removed while it is mapped.
+      if (fs.existsSync(installed)) {
+        displaced = `${installed}.previous-${crypto.randomUUID()}`;
+        fs.renameSync(installed, displaced);
+      }
+      fs.renameSync(candidate, installed);
+    } catch (error) {
+      fs.rmSync(candidate, { force: true });
+      throw error;
+    }
+    if (displaced) pruneLeftoverAddons(directory);
     console.log(`Installed official Myotis ${release.releaseTag} (${target.runtime})`);
   }
 }
@@ -104,4 +134,4 @@ if (require.main === module) main().catch((error) => {
   console.error(`fetch-myotis failed: ${error.message}`);
   process.exitCode = 1;
 });
-module.exports = { PINNED_RELEASE_TAG, release, sha256, selectedTargets, verifyBytes, validateInstalledAddon, download, main };
+module.exports = { PINNED_RELEASE_TAG, release, sha256, selectedTargets, verifyBytes, validateInstalledAddon, download, pruneLeftoverAddons, main };
