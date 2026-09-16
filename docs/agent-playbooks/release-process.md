@@ -494,7 +494,7 @@ npm run dist:linux:x64:docker
 npm run dist:linux:arm64:docker
 ```
 
-Both run `electron-builder` inside a Linux container and download the matching Radicle addon for the target arch. Each invocation produces the `.AppImage`, the `.deb` and the `.pacman` for that arch.
+Both run `electron-builder` inside a Linux container and download the matching Radicle addon for the target arch. Each invocation produces the `.AppImage`, the `.deb` and the `.pacman` for that arch. The container installs `libarchive-tools` alongside `fpm` for the same reason the release workflow's Linux legs do — fpm writes a pacman package's `.MTREE` manifest by shelling out to `bsdtar --format=mtree`, which `node:24-trixie` does not ship, and a missing one fails the build at the pacman step with a bare `/bin/sh failed (exit code 127)`.
 
 ### Windows
 
