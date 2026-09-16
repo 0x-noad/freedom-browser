@@ -36,8 +36,9 @@
  * auto-denies without prompting. Freedom does the same (#364) — the
  * embargo is recorded in the existing run-scoped tier (session-only in a
  * normal window, partition-scoped in a private one), so it survives
- * navigation but not a restart, and any revoke clears it along with the
- * dismissal counter. Only real user dismissals count: an allow or a block
+ * navigation but not a restart, and a revoke clears it along with the
+ * dismissal counter — in the scopes that revoke applies to (#366; see
+ * `revokeInScope`). Only real user dismissals count: an allow or a block
  * resets the counter, and a request invalidated by navigation or by the
  * window closing never touches it.
  *
@@ -247,23 +248,41 @@ function clearPrivateDecisions(partition) {
  */
 function clearPrivateDecision(origin, key) {
   let removed = false;
-  for (const [partition, origins] of privateDecisions) {
+  for (const partition of [...privateDecisions.keys()]) {
     if (origin === undefined) {
-      if (origins.size > 0) removed = true;
+      if (privateDecisions.get(partition).size > 0) removed = true;
       privateDecisions.delete(partition);
       continue;
     }
+    if (clearPrivateDecisionIn(partition, origin, key)) removed = true;
+  }
+  return removed;
+}
+
+/**
+ * Drop a live decision in ONE private partition — what a revoke issued from
+ * inside that window means (#366). Sibling private windows and the normal
+ * profile's own run-scoped tier are left alone.
+ *
+ * @param {string} partition
+ * @param {string} origin
+ * @param {string} [key] - omit to clear every key for `origin`
+ * @returns {boolean} true if anything was removed
+ */
+function clearPrivateDecisionIn(partition, origin, key) {
+  const origins = privateDecisions.get(partition);
+  if (!origins) return false;
+  let removed = false;
+  if (key === undefined) {
+    removed = origins.delete(origin);
+  } else {
     const keys = origins.get(origin);
-    if (!keys) continue;
-    if (key === undefined) {
-      origins.delete(origin);
-      removed = true;
-    } else if (keys.delete(key)) {
+    if (keys?.delete(key)) {
       removed = true;
       if (keys.size === 0) origins.delete(origin);
     }
-    if (origins.size === 0) privateDecisions.delete(partition);
   }
+  if (origins.size === 0) privateDecisions.delete(partition);
   return removed;
 }
 
@@ -291,40 +310,45 @@ function bumpDismissCount(scopeKey, origin, key) {
 }
 
 /**
- * Forget dismissals for origin+key in ONE scope — what an explicit allow
- * or block means ("the user answered; start counting over").
+ * Forget dismissals in ONE scope. With both `origin` and `key` that is what
+ * an explicit allow or block means ("the user answered; start counting
+ * over"); the wider forms are what a revoke scoped to one window means
+ * (#366) — mirrors clearPrivateDecisionIn.
+ *
+ * @param {string} scopeKey - private partition, or '' for the normal profile
+ * @param {string} [origin] - omit to clear every origin in this scope
+ * @param {string} [key] - omit to clear every key for `origin`
  */
-function clearDismissCount(scopeKey, origin, key) {
+function clearDismissCountsIn(scopeKey, origin, key) {
   const origins = dismissCounts.get(scopeKey);
-  const keys = origins?.get(origin);
-  if (!keys) return;
-  keys.delete(key);
-  if (keys.size === 0) origins.delete(origin);
+  if (!origins) return;
+  if (origin === undefined) {
+    dismissCounts.delete(scopeKey);
+    return;
+  }
+  if (key === undefined) {
+    origins.delete(origin);
+  } else {
+    const keys = origins.get(origin);
+    if (!keys) return;
+    keys.delete(key);
+    if (keys.size === 0) origins.delete(origin);
+  }
   if (origins.size === 0) dismissCounts.delete(scopeKey);
 }
 
 /**
- * Forget dismissals across EVERY scope — what a revoke means. The settings
- * and popover revokes are profile-wide with no partition to aim at, and an
- * embargo the user just reset must not come back on the next dismissal, so
- * the counter goes with the decision (mirrors clearPrivateDecision).
+ * Forget dismissals across EVERY scope — what a profile-wide revoke means.
+ * Settings has no partition to aim at, and an embargo the user just reset
+ * must not come back on the next dismissal, so the counter goes with the
+ * decision (mirrors clearPrivateDecision).
  *
  * @param {string} [origin] - omit to clear every origin in every scope
  * @param {string} [key] - omit to clear every key for `origin`
  */
 function clearDismissCounts(origin, key) {
-  if (origin === undefined) {
-    dismissCounts.clear();
-    return;
-  }
   for (const scopeKey of [...dismissCounts.keys()]) {
-    if (key === undefined) {
-      const origins = dismissCounts.get(scopeKey);
-      origins.delete(origin);
-      if (origins.size === 0) dismissCounts.delete(scopeKey);
-    } else {
-      clearDismissCount(scopeKey, origin, key);
-    }
+    clearDismissCountsIn(scopeKey, origin, key);
   }
 }
 
@@ -684,7 +708,7 @@ function resolvePrompt({ id, decision, remember }) {
     for (const key of entry.keys) {
       // The user answered: previous dismissals stop counting toward the
       // embargo, whichever way they answered.
-      clearDismissCount(scopeKey, entry.origin, key);
+      clearDismissCountsIn(scopeKey, entry.origin, key);
       if (entry.privatePartition) {
         // PRIVATE MODE GUARD (permissions): never persisted, "remember"
         // included — the decision lives exactly as long as the window.
@@ -925,43 +949,94 @@ function getDecisionsForOrigin(origin, privatePartition = null) {
   return result;
 }
 
-// The three revoke entry points clear the persistent store, the run-scoped
-// session decisions AND the live private-window decisions. All three tiers
-// are what "revoke" means to the user; leaving the private tier behind left
-// an open private window silently granting until it closed. They also drop
-// the dismissal counters (#364): a reset that left the count at the embargo
-// threshold would re-embargo on the site's very next dismissed prompt, so
+// Every revoke clears the persistent store, a run-scoped decision and the
+// dismissal counter behind an embargo (#364) — a reset that left the count at
+// the threshold would re-embargo on the site's very next dismissed prompt, so
 // "Remove" would not genuinely let the site ask again.
 //
-// They are scope-blind on purpose — that is what makes a profile-wide
-// "Revoke all" from Settings reach a still-open private window's live grant.
-// The cost is the other direction: a "Remove" clicked in a private window's
-// own popover also clears the normal profile's run-scoped decision for that
-// origin + key, so lifting a private window's embargo silently lifts the
-// normal profile's too. It only ever costs an extra prompt (nothing is
-// granted, nothing is persisted), and scoping the revoke to the asking
-// window would weaken the Settings path it exists for, so it is tracked
-// separately in #366 rather than papered over here.
-function revokeDecision(origin, permission) {
+// WHICH run-scoped tiers it reaches is the revoke's SCOPE (#366):
+//
+//   profile-wide (the default; Settings > Site Permissions, "Remove site",
+//     "Remove all") — the store, the normal-profile session tier and EVERY
+//     live private partition. The private sweep is deliberate: without it a
+//     camera grant made inside a still-open private window keeps granting
+//     after the user hit "Revoke all", because `getEffectiveDecision`
+//     (correctly) prefers the partition-scoped answer and a removal carries
+//     no decision that could override it.
+//
+//   window-scoped (the address-bar popover's "Remove") — exactly the tiers
+//     the ASKING window reads: the store, plus its own run-scoped tier and
+//     that scope's dismissal counter. A Remove clicked in a private window
+//     therefore clears that partition's decision and leaves the normal
+//     profile's session decision standing, and a Remove clicked in a normal
+//     window leaves every private partition alone. Before this, both
+//     directions silently cleared the other scope's decision with no trace
+//     in the window the user was looking at (#366).
+//
+//     The store is shared, so a window-scoped Remove does clear a REMEMBERED
+//     decision — including from a private window, which lists the stored tier
+//     because it inherits it (`getEffectiveDecision`). That is the answer to
+//     #366's open question: the popover lists what applies in this window and
+//     its Remove has to lift exactly that, or Remove on an inherited row does
+//     nothing visible. It only ever deletes a decision — it can never grant
+//     one, and nothing private is written back.
+const PROFILE_WIDE_SCOPE = { windowScoped: false, privatePartition: null };
+
+/**
+ * @typedef {Object} RevokeScope
+ * @property {boolean} windowScoped - true for the popover's window-scoped Remove
+ * @property {string|null} privatePartition - the asking window's partition, if private
+ */
+
+/**
+ * Shared body of revokeDecision/revokeOrigin.
+ *
+ * @param {string} origin
+ * @param {string|undefined} permission - undefined revokes the whole origin
+ * @param {RevokeScope} [scope]
+ */
+function revokeInScope(origin, permission, scope) {
+  const { windowScoped = false, privatePartition = null } = scope || PROFILE_WIDE_SCOPE;
   const key = normalizeOrigin(origin);
-  const removed = store.removeDecision(key, permission);
-  const hadSession = getSessionDecision(key, permission) !== null;
-  clearSessionDecision(key, permission);
-  const hadPrivate = clearPrivateDecision(key, permission);
-  clearDismissCounts(key, permission);
-  if (removed || hadSession || hadPrivate) broadcastChanged();
-  return removed || hadSession || hadPrivate;
+  const wholeOrigin = permission === undefined;
+
+  // The persistent store is the one tier every window reads.
+  let changed = wholeOrigin ? store.removeOrigin(key) : store.removeDecision(key, permission);
+
+  // The normal profile's run-scoped tier: not a tier a private window reads,
+  // so a Remove clicked inside one must not touch it.
+  if (!windowScoped || !privatePartition) {
+    const hadSession = wholeOrigin
+      ? sessionDecisions.has(key)
+      : getSessionDecision(key, permission) !== null;
+    clearSessionDecision(key, permission);
+    if (hadSession) changed = true;
+  }
+
+  // Live private-window decisions: every partition profile-wide, only the
+  // asking window's own when the revoke is window-scoped.
+  if (!windowScoped) {
+    if (clearPrivateDecision(key, permission)) changed = true;
+  } else if (privatePartition) {
+    if (clearPrivateDecisionIn(privatePartition, key, permission)) changed = true;
+  }
+
+  if (windowScoped) {
+    clearDismissCountsIn(dismissScope(privatePartition), key, permission);
+  } else {
+    clearDismissCounts(key, permission);
+  }
+
+  if (changed) broadcastChanged();
+  return changed;
 }
 
-function revokeOrigin(origin) {
-  const key = normalizeOrigin(origin);
-  const removed = store.removeOrigin(key);
-  const hadSession = sessionDecisions.has(key);
-  clearSessionDecision(key);
-  const hadPrivate = clearPrivateDecision(key);
-  clearDismissCounts(key);
-  if (removed || hadSession || hadPrivate) broadcastChanged();
-  return removed || hadSession || hadPrivate;
+function revokeDecision(origin, permission, scope) {
+  return revokeInScope(origin, permission, scope);
+}
+
+function revokeOrigin(origin, scope) {
+  return revokeInScope(origin, undefined, scope);
 }
 
 function revokeAll() {
@@ -971,6 +1046,25 @@ function revokeAll() {
   clearDismissCounts();
   broadcastChanged();
   return true;
+}
+
+/**
+ * Resolve a revoke's scope (#366). A caller asks for a window-scoped revoke
+ * with `{ scope: 'window' }` — the chrome preload marks the address-bar
+ * popover's Remove that way, and nothing else does, so Settings stays
+ * profile-wide. Which window that is never comes from the renderer: the
+ * partition is resolved from the IPC sender through the private-window
+ * registry, the same way `permissions:get-for-origin` resolves the scope it
+ * answers from, so the read and the revoke behind it can't drift apart.
+ *
+ * @returns {RevokeScope}
+ */
+function scopeFromSender(event, options) {
+  if (options?.scope !== 'window') return PROFILE_WIDE_SCOPE;
+  return {
+    windowScoped: true,
+    privatePartition: getPartitionForWebContents(event?.sender) || null,
+  };
 }
 
 /**
@@ -1000,12 +1094,12 @@ function registerPermissionsIpc() {
     return getDecisionsForOrigin(origin, getPartitionForWebContents(event?.sender));
   });
 
-  ipcMain.handle(IPC.PERMISSIONS_REVOKE, (_event, origin, permission) => {
-    return revokeDecision(origin, permission);
+  ipcMain.handle(IPC.PERMISSIONS_REVOKE, (event, origin, permission, options) => {
+    return revokeDecision(origin, permission, scopeFromSender(event, options));
   });
 
-  ipcMain.handle(IPC.PERMISSIONS_REVOKE_ORIGIN, (_event, origin) => {
-    return revokeOrigin(origin);
+  ipcMain.handle(IPC.PERMISSIONS_REVOKE_ORIGIN, (event, origin, options) => {
+    return revokeOrigin(origin, scopeFromSender(event, options));
   });
 
   ipcMain.handle(IPC.PERMISSIONS_REVOKE_ALL, () => {

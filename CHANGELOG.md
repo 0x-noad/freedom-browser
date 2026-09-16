@@ -21,6 +21,10 @@ All notable changes to Freedom will be documented in this file.
 
 ### Fixed
 
+- Removing a site permission from the address-bar indicator now only affects the window you remove it in
+  - "Remove" in a private window lifts the decision that window is running on and nothing else; it used to also clear the same site's decision in your normal windows, with no sign of it in the window you were looking at
+  - "Remove" in a normal window likewise no longer reaches into an open private window's own decisions
+  - Settings > Site Permissions is unchanged: "Remove", "Remove site" and "Remove all" still clear the profile's saved decisions everywhere, open private windows included
 - Camera and microphone on sites that check permission before they ask, such as Google Meet
   - `navigator.permissions.query()` and `Notification.permission` no longer report "denied" for a site you have never been asked about, so those sites go on to ask and Freedom's own prompt appears instead of their "access is blocked" screen
   - A remembered or this-session Block still reads as denied, and the prompt is unchanged: an undecided site is still asked about, and blocking it still denies

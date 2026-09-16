@@ -23,7 +23,13 @@
  * 2. The address-bar indicator + popover: a small icon when the current
  *    site holds granted permissions (or an embargoed one), listing
  *    decisions with quick revoke. Mirrors the ENS trust shield's popover
- *    interaction pattern.
+ *    interaction pattern. Both the list and its Remove are scoped to the
+ *    window they are shown in: main answers `permissions:get-for-origin`
+ *    from the asking window's own tier, and `sitePermissions.revoke` is
+ *    marked window-scoped in the preload so a Remove clicked in a private
+ *    window cannot clear the normal profile's run-scoped decision, or
+ *    vice versa (#365, #366). Profile-wide removal is Settings > Site
+ *    Permissions.
  */
 
 import { getActiveWebview, getDisplayUrlForWebview } from './tabs.js';

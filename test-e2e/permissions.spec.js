@@ -153,6 +153,23 @@ async function openPrivateWindow(electronApp) {
   return page;
 }
 
+const resetOut = (page) =>
+  evalInWebview(page, "document.getElementById('out').textContent = 'none'; true");
+
+// Three prompts, three Escapes — the embargo (#364), driven in one window.
+// Each dismissal is still a deny-once; the third records the run-scoped deny.
+async function dismissThrice(page) {
+  const prompt = page.locator('[data-test="permission-prompt"]');
+  for (let i = 0; i < 3; i += 1) {
+    await resetOut(page);
+    await clickAsk(page);
+    await expect(prompt).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(prompt).toBeHidden();
+    await expect.poll(() => readOut(page), { timeout: 5_000 }).toBe('denied');
+  }
+}
+
 // close() is asynchronous, so getAllWindows() still lists windows that are
 // mid-teardown; reading webContents on one of those throws.
 async function closePrivateWindows(electronApp) {
@@ -452,23 +469,14 @@ test('three dismissals embargo the site, and Remove from the popover lets it ask
 
   const prompt = window.locator('[data-test="permission-prompt"]');
   const indicator = window.locator('[data-test="permission-indicator"]');
-  const resetOut = () =>
-    evalInWebview(window, "document.getElementById('out').textContent = 'none'; true");
 
   // Three prompts, three Escapes. Each one is still a deny-once: the page
   // is told "denied" and is asked nothing — it just asks again.
-  for (let i = 0; i < 3; i += 1) {
-    await resetOut();
-    await clickAsk(window);
-    await expect(prompt).toBeVisible();
-    await window.keyboard.press('Escape');
-    await expect(prompt).toBeHidden();
-    await expect.poll(() => readOut(window), { timeout: 5_000 }).toBe('denied');
-  }
+  await dismissThrice(window);
 
   // The fourth request is auto-denied: no prompt at all, and the page's own
   // read of Notification.permission now says denied.
-  await resetOut();
+  await resetOut(window);
   await clickAsk(window);
   await expect.poll(() => readOut(window), { timeout: 5_000 }).toBe('denied');
   await window.waitForTimeout(500);
@@ -493,7 +501,7 @@ test('three dismissals embargo the site, and Remove from the popover lets it ask
     .poll(() => evalInWebview(window, 'Notification.permission'), { timeout: 5_000 })
     .toBe('granted');
 
-  await resetOut();
+  await resetOut(window);
   await clickAsk(window);
   await expect(prompt).toBeVisible();
 });
@@ -510,22 +518,6 @@ test('the embargo, and its indicator, are scoped to the window that made it', as
   electronApp,
   harness,
 }) => {
-  const resetOut = (page) =>
-    evalInWebview(page, "document.getElementById('out').textContent = 'none'; true");
-
-  // Three prompts, three Escapes — the embargo, driven in one window.
-  const dismissThrice = async (page) => {
-    const prompt = page.locator('[data-test="permission-prompt"]');
-    for (let i = 0; i < 3; i += 1) {
-      await resetOut(page);
-      await clickAsk(page);
-      await expect(prompt).toBeVisible();
-      await page.keyboard.press('Escape');
-      await expect(prompt).toBeHidden();
-      await expect.poll(() => readOut(page), { timeout: 5_000 }).toBe('denied');
-    }
-  };
-
   await navigateToFixture(window, harness);
   await dismissThrice(window);
   await expect(window.locator('[data-test="permission-indicator"]')).toBeVisible();
@@ -568,6 +560,92 @@ test('the embargo, and its indicator, are scoped to the window that made it', as
   await expect(priv.locator('.permission-popover-row-status')).toHaveText(
     'Blocked after repeated dismissals (this session)'
   );
+
+  await closePrivateWindows(electronApp);
+});
+
+// #366: the popover's Remove lifts what that window listed, and nothing else.
+// The revoke used to be scope-blind, so a Remove clicked inside a private
+// window also cleared the normal profile's run-scoped decision for the same
+// origin + key — the normal window's embargo simply disappeared, with no
+// trace in the window the user was looking at — and a Remove in a normal
+// window reached into every live private partition the same way.
+test("the popover's Remove lifts only the asking window's decision", async ({
+  window,
+  electronApp,
+  harness,
+}) => {
+  const indicator = window.locator('[data-test="permission-indicator"]');
+  const prompt = window.locator('[data-test="permission-prompt"]');
+
+  // Embargoed in a normal window…
+  await navigateToFixture(window, harness);
+  await dismissThrice(window);
+  await expect(indicator).toBeVisible();
+
+  // …and, independently, in a private one.
+  const priv = await openPrivateWindow(electronApp);
+  await navigateToFixture(priv, harness);
+  await dismissThrice(priv);
+  const privIndicator = priv.locator('[data-test="permission-indicator"]');
+  const privPrompt = priv.locator('[data-test="permission-prompt"]');
+  await expect(privIndicator).toBeVisible();
+
+  // Remove in the PRIVATE window lifts the private embargo…
+  await privIndicator.click();
+  await expect(priv.locator('#permission-popover')).toBeVisible();
+  await priv.locator('.permission-popover-revoke').dispatchEvent('click');
+  await expect(privIndicator).toBeHidden();
+  await resetOut(priv);
+  await clickAsk(priv);
+  await expect(privPrompt).toBeVisible();
+
+  // …and leaves the normal window exactly as it was: the indicator is still
+  // there, the popover still says why, and the site is still auto-denied
+  // without a prompt. This is the regression #366 is about.
+  await expect(indicator).toBeVisible();
+  await indicator.click();
+  await expect(window.locator('#permission-popover')).toBeVisible();
+  await expect(window.locator('.permission-popover-row-status')).toHaveText(
+    'Blocked after repeated dismissals (this session)'
+  );
+  await window.keyboard.press('Escape');
+  await resetOut(window);
+  await clickAsk(window);
+  await expect.poll(() => readOut(window), { timeout: 5_000 }).toBe('denied');
+  await window.waitForTimeout(500);
+  await expect(prompt).toBeHidden();
+
+  // Now the other direction, with a live private grant: Allow the prompt the
+  // private window just got back.
+  await priv.locator('[data-test="permission-allow"]').dispatchEvent('click');
+  await expect(privPrompt).toBeHidden();
+  await expect.poll(() => readOut(priv), { timeout: 5_000 }).toBe('granted');
+  await expect(privIndicator).toBeVisible();
+
+  // Remove in the NORMAL window lifts its own embargo — the site prompts
+  // there again…
+  await indicator.click();
+  await expect(window.locator('#permission-popover')).toBeVisible();
+  await window.locator('.permission-popover-revoke').dispatchEvent('click');
+  await expect(indicator).toBeHidden();
+  await resetOut(window);
+  await clickAsk(window);
+  await expect(prompt).toBeVisible();
+  await window.keyboard.press('Escape');
+
+  // …while the private window keeps its grant: indicator, popover row, and a
+  // silent grant on the next ask (a private decision is never persisted, so
+  // it reads as a session one).
+  await expect(privIndicator).toBeVisible();
+  await privIndicator.click();
+  await expect(priv.locator('#permission-popover')).toBeVisible();
+  await expect(priv.locator('.permission-popover-row-status')).toHaveText('Allowed (this session)');
+  await priv.keyboard.press('Escape');
+  await resetOut(priv);
+  await clickAsk(priv);
+  await expect.poll(() => readOut(priv), { timeout: 5_000 }).toBe('granted');
+  await expect(privPrompt).toBeHidden();
 
   await closePrivateWindows(electronApp);
 });
