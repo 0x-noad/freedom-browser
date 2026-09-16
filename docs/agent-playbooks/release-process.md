@@ -407,7 +407,7 @@ The version is the `package.json` version with any pre-release suffix dropped, p
 
 Valid semver that sorts **below** `0.8.6`, so a nightly never looks newer than the stable build of the same version, and each night's build sorts above the previous one. The `plan` job computes it; each build job stamps it with `npm version --no-git-tag-version` before packaging. `main`'s committed version is never changed.
 
-There is one nightly tag and one nightly release, both called `nightly`, both rolling: the `nightly` job force-moves the tag to the built commit, replaces the assets, deletes the previous night's (their names carry the version, so they would otherwise pile up), and rewrites the notes with the version, the `commit: <sha>` line the next run's skip check reads, and the merge commits since the previous nightly.
+There is one nightly tag and one nightly release, both called `nightly`, both rolling: the `nightly` job force-moves the tag to the built commit, then deletes the previous release object and creates a fresh one on it with the new assets and notes (the version, the `commit: <sha>` line the next run's skip check reads, and the merge commits since the previous nightly). Recreating rather than editing is what keeps the release page's "released this <date>" current — GitHub sets that once at first publish and never on edit. The page is empty for the minute or two the upload takes; an updater check in that window gets a 404 and retries on its next interval.
 
 ```
 https://github.com/solardev-xyz/freedom-browser/releases/tag/nightly
