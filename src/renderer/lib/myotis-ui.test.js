@@ -26,6 +26,8 @@ async function loadMyotisUi(options = {}) {
     noticeClose: createElement('button'),
     noticeOpen: createElement('button'),
     nodesButton: { click: jest.fn() },
+    recoveryHelp: createElement('button'),
+    gnosisRecoveryHelp: createElement('button'),
     retryCheckpoint: createElement('button'),
     gnosisRetryCheckpoint: createElement('button'),
     gnosisButton: createElement('button'),
@@ -55,6 +57,8 @@ async function loadMyotisUi(options = {}) {
       'myotis-recovery-notice-open': elements.noticeOpen,
       'bee-menu-button': elements.nodesButton,
       'myotis-retry-checkpoint': elements.retryCheckpoint,
+      'myotis-recovery-help': elements.recoveryHelp,
+      'myotis-gnosis-recovery-help': elements.gnosisRecoveryHelp,
       'myotis-gnosis-retry-checkpoint': elements.gnosisRetryCheckpoint,
       'myotis-gnosis-toggle-btn': elements.gnosisButton,
       'myotis-gnosis-toggle-switch': elements.gnosisToggle,
@@ -75,6 +79,8 @@ async function loadMyotisUi(options = {}) {
   };
   const api = {
     retryCheckpoint: jest.fn(),
+    repairSyncData: jest.fn(),
+    recoveryHelp: jest.fn(),
     start: jest.fn().mockResolvedValue({
       supported: true,
       available: true,
@@ -498,9 +504,9 @@ describe('myotis-ui', () => {
     ctx.elements.retryCheckpoint.dispatch('click');
     await flushMicrotasks();
     expect(ctx.elements.retryCheckpoint.disabled).toBe(false);
-    expect(ctx.elements.recoveryMessage.textContent).toBe('The retry could not start. Try again.');
+    expect(ctx.elements.recoveryMessage.textContent).toBe('The recovery action could not start. Try again.');
     ctx.getStatusHandler()(recoveryStatus(1));
-    expect(ctx.elements.recoveryMessage.textContent).toBe('The retry could not start. Try again.');
+    expect(ctx.elements.recoveryMessage.textContent).toBe('The recovery action could not start. Try again.');
   });
 
   test.each([1, 100])(
@@ -529,9 +535,11 @@ describe('myotis-ui', () => {
 
   test.each([
     ['clock', 'date and time'],
-    ['storage', 'disk space'],
+    ['storage', 'inconsistent'],
+    ['storage-io', 'disk space'],
     ['ownership', 'Close other Freedom instances and retry'],
-    ['unsupported', 'Update Freedom'],
+    ['unsupported', 'Update or reinstall Freedom'],
+    ['installation', 'Update or reinstall Freedom'],
     ['startup', 'restart the node'],
     ['stalled', 'node will keep trying'],
     ['quorum-unavailable', 'Not enough checkpoint sources'],
@@ -555,4 +563,54 @@ describe('myotis-ui', () => {
     expect(ctx.elements.recoveryMessage.textContent).toContain(text);
     expect(ctx.elements.retryCheckpoint.hidden).toBe(reason === 'unsupported');
   });
+  test.each([1, 100])('inconsistent data offers repair rather than a fruitless retry for chain %s', async chainId => {
+    const ctx = await loadMyotisUi(); ctx.mod.initMyotisUi(); await flushMicrotasks();
+    const status = recoveryStatus(chainId, { recovery: { phase: 'blocked', reason: 'storage', canRetry: true } });
+    ctx.getStatusHandler()(status);
+    const button = chainId === 100 ? ctx.elements.gnosisRetryCheckpoint : ctx.elements.retryCheckpoint;
+    const help = chainId === 100 ? ctx.elements.gnosisRecoveryHelp : ctx.elements.recoveryHelp;
+    expect(button.textContent).toBe('Repair sync data');
+    expect(help.hidden).toBe(false);
+    ctx.api.repairSyncData.mockResolvedValue(status); // User cancels the native confirmation.
+    button.dispatch('click'); await flushMicrotasks();
+    expect(ctx.api.repairSyncData).toHaveBeenCalledWith(chainId);
+    expect(ctx.api.retryCheckpoint).not.toHaveBeenCalled();
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toBe('Repair sync data');
+    help.dispatch('click'); await flushMicrotasks();
+    expect(ctx.api.recoveryHelp).toHaveBeenCalledWith(chainId);
+  });
+
+  test('missing component remains explained in Nodes when no native node ever started', async () => {
+    const ctx = await loadMyotisUi({ initialStatus: recoveryStatus(1, {
+      available: false, running: false, state: 'unavailable',
+      recovery: { phase: 'blocked', reason: 'installation', canRetry: false },
+    }) });
+    ctx.mod.initMyotisUi(); await flushMicrotasks();
+    expect(ctx.elements.info.classList.contains('visible')).toBe(true);
+    expect(ctx.elements.recoveryMessage.textContent).toContain('Update or reinstall Freedom');
+    expect(ctx.elements.retryCheckpoint.hidden).toBe(true);
+    expect(ctx.elements.recoveryHelp.hidden).toBe(false);
+    expect(ctx.elements.button.disabled).toBe(true);
+    expect(ctx.elements.notice.hidden).toBe(false);
+  });
+
+  test('slow recovery notice stays dismissed across automatic attempts but a failure is still announced', async () => {
+    const ctx = await loadMyotisUi({ menuOpen: false }); ctx.mod.initMyotisUi(); await flushMicrotasks();
+    const status = recoveryStatus(1, { state: 'recovering', recovery: {
+      phase: 'checking', attempt: 1, canRetry: false, takingLonger: true,
+    } });
+    ctx.getStatusHandler()(status);
+    expect(ctx.elements.noticeText.textContent).toContain('Still trying automatically');
+    ctx.elements.noticeClose.dispatch('click');
+    ctx.getStatusHandler()({ ...status, recovery: { ...status.recovery, phase: 'waiting', attempt: 2 } });
+    expect(ctx.elements.notice.hidden).toBe(true);
+    ctx.getStatusHandler()(recoveryStatus(1));
+    expect(ctx.elements.notice.hidden).toBe(false);
+    expect(ctx.elements.noticeText.textContent).toContain('could not be verified');
+    ctx.getStatusHandler()({ ...status, state: 'ready', recovery: undefined });
+    expect(ctx.elements.notice.hidden).toBe(true);
+    expect(ctx.elements.recoveryMessage.hidden).toBe(true);
+  });
+
 });

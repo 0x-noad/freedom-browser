@@ -158,7 +158,8 @@ class MyotisProcess {
           ? message.failure : 'unknown';
         this.report('startup-failed', { failure });
         this.failureCode = failure === 'checkpoint-unsupported' ? 'CHECKPOINT_UNSUPPORTED' :
-          failure === 'anchor-mismatch' ? 'CHECKPOINT_STORAGE' : null;
+          failure === 'anchor-mismatch' ? 'CHECKPOINT_STORAGE' :
+            ['load', 'methods', 'abi'].includes(failure) ? 'CHECKPOINT_INSTALLATION' : null;
         this.fail('Myotis native startup failed (check addon ABI and installation)');
         return;
       }

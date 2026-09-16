@@ -145,8 +145,9 @@ stop automatic retries.
 Five minutes without read readiness shows **Syncing slowly** and explains that
 the native node keeps trying. Its notice clears when full read readiness returns;
 **Retry sync** remains available while waiting and restarts using the same
-owned state directory. Retry after startup, storage or ownership failure also
+owned state directory. Retry after startup, storage access or ownership failure also
 rechecks that state and its guards rather than acquiring a new checkpoint.
+Inconsistent records instead offer **Repair sync data**, as described below.
 Only native `STALE_ANCHOR` detection triggers fresh checkpoint verification.
 Stopping the node, switching profile or shutting down cancels pending work and
 invalidates late results. Ethereum and Gnosis recover independently.
@@ -155,15 +156,41 @@ While checking or restarting, the Nodes menu shows **Updating sync checkpoint…
 or **Checkpoint verified. Restarting sync…**. An ordinary restart instead shows
 **Restarting node…**, without implying any new checkpoint was verified.
 A pending retry shows its reason
-and the remaining delay. Ordinary successful recovery raises no prompt. A final
-failure leaves a persistent explanation and **Retry sync** action; the switch
+and the remaining delay. After one minute of recovery, a quiet, dismissible
+notice says it is still trying automatically. The timer spans automatic retry
+delays, resets for a manual retry, and clears on recovery completion or stop.
+Dismissing progress does not suppress a subsequent terminal failure. Ordinary
+successful recovery raises no decision prompt. A final
+failure leaves a persistent explanation and an appropriate recovery action; the switch
 stays on and can turn the node off even while no native child exists. A
 dismissible notice with **Open Nodes** makes failures visible when the menu is
 closed; identical status updates do not repeat it. Clock, storage, update-required,
 ownership and stale-response failures have specific guidance. Settings also points paused
 nodes to the toolbar's Nodes menu. Retry requests are accepted only from the
 browser chrome, not web pages or subframes. No user confirmation bypasses proof
-verification. See the [both-theme UI evidence](audits/images/myotis-recovery/README.md).
+verification. See the [both-theme UI evidence](audits/images/myotis-recovery/README.md)
+and [failure-path UX checks](audits/evidence/myotis-recovery-ux-2026-09/README.md).
+
+Storage access failures (disk full, read-only storage, permissions, I/O errors)
+explain what to check and offer **Retry sync**. Inconsistent checkpoint metadata
+and native anchor mismatch offer **Repair sync data** with a native confirmation.
+Repair preserves every old generation and backs up the old pointer byte-for-byte,
+then atomically selects a new bundled generation. It checks the base and **all**
+generation ownership records, including orphans, again immediately before the
+pointer switch. Linked or unknown generation paths, an unsafe pointer, and any
+active/unknown ownership prevent repair. No native ownership receipt is edited.
+If the bundled anchor is stale, the normal quorum and Colibri checks are required.
+The confirmation is single-flight and invalidated by stop, profile change or
+navigation away from browser chrome. Wallets and settings are untouched.
+
+**Get help** opens a native dialog for storage, ownership and installation
+failures. It explains the safe next step, links the support issue destination,
+and can copy a small report containing only the node version/ABI, network,
+platform, failure category and whether the addon was found. It does not send
+anything or include paths, profile identifiers, wallet data or arbitrary logs.
+Missing components show **Update or reinstall Freedom** even before a native
+node has started; incompatible imports/ABI/methods receive the same guidance.
+Settings directs the user to Nodes instead of giving a developer npm command.
 
 ## Native ownership and durable recovery
 
@@ -229,7 +256,8 @@ The ownership **Retry sync** action rechecks the native ownership guard; it
 cannot establish a missing exit proof or clear permanent unknown quarantine.
 Closing another Freedom instance may allow that live owner to retire normally,
 but closing instances does not repair an active or corrupt record left after
-supervisor loss. There is currently no automated quarantine-clearing UI.
+supervisor loss. The **Get help** dialog makes that limitation explicit and offers support details.
+**Repair sync data** cannot clear this quarantine either.
 An operator must first
 establish that the old child cannot still run, for example by a complete host
 reboot, then preserve the quarantined chain cache/record for investigation and

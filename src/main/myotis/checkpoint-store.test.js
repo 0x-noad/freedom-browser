@@ -2,7 +2,7 @@ const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
 const { randomUUID } = require('crypto');
-const { loadOrCreateState, replaceCheckpoint } = require('./checkpoint-store');
+const { loadOrCreateState, replaceCheckpoint, repairState } = require('./checkpoint-store');
 const { CHECKPOINT_NETWORKS, MAX_AGE_MS } = require('./checkpoint-verifier');
 
 const NOW = Date.UTC(2026, 8, 14, 21);
@@ -317,7 +317,7 @@ describe('checkpoint generation store on the real filesystem', () => {
     });
 
     await expect(replaceCheckpoint(baseDir, 1, checkpoint(1, '56'))).rejects.toMatchObject(
-      STORAGE_ERROR
+      { code: 'CHECKPOINT_STORAGE_IO' }
     );
     failSwitch.mockRestore();
     expect(await fs.readFile(pointerPath)).toEqual(originalPointer);
@@ -492,4 +492,64 @@ describe('checkpoint generation store on the real filesystem', () => {
       expect(await fs.readdir(path.join(baseDir, 'verified-sync'))).toEqual([current.generation]);
     });
   });
+  test.each(['pointer', 'anchor', 'marker'])('repair preserves inconsistent %s and starts a clean bundled generation', async target => {
+    const first = await replaceCheckpoint(baseDir, 1, checkpoint());
+    const filename = target === 'pointer' ? path.join(baseDir, 'verified-sync.json') :
+      path.join(first.dataDir, target === 'anchor' ? 'anchor.json' : 'sync-anchor.json');
+    await fs.writeFile(filename, 'broken metadata');
+    await fs.writeFile(path.join(first.dataDir, 'sync-state.snapshot'), 'old snapshot');
+    const repaired = await repairState(baseDir, 1);
+    expect(repaired).toMatchObject({ origin: 'bundled', checkpoint: null });
+    expect(repaired.dataDir).not.toBe(first.dataDir);
+    expect(await loadOrCreateState(baseDir, 1)).toEqual(repaired);
+    expect(await fs.readFile(path.join(first.dataDir, 'sync-state.snapshot'), 'utf8')).toBe('old snapshot');
+    if (target !== 'pointer') expect(await fs.readFile(filename, 'utf8')).toBe('broken metadata');
+    const backups = (await fs.readdir(baseDir)).filter(name => name.startsWith('verified-sync-backup-'));
+    expect(backups).toHaveLength(1);
+    if (target === 'pointer') expect(await fs.readFile(path.join(baseDir, backups[0]), 'utf8')).toBe('broken metadata');
+  });
+
+  test.each(['base', 'current', 'orphan'])('repair refuses unknown ownership in %s despite a corrupt pointer', async target => {
+    const first = await loadOrCreateState(baseDir, 1);
+    let ownerDir = target === 'base' ? baseDir : first.dataDir;
+    if (target === 'orphan') {
+      ownerDir = path.join(baseDir, 'verified-sync', randomUUID());
+      await fs.mkdir(ownerDir);
+    }
+    await fs.writeFile(path.join(ownerDir, '.freedom-myotis-owner'), `v1 active ${randomUUID()}\n`);
+    await fs.writeFile(path.join(baseDir, 'verified-sync.json'), 'bad pointer');
+    await expect(repairState(baseDir, 1)).rejects.toMatchObject({ code: 'CHECKPOINT_OWNERSHIP' });
+    expect(await fs.readFile(path.join(baseDir, 'verified-sync.json'), 'utf8')).toBe('bad pointer');
+  });
+
+  test('repair rechecks orphan ownership immediately before publishing its new pointer', async () => {
+    const first = await loadOrCreateState(baseDir, 1);
+    const before = await fs.readFile(path.join(baseDir, 'verified-sync.json'), 'utf8');
+    const orphan = path.join(baseDir, 'verified-sync', randomUUID());
+    await fs.mkdir(orphan);
+    const open = fs.open.bind(fs);
+    jest.spyOn(fs, 'open').mockImplementation(async (filename, ...args) => {
+      if (path.basename(filename).endsWith('.tmp'))
+        await fs.writeFile(path.join(orphan, '.freedom-myotis-owner'), `v1 active ${randomUUID()}\n`);
+      return open(filename, ...args);
+    });
+    await expect(repairState(baseDir, 1)).rejects.toMatchObject({ code: 'CHECKPOINT_OWNERSHIP' });
+    expect(await fs.readFile(path.join(baseDir, 'verified-sync.json'), 'utf8')).toBe(before);
+    expect(await fs.readFile(path.join(first.dataDir, 'anchor.json'), 'utf8')).toContain(first.generation);
+  });
+
+  test('repair refuses linked generation directories and leaves their target alone', async () => {
+    await loadOrCreateState(baseDir, 1);
+    const outside = path.join(temporary, 'outside'); await fs.mkdir(outside);
+    await fs.symlink(outside, path.join(baseDir, 'verified-sync', randomUUID()), 'dir');
+    await expect(repairState(baseDir, 1)).rejects.toMatchObject(STORAGE_ERROR);
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+
+  test.each(['ENOSPC', 'EACCES', 'EROFS'])('%s is a storage access failure, not inconsistent data', async code => {
+    jest.spyOn(fs, 'mkdir').mockRejectedValue(Object.assign(new Error('private path'), { code }));
+    await expect(loadOrCreateState(baseDir, 1)).rejects.toMatchObject({ code: 'CHECKPOINT_STORAGE_IO' });
+    await expect(repairState(baseDir, 1)).rejects.toMatchObject({ code: 'CHECKPOINT_STORAGE_IO' });
+  });
+
 });

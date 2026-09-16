@@ -89,7 +89,7 @@ const updateControls = (status) => {
     }
   }
   toggleSwitch?.classList.toggle('running', running);
-  infoPanel?.classList.toggle('visible', state.antMenuOpen && running);
+  infoPanel?.classList.toggle('visible', state.antMenuOpen && (running || Boolean(status?.recovery)));
   if (stateText) stateText.textContent = stateLabel(status);
   if (peersCount) peersCount.textContent = String(status?.peerCount ?? 0);
   if (finalizedBlock) finalizedBlock.textContent = countText(status?.finalizedBlockNumber);
@@ -129,7 +129,7 @@ const updateGnosisControls = (status) => {
     else gnosis.button.removeAttribute('title');
   }
   gnosis.toggle?.classList.toggle('running', running);
-  gnosis.info?.classList.toggle('visible', state.antMenuOpen && running);
+  gnosis.info?.classList.toggle('visible', state.antMenuOpen && (running || Boolean(status?.recovery)));
   if (gnosis.state) gnosis.state.textContent = stateLabel(status);
   if (gnosis.peers) gnosis.peers.textContent = String(status?.peerCount ?? 0);
   if (gnosis.block) gnosis.block.textContent = countText(status?.finalizedBlockNumber);
@@ -146,10 +146,12 @@ const recoveryFailureMessage = (reason) =>
     stale: 'The checkpoint service returned an outdated checkpoint. Retry to get a recent one.',
     mismatch: 'Checkpoint could not be verified. Sync is paused.',
     clock: 'Check your computer’s date and time, then retry.',
-    storage: 'Could not save sync recovery data. Check available disk space and retry.',
+    storage: 'Local sync data is inconsistent. Repair sync data to start again; your old data will be kept.',
+    'storage-io': 'Could not read or save sync data. Check disk space and folder permissions, then retry.',
     ownership:
-      'Could not confirm that the previous node stopped. Close other Freedom instances and retry.',
-    unsupported: 'Update Freedom to recover this node.',
+      'Could not confirm that the previous node stopped. Close other Freedom instances and retry. If this persists, choose Get help.',
+    unsupported: 'Update or reinstall Freedom to recover this node.',
+    installation: 'The sync component is missing or incompatible. Update or reinstall Freedom.',
     startup: 'Could not restart the node. Retry to resume syncing.',
     stalled:
       'Sync is taking longer than expected. Check your connection; the node will keep trying.',
@@ -157,7 +159,7 @@ const recoveryFailureMessage = (reason) =>
 
 const recoveryMessage = (status) => {
   const recovery = status?.recovery;
-  if (status?.state === 'recovery-blocked') return recoveryFailureMessage(recovery?.reason);
+  if (recovery?.phase === 'blocked') return recoveryFailureMessage(recovery.reason);
   if (status?.state !== 'recovering') return '';
   if (recovery?.phase === 'waiting') {
     const retryAt = recovery.nextRetryAt;
@@ -184,13 +186,16 @@ function renderRecoveryNotice() {
   recoveryNotice.hidden = notices.length === 0;
   recoveryNoticeText.textContent =
     notices.length > 1
-      ? 'Ethereum and Gnosis sync need attention. Open Nodes for details.'
+      ? [...pendingNotices.keys()].some(id => (id === 100 ? gnosis.status : latestStatus)?.recovery?.phase === 'blocked')
+        ? 'Ethereum and Gnosis sync need attention. Open Nodes for details.'
+        : 'Ethereum and Gnosis sync recovery is taking longer than usual. Still trying automatically.'
       : notices[0] || '';
 }
 
 function updateRecovery(button, status, chainId) {
-  const active = status?.running && status?.state !== 'disabled';
-  const blocked = active && status?.state === 'recovery-blocked';
+  const active = (status?.running || status?.recovery) && status?.state !== 'disabled';
+  const blocked = active && status?.recovery?.phase === 'blocked';
+  const slow = active && status?.state === 'recovering' && status.recovery?.takingLonger;
   const message = document.getElementById(
     chainId === 100 ? 'myotis-gnosis-recovery-message' : 'myotis-recovery-message'
   );
@@ -203,15 +208,17 @@ function updateRecovery(button, status, chainId) {
   if (button) {
     button.hidden = !(blocked && status.recovery?.canRetry);
     button.disabled = retryingCheckpoints.has(chainId);
-    button.textContent = button.disabled ? 'Retrying…' : 'Retry sync';
+    button.textContent = button.disabled ? 'Starting…' : status?.recovery?.reason === 'storage' ? 'Repair sync data' : 'Retry sync';
   }
-  if (blocked) {
-    const key = `${status.recovery?.attempt}:${status.recovery?.reason}`;
+  const help = document.getElementById(chainId === 100 ? 'myotis-gnosis-recovery-help' : 'myotis-recovery-help');
+  if (help) help.hidden = !(blocked && ['storage', 'storage-io', 'ownership', 'installation', 'unsupported'].includes(status.recovery?.reason));
+  if (blocked || slow) {
+    const key = slow ? 'slow' : `${status.recovery?.attempt}:${status.recovery?.reason}`;
     if (notifiedFailures.get(chainId) !== key) {
       notifiedFailures.set(chainId, key);
       pendingNotices.set(
         chainId,
-        `${chainId === 100 ? 'Gnosis' : 'Ethereum'}: ${recoveryFailureMessage(status.recovery?.reason)}`
+        `${chainId === 100 ? 'Gnosis' : 'Ethereum'}: ${slow ? 'Sync recovery is taking longer than usual. Still trying automatically; you can keep browsing.' : recoveryFailureMessage(status.recovery?.reason)}`
       );
     }
   } else {
@@ -229,9 +236,9 @@ async function retryCheckpoint(chainId) {
   const update = chainId === 100 ? updateGnosisControls : updateControls;
   update(status);
   try {
-    update(await window.myotis.retryCheckpoint(chainId));
+    update(await (status.recovery.reason === 'storage' ? window.myotis.repairSyncData : window.myotis.retryCheckpoint)(chainId));
   } catch {
-    retryErrors.set(chainId, 'The retry could not start. Try again.');
+    retryErrors.set(chainId, 'The recovery action could not start. Try again.');
     pushDebug('Myotis checkpoint retry failed');
   } finally {
     retryingCheckpoints.delete(chainId);
@@ -249,10 +256,10 @@ export const stopMyotisInfoPolling = () => {
 export const startMyotisInfoPolling = () => {
   if (!state.antMenuOpen) return;
   refreshStatus();
-  infoPanel?.classList.toggle('visible', isEffectivelyRunning());
+  infoPanel?.classList.toggle('visible', isEffectivelyRunning() || Boolean(latestStatus?.recovery));
   gnosis.info?.classList.toggle(
     'visible',
-    gnosis.desiredRunning === null ? gnosis.status?.running === true : gnosis.desiredRunning
+    (gnosis.desiredRunning === null ? gnosis.status?.running === true : gnosis.desiredRunning) || Boolean(gnosis.status?.recovery)
   );
   if (pollInterval) clearInterval(pollInterval);
   pollInterval = setInterval(refreshStatus, 5000);
@@ -344,6 +351,15 @@ export const initMyotisUi = () => {
     (chainId === 100 ? gnosis.info : infoPanel)?.scrollIntoView?.({ block: 'nearest' });
     dismissNotice();
   });
+  for (const chainId of [1, 100]) {
+    document.getElementById(chainId === 100 ? 'myotis-gnosis-recovery-help' : 'myotis-recovery-help')?.addEventListener('click', async () => {
+      try { await window.myotis.recoveryHelp(chainId); } catch {
+        retryErrors.set(chainId, 'Help could not open. Try again.');
+        if (chainId === 100) updateGnosisControls(gnosis.status);
+        else updateControls(latestStatus);
+      }
+    });
+  }
   retryCheckpointButton?.addEventListener('click', () => retryCheckpoint(1));
   gnosis.retryCheckpointButton?.addEventListener('click', () => retryCheckpoint(100));
 

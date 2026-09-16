@@ -3257,6 +3257,7 @@
             if (cid !== '1' && cid !== '100') return 'Unsupported';
             const status = myotisStatuses[cid];
             if (!status) return 'Status unknown';
+            if (status.recovery?.reason === 'installation' || status.recovery?.reason === 'unsupported') return 'Update or reinstall — open Nodes';
             if (status.state === 'ready') return 'Ready';
             if (status.state === 'syncing') return 'Syncing';
             if (status.state === 'recovering') return 'Updating checkpoint';
@@ -3934,6 +3935,8 @@
 
           if (!myotisStatus) {
             setBadge('myotis', 'Status unknown', 'warning');
+          } else if (['installation', 'unsupported'].includes(myotisStatus.recovery?.reason)) {
+            setBadge('myotis', 'Update or reinstall — open Nodes', 'warning');
           } else if (myotisStatus.state === 'unavailable') {
             setBadge('myotis', 'Unavailable');
           } else if (myotisStatus.state === 'disabled') {
@@ -4344,9 +4347,9 @@
                 : disabled
                   ? 'Disabled for this profile under Settings → Nodes.'
                   : supported && !available
-                    ? 'Addon not installed — run "npm run myotis:download" and restart.'
+                    ? 'Sync component missing. Update or reinstall Freedom; open Nodes for help.'
                     : myotisStatus.state === 'recovery-blocked'
-                      ? 'Sync recovery needs attention. Open Nodes in the toolbar to retry or turn the node off.'
+                      ? 'Sync recovery needs attention. Open Nodes in the toolbar for recovery actions and help.'
                       : myotisStatus.state === 'recovering'
                         ? 'Updating the sync checkpoint automatically. You can turn the node off in Nodes.'
                         : defaultLaunchHelp;
@@ -4365,9 +4368,9 @@
                 : disabled
                   ? 'Disabled for this profile under Settings → Nodes.'
                   : supported && !available
-                    ? 'Addon not installed — run "npm run myotis:download" and restart.'
+                    ? 'Sync component missing. Update or reinstall Freedom; open Nodes for help.'
                     : myotisGnosisStatus.state === 'recovery-blocked'
-                      ? 'Sync recovery needs attention. Open Nodes in the toolbar to retry or turn the node off.'
+                      ? 'Sync recovery needs attention. Open Nodes in the toolbar for recovery actions and help.'
                       : myotisGnosisStatus.state === 'recovering'
                         ? 'Updating the sync checkpoint automatically. You can turn the node off in Nodes.'
                         : defaultGnosisLaunchHelp;

@@ -8,12 +8,15 @@ describe('myotis-manager', () => {
 
   function loadManager(mode = 'managed') {
     const clients = [];
+    const existsSync = jest.fn(() => true);
+    const clipboard = { writeText: jest.fn() };
     const profile = { id: 'profile-one', metadata: { nodes: { myotis: { mode } } } };
     const acquireCheckpoint = jest.fn((_chainId, { signal }) => new Promise((_resolve, reject) => {
       signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
     }));
     const store = {
       loadOrCreateState: jest.fn(async (baseDir) => ({ dataDir: path.join(baseDir, 'initial'), origin: 'bundled', checkpoint: null })),
+      repairState: jest.fn(async (baseDir) => ({ dataDir: path.join(baseDir, 'repaired'), origin: 'bundled', checkpoint: null })),
       replaceCheckpoint: jest.fn(async (baseDir, _chainId, checkpoint) => ({ dataDir: path.join(baseDir, 'recovered'), origin: 'verified', checkpoint })),
     };
     const status = { running: true, paused: false, beaconState: 'SYNCED', elReaderAvailable: true, elHunting: false, snapPeers: 2 };
@@ -47,9 +50,9 @@ describe('myotis-manager', () => {
     const BrowserWindow = { getAllWindows: () => [], fromWebContents: jest.fn(() => win) };
     const dataDir = path.join('/profile', 'myotis');
     const { mod } = loadMainModule(require.resolve('./myotis-manager'), {
-      ipcMain, dialog, BrowserWindow,
+      ipcMain, dialog, BrowserWindow, clipboard,
       extraMocks: {
-        fs: () => ({ existsSync: () => true }),
+        fs: () => ({ existsSync }),
         [require.resolve('./myotis-process')]: () => ({ MyotisProcess: MockProcess }),
         [require.resolve('./checkpoint-store')]: () => store,
         [require.resolve('./checkpoint-verifier')]: () => ({ acquireCheckpoint }),
@@ -63,7 +66,7 @@ describe('myotis-manager', () => {
         }),
       },
     });
-    return { mod, clients, dataDir, ipcMain, status, event, win, dialog, acquireCheckpoint, store, profile };
+    return { mod, clients, dataDir, ipcMain, status, event, win, dialog, acquireCheckpoint, store, profile, existsSync, clipboard };
   }
 
   test('keeps independent chain processes and profile directories', async () => {
@@ -235,7 +238,7 @@ describe('myotis-manager', () => {
     resolveProof(checkpoint); await flush();
     expect(ctx.store.replaceCheckpoint).not.toHaveBeenCalled();
     expect(ctx.clients).toHaveLength(1);
-    expect(ctx.mod.publicStatus(100)).toMatchObject({ state: 'recovery-blocked', recovery: { reason: 'startup' } });
+    expect(ctx.mod.publicStatus(100)).toMatchObject({ state: 'recovery-blocked', recovery: { reason: 'ownership' } });
   });
 
   test.each(['stop', 'profile-change'])('late checkpoint verification cannot start a node after %s', async (change) => {
@@ -483,6 +486,133 @@ describe('myotis-manager', () => {
     expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'checking', attempt: 1 });
     expect(ctx.mod.isReady(100)).toBe(false);
     await ctx.mod.stopMyotis(100);
+  });
+
+  test('missing addon and load incompatibility offer installation help without retrying proofs', async () => {
+    const ctx = loadManager(); ctx.existsSync.mockReturnValue(false);
+    await expect(ctx.mod.startMyotis()).resolves.toBe(false);
+    expect(ctx.mod.publicStatus()).toMatchObject({ state: 'unavailable', recovery: { reason: 'installation', canRetry: false } });
+    expect(ctx.clients).toHaveLength(0);
+    ctx.existsSync.mockReturnValue(true);
+    await ctx.mod.startMyotis();
+    ctx.clients[0].options.onUnavailable('bounded error', 'CHECKPOINT_INSTALLATION');
+    expect(ctx.mod.publicStatus()).toMatchObject({ state: 'recovery-blocked', recovery: { reason: 'installation', canRetry: false } });
+    expect(ctx.acquireCheckpoint).not.toHaveBeenCalled();
+  });
+
+  test('recovery advertises a quiet notice after one minute and clears it on stop', async () => {
+    const ctx = await parked();
+    expect(ctx.mod.publicStatus(100).recovery.takingLonger).toBe(false);
+    await jest.advanceTimersByTimeAsync(59999);
+    expect(ctx.mod.publicStatus(100).recovery.takingLonger).toBe(false);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(ctx.mod.publicStatus(100).recovery.takingLonger).toBe(true);
+    await ctx.mod.stopMyotis(100);
+    await jest.advanceTimersByTimeAsync(60000);
+    expect(ctx.mod.publicStatus(100).recovery).toBeUndefined();
+  });
+
+  test('slow notice counts time across automatic retry delays, then resets on manual retry', async () => {
+    const ctx = loadManager();
+    ctx.acquireCheckpoint.mockRejectedValue(Object.assign(new Error('offline'), { code: 'CHECKPOINT_UNAVAILABLE' }));
+    ctx.status.beaconState = 'STALE_ANCHOR';
+    await ctx.mod.startMyotis({ chainId: 100 }); await flush();
+    await jest.advanceTimersByTimeAsync(60000);
+    expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'waiting', takingLonger: true });
+    await jest.advanceTimersByTimeAsync(15000);
+    expect(ctx.mod.publicStatus(100).recovery.phase).toBe('blocked');
+    ctx.mod.registerMyotisIpc();
+    ctx.ipcMain.handlers.get(IPC.MYOTIS_RETRY_CHECKPOINT)(ctx.event, 100); await flush();
+    expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'waiting', takingLonger: false });
+    await ctx.mod.stopMyotis(100);
+  });
+
+  async function brokenStorage() {
+    const ctx = loadManager();
+    ctx.store.loadOrCreateState.mockRejectedValue(Object.assign(new Error('bad record'), { code: 'CHECKPOINT_STORAGE' }));
+    await ctx.mod.startMyotis({ chainId: 100 });
+    ctx.mod.registerMyotisIpc();
+    ctx.repair = (event = ctx.event) => ctx.ipcMain.handlers.get(IPC.MYOTIS_REPAIR_SYNC_DATA)(event, 100);
+    return ctx;
+  }
+
+  test('repair is confirmed, single flight, and stale replacement still requires checkpoint verification', async () => {
+    const ctx = await brokenStorage();
+    let confirm;
+    ctx.dialog.showMessageBox.mockImplementation(() => new Promise(resolve => { confirm = resolve; }));
+    const first = ctx.repair();
+    await ctx.repair();
+    expect(ctx.dialog.showMessageBox).toHaveBeenCalledTimes(1);
+    expect(ctx.store.repairState).not.toHaveBeenCalled();
+    ctx.status.beaconState = 'STALE_ANCHOR';
+    confirm({ response: 1 }); await first; await flush();
+    expect(ctx.store.repairState).toHaveBeenCalledTimes(1);
+    expect(ctx.clients[0].options).toMatchObject({ checkpoint: null, dataDir: path.join(ctx.dataDir, 'gnosis', 'repaired') });
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(1);
+    expect(ctx.mod.isReady(100)).toBe(false);
+    await ctx.mod.stopMyotis(100);
+  });
+
+  test.each(['cancel', 'stop', 'profile-change', 'navigation'])('repair does not mutate storage after %s during confirmation', async (action) => {
+    const ctx = await brokenStorage();
+    let confirm;
+    ctx.dialog.showMessageBox.mockImplementation(() => new Promise(resolve => { confirm = resolve; }));
+    const pending = ctx.repair();
+    if (action === 'stop') await ctx.mod.stopMyotis(100);
+    if (action === 'profile-change') ctx.profile.id = 'new-profile';
+    if (action === 'navigation') ctx.event.senderFrame.url = 'https://example.com';
+    confirm({ response: action === 'cancel' ? 0 : 1 }); await pending; await flush();
+    expect(ctx.store.repairState).not.toHaveBeenCalled();
+    expect(ctx.clients).toHaveLength(0);
+  });
+
+  test('repair never replaces storage while its native child has unconfirmed exit', async () => {
+    const ctx = loadManager(); await ctx.mod.startMyotis({ chainId: 100 });
+    ctx.clients[0].options.onUnavailable('mismatch', 'CHECKPOINT_STORAGE');
+    ctx.clients[0].stop.mockResolvedValue(false);
+    ctx.dialog.showMessageBox.mockResolvedValue({ response: 1 });
+    ctx.mod.registerMyotisIpc();
+    await ctx.ipcMain.handlers.get(IPC.MYOTIS_REPAIR_SYNC_DATA)(ctx.event, 100); await flush();
+    expect(ctx.store.repairState).not.toHaveBeenCalled();
+    expect(ctx.mod.publicStatus(100).recovery.reason).toBe('ownership');
+  });
+
+  test('repair failures stay actionable and cannot become verified reads', async () => {
+    const ctx = await brokenStorage();
+    ctx.dialog.showMessageBox.mockResolvedValue({ response: 1 });
+    ctx.store.repairState.mockRejectedValue(Object.assign(new Error('disk full'), { code: 'CHECKPOINT_STORAGE_IO' }));
+    await ctx.repair(); await flush();
+    expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ reason: 'storage-io', canRetry: true });
+    expect(ctx.clients).toHaveLength(0);
+    expect(ctx.mod.isReady(100)).toBe(false);
+  });
+
+  test.each([IPC.MYOTIS_REPAIR_SYNC_DATA, IPC.MYOTIS_RECOVERY_HELP])('%s rejects pages and subframes', async channel => {
+    const ctx = await brokenStorage();
+    const handler = ctx.ipcMain.handlers.get(channel);
+    await expect(handler({ ...ctx.event, senderFrame: { ...ctx.event.senderFrame } }, 100)).rejects.toThrow('Nodes menu');
+    ctx.event.senderFrame.url = 'https://example.com';
+    await expect(handler(ctx.event, 100)).rejects.toThrow('Nodes menu');
+    expect(ctx.dialog.showMessageBox).not.toHaveBeenCalled();
+    expect(ctx.store.repairState).not.toHaveBeenCalled();
+  });
+
+  test('ownership help copies only bounded support details on explicit action', async () => {
+    const ctx = loadManager();
+    ctx.store.loadOrCreateState.mockRejectedValue(Object.assign(new Error('secret path'), { code: 'CHECKPOINT_OWNERSHIP' }));
+    await ctx.mod.startMyotis({ chainId: 100 });
+    ctx.mod.registerMyotisIpc();
+    const help = ctx.ipcMain.handlers.get(IPC.MYOTIS_RECOVERY_HELP);
+    await help(ctx.event, 100);
+    expect(ctx.clipboard.writeText).not.toHaveBeenCalled();
+    ctx.dialog.showMessageBox.mockResolvedValue({ response: 1 });
+    await help(ctx.event, 100);
+    const details = ctx.clipboard.writeText.mock.calls[0][0];
+    expect(details).toContain('Failure: ownership');
+    expect(details).not.toMatch(/secret|profile|\/Users/);
+    expect(ctx.dialog.showMessageBox.mock.calls[0][1].detail).toContain('cannot clear an unconfirmed ownership record');
+    expect(ctx.store.repairState).not.toHaveBeenCalled();
   });
 
 });

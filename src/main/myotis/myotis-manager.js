@@ -21,6 +21,7 @@ const STATUS_FRESH_MS = 6000;
 const STATUS_REQUEST_MS = 10000;
 const RECOVERY_COOLDOWN_MS = 15000;
 const RECOVERY_RETRY_MS = [15000, 60000];
+const RECOVERY_NOTICE_MS = 60 * 1000;
 const SYNC_NOTICE_MS = 5 * 60 * 1000;
 
 const NETWORKS = new Map([
@@ -65,6 +66,9 @@ function instanceFor(chainId = 1) {
       recoveryPromise: null,
       recoveryController: null,
       recoveryTimer: null,
+      recoveryNoticeTimer: null,
+      recoveryStartedAt: null,
+      repairPrompt: false,
       notReadySince: 0,
       retiring: null,
     });
@@ -247,6 +251,29 @@ function clearRecoveryTimer(instance) {
   instance.recoveryTimer = null;
 }
 
+function clearRecoveryNotice(instance) {
+  clearTimeout(instance.recoveryNoticeTimer);
+  instance.recoveryNoticeTimer = null;
+  instance.recoveryStartedAt = null;
+}
+
+function startRecoveryNotice(instance, reset = false) {
+  if (reset) clearRecoveryNotice(instance);
+  if (instance.recoveryStartedAt !== null) return;
+  instance.recoveryStartedAt = Date.now();
+  const token = instance.lifecycleToken;
+  instance.recoveryNoticeTimer = setTimeout(() => {
+    instance.recoveryNoticeTimer = null;
+    if (currentRun(instance, token) && instance.recovery) publishStatus(publicStatus(instance.chainId));
+  }, RECOVERY_NOTICE_MS);
+  instance.recoveryNoticeTimer.unref?.();
+}
+
+function storageFailureReason(error) {
+  return ({ CHECKPOINT_OWNERSHIP: 'ownership', CHECKPOINT_STORAGE: 'storage',
+    CHECKPOINT_STORAGE_IO: 'storage-io' })[error.code] || 'startup';
+}
+
 function failRecovery(instance, reason, retry = false) {
   if (!instance.wanted || shuttingDown || instance.stopping) return;
   clearRecoveryTimer(instance);
@@ -256,8 +283,9 @@ function failRecovery(instance, reason, retry = false) {
     phase: delay ? 'waiting' : 'blocked', reason,
     attempt: instance.recoveryAttempt,
     nextRetryAt: delay ? Date.now() + delay : null,
-    canRetry: reason !== 'unsupported',
+    canRetry: !['unsupported', 'installation'].includes(reason),
   };
+  if (!delay) clearRecoveryNotice(instance);
   instance.lastError = null;
   publishAvailability(instance, false, 'checkpoint-recovery-failed');
   publishStatus(publicStatus(instance.chainId));
@@ -309,6 +337,7 @@ function observeSync(instance, status) {
   if ((finished && instance.recovery?.phase === 'restarting') ||
       (ready && instance.recovery?.reason === 'stalled')) {
     clearRecoveryTimer(instance);
+    clearRecoveryNotice(instance);
     instance.recovery = null;
     instance.recoveryAttempt = 0;
   }
@@ -323,7 +352,7 @@ function observeSync(instance, status) {
 async function launchClient(instance, token) {
   if (!currentRun(instance, token)) return false;
   const addonFile = addonPath();
-  if (!addonFile) return false;
+  if (!addonFile) { failRecovery(instance, 'installation'); return false; }
   const client = new MyotisProcess({
     addonPath: addonFile,
     network: instance.name,
@@ -342,7 +371,7 @@ async function launchClient(instance, token) {
       instance.lastStatus = null;
       instance.retryAfter = Date.now() + RECOVERY_COOLDOWN_MS;
       publishAvailability(instance, false, 'unavailable', true);
-      failRecovery(instance, code === 'CHECKPOINT_UNSUPPORTED' ? 'unsupported' : code === 'CHECKPOINT_STORAGE' ? 'storage' : 'startup');
+      failRecovery(instance, code === 'CHECKPOINT_UNSUPPORTED' ? 'unsupported' : code === 'CHECKPOINT_STORAGE' ? 'storage' : code === 'CHECKPOINT_INSTALLATION' ? 'installation' : 'startup');
       log.warn(`[myotis] ${instance.name} native process unavailable`);
     },
     onExit: () => {
@@ -386,6 +415,7 @@ function recoverCheckpoint(instance, { resetAttempts = false } = {}) {
     failRecovery(instance, 'unsupported');
     return Promise.resolve(false);
   }
+  startRecoveryNotice(instance, resetAttempts);
   const controller = new AbortController();
   instance.recoveryController = controller;
   instance.recoveryAttempt += 1;
@@ -406,7 +436,7 @@ function recoverCheckpoint(instance, { resetAttempts = false } = {}) {
         instance.retiring = null;
         if (!currentRun(instance, token)) return false;
         if (!exited || !previous.exited) {
-          failRecovery(instance, 'startup');
+          failRecovery(instance, 'ownership');
           return false;
         }
       }
@@ -429,7 +459,7 @@ function recoverCheckpoint(instance, { resetAttempts = false } = {}) {
         CHECKPOINT_QUORUM_UNAVAILABLE: 'quorum-unavailable',
         CHECKPOINT_QUORUM_CONFLICT: 'quorum-conflict',
         CHECKPOINT_MISMATCH: 'mismatch', CHECKPOINT_CLOCK: 'clock',
-        CHECKPOINT_STORAGE: 'storage', CHECKPOINT_OWNERSHIP: 'ownership', CHECKPOINT_STALE: 'stale',
+        CHECKPOINT_STORAGE: 'storage', CHECKPOINT_STORAGE_IO: 'storage-io', CHECKPOINT_OWNERSHIP: 'ownership', CHECKPOINT_STALE: 'stale',
         CHECKPOINT_INCOMPATIBLE: 'unsupported',
       };
       const retry = ['CHECKPOINT_UNAVAILABLE', 'CHECKPOINT_QUORUM_UNAVAILABLE', 'CHECKPOINT_RACE', 'CHECKPOINT_STALE'].includes(error.code);
@@ -450,12 +480,13 @@ function recoverCheckpoint(instance, { resetAttempts = false } = {}) {
 // Ordinary process or peer failures do not require a different checkpoint.
 // Retry the authenticated generation; its native stale guard can then request
 // checkpoint recovery if the anchor really has expired.
-function restartOwnedState(instance) {
+function restartOwnedState(instance, { repair = false } = {}) {
   if (instance.recoveryPromise) return instance.recoveryPromise;
   const token = instance.lifecycleToken;
   if (!currentRun(instance, token)) return Promise.resolve(false);
   clearRecoveryTimer(instance);
   instance.recoveryAttempt = 0;
+  startRecoveryNotice(instance, true);
   instance.recovery = { phase: 'restarting', mode: 'restart', reason: null,
     attempt: 0, nextRetryAt: null, canRetry: false };
   publishAvailability(instance, false, 'restarting', true);
@@ -474,7 +505,9 @@ function restartOwnedState(instance) {
         }
       }
       if (!currentRun(instance, token)) return false;
-      const storage = await checkpointStore.loadOrCreateState(instance.baseDir, instance.chainId);
+      const storage = await (repair ? checkpointStore.repairState : checkpointStore.loadOrCreateState)(
+        instance.baseDir, instance.chainId
+      );
       if (!currentRun(instance, token)) return false;
       instance.storage = storage;
       instance.lastStatus = null;
@@ -487,8 +520,7 @@ function restartOwnedState(instance) {
       return started;
     } catch (error) {
       if (currentRun(instance, token)) {
-        const reason = error.code === 'CHECKPOINT_OWNERSHIP' ? 'ownership' :
-          error.code === 'CHECKPOINT_STORAGE' ? 'storage' : 'startup';
+        const reason = storageFailureReason(error);
         failRecovery(instance, reason);
       }
       return false;
@@ -509,6 +541,7 @@ function startMyotis({ dataDir, chainId = 1 } = {}) {
   }
   if (Date.now() < instance.retryAfter) return Promise.resolve(false);
   if (!addonPath()) { publishStatus(publicStatus(chainId)); return Promise.resolve(false); }
+  clearRecoveryNotice(instance);
   instance.wanted = true;
   instance.baseDir = dataDir || getMyotisDataDir(instance.name);
   instance.profileIdentity = profileIdentity();
@@ -527,8 +560,7 @@ function startMyotis({ dataDir, chainId = 1 } = {}) {
       return await launchClient(instance, token);
     } catch (error) {
       if (currentRun(instance, token)) {
-        const reason = error.code === 'CHECKPOINT_OWNERSHIP' ? 'ownership' :
-          error.code === 'CHECKPOINT_STORAGE' ? 'storage' : 'startup';
+        const reason = storageFailureReason(error);
         failRecovery(instance, reason);
       }
       return false;
@@ -646,6 +678,7 @@ function stopMyotis(chainId = 1) {
   instance.lifecycleToken += 1;
   instance.stopping = true;
   clearRecoveryTimer(instance);
+  clearRecoveryNotice(instance);
   instance.recoveryController?.abort();
   instance.recovery = null;
   instance.recoveryAttempt = 0;
@@ -708,11 +741,15 @@ function publicStatus(chainId = 1) {
   if (isDisabledMyotisConfig()) {
     return { ...base, running: false, state: 'disabled' };
   }
-  if (!available) return { ...base, running: false, state: 'unavailable' };
+  if (!available) return { ...base, running: false, state: 'unavailable',
+    ...(supported ? { recovery: { phase: 'blocked', reason: 'installation', canRetry: false } } : {}),
+  };
   if (instance.recovery && instance.wanted) {
     return { ...base, running: true,
       state: ['checking', 'restarting', 'waiting'].includes(instance.recovery.phase) ? 'recovering' : 'recovery-blocked',
-      recovery: { ...instance.recovery },
+      recovery: { ...instance.recovery,
+        takingLonger: instance.recoveryStartedAt !== null && Date.now() - instance.recoveryStartedAt >= RECOVERY_NOTICE_MS,
+      },
       beaconState: instance.lastStatus?.beaconState,
       peerCount: instance.lastStatus?.peerCount,
     };
@@ -758,11 +795,56 @@ function retryCheckpoint(event, chainId = 1) {
   if (!recoveryWindow(event)) throw new Error('Myotis recovery is only available from the browser Nodes menu');
   const instance = instanceFor(chainId);
   if (instance.wanted && instance.recovery?.canRetry && !instance.stopping) {
-    if (['startup', 'stalled', 'storage', 'ownership'].includes(instance.recovery.reason))
+    if (['startup', 'stalled', 'storage', 'storage-io', 'ownership'].includes(instance.recovery.reason))
       restartOwnedState(instance);
     else recoverCheckpoint(instance, { resetAttempts: true });
   }
   return publicStatus(chainId);
+}
+
+async function repairSyncData(event, chainId = 1) {
+  const win = recoveryWindow(event);
+  if (!win) throw new Error('Myotis recovery is only available from the browser Nodes menu');
+  const instance = instanceFor(chainId);
+  const token = instance.lifecycleToken;
+  if (!currentRun(instance, token) || instance.recovery?.reason !== 'storage' ||
+      instance.recoveryPromise || instance.repairPrompt) return publicStatus(chainId);
+  instance.repairPrompt = true;
+  try {
+    const { response } = await require('electron').dialog.showMessageBox(win, {
+      type: 'question', title: 'Repair sync data',
+      message: `Start ${instance.displayName} sync again with fresh local data?`,
+      detail: 'Your old sync data will be kept. Wallets and settings are not affected. Checkpoint verification remains required. Repair cannot proceed if another node may still be using the data.',
+      buttons: ['Cancel', 'Repair sync data'], defaultId: 0, cancelId: 0, noLink: true,
+    });
+    if (response === 1 && currentRun(instance, token) && recoveryWindow(event) === win &&
+        instance.recovery?.reason === 'storage') restartOwnedState(instance, { repair: true });
+  } finally { instance.repairPrompt = false; }
+  return publicStatus(chainId);
+}
+
+async function recoveryHelp(event, chainId = 1) {
+  const win = recoveryWindow(event);
+  if (!win) throw new Error('Myotis recovery is only available from the browser Nodes menu');
+  const status = publicStatus(chainId);
+  const reason = status.recovery?.reason;
+  const guidance = {
+    ownership: 'Close other Freedom instances, then choose Retry sync in Nodes. If it still cannot confirm that the previous node stopped, contact Freedom support with the details below. Restarting the computer may stop a leftover process, but cannot clear an unconfirmed ownership record. Do not delete the sync folder or ownership files to force a restart.',
+    storage: 'Choose Repair sync data in Nodes to start again while keeping the old data. If repair fails, contact Freedom support with the details below. Repair cannot bypass an unconfirmed node exit or unsafe filesystem entries.',
+    'storage-io': 'Check free disk space and that Freedom can write to its data folder, then choose Retry sync in Nodes. If this keeps happening, contact Freedom support with the details below.',
+    installation: 'Update or reinstall Freedom from its official release. Your profile does not need to be deleted. If this keeps happening, contact Freedom support with the details below.',
+    unsupported: 'Update or reinstall Freedom from its official release. This installed node cannot perform verified checkpoint recovery.',
+  }[reason];
+  if (!guidance) return;
+  // Deliberately bounded: no paths, profile identifiers, wallet data or logs.
+  const details = `Myotis ${MYOTIS_VERSION} / ABI 26\nNetwork: ${status.displayName}\nPlatform: ${process.platform}-${process.arch}\nFailure: ${reason}\nAddon found: ${status.available}\nCheckpoint verification: required`;
+  const { dialog, clipboard } = require('electron');
+  const { response } = await dialog.showMessageBox(win, {
+    type: 'info', title: `${status.displayName} sync help`, message: 'Help with sync recovery',
+    detail: `${guidance}\n\n${details}\n\nCopy support details and share them at github.com/solardev-xyz/freedom-browser/issues. Nothing is sent automatically.`,
+    buttons: ['Close', 'Copy support details'], defaultId: 0, cancelId: 0, noLink: true,
+  });
+  if (response === 1 && !win.isDestroyed()) clipboard.writeText(details);
 }
 
 function registerMyotisIpc() {
@@ -779,6 +861,8 @@ function registerMyotisIpc() {
     return publicStatus(chainId);
   });
   ipcMain.handle(IPC.MYOTIS_RETRY_CHECKPOINT, retryCheckpoint);
+  ipcMain.handle(IPC.MYOTIS_REPAIR_SYNC_DATA, repairSyncData);
+  ipcMain.handle(IPC.MYOTIS_RECOVERY_HELP, recoveryHelp);
   ipcMain.handle(IPC.MYOTIS_GET_STATUS, (_event, chainId = 1) => publicStatus(chainId));
   publishStatus();
 }

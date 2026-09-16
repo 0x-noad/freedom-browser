@@ -13,6 +13,16 @@ const OWNER = '.freedom-myotis-owner';
 const RETIRED_OWNER = /^v1 retired [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\n$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+function classifyStorageError(error) {
+  if (error.code === 'CHECKPOINT_OWNERSHIP') return error;
+  if (['ENOSPC', 'EDQUOT', 'EACCES', 'EPERM', 'EROFS', 'EIO', 'EMFILE', 'ENFILE'].includes(error.code)) {
+    const failure = new Error('Could not access Myotis sync storage');
+    failure.code = 'CHECKPOINT_STORAGE_IO';
+    return failure;
+  }
+  return storageError();
+}
+
 function storageError() {
   const error = new Error('Could not read or save Myotis recovery data');
   error.code = 'CHECKPOINT_STORAGE';
@@ -78,27 +88,44 @@ async function directory(filename, create = false) {
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw storageError();
 }
 
-async function readJson(filename) {
+async function readBytes(filename) {
   const stat = await fs.lstat(filename);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16384) throw storageError();
-  const handle = await fs.open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+  const handle = await fs.open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
   try {
     const opened = await handle.stat();
-    if (!opened.isFile() || opened.size > 16384) throw storageError();
-    return JSON.parse(await handle.readFile('utf8'));
+    if (!opened.isFile() || opened.size > 16384 || opened.dev !== stat.dev || opened.ino !== stat.ino)
+      throw storageError();
+    const bytes = Buffer.alloc(16385);
+    let bytesRead = 0;
+    while (bytesRead < bytes.length) {
+      const chunk = await handle.read(bytes, bytesRead, bytes.length - bytesRead, bytesRead);
+      if (chunk.bytesRead === 0) break;
+      bytesRead += chunk.bytesRead;
+    }
+    if (bytesRead > 16384) throw storageError();
+    return bytes.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readJson(filename) {
+  return JSON.parse((await readBytes(filename)).toString('utf8'));
+}
+
+async function writeBytes(filename, bytes) {
+  const handle = await fs.open(filename, 'wx', 0o600);
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
   } finally {
     await handle.close();
   }
 }
 
 async function writeJson(filename, value) {
-  const handle = await fs.open(filename, 'wx', 0o600);
-  try {
-    await handle.writeFile(JSON.stringify(value) + '\n');
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
+  return writeBytes(filename, JSON.stringify(value) + '\n');
 }
 
 function validateIdentity(record, chainId) {
@@ -131,9 +158,26 @@ async function requireCurrentOwnerRetired(baseDir, chainId) {
   await requireRetiredOwner(dataDir);
 }
 
-async function createState(baseDir, chainId, checkpoint = null) {
+// Repair cannot trust the pointer to identify the previous native child.
+// Inspect every generation, including orphans. Unknown entries and any active
+// or quarantined owner refuse repair; no ownership receipt is ever rewritten.
+async function requireAllOwnersRetired(baseDir) {
+  await directory(baseDir);
+  await requireRetiredOwner(baseDir);
+  const generations = path.join(baseDir, GENERATIONS);
+  await directory(generations);
+  for (const name of await fs.readdir(generations)) {
+    if (!UUID.test(name)) throw storageError();
+    const dataDir = path.join(generations, name);
+    await directory(dataDir);
+    await requireRetiredOwner(dataDir);
+  }
+}
+
+async function createState(baseDir, chainId, checkpoint = null, repair = false) {
   await prepareBase(baseDir, chainId);
-  await requireCurrentOwnerRetired(baseDir, chainId);
+  const checkOwners = () => repair ? requireAllOwnersRetired(baseDir) : requireCurrentOwnerRetired(baseDir, chainId);
+  await checkOwners();
   if (checkpoint) validateCheckpoint(checkpoint, chainId);
   const generation = randomUUID();
   const dataDir = path.join(baseDir, GENERATIONS, generation);
@@ -152,7 +196,7 @@ async function createState(baseDir, chainId, checkpoint = null) {
   const temporary = path.join(baseDir, `verified-sync-${randomUUID()}.tmp`);
   await writeJson(temporary, { schemaVersion: SCHEMA_VERSION, chainId, generation });
   await requireRetiredOwner(baseDir);
-  await requireCurrentOwnerRetired(baseDir, chainId);
+  await checkOwners();
   await fs.rename(temporary, path.join(baseDir, POINTER));
   return { ...record, dataDir };
 }
@@ -217,8 +261,7 @@ async function loadOrCreateState(baseDir, chainId) {
       return await createState(baseDir, chainId);
     return { ...record, dataDir };
   } catch (error) {
-    if (error.code === 'CHECKPOINT_OWNERSHIP') throw error;
-    throw storageError();
+    throw classifyStorageError(error);
   }
 }
 
@@ -226,9 +269,26 @@ async function replaceCheckpoint(baseDir, chainId, checkpoint) {
   try {
     return await createState(baseDir, chainId, checkpoint);
   } catch (error) {
-    if (error.code === 'CHECKPOINT_OWNERSHIP') throw error;
-    throw storageError();
+    throw classifyStorageError(error);
   }
 }
 
-module.exports = { loadOrCreateState, replaceCheckpoint };
+async function repairState(baseDir, chainId) {
+  try {
+    await prepareBase(baseDir, chainId);
+    await requireAllOwnersRetired(baseDir);
+    // Keep the old pointer too, even when malformed. A linked or oversized
+    // pointer is not automatically repairable. Switching the pointer is atomic;
+    // it is never removed, so failed repair cannot open a missing-pointer escape.
+    let bytes;
+    try { bytes = await readBytes(path.join(baseDir, POINTER)); } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    if (bytes) await writeBytes(path.join(baseDir, `verified-sync-backup-${randomUUID()}.json`), bytes);
+    return await createState(baseDir, chainId, null, true);
+  } catch (error) {
+    throw classifyStorageError(error);
+  }
+}
+
+module.exports = { loadOrCreateState, replaceCheckpoint, repairState };

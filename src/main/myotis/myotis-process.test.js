@@ -330,4 +330,10 @@ describe('MyotisProcess', () => {
     expect(callbacks.onExit).toHaveBeenCalledTimes(1);
   });
 
+  test.each(['load', 'abi', 'methods'])('%s startup failures request installation repair with a bounded category', async failure => {
+    child.emit('message', { type: 'started', generation: processClient.generation, ok: false, failure });
+    await expect(processClient.startPromise).resolves.toBe(false);
+    expect(callbacks.onUnavailable).toHaveBeenCalledWith(expect.any(String), 'CHECKPOINT_INSTALLATION');
+  });
+
 });
