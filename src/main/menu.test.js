@@ -13,14 +13,37 @@ const {
 // (#97). A template-only duplicate check is blind to that, so the accelerator
 // sweep below resolves roles through this table.
 //
-// Read off the Electron this repo ships (44.3.0) on 2026-09-16 by building a
-// menu of every role used in this file and printing each MenuItem#accelerator
-// (Electron resolves the role default into that getter). Linux is the only
-// platform this table was read on; test-e2e/close-tab-shortcut.spec.js
-// re-derives the same ownership question from the *real* built menu and runs
-// on ubuntu/windows/macOS, so a platform whose role defaults differ fails
-// there. Any role not listed here throws rather than being assumed
-// accelerator-free — a new role has to be probed and added.
+// Some of those defaults are platform-conditional, so this table is keyed by
+// platform wherever Electron's own is: a flat table would sweep the win32 and
+// darwin legs below against chords the real menu never registers there (and
+// miss the ones it does).
+//
+// Provenance, both legs cross-checked on 2026-09-16 against the Electron this
+// repo ships (44.3.0):
+//   - linux: read empirically, by building a menu of every role used in this
+//     file under the real Electron binary and printing each
+//     MenuItem#accelerator (Electron resolves the role default into that
+//     getter). Every value in the `linux` column below came back verbatim.
+//   - darwin/win32: cannot be built on a Linux box — Electron resolves
+//     `process.platform` when its internal menu-item-roles module is first
+//     evaluated, which happens before any app code runs, so faking the
+//     platform does not reach it. Taken instead from the three `isMac`/
+//     `isWindows` ternaries in that module at the shipped tag,
+//     electron/electron v44.3.0 lib/browser/api/menu-item-roles.ts:135
+//     (pasteandmatchstyle), :150 (quit), :155 (redo) — confirmed to be the
+//     code actually shipped by finding those exact literals, in that order,
+//     in the binary's own string pool (`Cmd+Option+Shift+V`,
+//     `Shift+CommandOrControl+V`, a single `CommandOrControl+Q`, `Control+Y`,
+//     `Shift+CommandOrControl+Z`).
+//
+// test-e2e/close-tab-shortcut.spec.js re-derives ownership from the *real*
+// built menu on ubuntu/windows/macOS, but only for the Cmd/Ctrl+W chord — it
+// is not a general backstop for this table, so a role default that changes on
+// a chord other than Cmd/Ctrl+W is caught only by re-probing here.
+//
+// A value is either one accelerator (or null) for every platform, or a map
+// that must name all three. Any role not listed here throws rather than being
+// assumed accelerator-free — a new role has to be probed and added.
 const ROLE_DEFAULT_ACCELERATORS = {
   // Submenu containers.
   appmenu: null,
@@ -37,9 +60,18 @@ const ROLE_DEFAULT_ACCELERATORS = {
   hideothers: 'Command+Alt+H',
   minimize: 'CommandOrControl+M',
   paste: 'CommandOrControl+V',
-  pasteandmatchstyle: 'Shift+CommandOrControl+V',
-  quit: 'CommandOrControl+Q',
-  redo: 'Shift+CommandOrControl+Z',
+  pasteandmatchstyle: {
+    darwin: 'Cmd+Option+Shift+V',
+    win32: 'Shift+CommandOrControl+V',
+    linux: 'Shift+CommandOrControl+V',
+  },
+  // Windows gets no accelerator at all: its Exit row is unbound.
+  quit: { darwin: 'CommandOrControl+Q', win32: null, linux: 'CommandOrControl+Q' },
+  redo: {
+    darwin: 'Shift+CommandOrControl+Z',
+    win32: 'Control+Y',
+    linux: 'Shift+CommandOrControl+Z',
+  },
   selectall: 'CommandOrControl+A',
   services: null,
   startspeaking: null,
@@ -49,6 +81,25 @@ const ROLE_DEFAULT_ACCELERATORS = {
   zoom: null,
 };
 
+// The role's implicit default accelerator on `platform`, unnormalized.
+function roleDefaultAccelerator(role, platform) {
+  if (!(role in ROLE_DEFAULT_ACCELERATORS)) {
+    throw new Error(
+      `Unmodelled menu role "${role}" — probe its default accelerator ` +
+        'and add it to ROLE_DEFAULT_ACCELERATORS so the #97 collision sweep stays honest.'
+    );
+  }
+  const modelled = ROLE_DEFAULT_ACCELERATORS[role];
+  if (modelled === null || typeof modelled === 'string') return modelled;
+  if (!(platform in modelled)) {
+    throw new Error(
+      `Menu role "${role}" has no modelled default for platform "${platform}" — ` +
+        'probe it and add it to ROLE_DEFAULT_ACCELERATORS.'
+    );
+  }
+  return modelled[platform];
+}
+
 // Accelerator a built menu item would actually answer to on `platform`:
 // its explicit accelerator, else its role's implicit default, else none.
 function effectiveAccelerator(item, platform) {
@@ -57,14 +108,7 @@ function effectiveAccelerator(item, platform) {
     return normalizeAccelerator(item.accelerator, platform);
   }
   if (item.role) {
-    const role = String(item.role).toLowerCase();
-    if (!(role in ROLE_DEFAULT_ACCELERATORS)) {
-      throw new Error(
-        `Unmodelled menu role "${item.role}" — probe its default accelerator ` +
-          'and add it to ROLE_DEFAULT_ACCELERATORS so the #97 collision sweep stays honest.'
-      );
-    }
-    const roleAccelerator = ROLE_DEFAULT_ACCELERATORS[role];
+    const roleAccelerator = roleDefaultAccelerator(String(item.role).toLowerCase(), platform);
     return roleAccelerator ? normalizeAccelerator(roleAccelerator, platform) : null;
   }
   return null;
@@ -511,6 +555,31 @@ describe('menu', () => {
       expect(effectiveAccelerator({ role: 'close' }, 'linux')).toBe(closeTabChord('linux'));
       expect(effectiveAccelerator({ role: 'close' }, 'darwin')).toBe(closeTabChord('darwin'));
       expect(() => effectiveAccelerator({ role: 'notARole' }, 'linux')).toThrow(/Unmodelled/);
+    });
+
+    test('platform-conditional role defaults resolve per platform', () => {
+      // Electron picks these three from process.platform (see the table's
+      // provenance note). Pinned literally so the win32/darwin legs of the
+      // sweep below cannot silently drift back onto the Linux values.
+      expect(effectiveAccelerator({ role: 'redo' }, 'win32')).toBe('Ctrl+Y');
+      expect(effectiveAccelerator({ role: 'redo' }, 'linux')).toBe('Ctrl+Shift+Z');
+      expect(effectiveAccelerator({ role: 'redo' }, 'darwin')).toBe('Shift+Cmd+Z');
+
+      expect(effectiveAccelerator({ role: 'pasteAndMatchStyle' }, 'darwin')).toBe(
+        'Alt+Shift+Cmd+V'
+      );
+      expect(effectiveAccelerator({ role: 'pasteAndMatchStyle' }, 'win32')).toBe('Ctrl+Shift+V');
+
+      // Windows leaves Exit unbound; every other platform gets Cmd/Ctrl+Q.
+      expect(effectiveAccelerator({ role: 'quit' }, 'win32')).toBeNull();
+      expect(effectiveAccelerator({ role: 'quit' }, 'linux')).toBe('Ctrl+Q');
+      expect(effectiveAccelerator({ role: 'quit' }, 'darwin')).toBe('Cmd+Q');
+
+      // A platform the table does not model is an error, never a silent
+      // "this role is accelerator-free here".
+      expect(() => effectiveAccelerator({ role: 'quit' }, 'freebsd')).toThrow(
+        /no modelled default for platform/
+      );
     });
 
     test('exactly one enabled menu item owns it, and it is Close Tab', () => {
