@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { validateInstalledAddon } = require('./build-myotis-addon');
+const { validateInstalledAddon } = require('./fetch-myotis');
 
 const ANT_BIN_DIR = path.join(__dirname, '..', 'ant-bin');
 const FREEDOM_IPFS_NATIVE_PREBUILDS_DIR = path.join(
@@ -127,7 +127,7 @@ function checkBinaries(platforms) {
       }
       const provenanceError = validateInstalledAddon(path.dirname(myotisAddonPath));
       if (provenanceError) {
-        missing.push(`myotis checkpoint addon for ${platformDir}: ${provenanceError}; run npm run myotis:download on the target host`);
+        missing.push(`myotis checkpoint addon for ${platformDir}: ${provenanceError}; run npm run myotis:download`);
       }
       const supervisorPath = path.join(MYOTIS_BIN_DIR, platformDir,
         `myotis-supervisor${os === 'win' ? '.exe' : ''}`);

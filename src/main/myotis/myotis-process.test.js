@@ -248,6 +248,13 @@ describe('MyotisProcess', () => {
     expect(callbacks.onExit).not.toHaveBeenCalled();
   });
 
+  test('propagates native anchor mismatch as a bounded storage error', () => {
+    receipt('owned');
+    child.emit('message', { type: 'started', generation: processClient.generation, ok: false, failure: 'anchor-mismatch' });
+    expect(callbacks.onUnavailable).toHaveBeenCalledWith(expect.any(String), 'CHECKPOINT_STORAGE');
+    expect(processClient.accepting).toBe(false);
+  });
+
   test('logs bounded startup and unknown-exit facts without addon payloads', async () => {
     receipt('owned');
     child.emit('message', {
@@ -299,10 +306,10 @@ describe('MyotisProcess', () => {
   test('forwards the imported checkpoint only after supervisor ownership', () => {
     const { MyotisProcess } = require('./myotis-process');
     const checkpoint = { chainId: 100, network: 'gnosis', root: '0x' + 'ab'.repeat(32), slot: 123 };
-    processClient = new MyotisProcess({ addonPath: '/addon.node', network: 'gnosis', dataDir: '/owned', checkpoint, resumeVerifiedState: true, ...callbacks });
+    processClient = new MyotisProcess({ addonPath: '/addon.node', network: 'gnosis', dataDir: '/owned', checkpoint, ...callbacks });
     expect(child.send).not.toHaveBeenCalled();
     receipt('owned');
-    expect(child.send).toHaveBeenCalledWith(expect.objectContaining({ checkpoint, resumeVerifiedState: true, dataDir: '/owned' }), expect.any(Function));
+    expect(child.send).toHaveBeenCalledWith(expect.objectContaining({ checkpoint, dataDir: '/owned' }), expect.any(Function));
     child.emit('message', { type: 'started', generation: processClient.generation, ok: true, checkpointSupported: true });
     expect(processClient.checkpointSupported).toBe(true);
   });

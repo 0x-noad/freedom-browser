@@ -55,7 +55,7 @@ function unavailable(message, uncertain = false) {
 }
 
 class MyotisProcess {
-  constructor({ addonPath, network, dataDir, checkpoint = null, resumeVerifiedState = false, onStatus, onUnavailable, onExit, onLifecycle = () => {} }) {
+  constructor({ addonPath, network, dataDir, checkpoint = null, onStatus, onUnavailable, onExit, onLifecycle = () => {} }) {
     this.generation = randomUUID();
     this.onLifecycle = onLifecycle;
     this.lifecycleEvents = new Set();
@@ -103,7 +103,7 @@ class MyotisProcess {
         if (receipt.generation !== this.generation) { this.invalidReceipt(); return; }
         if (receipt.type === 'owned' && !this.owned) {
           this.owned = true;
-          if (!this.stopping) this.send({ type: 'start', addonPath, network, dataDir, checkpoint, resumeVerifiedState });
+          if (!this.stopping) this.send({ type: 'start', addonPath, network, dataDir, checkpoint });
         } else if (receipt.type === 'reaped' && this.owned && !this.terminalReceipt &&
           typeof receipt.forced === 'boolean' &&
           Number.isInteger(receipt.exitCode) && receipt.exitCode >= -1 && receipt.exitCode <= 0xffffffff &&
@@ -154,10 +154,11 @@ class MyotisProcess {
     if (message.type === 'started' && !this.stopping) {
       clearTimeout(this.startTimer);
       if (!message.ok) {
-        const failure = ['configuration', 'load', 'methods', 'abi', 'create', 'start', 'checkpoint-unsupported'].includes(message.failure)
+        const failure = ['configuration', 'load', 'methods', 'abi', 'create', 'start', 'checkpoint-unsupported', 'anchor-mismatch'].includes(message.failure)
           ? message.failure : 'unknown';
         this.report('startup-failed', { failure });
-        this.failureCode = failure === 'checkpoint-unsupported' ? 'CHECKPOINT_UNSUPPORTED' : null;
+        this.failureCode = failure === 'checkpoint-unsupported' ? 'CHECKPOINT_UNSUPPORTED' :
+          failure === 'anchor-mismatch' ? 'CHECKPOINT_STORAGE' : null;
         this.fail('Myotis native startup failed (check addon ABI and installation)');
         return;
       }

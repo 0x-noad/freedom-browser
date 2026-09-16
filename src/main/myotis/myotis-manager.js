@@ -15,7 +15,7 @@ const { getMyotisDataDir } = require('../profile-paths');
 const { MyotisProcess } = require('./myotis-process');
 const checkpointStore = require('./checkpoint-store');
 const { acquireCheckpoint } = require('./checkpoint-verifier');
-const MYOTIS_VERSION = '0.1.9';
+const MYOTIS_VERSION = '0.1.10';
 const AVAILABILITY_POLL_MS = 1000;
 const STATUS_FRESH_MS = 6000;
 const STATUS_REQUEST_MS = 10000;
@@ -329,7 +329,6 @@ async function launchClient(instance, token) {
     network: instance.name,
     dataDir: instance.storage.dataDir,
     checkpoint: instance.storage.checkpoint,
-    resumeVerifiedState: instance.storage.resumeVerifiedState,
     onLifecycle: (event) => log.info(`[myotis] ${instance.name} lifecycle ${JSON.stringify(event)}`),
     onStatus: (status) => {
       if (instance.client !== client || !currentRun(instance, token)) return;
@@ -343,7 +342,7 @@ async function launchClient(instance, token) {
       instance.lastStatus = null;
       instance.retryAfter = Date.now() + RECOVERY_COOLDOWN_MS;
       publishAvailability(instance, false, 'unavailable', true);
-      failRecovery(instance, code === 'CHECKPOINT_UNSUPPORTED' ? 'unsupported' : 'startup');
+      failRecovery(instance, code === 'CHECKPOINT_UNSUPPORTED' ? 'unsupported' : code === 'CHECKPOINT_STORAGE' ? 'storage' : 'startup');
       log.warn(`[myotis] ${instance.name} native process unavailable`);
     },
     onExit: () => {
@@ -701,7 +700,7 @@ function publicStatus(chainId = 1) {
     supported,
     available,
     version: MYOTIS_VERSION,
-    abi: 25,
+    abi: 26,
     chainId: instance.chainId,
     network: instance.name,
     displayName: instance.displayName,

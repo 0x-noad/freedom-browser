@@ -1,7 +1,7 @@
 const { EventEmitter } = require('events');
 const { runChild } = require('./myotis-child');
 
-function setup(abi = 25) {
+function setup(abi = 26) {
   const host = new EventEmitter();
   host.connected = true;
   host.send = jest.fn();
@@ -11,7 +11,7 @@ function setup(abi = 25) {
     statusJson: jest.fn(() => JSON.stringify({ snapPeers: 2 })), drainLogs: jest.fn(),
     ensRecordJson: jest.fn(), requestAccountJson: jest.fn(), estimateGasJson: jest.fn(),
     acceptStaleAnchor: jest.fn(() => true),
-    checkpointImportVersion: jest.fn(() => 1), createWithCheckpoint: jest.fn(() => 8),
+    createWithCheckpoint: jest.fn(() => 8),
     feeEstimateJson: jest.fn(), sendRawTransactionJson: jest.fn(),
     ethCallJson: jest.fn(async () => '{"resultHex":"0x1234"}'),
   };
@@ -79,9 +79,9 @@ test('does not expose the stale-anchor risk bypass', async () => {
 test('imports only a chain-bound checkpoint through the explicit native capability', () => {
   const ctx = setup();
   const checkpoint = { chainId: 100, network: 'gnosis', root: '0x' + 'ab'.repeat(32), slot: 30000000 };
-  ctx.send({ type: 'start', addonPath: '/addon.node', network: 'gnosis', dataDir: '/owned', checkpoint, resumeVerifiedState: true });
+  ctx.send({ type: 'start', addonPath: '/addon.node', network: 'gnosis', dataDir: '/owned', checkpoint });
   expect(ctx.addon.create).not.toHaveBeenCalled();
-  expect(ctx.addon.createWithCheckpoint).toHaveBeenCalledWith('gnosis', '/owned', checkpoint.root, checkpoint.slot, true);
+  expect(ctx.addon.createWithCheckpoint).toHaveBeenCalledWith('gnosis', '/owned', checkpoint.root, checkpoint.slot);
   expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: true, checkpointSupported: true }));
 });
 
@@ -90,17 +90,28 @@ test.each([
 ])('refuses malformed or wrong-chain checkpoint before native creation: %s', (change) => {
   const ctx = setup();
   const checkpoint = { chainId: 100, network: 'gnosis', root: '0x' + 'ab'.repeat(32), slot: 30000000, ...change };
-  ctx.send({ type: 'start', addonPath: '/addon.node', network: 'gnosis', dataDir: '/owned', checkpoint, resumeVerifiedState: false });
+  ctx.send({ type: 'start', addonPath: '/addon.node', network: 'gnosis', dataDir: '/owned', checkpoint });
   expect(ctx.addon.create).not.toHaveBeenCalled();
   expect(ctx.addon.createWithCheckpoint).not.toHaveBeenCalled();
   expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: false, failure: 'configuration' }));
 });
 
 test('refuses an unsupported addon instead of falling back to its embedded checkpoint', () => {
-  const ctx = setup(); ctx.addon.checkpointImportVersion.mockReturnValue(0);
+  const ctx = setup(); delete ctx.addon.createWithCheckpoint;
   ctx.send({ type: 'start', addonPath: '/addon.node', network: 'mainnet', dataDir: '/owned',
-    checkpoint: { chainId: 1, network: 'mainnet', root: '0x' + 'ab'.repeat(32), slot: 15000000 }, resumeVerifiedState: false });
+    checkpoint: { chainId: 1, network: 'mainnet', root: '0x' + 'ab'.repeat(32), slot: 15000000 } });
   expect(ctx.addon.create).not.toHaveBeenCalled();
-  expect(ctx.addon.createWithCheckpoint).not.toHaveBeenCalled();
   expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: false, failure: 'checkpoint-unsupported' }));
+});
+
+
+test.each([false, true])('reports native ANCHOR_MISMATCH without starting or falling back (checkpoint=%s)', (withCheckpoint) => {
+  const ctx = setup();
+  ctx.addon.create.mockReturnValue(-3);
+  ctx.addon.createWithCheckpoint.mockReturnValue(-3);
+  const checkpoint = withCheckpoint ? { chainId: 1, network: 'mainnet', root: '0x' + 'ab'.repeat(32), slot: 15000000 } : null;
+  ctx.send({ type: 'start', addonPath: '/addon.node', network: 'mainnet', dataDir: '/owned', checkpoint });
+  expect(ctx.addon.start).not.toHaveBeenCalled();
+  expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: false, failure: 'anchor-mismatch' }));
+  if (withCheckpoint) expect(ctx.addon.create).not.toHaveBeenCalled();
 });

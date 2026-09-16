@@ -65,7 +65,6 @@ describe('checkpoint generation store on the real filesystem', () => {
       chainId: 1,
       origin: 'bundled',
       checkpoint: null,
-      resumeVerifiedState: false,
     });
     expect(created.dataDir).toBe(path.join(baseDir, 'verified-sync', created.generation));
     expect(await fs.readdir(created.dataDir)).toEqual(['anchor.json']);
@@ -89,12 +88,12 @@ describe('checkpoint generation store on the real filesystem', () => {
         chainId,
         origin: 'verified',
         checkpoint: record,
-        resumeVerifiedState: false,
       });
       expect(await fs.readdir(created.dataDir)).toEqual(['anchor.json']);
       const persisted = await readJson(path.join(created.dataDir, 'anchor.json'));
       expect(persisted).toEqual({
         schemaVersion: 1,
+        nativeCheckpointApi: 26,
         chainId,
         generation: created.generation,
         origin: 'verified',
@@ -103,7 +102,7 @@ describe('checkpoint generation store on the real filesystem', () => {
       const snapshotName = chainId === 1 ? 'sync-state.snapshot' : 'sync-state-gnosis.snapshot';
       await fs.writeFile(path.join(created.dataDir, snapshotName), 'native-owned snapshot bytes');
       const reloaded = await loadOrCreateState(baseDir, chainId);
-      expect(reloaded).toEqual({ ...created, resumeVerifiedState: true });
+      expect(reloaded).toEqual({ ...created });
       expect(await fs.readFile(path.join(reloaded.dataDir, snapshotName), 'utf8')).toBe(
         'native-owned snapshot bytes'
       );
@@ -131,12 +130,48 @@ describe('checkpoint generation store on the real filesystem', () => {
     Date.now.mockReturnValue(NOW + 40 * 24 * MAX_AGE_MS);
     expect(await loadOrCreateState(baseDir, 1)).toEqual({
       ...created,
-      resumeVerifiedState: true,
     });
     // Aging does not authorize creating a fresh generation from that old record.
     const before = await fs.readFile(path.join(baseDir, 'verified-sync.json'));
     await expect(replaceCheckpoint(baseDir, 1, checkpoint())).rejects.toMatchObject(STORAGE_ERROR);
     expect(await fs.readFile(path.join(baseDir, 'verified-sync.json'))).toEqual(before);
+  });
+
+  test.each([1, 100])('migrates a patched ABI 25 checkpoint generation on chain %i without adopting its snapshot', async (chainId) => {
+    const old = await replaceCheckpoint(baseDir, chainId, checkpoint(chainId));
+    const anchorPath = path.join(old.dataDir, 'anchor.json');
+    const record = await readJson(anchorPath);
+    delete record.nativeCheckpointApi;
+    await writeJson(anchorPath, record);
+    const original = await fs.readFile(anchorPath);
+    const snapshot = path.join(old.dataDir, chainId === 1 ? 'sync-state.snapshot' : 'sync-state-gnosis.snapshot');
+    await fs.writeFile(snapshot, 'old patched lineage');
+    const current = await loadOrCreateState(baseDir, chainId);
+    expect(current.generation).not.toBe(old.generation);
+    expect(current).toMatchObject({ origin: 'bundled', checkpoint: null, nativeCheckpointApi: 26 });
+    expect(await fs.readFile(anchorPath)).toEqual(original);
+    expect(await fs.readFile(snapshot, 'utf8')).toBe('old patched lineage');
+    expect(await fs.readdir(current.dataDir)).toEqual(['anchor.json']);
+    expect((await loadOrCreateState(baseDir, chainId)).generation).toBe(current.generation);
+  });
+
+  test('native marker must match the authenticated anchor and is never rewritten', async () => {
+    const current = await replaceCheckpoint(baseDir, 1, checkpoint());
+    const marker = path.join(current.dataDir, 'sync-anchor.json');
+    await writeJson(marker, { checkpointRoot: current.checkpoint.root, checkpointSlot: current.checkpoint.slot });
+    expect((await loadOrCreateState(baseDir, 1)).generation).toBe(current.generation);
+    await writeJson(marker, { checkpointRoot: '0x' + 'ff'.repeat(32), checkpointSlot: current.checkpoint.slot });
+    const before = await fs.readFile(marker);
+    await expect(loadOrCreateState(baseDir, 1)).rejects.toMatchObject(STORAGE_ERROR);
+    expect(await fs.readFile(marker)).toEqual(before);
+  });
+
+  test('dangling native marker symlink fails closed without replacement', async () => {
+    const current = await replaceCheckpoint(baseDir, 1, checkpoint());
+    const marker = path.join(current.dataDir, 'sync-anchor.json');
+    await fs.symlink(path.join(temporary, 'absent-marker-target'), marker, 'file');
+    await expect(loadOrCreateState(baseDir, 1)).rejects.toMatchObject(STORAGE_ERROR);
+    expect((await fs.lstat(marker)).isSymbolicLink()).toBe(true);
   });
 
   test('a directory and pointer belonging to another chain fail closed', async () => {
@@ -248,6 +283,7 @@ describe('checkpoint generation store on the real filesystem', () => {
     'sync-state-gnosis.snapshot',
     'cl-peers.cache',
     'cl-peers-gnosis.cache',
+    'sync-anchor.json',
   ])('rejects symlinked %s even when the target is a valid regular file', async (name) => {
     const created = await replaceCheckpoint(baseDir, 1, checkpoint());
     const filename =
@@ -291,7 +327,6 @@ describe('checkpoint generation store on the real filesystem', () => {
     );
     expect(await loadOrCreateState(baseDir, 1)).toEqual({
       ...current,
-      resumeVerifiedState: true,
     });
     // A complete but unpublished candidate is retained and is never selected by
     // directory order or by its newer checkpoint contents.
@@ -377,7 +412,6 @@ describe('checkpoint generation store on the real filesystem', () => {
       await fs.writeFile(owner, retired);
       expect(await loadOrCreateState(baseDir, 1)).toMatchObject({
         generation: current.generation,
-        resumeVerifiedState: true,
       });
       const replacement = await replaceCheckpoint(baseDir, 1, checkpoint(1, '78'));
       expect(replacement.generation).not.toBe(current.generation);

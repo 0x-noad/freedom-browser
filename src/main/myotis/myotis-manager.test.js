@@ -14,7 +14,7 @@ describe('myotis-manager', () => {
     }));
     const store = {
       loadOrCreateState: jest.fn(async (baseDir) => ({ dataDir: path.join(baseDir, 'initial'), origin: 'bundled', checkpoint: null })),
-      replaceCheckpoint: jest.fn(async (baseDir, _chainId, checkpoint) => ({ dataDir: path.join(baseDir, 'recovered'), origin: 'verified', checkpoint, resumeVerifiedState: false })),
+      replaceCheckpoint: jest.fn(async (baseDir, _chainId, checkpoint) => ({ dataDir: path.join(baseDir, 'recovered'), origin: 'verified', checkpoint })),
     };
     const status = { running: true, paused: false, beaconState: 'SYNCED', elReaderAvailable: true, elHunting: false, snapPeers: 2 };
     class MockProcess {
@@ -73,7 +73,7 @@ describe('myotis-manager', () => {
     expect(clients.map((client) => client.options.dataDir)).toEqual([
       path.join(dataDir, 'mainnet', 'initial'), path.join(dataDir, 'gnosis', 'initial'),
     ]);
-    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.9', abi: 25 });
+    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.10', abi: 26 });
     await mod.stopMyotis(100);
     expect(mod.publicStatus(100).state).toBe('off');
     expect(mod.isReady(1)).toBe(true);
@@ -215,7 +215,7 @@ describe('myotis-manager', () => {
     await flush();
     expect(ctx.store.replaceCheckpoint).toHaveBeenCalledWith(path.join(ctx.dataDir, 'gnosis'), 100, checkpoint);
     const replacement = ctx.clients.at(-1);
-    expect(replacement.options).toMatchObject({ checkpoint, dataDir: path.join(ctx.dataDir, 'gnosis', 'recovered'), resumeVerifiedState: false });
+    expect(replacement.options).toMatchObject({ checkpoint, dataDir: path.join(ctx.dataDir, 'gnosis', 'recovered') });
     expect(ctx.clients.at(-2).exited).toBe(true);
     expect(ctx.mod.isReady(100)).toBe(false);
     replacement.options.onStatus({ ...ctx.status, beaconState: 'SYNCED', finalizedSlot: checkpoint.slot, finalizedRootHex: checkpoint.root.slice(2) });
@@ -249,6 +249,17 @@ describe('myotis-manager', () => {
     resolveProof(checkpoint); await stopping; await flush();
     expect(ctx.store.replaceCheckpoint).not.toHaveBeenCalled();
     expect(ctx.clients).toHaveLength(1);
+  });
+
+  test('native anchor mismatch exposes a storage block and never starts automatic recovery', async () => {
+    const ctx = loadManager();
+    await ctx.mod.startMyotis({ chainId: 100 });
+    ctx.clients[0].options.onUnavailable('bounded error', 'CHECKPOINT_STORAGE');
+    expect(ctx.mod.publicStatus(100)).toMatchObject({ state: 'recovery-blocked', recovery: { reason: 'storage' } });
+    expect(ctx.mod.isReady(100)).toBe(false);
+    await jest.advanceTimersByTimeAsync(120000);
+    expect(ctx.acquireCheckpoint).not.toHaveBeenCalled();
+    expect(ctx.store.replaceCheckpoint).not.toHaveBeenCalled();
   });
 
   test.each(['CHECKPOINT_UNAVAILABLE', 'CHECKPOINT_QUORUM_UNAVAILABLE'])('retries %s twice, then waits for an explicit trusted retry', async (code) => {
@@ -295,11 +306,11 @@ describe('myotis-manager', () => {
 
   test('resumes only the checkpoint and generation selected by persistent storage', async () => {
     const ctx = loadManager();
-    ctx.store.loadOrCreateState.mockResolvedValue({ origin: 'verified', checkpoint, dataDir: '/owned-generation', resumeVerifiedState: true });
+    ctx.store.loadOrCreateState.mockResolvedValue({ origin: 'verified', checkpoint, dataDir: '/owned-generation' });
     ctx.status.finalizedSlot = checkpoint.slot;
     ctx.status.finalizedRootHex = checkpoint.root.slice(2);
     await ctx.mod.startMyotis({ chainId: 100 });
-    expect(ctx.clients[0].options).toMatchObject({ dataDir: '/owned-generation', checkpoint, resumeVerifiedState: true });
+    expect(ctx.clients[0].options).toMatchObject({ dataDir: '/owned-generation', checkpoint });
     expect(ctx.acquireCheckpoint).not.toHaveBeenCalled();
     expect(ctx.mod.isReady(100)).toBe(true);
   });
@@ -403,7 +414,7 @@ describe('myotis-manager', () => {
 
   test.each(['startup', 'stalled'])('%s retry preserves the authenticated generation without a checkpoint request', async (reason) => {
     const ctx = loadManager();
-    ctx.store.loadOrCreateState.mockResolvedValue({ origin: 'verified', checkpoint, dataDir: '/owned-generation', resumeVerifiedState: true });
+    ctx.store.loadOrCreateState.mockResolvedValue({ origin: 'verified', checkpoint, dataDir: '/owned-generation' });
     ctx.status.finalizedSlot = checkpoint.slot;
     ctx.status.finalizedRootHex = checkpoint.root.slice(2);
     if (reason === 'stalled') ctx.status.elReaderAvailable = false;
@@ -415,7 +426,7 @@ describe('myotis-manager', () => {
     ctx.mod.registerMyotisIpc();
     ctx.ipcMain.handlers.get(IPC.MYOTIS_RETRY_CHECKPOINT)(ctx.event, 100); await flush();
     expect(ctx.clients).toHaveLength(2);
-    expect(ctx.clients[1].options).toMatchObject({ dataDir: '/owned-generation', checkpoint, resumeVerifiedState: true });
+    expect(ctx.clients[1].options).toMatchObject({ dataDir: '/owned-generation', checkpoint });
     expect(ctx.acquireCheckpoint).not.toHaveBeenCalled();
     expect(ctx.store.replaceCheckpoint).not.toHaveBeenCalled();
     expect(ctx.mod.isReady(100)).toBe(true);
@@ -442,7 +453,7 @@ describe('myotis-manager', () => {
     ctx.mod.registerMyotisIpc();
     ctx.ipcMain.handlers.get(IPC.MYOTIS_RETRY_CHECKPOINT)(ctx.event, 100); await flush();
     const stopping = ctx.mod.stopMyotis(100);
-    resolveLoad({ dataDir: '/owned-generation', checkpoint, resumeVerifiedState: true });
+    resolveLoad({ dataDir: '/owned-generation', checkpoint });
     await stopping; await flush();
     expect(ctx.clients).toHaveLength(1);
     expect(ctx.mod.publicStatus(100).state).toBe('off');

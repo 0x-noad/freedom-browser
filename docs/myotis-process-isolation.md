@@ -1,7 +1,6 @@
 # Myotis process isolation
 
-Myotis v0.1.9 / ABI 25 plus Freedom checkpoint-import extension version 1 is
-pinned. Every addon call, including init,
+Official Myotis v0.1.10 / ABI 26 is pinned. No downstream native patch is used. Every addon call, including init,
 create, start, status, log draining and stop, runs outside Electron main.
 Each enabled chain has its own native supervisor and Electron-as-Node child.
 Main retains profile configuration and paths, chain routing policy, signing,
@@ -71,7 +70,7 @@ Raw addon logs, exception text, request arguments and profile paths are excluded
 
 ## Automatic stale-checkpoint recovery
 
-ABI 25 parks in `STALE_ANCHOR` when neither the embedded checkpoint nor saved
+Myotis parks in `STALE_ANCHOR` when neither the embedded checkpoint nor saved
 state is recent enough. Freedom then obtains an authenticated recent checkpoint
 and restarts the affected chain from it. No consent dialog or risk bypass is
 exposed, and the host does not call `acceptStaleAnchor`. Verified routing stays
@@ -126,10 +125,11 @@ is preserved but not silently adopted. Saved checkpoints can be older than one
 hour on restart because Myotis still evaluates its saved verified state against
 the native weak-subjectivity bound; renewed staleness triggers another recovery.
 New schema-v2 checkpoint records retain the distinct quorum voter origins;
-worker and new-generation validation require the configured threshold. Existing
-schema-v1 generations retain their original single-authority provenance and can
-resume under the previous trust policy. They cannot authorize a new recovery or
-be relabeled as quorum-verified. Renewed staleness requires v2 acquisition.
+worker and new-generation validation require the configured threshold. Historical
+schema-v1 records retain their original single-authority provenance for migration;
+patched ABI 25 generations are preserved and replaced, not resumed under ABI 26.
+They cannot authorize a new recovery or be relabeled as quorum-verified. New
+recovery always requires v2 acquisition.
 Malformed records or unsafe state paths fail closed as storage failures.
 Native ownership quarantine is independent and is never cleared by this flow.
 Every load or replacement also checks the legacy base-directory ownership
@@ -240,14 +240,25 @@ requirement is a release limitation.
 
 ## Build and signing
 
-The upstream v0.1.9 addon does not expose checkpoint import.
-`npm run myotis:download` therefore builds the pinned release source with Freedom's
-additive checkpoint-import patch for the current host, using Rust 1.94 and the
-unchanged upstream Cargo lock. Source archive, patch and installed addon hashes
-are recorded in `myotis-build.json`; packaging rejects incompatible or missing
-provenance. ABI remains 25 and the extra capability is versioned separately.
-See [native extension build instructions](../scripts/myotis-native/README.md)
-for prerequisites and target-host builds. No npm dependency changes are required.
+`npm run myotis:download` downloads the official v0.1.10 Node addons for all
+five supported targets (or one `MYOTIS_DOWNLOAD_TARGET`). The release checksum
+manifest and each addon digest are pinned in `scripts/myotis-release.json`.
+Packaging checks the actual bytes against these pins before signing; runtime
+requires exactly ABI 26. No Rust build, downstream patch, or build-provenance
+sidecar is required for Myotis. Other native components retain their own builds.
+
+The official API is `createWithCheckpoint(network, dataDir, root, slot)`.
+Myotis writes `sync-anchor[-gnosis].json` and allows only the same root/slot to
+resume that directory; `-3 ANCHOR_MISMATCH` is a storage failure, never a fallback
+to the embedded anchor. Freedom validates existing native markers against its
+own authenticated checkpoint record. New generations record `nativeCheckpointApi:
+26` in `anchor.json`. Pre-release generations made by our patched ABI 25 build
+are preserved and replaced with a clean bundled generation, after checking
+retired ownership. No old snapshot is copied or relabeled. If the bundled anchor
+is stale, the usual quorum and Colibri recovery runs. Ordinary ABI 26 restarts
+retain their generation and need no new external checkpoint unless native sync
+reports a stale anchor.
+
 Build the small supervisor from the checked-in C source with an already
 installed compiler:
 
@@ -262,8 +273,7 @@ MSVC; the live Myotis CI job also builds the helper before launching its tests.
 The existing binary preflight requires
 both addon and helper for supported Myotis targets. Cross-platform packagers
 must supply helpers built on the corresponding host; the build never downloads
-a compiler. The addon build uses its pinned source and patch rather than
-substituting an upstream binary without checkpoint support. `extraResources`
+a compiler. Myotis addons come from the pinned official release. `extraResources`
 includes the helper. macOS explicitly signs only the added
 `Contents/Resources/myotis-node/myotis-supervisor` through `mac.binaries`;
 `scripts/sign-myotis-helper.js` overrides only that exact file's signing options

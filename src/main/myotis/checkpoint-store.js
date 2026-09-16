@@ -142,6 +142,7 @@ async function createState(baseDir, chainId, checkpoint = null) {
     schemaVersion: SCHEMA_VERSION,
     chainId,
     generation,
+    nativeCheckpointApi: 26,
     origin: checkpoint ? 'verified' : 'bundled',
     checkpoint: checkpoint ? JSON.parse(JSON.stringify(checkpoint)) : null,
   };
@@ -153,7 +154,7 @@ async function createState(baseDir, chainId, checkpoint = null) {
   await requireRetiredOwner(baseDir);
   await requireCurrentOwnerRetired(baseDir, chainId);
   await fs.rename(temporary, path.join(baseDir, POINTER));
-  return { ...record, dataDir, resumeVerifiedState: false };
+  return { ...record, dataDir };
 }
 
 async function loadOrCreateState(baseDir, chainId) {
@@ -174,10 +175,27 @@ async function loadOrCreateState(baseDir, chainId) {
     await requireRetiredOwner(dataDir);
     const record = await readJson(path.join(dataDir, 'anchor.json'));
     validateIdentity(record, chainId);
-    if (record.generation !== pointer.generation) throw storageError();
+    if (record.generation !== pointer.generation ||
+        (record.nativeCheckpointApi !== undefined && record.nativeCheckpointApi !== 26)) throw storageError();
     if (record.origin === 'verified')
       validateCheckpoint(record.checkpoint, chainId, { fresh: false });
     else if (record.origin !== 'bundled' || record.checkpoint !== null) throw storageError();
+    // The native marker is untrusted filesystem input too. Its absence is
+    // valid before the first constructor; Myotis refuses an existing snapshot
+    // without a marker. Existing markers must agree with our authenticated
+    // record, and symlinks (including dangling ones) are never treated as absent.
+    const markerPath = path.join(dataDir, chainId === 1 ? 'sync-anchor.json' : 'sync-anchor-gnosis.json');
+    let markerPresent = true;
+    try { await fs.lstat(markerPath); } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      markerPresent = false;
+    }
+    if (markerPresent) {
+      const marker = await readJson(markerPath);
+      if (record.origin !== 'verified' ||
+          marker.checkpointRoot !== record.checkpoint.root ||
+          marker.checkpointSlot !== record.checkpoint.slot) throw storageError();
+    }
     for (const name of [
       'sync-state.snapshot',
       'sync-state-gnosis.snapshot',
@@ -191,7 +209,13 @@ async function loadOrCreateState(baseDir, chainId) {
         if (error.code !== 'ENOENT') throw error;
       }
     }
-    return { ...record, dataDir, resumeVerifiedState: record.origin === 'verified' };
+    // Patched ABI 25 generations have no native anchor marker contract. Keep
+    // them intact and bootstrap a new bundled generation; if its anchor is
+    // stale, normal quorum + Colibri recovery supplies a fresh checkpoint.
+    // Never manufacture a native marker to adopt an old snapshot.
+    if (record.nativeCheckpointApi === undefined && record.origin === 'verified')
+      return await createState(baseDir, chainId);
+    return { ...record, dataDir };
   } catch (error) {
     if (error.code === 'CHECKPOINT_OWNERSHIP') throw error;
     throw storageError();

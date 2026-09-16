@@ -6,8 +6,7 @@ const path = require('path');
 
 function verifyAddon(addonPath) {
   const addon = require(path.resolve(addonPath));
-  assert.equal(addon.init(), 25);
-  assert.equal(addon.checkpointImportVersion(), 1);
+  assert.equal(addon.init(), 26);
   assert.equal(typeof addon.createWithCheckpoint, 'function');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-myotis-constructor-'));
   const untouched = path.join(directory, 'invalid-must-not-exist');
@@ -21,8 +20,6 @@ function verifyAddon(addonPath) {
     assert.equal(addon.createWithCheckpoint('gnosis', untouched, malformed, 1), -1);
   }
   assert.equal(addon.createWithCheckpoint('unknown', untouched, root, 1), -1);
-  assert.ok(addon.createWithCheckpoint('sepolia', untouched, root, 1) < 0);
-  assert.equal(addon.createWithCheckpoint('gnosis', 'relative-directory', root, 1), -1);
   assert.equal(addon.createWithCheckpoint('gnosis', untouched, root, Number.MAX_SAFE_INTEGER), -1);
   assert.equal(fs.existsSync(untouched), false);
 
@@ -34,17 +31,18 @@ function verifyAddon(addonPath) {
     const handle = addon.createWithCheckpoint(network, dataDir, root, 1);
     assert.ok(handle > 0);
     addon.stop(handle);
-    // A real host only sets resume=true after verifying its immutable generation
-    // record. Here we check the explicit constructor switch without starting it.
+    // The official native marker binds the directory to this exact root/slot.
+    assert.equal(addon.createWithCheckpoint(network, dataDir, `0x${'22'.repeat(32)}`, 1), -3);
+    assert.equal(addon.createWithCheckpoint(network, dataDir, root, 2), -3);
+    assert.equal(addon.create(network, dataDir), -3);
     fs.writeFileSync(path.join(dataDir, filename), 'constructor-only fixture');
-    assert.equal(addon.createWithCheckpoint(network, dataDir, root, 1), -1);
-    assert.equal(addon.createWithCheckpoint(network, dataDir, root, 1, false), -1);
-    const resumed = addon.createWithCheckpoint(network, dataDir, root, 1, true);
+    const resumed = addon.createWithCheckpoint(network, dataDir, root, 1);
     assert.ok(resumed > 0);
+    assert.equal(addon.createWithCheckpoint(network, dataDir, root, 1), -1);
     addon.stop(resumed);
     assert.equal(fs.readFileSync(path.join(dataDir, filename), 'utf8'), 'constructor-only fixture');
   }
-  console.log('Myotis ABI 25 / checkpoint import v1 constructor checks passed (no networking)');
+  console.log('Official Myotis ABI 26 checkpoint import constructor checks passed (no networking)');
 }
 
 if (require.main === module) verifyAddon(process.argv[2]);

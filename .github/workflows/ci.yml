@@ -232,17 +232,14 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Install pinned Myotis Rust toolchain
-        run: rustup toolchain install 1.94 --profile minimal
-
-      - name: Build this runner's pinned Myotis checkpoint addon
+      - name: Download this runner's official Myotis addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
           MYOTIS_DOWNLOAD_TARGET: ${{ matrix.target }}
 
       - name: Load addon and verify ABI
-        run: node -e "const addon=require('./'+process.env.MYOTIS_ADDON); const abi=addon.init(); if(abi!==25) throw new Error('Expected ABI 25, got '+abi); if(addon.checkpointImportVersion?.()!==1||typeof addon.createWithCheckpoint!=='function') throw new Error('Missing checkpoint import extension'); console.log(process.platform+'-'+process.arch+' ABI '+abi);"
+        run: node -e "const addon=require('./'+process.env.MYOTIS_ADDON); const abi=addon.init(); if(abi!==26) throw new Error('Expected ABI 26, got '+abi); if(typeof addon.createWithCheckpoint!=='function') throw new Error('Missing checkpoint import API'); console.log(process.platform+'-'+process.arch+' ABI '+abi);"
         env:
           MYOTIS_ADDON: ${{ matrix.addon }}
 
@@ -304,10 +301,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Install pinned Myotis Rust toolchain
-        run: rustup toolchain install 1.94 --profile minimal
-
-      - name: Build pinned Myotis checkpoint addon
+      - name: Download official Myotis addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -339,9 +333,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/myotis-data
-          key: myotis-${{ hashFiles('scripts/build-myotis-addon.js', 'scripts/myotis-native/*') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: myotis-${{ hashFiles('scripts/fetch-myotis.js', 'scripts/myotis-release.json') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            myotis-${{ hashFiles('scripts/build-myotis-addon.js', 'scripts/myotis-native/*') }}-${{ matrix.target }}-
+            myotis-${{ hashFiles('scripts/fetch-myotis.js', 'scripts/myotis-release.json') }}-${{ matrix.target }}-
 
       - name: Download IPFS native addon
         run: npm run ipfs:download
@@ -410,7 +404,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/myotis-data
-          key: myotis-${{ hashFiles('scripts/build-myotis-addon.js', 'scripts/myotis-native/*') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: myotis-${{ hashFiles('scripts/fetch-myotis.js', 'scripts/myotis-release.json') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload Playwright traces and screenshots
         if: failure()

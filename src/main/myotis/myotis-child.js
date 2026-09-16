@@ -1,6 +1,6 @@
 // Private child entry point. Never import this module into Electron main.
 // No profile policy, wallet signing, renderer IPC, or credentials live here.
-const EXPECTED_ABI = 25;
+const EXPECTED_ABI = 26;
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const OPERATIONS = Object.freeze({
   ens: 'ensRecordJson',
@@ -45,24 +45,23 @@ function runChild(host = process, loadAddon = require) {
         failure = 'abi';
         if (addon.init() !== EXPECTED_ABI) throw new Error('ABI');
         failure = 'create';
-        const checkpointSupported = typeof addon.createWithCheckpoint === 'function' &&
-          typeof addon.checkpointImportVersion === 'function' && addon.checkpointImportVersion() === 1;
+        const checkpointSupported = typeof addon.createWithCheckpoint === 'function';
         if (message.checkpoint) {
           failure = 'configuration';
           const checkpoint = message.checkpoint;
           const chainId = message.network === 'mainnet' ? 1 : 100;
           if (checkpoint.chainId !== chainId || checkpoint.network !== message.network ||
               !/^0x[0-9a-f]{64}$/i.test(checkpoint.root || '') || /^0x0{64}$/i.test(checkpoint.root) ||
-              !Number.isSafeInteger(checkpoint.slot) || checkpoint.slot <= 0 ||
-              typeof message.resumeVerifiedState !== 'boolean') throw new Error('checkpoint');
+              !Number.isSafeInteger(checkpoint.slot) || checkpoint.slot <= 0) throw new Error('checkpoint');
           failure = 'checkpoint-unsupported';
           if (!checkpointSupported) throw new Error('checkpoint capability');
           failure = 'create';
           handle = addon.createWithCheckpoint(message.network, message.dataDir,
-            checkpoint.root, checkpoint.slot, message.resumeVerifiedState);
+            checkpoint.root, checkpoint.slot);
         } else {
           handle = addon.create(message.network, message.dataDir);
         }
+        if (handle === -3) { failure = 'anchor-mismatch'; throw new Error('anchor mismatch'); }
         if (handle < 1) throw new Error('create');
         failure = 'start';
         if (!addon.start(handle)) throw new Error('start');
