@@ -41,7 +41,7 @@ not yet expose those fields.
 | Wrong checkpoint root supplied to Colibri                           | Rejected       | Rejected       |
 | Selected checkpoint authority unavailable                           | Rejected       | Rejected       |
 
-Restart results and final run summaries are recorded in `summary.json`.
+Restart results and final run summaries are recorded in [`summary.json`](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/summary.json), published with the rest of the captures (see [Published captures](#published-captures)).
 
 Instrumentation note: the first fresh-run executable incorrectly required an
 internal marker that is only set when catching up across periods. Its final
@@ -53,8 +53,11 @@ preserved with this explanation, not relabeled as a successful process exit.
 
 `captures/` contains raw public proof bytes, checkpoint/finality responses, and
 verification results. `native/` contains status observations and summaries without
-peer addresses or the test machine's network address. Raw native stderr logs are
-retained locally, not published. The captured extractor metadata field
+peer addresses or the test machine's network address. Both are published in
+alan-artifacts rather than committed here — see [Published captures](#published-captures)
+for every link, and for the two capture directories plus `native/stale-checkpoints.json`
+that stay in this repository because test and harness code reads them. Raw native
+stderr logs are retained locally, not published. The captured extractor metadata field
 `proofRequestLatestBlock` describes the original latest-block request, **not** the
 execution payload of the older checkpoint header; the final comparison captures
 contain the correctly matched native tuple.
@@ -157,3 +160,58 @@ and
 specifications. Finality in this bridge additionally relies on the selected
 authority's explicit assertion; these endpoint responses do not expose an
 `execution_optimistic` field, so the spike does not claim to verify that flag.
+
+## Published captures
+
+The raw capture bytes, native status observations and run summaries are generated output, so they are published in the public [alan-artifacts](https://github.com/solardev-xyz/alan-artifacts) evidence repository rather than committed to this source tree. Nothing in the analysis above changed.
+
+Two capture directories stay in this repository because `src/main/myotis/checkpoint-verifier-worker.test.js` replays them as offline unit-test fixtures: `captures/mainnet-finalized/` and `captures/gnosis-finalized/` keep their `proof.ssz`, `verified-checkpoint.json`, `finality.json` and `checkpoint-1.json`. `native/stale-checkpoints.json` also stays, because the recovery-integration harnesses read it as a stale-anchor input fixture. Only their `result.json` observations moved.
+
+| Generation | File | Link |
+| --- | --- | --- |
+| `captures/1-unavailable/` | `proof.ssz` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/1-unavailable/proof.ssz) |
+| `captures/1-unavailable/` | `result.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/1-unavailable/result.json) |
+| `captures/1-wrong-root/` | `checkpoint-1.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/1-wrong-root/checkpoint-1.json) |
+| `captures/1-wrong-root/` | `proof.ssz` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/1-wrong-root/proof.ssz) |
+| `captures/1-wrong-root/` | `result.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/1-wrong-root/result.json) |
+| `captures/100-unavailable/` | `proof.ssz` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/100-unavailable/proof.ssz) |
+| `captures/100-unavailable/` | `result.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/100-unavailable/result.json) |
+| `captures/100-wrong-root/` | `checkpoint-1.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/100-wrong-root/checkpoint-1.json) |
+| `captures/100-wrong-root/` | `proof.ssz` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/100-wrong-root/proof.ssz) |
+| `captures/100-wrong-root/` | `result.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/100-wrong-root/result.json) |
+| `captures/gnosis-comparison/` | `checkpoint-1.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/gnosis-comparison/checkpoint-1.json) |
+| `captures/gnosis-comparison/` | `proof.ssz` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/gnosis-comparison/proof.ssz) |
+| `captures/gnosis-comparison/` | `result.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/gnosis-comparison/result.json) |
+| `captures/gnosis-finalized/` | `result.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/gnosis-finalized/result.json) |
+| `captures/gnosis-published-script/` | `checkpoint-1.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/gnosis-published-script/checkpoint-1.json) |
+| `captures/gnosis-published-script/` | `finality.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/gnosis-published-script/finality.json) |
+| `captures/gnosis-published-script/` | `proof.ssz` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/gnosis-published-script/proof.ssz) |
+| `captures/gnosis-published-script/` | `result.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/gnosis-published-script/result.json) |
+| `captures/gnosis-published-script/` | `verified-checkpoint.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/gnosis-published-script/verified-checkpoint.json) |
+| `captures/mainnet-comparison/` | `checkpoint-1.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/mainnet-comparison/checkpoint-1.json) |
+| `captures/mainnet-comparison/` | `proof.ssz` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/mainnet-comparison/proof.ssz) |
+| `captures/mainnet-comparison/` | `result.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/mainnet-comparison/result.json) |
+| `captures/mainnet-finalized/` | `result.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/mainnet-finalized/result.json) |
+| `captures/mainnet-published-script/` | `checkpoint-1.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/mainnet-published-script/checkpoint-1.json) |
+| `captures/mainnet-published-script/` | `finality.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/mainnet-published-script/finality.json) |
+| `captures/mainnet-published-script/` | `proof.ssz` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/mainnet-published-script/proof.ssz) |
+| `captures/mainnet-published-script/` | `result.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/mainnet-published-script/result.json) |
+| `captures/mainnet-published-script/` | `verified-checkpoint.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/captures/mainnet-published-script/verified-checkpoint.json) |
+| `native/` | `gnosis-myotis-fresh-verification.log` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/gnosis-myotis-fresh-verification.log) |
+| `native/` | `gnosis-myotis-fresh.jsonl` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/gnosis-myotis-fresh.jsonl) |
+| `native/` | `gnosis-myotis-resume-verification.log` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/gnosis-myotis-resume-verification.log) |
+| `native/` | `gnosis-myotis-resume.jsonl` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/gnosis-myotis-resume.jsonl) |
+| `native/` | `gnosis-myotis-stale-verification.log` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/gnosis-myotis-stale-verification.log) |
+| `native/` | `gnosis-myotis-stale.jsonl` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/gnosis-myotis-stale.jsonl) |
+| `native/` | `harness-negative-validation.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/harness-negative-validation.json) |
+| `native/` | `mainnet-myotis-fresh-verification.log` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/mainnet-myotis-fresh-verification.log) |
+| `native/` | `mainnet-myotis-fresh.jsonl` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/mainnet-myotis-fresh.jsonl) |
+| `native/` | `mainnet-myotis-resume-verification.log` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/mainnet-myotis-resume-verification.log) |
+| `native/` | `mainnet-myotis-resume.jsonl` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/mainnet-myotis-resume.jsonl) |
+| `native/` | `mainnet-myotis-stale-verification.log` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/mainnet-myotis-stale-verification.log) |
+| `native/` | `mainnet-myotis-stale.jsonl` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/mainnet-myotis-stale.jsonl) |
+| `native/` | `myotis-first-run-summary.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/myotis-first-run-summary.json) |
+| `native/` | `myotis-restart-summary.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/myotis-restart-summary.json) |
+| `native/` | `stale-control-summary.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/stale-control-summary.json) |
+| `native/` | `upstream-integrity.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/native/upstream-integrity.json) |
+| (root) | `summary.json` | [download](https://raw.githubusercontent.com/solardev-xyz/alan-artifacts/main/solardev-xyz/freedom-browser/pr353/evidence/myotis-recovery-spike-2026-09/summary.json) |
