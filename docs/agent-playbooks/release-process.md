@@ -372,7 +372,7 @@ Nightly builds exist so internal testers can run what is on `main` without build
 
 ### What runs, when
 
-`.github/workflows/release.yml` also runs on a schedule, `0 3 * * *` — **03:00 UTC, 05:00 CEST / 04:00 CET**. The schedule only fires on `main` (GitHub runs scheduled workflows from the default branch).
+`.github/workflows/release.yml` also runs on a schedule, `23 3 * * *` — **03:23 UTC, 05:23 CEST / 04:23 CET**. The schedule only fires on `main` (GitHub runs scheduled workflows from the default branch).
 
 | Job              | What it does on a nightly run                                                                                       |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -431,7 +431,7 @@ To leave the nightly channel, uninstall and install a release — there is no in
 
 Same artifacts as a release, from the `nightly` release page: the signed and notarized macOS `.dmg`, the Linux `.AppImage` / `.deb` for x64 and arm64, and the unsigned Windows `Freedom-Setup-<version>.exe` or portable `-win.zip` (SmartScreen prompts; More info → Run anyway).
 
-**Internal testing only.** A nightly is whatever was on `main` at 03:00 UTC. It has passed the packaged smoke tests and nothing else — no §6 pass, no manual checklist, no changelog. Do not hand it to users.
+**Internal testing only.** A nightly is whatever was on `main` at 03:23 UTC. It has passed the packaged smoke tests and nothing else — no §6 pass, no manual checklist, no changelog. Do not hand it to users.
 
 Run it against a scratch profile, for the same reason a release candidate gets one (§6, "Use a separate profile"): a nightly shares its app id and profile directory with an installed stable Freedom, so a half-finished migration on `main` would otherwise touch real data.
 
