@@ -190,6 +190,62 @@ const invalidateContentName = (input) => {
   });
 };
 
+// Favicon fetching (#75). A favicon fetch needs two things that arrive on
+// separate webview events, in either order:
+//
+//   * `did-stop-loading` — which page finished, and what the address bar is
+//     displaying for it (the per-domain cache key).
+//   * `page-favicon-updated` — the icon URL Chromium parsed out of the
+//     document it already downloaded.
+//
+// Neither alone is enough, so each records its half on the tab and asks
+// `runFaviconFetch` to fire when both halves describe the same page URL. That
+// ordering is real, not defensive: on a live http page load Chromium emits
+// `page-favicon-updated` *after* `did-stop-loading` (measured against a local
+// server; see the PR for #75), so fetching at did-stop-loading time would
+// never see the reported URL.
+//
+// Both halves live on the tab object, so they are collected with the tab
+// rather than accumulating in a module-level map keyed by a dead tab id.
+//
+// Before #75 the main process instead re-fetched the page URL itself, with no
+// cookies, purely to run its own regex over the HTML — a second server-side
+// GET of every page the user visited. The webview already did that parse.
+const runFaviconFetch = (tab) => {
+  const load = tab?.faviconLoad;
+  const reported = tab?.reportedFavicon;
+  if (!load || !reported || load.pageUrl !== reported.pageUrl) return;
+  // Consume both halves: a page that reports several icon candidates (or
+  // re-reports one) must not produce a second fetch for the same load.
+  tab.faviconLoad = null;
+  tab.reportedFavicon = null;
+  electronAPI
+    ?.fetchFaviconWithKey?.(load.internalUrl, load.displayUrl, reported.iconUrl)
+    ?.then((favicon) => {
+      if (favicon) {
+        updateTabFavicon(tab.id, load.displayUrl);
+      }
+    })
+    ?.catch((err) => {
+      pushDebug(`[Nav] Favicon fetch failed for ${load.displayUrl}: ${err.message}`);
+    });
+};
+
+// Half one: a page load finished in `tab`, and this is what its icon should
+// be cached under.
+const noteFaviconPageLoad = (tab, load) => {
+  if (!tab) return;
+  tab.faviconLoad = load;
+  runFaviconFetch(tab);
+};
+
+// Half two: the webview reported an icon URL for the page it is showing.
+const noteReportedFavicon = (tab, reported) => {
+  if (!tab) return;
+  tab.reportedFavicon = reported;
+  runFaviconFetch(tab);
+};
+
 // Experimental opt-in (Settings → Experimental, default off). Mirrors the
 // `showIpfsProgressStatus` setting, seeded in initNavigation and kept live via
 // the `settings:updated` broadcast. While off, the IPFS progress poller never
@@ -2517,19 +2573,11 @@ export const initNavigation = () => {
             !displayUrl.startsWith('freedom://') &&
             !displayUrl.startsWith('view-source:')
           ) {
-            // Fetch and cache favicon in background, then update tab favicon
+            // Record what this load's icon would be cached under — the fetch
+            // itself waits for the webview to report the icon URL (#75).
             // Use displayUrl as cache key (so bzz://, ipfs:// sites get unique favicons)
             // Use internalUrl for fetching (the actual HTTP gateway URL)
-            electronAPI
-              ?.fetchFaviconWithKey?.(internalUrl, displayUrl)
-              .then((favicon) => {
-                if (favicon) {
-                  updateTabFavicon(activeTab.id, displayUrl);
-                }
-              })
-              .catch((err) => {
-                pushDebug(`[Nav] Favicon fetch failed for ${displayUrl}: ${err.message}`);
-              });
+            noteFaviconPageLoad(activeTab, { pageUrl: internalUrl, displayUrl, internalUrl });
 
             // Also try to show cached favicon immediately
             updateTabFavicon(activeTab.id, displayUrl);
@@ -2572,6 +2620,22 @@ export const initNavigation = () => {
 
         pushDebug('Webview finished loading.');
         break;
+
+      case 'page-favicon-updated': {
+        // The active tab's webview reported the icon URL Chromium parsed out
+        // of the page it already loaded (#75). Pairs with the `faviconLoad`
+        // half recorded at did-stop-loading above; whichever lands second
+        // fires the single icon fetch.
+        //
+        // PRIVATE MODE GUARD (favicons): nothing to guard here — a private
+        // window never records the load half (shouldCacheFavicons() above),
+        // so the pair never completes and no fetch is made. The main process
+        // refuses a private sender's fetch anyway (src/main/favicons.js).
+        const tab = getActiveTab();
+        if (!tab || tab.id !== data.tabId) break;
+        noteReportedFavicon(tab, { pageUrl: data.pageUrl, iconUrl: data.iconUrl });
+        break;
+      }
 
       case 'did-fail-load':
         // Defensive twin of the per-tab gate in `tabs.js`. Chromium fires

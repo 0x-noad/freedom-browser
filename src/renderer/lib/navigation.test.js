@@ -484,6 +484,9 @@ const loadNavigationModule = async (options = {}) => {
     electronAPI,
     location: {
       href: 'file:///app/index.html',
+      // Private windows are opened with `?privatePartition=private-<uuid>`;
+      // private-mode.js reads it at import time.
+      search: options.locationSearch || '',
     },
     addEventListener: jest.fn((event, handler) => {
       windowHandlers[event] = handler;
@@ -873,9 +876,21 @@ describe('navigation', () => {
       immediate: true,
     });
     expect(ctx.elements.reloadBtn.dataset.state).toBe('reload');
+    // #75: a finished load on its own fetches nothing — the icon URL comes
+    // from the webview's own report, which lands next.
+    expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+
+    ctx.tabsMocks.webviewEventHandler('page-favicon-updated', {
+      tabId: ctx.activeRef.tab.id,
+      pageUrl: 'https://loaded.example',
+      iconUrl: 'https://loaded.example/icon.png',
+    });
+    await flushMicrotasks();
+
     expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledWith(
       'https://loaded.example',
-      'https://recorded.example'
+      'https://recorded.example',
+      'https://loaded.example/icon.png'
     );
     expect(ctx.tabsMocks.updateTabFavicon).toHaveBeenCalledWith(
       ctx.activeRef.tab.id,
@@ -926,6 +941,165 @@ describe('navigation', () => {
     ctx.tabsMocks.webviewEventHandler('dom-ready', {});
     await flushMicrotasks();
     expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith('Webview ready.');
+  });
+
+  // #75. Favicon discovery used to re-download the page in the main process
+  // (cookieless) just to run a regex over its HTML, so every external
+  // navigation hit the server twice. The icon URL now comes from the
+  // webview's own `page-favicon-updated` report, and main fetches the icon
+  // and nothing else. These tests pin "one favicon-related fetch per load,
+  // never the page" on the renderer side of that contract.
+  describe('favicon fetching (#75)', () => {
+    const finishLoad = async (ctx, { displayUrl, pageUrl }) => {
+      ctx.elements.addressInput.value = displayUrl;
+      ctx.tabsMocks.webviewEventHandler('did-stop-loading', { url: pageUrl });
+      await flushMicrotasks();
+    };
+
+    const reportFavicon = async (ctx, { pageUrl, iconUrl, tabId }) => {
+      ctx.tabsMocks.webviewEventHandler('page-favicon-updated', {
+        tabId: tabId ?? ctx.activeRef.tab.id,
+        pageUrl,
+        iconUrl,
+      });
+      await flushMicrotasks();
+    };
+
+    test('a page load fetches the reported icon exactly once, and never the page', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(1);
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledWith(
+        'https://shop.example/item',
+        'https://shop.example/item',
+        'https://shop.example/icon.png'
+      );
+      // The page URL goes over only as the *context* the icon URL is
+      // resolved and cached against; that main never fetches it is asserted
+      // against the real module in src/main/favicons.test.js.
+    });
+
+    test('repeated icon reports for one load do not fetch again', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      // Chromium can report several candidates (icon, apple-touch-icon) for
+      // one document; each arrives as its own event.
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/apple-touch-icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(1);
+    });
+
+    // Measured ordering on a live http load is report-after-stop, but the
+    // pairing must not depend on it: a cached page can report its icon
+    // before the load finishes.
+    test('an icon reported before the load finishes still fetches once', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+      expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(1);
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledWith(
+        'https://shop.example/item',
+        'https://shop.example/item',
+        'https://shop.example/icon.png'
+      );
+    });
+
+    // A report left over from the previous document (or one racing in from a
+    // page the tab has already navigated away from) describes a different
+    // page URL than the load that just finished — caching it under this
+    // page's key would paint the wrong site's icon.
+    test('an icon reported for a different page is not fetched', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://other.example/old',
+        iconUrl: 'https://other.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+    });
+
+    test('a report for a tab that is no longer active is ignored', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await reportFavicon(ctx, {
+        tabId: ctx.activeRef.tab.id + 99,
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+    });
+
+    // PRIVATE MODE GUARD (favicons): a private window records no load half,
+    // so a reported icon can never complete a pair and nothing is fetched or
+    // cached. Main refuses a private sender's fetch too (favicons.test.js).
+    test('a private window fetches no favicon even when the icon is reported', async () => {
+      const ctx = await loadNavigationModule({
+        locationSearch: '?privatePartition=private-test',
+      });
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+    });
   });
 
   describe('address bar search fallback', () => {

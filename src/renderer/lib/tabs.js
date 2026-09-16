@@ -692,15 +692,30 @@ const createWebview = (tabId, initialUrl) => {
     'page-favicon-updated': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       if (!tab) return;
-      // Only honor this event for internal pages. External sites flow through
-      // the HTTP favicon pipeline (updateTabFavicon) which handles per-domain
-      // caching across sessions; letting this event override it would race
-      // with the cached value on subsequent loads.
-      if (!isInternalPageUrl(webview.getURL())) return;
       const icon = event.favicons?.[0];
       if (!icon) return;
-      tab.favicon = icon;
-      renderTabs();
+      const pageUrl = webview.getURL();
+      // Internal pages paint the reported URL straight into the strip: it is
+      // a file:// URL out of our own bundle, so there is nothing to fetch or
+      // cache per domain.
+      if (isInternalPageUrl(pageUrl)) {
+        tab.favicon = icon;
+        renderTabs();
+        return;
+      }
+      // External sites: this event *is* Chromium's `<link rel="icon">` parse
+      // of the document the webview already downloaded, so it is what the
+      // main process now works from (#75). It does not become `tab.favicon`
+      // directly — the strip paints the per-domain cached copy that main
+      // fetches and stores, which is also what survives across sessions, so
+      // there is no race with the cached value on subsequent loads (the
+      // reason this event used to be ignored for external pages).
+      // Only the foreground tab is forwarded: the cache key is the address
+      // bar's displayed URL, which only the active tab has. Background tabs
+      // pick their icon up from the cache on switch, exactly as before.
+      if (tabId === tabState.activeTabId && onWebviewEvent) {
+        onWebviewEvent('page-favicon-updated', { tabId, pageUrl, iconUrl: icon });
+      }
     },
     'page-title-updated': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);

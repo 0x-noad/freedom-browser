@@ -154,8 +154,13 @@ describe('preload', () => {
       [exposures.electronAPI, 'copyImageFromUrl', ['https://example.com/image.png'], 'clipboard:copy-image', ['https://example.com/image.png']],
       [exposures.electronAPI, 'getFavicon', ['https://example.com'], IPC.FAVICON_GET, ['https://example.com']],
       [exposures.electronAPI, 'getCachedFavicon', ['https://example.com'], IPC.FAVICON_GET_CACHED, ['https://example.com']],
-      [exposures.electronAPI, 'fetchFavicon', ['https://example.com'], IPC.FAVICON_FETCH, ['https://example.com']],
-      [exposures.electronAPI, 'fetchFaviconWithKey', ['https://example.com/icon.png', 'icon-key'], IPC.FAVICON_FETCH_WITH_KEY, ['https://example.com/icon.png', 'icon-key']],
+      // The trailing argument is the icon URL the webview reported through
+      // `page-favicon-updated`; omitted by a caller, it goes over as null and
+      // main falls back to /favicon.ico (#75).
+      [exposures.electronAPI, 'fetchFavicon', ['https://example.com'], IPC.FAVICON_FETCH, ['https://example.com', null]],
+      [exposures.electronAPI, 'fetchFavicon', ['https://example.com', 'https://example.com/i.png'], IPC.FAVICON_FETCH, ['https://example.com', 'https://example.com/i.png']],
+      [exposures.electronAPI, 'fetchFaviconWithKey', ['https://example.com/icon.png', 'icon-key'], IPC.FAVICON_FETCH_WITH_KEY, ['https://example.com/icon.png', 'icon-key', null]],
+      [exposures.electronAPI, 'fetchFaviconWithKey', ['https://example.com/page', 'icon-key', 'https://example.com/i.png'], IPC.FAVICON_FETCH_WITH_KEY, ['https://example.com/page', 'icon-key', 'https://example.com/i.png']],
       [exposures.ant, 'start', [], IPC.ANT_START, []],
       [exposures.ant, 'stop', [], IPC.ANT_STOP, []],
       [exposures.ant, 'getStatus', [], IPC.ANT_GET_STATUS, []],

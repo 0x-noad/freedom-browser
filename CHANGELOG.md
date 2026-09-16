@@ -21,6 +21,11 @@ All notable changes to Freedom will be documented in this file.
 
 ### Fixed
 
+- Visiting a site no longer downloads its page twice
+  - Finding a site's icon used to mean fetching the page a second time behind your back — without your cookies or session — purely to read its `<link rel="icon">` tag. Every site you visited saw two requests for the same address, one signed in and one not
+  - On sites that gate content — a paywall, a paid session, a rate limit, a login — that second anonymous request could be refused, logged as a failed visit, or counted against your quota
+  - Freedom now uses the icon address the page itself already reported while loading, and fetches only the icon. Icons that a page does not declare are still looked for at the site's `/favicon.ico`, as before
+  - The icon is still fetched without your cookies or session, and a `.onion` site's icon still goes over Tor. Private windows still fetch and cache no icons at all
 - `Ctrl+W` on Windows and Linux closes the active tab instead of the whole window
   - The File menu carried the shortcut twice — on Close Tab, and invisibly on Close Window — and Windows and Linux gave it to Close Window, so one keystroke closed every tab in the window at once. It only looked right with a single tab open, where closing the tab closes the window anyway
   - Closing the last tab still closes the window, and `Cmd+W` on macOS is unchanged
