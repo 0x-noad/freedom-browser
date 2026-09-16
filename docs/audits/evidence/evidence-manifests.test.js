@@ -8,9 +8,10 @@
  * alan-artifacts, but left the `README.md` digests pinned to the pre-rewrite
  * bytes — `sha256sum --check` then failed in every one of those directories.
  *
- * Any file a manifest lists that is still in this repo must hash to its
- * recorded digest. Entries for files published out-of-tree are skipped here;
- * those are checked on download, against these same lines.
+ * Every retained file must exist and match its recorded digest. Only the
+ * explicitly enumerated published captures may be absent. The inventory is
+ * independent of filesystem discovery, so deleting a harness or manifest
+ * cannot silently turn a required input into an out-of-tree capture.
  */
 
 const crypto = require('crypto');
@@ -18,6 +19,29 @@ const fs = require('fs');
 const path = require('path');
 
 const EVIDENCE_ROOT = __dirname;
+const CAPTURE_FILES = [
+  'gnosis-result.json', 'gnosis-stdout.log', 'mainnet-result.json',
+  'mainnet-stdout.log', 'summary.json',
+];
+// These locations describe the intentional evidence move, not today's file
+// existence. New/moved entries must update this contract explicitly.
+const INVENTORY = {
+  'myotis-recovery-integration-2026-09/SHA256SUMS': {
+    retained: ['README.md', 'electron-main.js'], published: CAPTURE_FILES,
+  },
+  'myotis-recovery-integration-2026-09/final/SHA256SUMS': {
+    retained: ['README.md', 'electron-main.js'], published: CAPTURE_FILES,
+  },
+  'myotis-recovery-integration-2026-09/review-fixed/SHA256SUMS': {
+    retained: ['README.md', 'electron-main.js'], published: CAPTURE_FILES,
+  },
+  'myotis-recovery-integration-2026-09/asar/SHA256SUMS': {
+    retained: ['README.md', 'prepare.js', 'source-hashes.json'], published: ['result.jsonl'],
+  },
+  'myotis-recovery-integration-2026-09/asar/review-fixed/SHA256SUMS': {
+    retained: ['README.md', 'source-hashes.json'], published: ['result.jsonl'],
+  },
+};
 
 function findManifests(dir) {
   const found = [];
@@ -44,25 +68,29 @@ function parseManifest(text) {
 const manifests = findManifests(EVIDENCE_ROOT);
 
 describe('docs/audits/evidence SHA256SUMS trust roots', () => {
-  test('at least one manifest is present to check', () => {
-    expect(manifests.length).toBeGreaterThan(0);
+  test('every expected manifest exists and every discovered manifest is classified', () => {
+    const found = manifests.map(file => path.relative(EVIDENCE_ROOT, file).split(path.sep).join('/'));
+    expect(found.sort()).toEqual(Object.keys(INVENTORY).sort());
   });
 
-  describe.each(manifests.map((m) => [path.relative(EVIDENCE_ROOT, m), m]))('%s', (_rel, file) => {
+  describe.each(Object.entries(INVENTORY))('%s', (relative, inventory) => {
+    const file = path.join(EVIDENCE_ROOT, relative);
     const dir = path.dirname(file);
     const entries = parseManifest(fs.readFileSync(file, 'utf8'));
 
-    test('lists at least one retained file, so the check cannot go vacuous', () => {
-      const retained = entries.filter((e) => fs.existsSync(path.join(dir, e.name)));
-      expect(retained.length).toBeGreaterThan(0);
+    test('lists exactly the retained and published inputs', () => {
+      expect(entries.map(entry => entry.name).sort()).toEqual(
+        [...inventory.retained, ...inventory.published].sort()
+      );
+      for (const name of inventory.retained) expect(fs.statSync(path.join(dir, name)).isFile()).toBe(true);
     });
 
     test.each(entries.map((e) => [e.name, e.digest]))(
       '%s matches its recorded digest',
       (name, digest) => {
         const target = path.join(dir, name);
-        // Published out-of-tree (alan-artifacts); verified on download instead.
-        if (!fs.existsSync(target)) return;
+        // Only a capture explicitly published to alan-artifacts may be absent.
+        if (inventory.published.includes(name) && !fs.existsSync(target)) return;
 
         const actual = crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex');
         expect(actual).toBe(digest);
