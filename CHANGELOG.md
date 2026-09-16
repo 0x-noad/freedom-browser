@@ -23,6 +23,9 @@ All notable changes to Freedom will be documented in this file.
 
 ### Fixed
 
+- The Nodes menu no longer shows a Tor version while Tor is off
+  - A stopped Tor still carried a `Version: Arti <n>` row beneath its toggle — the one section in that menu with anything under an off node, where Swarm, IPFS, Ethereum, Gnosis and Radicle all show nothing until they are running
+  - A running Tor is unchanged: the SOCKS endpoint and the version read as before, and a start that fails still says why
 - `Ctrl+W` on Windows and Linux closes the active tab instead of the whole window
   - The File menu carried the shortcut twice — on Close Tab, and invisibly on Close Window — and Windows and Linux gave it to Close Window, so one keystroke closed every tab in the window at once. It only looked right with a single tab open, where closing the tab closes the window anyway
   - Closing the last tab still closes the window, and `Cmd+W` on macOS is unchanged
