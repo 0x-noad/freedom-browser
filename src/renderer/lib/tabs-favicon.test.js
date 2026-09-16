@@ -94,6 +94,11 @@ const loadTabs = async () => {
     getInternalPageName: () => null,
     isNewTabPageUrl: (url) => url === HOME_URL || url === 'freedom://private',
     isNewTabPageName: (pageName) => pageName === 'home' || pageName === 'private',
+    // Mirrors `page-urls.js#isHomePageUrl`: anchored to the home page's own
+    // resolved URL, never an `/pages/home.html` suffix (#376).
+    isHomePageUrl: (url) =>
+      typeof url === 'string' &&
+      (url === HOME_URL || url.startsWith(`${HOME_URL}?`) || url.startsWith(`${HOME_URL}#`)),
   }));
 
   const tabs = await import('./tabs.js');

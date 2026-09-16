@@ -9,6 +9,7 @@ import {
   getInternalPageName,
   getOnchainInterstitialTarget,
   internalPages,
+  isHomePageUrl,
   isNewTabPageName,
   isNewTabPageUrl,
 } from './page-urls.js';
@@ -655,8 +656,13 @@ const createWebview = (tabId, initialUrl) => {
           tab.favicon = null;
           renderTabs();
         }
-        // Reset title to "New Tab" on home-page navigation (e.g., back button)
-        if (homeUrl && (event.url === homeUrl || event.url.endsWith('/pages/home.html'))) {
+        // Reset title to "New Tab" on home-page navigation (e.g., back button).
+        // Anchored (isHomePageUrl), not an `/pages/home.html` suffix: a remote
+        // page is free to serve that path, and the suffix test gave it the
+        // new-tab-page title treatment — the tab relabelled "New Tab" and the
+        // window title blanked over the site's own content (#376, same
+        // discipline as the internal-page split above).
+        if (isHomePageUrl(event.url)) {
           tab.title = 'New Tab';
           renderTabs();
           if (tabId === tabState.activeTabId) {
@@ -733,8 +739,10 @@ const createWebview = (tabId, initialUrl) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       if (tab) {
         const currentUrl = webview.getURL();
-        // For home page, always use "New Tab" regardless of what the page reports
-        if (homeUrl && (currentUrl === homeUrl || currentUrl.endsWith('/pages/home.html'))) {
+        // For home page, always use "New Tab" regardless of what the page
+        // reports — anchored the same way as the did-navigate reset above, so
+        // a remote `…/pages/home.html` keeps its own <title> (#376).
+        if (isHomePageUrl(currentUrl)) {
           if (tab.title !== 'New Tab') {
             tab.title = 'New Tab';
             renderTabs();

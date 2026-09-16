@@ -144,6 +144,22 @@ describe('page-urls', () => {
     expect(mod.isErrorPageUrl('file:///app/pages/error.html?url=https%3A%2F%2Fa.test')).toBe(true);
     expect(mod.isErrorPageUrl('file:///app/pages/error.html#frag')).toBe(true);
     expect(mod.isErrorPageUrl(undefined)).toBe(false);
+
+    // Same shape for the home page: `tabs.js` keys the "New Tab" title
+    // treatment on it, and an `endsWith('/pages/home.html')` test handed that
+    // treatment to any site serving the path (#376).
+    for (const hostile of [
+      'https://example.com/pages/home.html',
+      'https://evil.test/home.html',
+      'file:///app/pages/home.html.evil',
+    ]) {
+      expect(mod.isHomePageUrl(hostile)).toBe(false);
+    }
+
+    expect(mod.isHomePageUrl('file:///app/pages/home.html')).toBe(true);
+    expect(mod.isHomePageUrl('file:///app/pages/home.html#recent')).toBe(true);
+    expect(mod.isHomePageUrl('file:///app/pages/home.html?x=1')).toBe(true);
+    expect(mod.isHomePageUrl(undefined)).toBe(false);
   });
 
   test('maps internal page urls back to freedom:// names', async () => {
