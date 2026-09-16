@@ -1,6 +1,98 @@
 const fs = require('fs');
 const { loadMainModule } = require('../../test/helpers/main-process-test-utils');
-const { SHORTCUTS, getDefaultAccelerator, getAliasAccelerators } = require('../shared/shortcuts');
+const {
+  SHORTCUTS,
+  getDefaultAccelerator,
+  getAliasAccelerators,
+  normalizeAccelerator,
+} = require('../shared/shortcuts');
+
+// Electron gives most menu *roles* an implicit default accelerator that never
+// appears in the template — which is how `{ role: 'close' }` silently claimed
+// Cmd/Ctrl+W next to Close Tab and closed the whole window on Windows/Linux
+// (#97). A template-only duplicate check is blind to that, so the accelerator
+// sweep below resolves roles through this table.
+//
+// Read off the Electron this repo ships (44.3.0) on 2026-09-16 by building a
+// menu of every role used in this file and printing each MenuItem#accelerator
+// (Electron resolves the role default into that getter). Linux is the only
+// platform this table was read on; test-e2e/close-tab-shortcut.spec.js
+// re-derives the same ownership question from the *real* built menu and runs
+// on ubuntu/windows/macOS, so a platform whose role defaults differ fails
+// there. Any role not listed here throws rather than being assumed
+// accelerator-free — a new role has to be probed and added.
+const ROLE_DEFAULT_ACCELERATORS = {
+  // Submenu containers.
+  appmenu: null,
+  editmenu: null,
+  windowmenu: null,
+  // Leaf roles.
+  about: null,
+  close: 'CommandOrControl+W',
+  copy: 'CommandOrControl+C',
+  cut: 'CommandOrControl+X',
+  delete: null,
+  front: null,
+  hide: 'Command+H',
+  hideothers: 'Command+Alt+H',
+  minimize: 'CommandOrControl+M',
+  paste: 'CommandOrControl+V',
+  pasteandmatchstyle: 'Shift+CommandOrControl+V',
+  quit: 'CommandOrControl+Q',
+  redo: 'Shift+CommandOrControl+Z',
+  selectall: 'CommandOrControl+A',
+  services: null,
+  startspeaking: null,
+  stopspeaking: null,
+  undo: 'CommandOrControl+Z',
+  unhide: null,
+  zoom: null,
+};
+
+// Accelerator a built menu item would actually answer to on `platform`:
+// its explicit accelerator, else its role's implicit default, else none.
+function effectiveAccelerator(item, platform) {
+  if (!item || item.type === 'separator') return null;
+  if (item.accelerator !== undefined && item.accelerator !== null) {
+    return normalizeAccelerator(item.accelerator, platform);
+  }
+  if (item.role) {
+    const role = String(item.role).toLowerCase();
+    if (!(role in ROLE_DEFAULT_ACCELERATORS)) {
+      throw new Error(
+        `Unmodelled menu role "${item.role}" — probe its default accelerator ` +
+          'and add it to ROLE_DEFAULT_ACCELERATORS so the #97 collision sweep stays honest.'
+      );
+    }
+    const roleAccelerator = ROLE_DEFAULT_ACCELERATORS[role];
+    return roleAccelerator ? normalizeAccelerator(roleAccelerator, platform) : null;
+  }
+  return null;
+}
+
+// Every (item, accelerator) pair a menu template would register on `platform`,
+// walking submenus. Disabled rows are skipped: Electron does not fire them.
+function collectBindings(items, platform, trail = [], found = []) {
+  for (const item of items || []) {
+    const label = item.label ?? item.role ?? item.type ?? '(unnamed)';
+    const path = [...trail, label];
+    if (item.enabled !== false) {
+      const accelerator = effectiveAccelerator(item, platform);
+      if (accelerator) {
+        found.push({
+          accelerator,
+          path: path.join(' > '),
+          id: item.id ?? null,
+          role: item.role ?? null,
+        });
+      }
+    }
+    if (Array.isArray(item.submenu)) {
+      collectBindings(item.submenu, platform, path, found);
+    }
+  }
+  return found;
+}
 
 function loadMenuModule(platform, options = {}) {
   let capturedTemplate = null;
@@ -404,6 +496,102 @@ describe('menu', () => {
 
     expect(view.submenu.find((entry) => entry.id === 'zoom-in').accelerator).toBe('Ctrl+Shift+Up');
     expect(view.submenu.find((entry) => entry.id === 'zoom-out').accelerator).toBe('CmdOrCtrl+-');
+  });
+
+  // #97: the File menu used to bind Cmd/Ctrl+W twice — the explicit Close Tab
+  // item and `{ role: 'close' }`, whose implicit default is the same chord.
+  // Windows and Linux gave the role the chord, so Ctrl+W closed the whole
+  // window (every tab at once) instead of the active tab.
+  describe('Cmd/Ctrl+W (#97)', () => {
+    const closeTabChord = (platform) => normalizeAccelerator('CmdOrCtrl+W', platform);
+
+    test('the accelerator sweep resolves a role default, not just explicit accelerators', () => {
+      // Guards the guard: if this returned null, every assertion below would
+      // pass against the bug it exists to catch.
+      expect(effectiveAccelerator({ role: 'close' }, 'linux')).toBe(closeTabChord('linux'));
+      expect(effectiveAccelerator({ role: 'close' }, 'darwin')).toBe(closeTabChord('darwin'));
+      expect(() => effectiveAccelerator({ role: 'notARole' }, 'linux')).toThrow(/Unmodelled/);
+    });
+
+    test('exactly one enabled menu item owns it, and it is Close Tab', () => {
+      for (const platform of ['darwin', 'win32', 'linux']) {
+        const { capturedTemplate } = loadMenuModule(platform);
+        const owners = collectBindings(capturedTemplate, platform).filter(
+          (binding) => binding.accelerator === closeTabChord(platform)
+        );
+
+        expect(owners.map((binding) => binding.path)).toEqual(['File > Close Tab']);
+        expect(owners[0].id).toBe('close-tab');
+      }
+    });
+
+    test('Close Window is still in the File menu, with no accelerator of its own', () => {
+      for (const platform of ['darwin', 'win32', 'linux']) {
+        const { capturedTemplate } = loadMenuModule(platform);
+        const file = findTopLabel(capturedTemplate, 'File');
+        const closeWindow = file.submenu.find((item) => item.id === 'close-window');
+
+        expect(closeWindow).toEqual(expect.objectContaining({ label: 'Close Window' }));
+        expect(closeWindow.accelerator).toBeUndefined();
+        // Not a role either: `{ role: 'close' }` would drag its implicit
+        // Cmd/Ctrl+W back in without ever naming it in the template.
+        expect(closeWindow.role).toBeUndefined();
+      }
+    });
+
+    test('Close Window closes the focused window; Close Tab closes only the tab', () => {
+      const send = jest.fn();
+      const close = jest.fn();
+      const targetWindow = {
+        webContents: { send },
+        close,
+        isFocused: () => true,
+      };
+      const { capturedTemplate } = loadMenuModule('linux', { targetWindow });
+      const file = findTopLabel(capturedTemplate, 'File');
+
+      file.submenu.find((item) => item.id === 'close-tab').click();
+      expect(send).toHaveBeenCalledWith('tab:close');
+      expect(close).not.toHaveBeenCalled();
+
+      send.mockClear();
+      file.submenu.find((item) => item.id === 'close-window').click();
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    test('a remapped Close Tab takes the whole binding with it', () => {
+      // The collision was invisible to the registry's own conflict checks
+      // (a role carries no registry entry), so re-run the sweep against a
+      // remap: nothing may inherit the freed Cmd/Ctrl+W.
+      const { capturedTemplate } = loadMenuModule('linux', {
+        shortcutOverrides: { 'tab.close': 'Ctrl+Shift+K' },
+      });
+      const bindings = collectBindings(capturedTemplate, 'linux');
+
+      expect(bindings.filter((b) => b.accelerator === closeTabChord('linux'))).toEqual([]);
+      expect(bindings.find((b) => b.id === 'close-tab').accelerator).toBe(
+        normalizeAccelerator('Ctrl+Shift+K', 'linux')
+      );
+    });
+
+    test('no two enabled menu items share an accelerator on any platform', () => {
+      for (const platform of ['darwin', 'win32', 'linux']) {
+        const { capturedTemplate } = loadMenuModule(platform);
+        const byAccelerator = new Map();
+        for (const binding of collectBindings(capturedTemplate, platform)) {
+          const paths = byAccelerator.get(binding.accelerator) || [];
+          paths.push(binding.path);
+          byAccelerator.set(binding.accelerator, paths);
+        }
+
+        const collisions = [...byAccelerator.entries()]
+          .filter(([, paths]) => paths.length > 1)
+          .map(([accelerator, paths]) => `${accelerator}: ${paths.join(' / ')}`);
+
+        expect({ platform, collisions }).toEqual({ platform, collisions: [] });
+      }
+    });
   });
 
   test('macOS places editMenu immediately after File', () => {
