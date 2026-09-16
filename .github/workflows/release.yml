@@ -293,7 +293,7 @@ jobs:
       - name: Download libradicle addon
         run: npm run radicle:download -- --mac --arm64
 
-      - name: Download Myotis addon
+      - name: Download official Myotis addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -533,7 +533,7 @@ jobs:
       - name: Download libradicle addon
         run: npm run radicle:download -- --linux --${{ matrix.arch }}
 
-      - name: Download Myotis addon
+      - name: Download official Myotis addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -1066,7 +1066,7 @@ jobs:
       - name: Download libradicle addon
         run: npm run radicle:download -- --win --x64
 
-      - name: Download Myotis addon
+      - name: Download official Myotis addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}

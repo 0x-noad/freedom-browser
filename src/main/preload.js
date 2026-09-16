@@ -335,6 +335,9 @@ contextBridge.exposeInMainWorld('ant', {
 });
 
 contextBridge.exposeInMainWorld('myotis', {
+  retryCheckpoint: (chainId = 1) => ipcRenderer.invoke('myotis:retryCheckpoint', chainId),
+  repairSyncData: (chainId = 1) => ipcRenderer.invoke('myotis:repairSyncData', chainId),
+  recoveryHelp: (chainId = 1) => ipcRenderer.invoke('myotis:recoveryHelp', chainId),
   start: (chainId) => chainId == null
     ? ipcRenderer.invoke('myotis:start')
     : ipcRenderer.invoke('myotis:start', chainId),
