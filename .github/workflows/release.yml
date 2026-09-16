@@ -1534,28 +1534,23 @@ jobs:
           git push -f origin refs/tags/nightly
 
           title="Freedom nightly ${VERSION}"
+
+          # Recreate the release object rather than editing it: GitHub sets a
+          # release's "released this <date>" once, when it is first published,
+          # and never on edit, so an edited rolling release would say the date
+          # of the very first nightly forever. Deleting and recreating costs a
+          # minute or two in which the nightly page is empty and an updater
+          # check 404s (it retries on its next interval) — acceptable for an
+          # internal nightly, and a fresh release also starts with no stale
+          # assets from the previous night. The download URLs are keyed by tag
+          # name, so nothing a tester or the updater holds changes.
           if [ "${NIGHTLY_RELEASE_EXISTS:-false}" = 'true' ]; then
-            gh release edit nightly --repo "$GH_REPO" \
-              --title "$title" --notes-file nightly-notes.md --prerelease --draft=false
-          else
-            gh release create nightly --repo "$GH_REPO" --target "$GITHUB_SHA" \
-              --prerelease --title "$title" --notes-file nightly-notes.md
+            gh release delete nightly --repo "$GH_REPO" --yes
           fi
+          gh release create nightly --repo "$GH_REPO" --target "$GITHUB_SHA" \
+            --prerelease --title "$title" --notes-file nightly-notes.md
 
-          gh release upload nightly --repo "$GH_REPO" --clobber release/*
-
-          # Every file name carries the version, so last night's assets are not
-          # overwritten by this night's — they would pile up and a tester could
-          # download a stale build from the same page. Drop anything this run
-          # did not just upload.
-          gh release view nightly --repo "$GH_REPO" --json assets --jq '.assets[].name' > uploaded.txt
-          while read -r name; do
-            [ -n "$name" ] || continue
-            if [ ! -e "release/$name" ]; then
-              echo "Deleting stale asset $name"
-              gh release delete-asset nightly "$name" --yes --repo "$GH_REPO"
-            fi
-          done < uploaded.txt
+          gh release upload nightly --repo "$GH_REPO" release/*
 
           echo "Published ${GITHUB_SERVER_URL}/${GH_REPO}/releases/tag/nightly"
 
