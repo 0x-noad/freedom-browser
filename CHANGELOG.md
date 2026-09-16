@@ -25,6 +25,11 @@ All notable changes to Freedom will be documented in this file.
   - The File menu carried the shortcut twice — on Close Tab, and invisibly on Close Window — and Windows and Linux gave it to Close Window, so one keystroke closed every tab in the window at once. It only looked right with a single tab open, where closing the tab closes the window anyway
   - Closing the last tab still closes the window, and `Cmd+W` on macOS is unchanged
   - Close Window keeps its place in the File menu and no longer advertises a shortcut of its own; `Ctrl+F4` still closes a tab on Windows and Linux
+- Removing a site permission from the address-bar indicator no longer reaches into another window's own decisions
+  - "Remove" in a private window lifts what that window is running on; it used to also clear the same site's this-session decision in your normal windows, with no sign of it in the window you were looking at
+  - "Remove" in a normal window likewise no longer reaches into an open private window's own decisions
+  - A remembered decision is a single saved entry for the whole profile, so removing one from the indicator clears it for every window — including from a private window, whose indicator lists it because that window inherits it
+  - Settings > Site Permissions is unchanged: "Remove", "Remove site" and "Remove all" still clear the profile's saved decisions everywhere, open private windows included
 - Camera and microphone on sites that check permission before they ask, such as Google Meet
   - `navigator.permissions.query()` and `Notification.permission` no longer report "denied" for a site you have never been asked about, so those sites go on to ask and Freedom's own prompt appears instead of their "access is blocked" screen
   - A remembered or this-session Block still reads as denied, and the prompt is unchanged: an undecided site is still asked about, and blocking it still denies
