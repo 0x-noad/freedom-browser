@@ -120,12 +120,14 @@ function checkUsageDescriptions(infoPlistXml) {
   return problems;
 }
 
-// `:-` writes the entitlements to stdout as text instead of to a file; without
-// the colon `codesign` treats `-` as a filename. macOS prints the plist with a
-// binary blob header on some versions, which is why nothing here assumes the
-// output starts with `<?xml`.
+// `--entitlements -` writes them to stdout and `--xml` asks for the plist
+// rather than a DER blob. Not the `:-` spelling most recipes still use: it does
+// the same thing, but codesign on macOS 14 answers it with "Specifying ':' in
+// the path is deprecated and will not work in a future release". Nothing here
+// assumes the output starts with `<?xml` either — the checks read keys wherever
+// they are, so a header or a one-line serialization changes nothing.
 function extractEntitlements(appPath) {
-  return execFileSync('codesign', ['-d', '--entitlements', ':-', '--xml', appPath], {
+  return execFileSync('codesign', ['-d', '--entitlements', '-', '--xml', appPath], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'inherit'],
   });
