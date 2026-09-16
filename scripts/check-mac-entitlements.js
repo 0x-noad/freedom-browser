@@ -12,9 +12,24 @@
 // camera TCC prompt never appears and which is not even listed under Privacy &
 // Security.
 //
+// It reads the outer `Freedom.app` signature *and* each helper bundle under
+// `Contents/Frameworks`: those host the capture and renderer processes and are
+// signed separately, through `entitlementsInherit` rather than `entitlements`
+// (app-builder-lib hands every nested path that is neither the app itself nor a
+// `Library/LoginItems` helper to that file). package.json points both keys at
+// the same plist today, so an `entitlementsInherit` split or a signing step
+// that reaches only the outer bundle would deny the hardened-runtime capture
+// process while the outer app's signature still reads correctly — #362's exact
+// symptom, with this check green.
+//
 // The macOS smoke job runs this once per shipped artifact (the app copied out
-// of the `.dmg` and the app out of the `-mac.zip`), on signed runs only: an
-// unsigned pipeline build has no signature to read entitlements out of.
+// of the `.dmg` and the app out of the `-mac.zip`), on signed runs only:
+// entitlements reach a bundle only through the `codesign` pass electron-builder
+// skips on an unsigned dispatch run, so there is nothing to assert there. What
+// `codesign -d` does on such a build — error out, or print an empty set off the
+// ad-hoc signature the repacked Electron binaries were shipped with — has never
+// been checked against a real unsigned artifact; the gate holds either way, so
+// do not lean on one of those answers without verifying it first.
 //
 // Usage:
 //   node scripts/check-mac-entitlements.js <path/to/Freedom.app>
@@ -99,11 +114,35 @@ function grantsEntitlement(xml, key) {
   return new RegExp(`<key>${escaped}</key>\\s*<true\\s*/>`).test(xml);
 }
 
-// @returns {string[]} One line per problem; empty when the app is fine.
-function checkEntitlements(entitlementsXml, expectedKeys) {
+// @returns {string[]} One line per problem; empty when the bundle is fine.
+function checkEntitlements(entitlementsXml, expectedKeys, subject = 'the signed app') {
   return expectedKeys
     .filter((key) => !grantsEntitlement(entitlementsXml, key))
-    .map((key) => `entitlement ${key} is not granted in the signed app`);
+    .map((key) => `entitlement ${key} is not granted in ${subject}`);
+}
+
+// The helper bundles Electron runs its capture, GPU and renderer processes in.
+// They sit directly under Contents/Frameworks next to the frameworks
+// themselves, so only the `.app` children are signed with entitlements of their
+// own; a build with none there is a layout this check cannot assert, which is
+// worth failing on rather than passing quietly.
+function helperBundlePaths(appPath) {
+  const frameworks = path.join(appPath, 'Contents', 'Frameworks');
+  if (!fs.existsSync(frameworks)) {
+    throw new Error(`No Contents/Frameworks at ${frameworks} — is ${appPath} an app bundle?`);
+  }
+  const helpers = fs
+    .readdirSync(frameworks)
+    .filter((entry) => entry.endsWith('.app'))
+    .sort()
+    .map((entry) => path.join(frameworks, entry));
+  if (helpers.length === 0) {
+    throw new Error(
+      `No helper app bundles under ${frameworks} — Electron hosts the camera and microphone` +
+        ' capture processes there, so their entitlements cannot be read (#362).'
+    );
+  }
+  return helpers;
 }
 
 // @returns {string[]} One line per problem; empty when the app is fine.
@@ -148,7 +187,9 @@ function readInfoPlist(appPath) {
 }
 
 function main(argv) {
-  let entitlementsXml;
+  // One entry per separately-signed bundle: `{ subject, entitlementsXml }`,
+  // where `subject` is what a failure line names.
+  let bundles;
   let infoPlistXml;
   let subject;
 
@@ -164,7 +205,9 @@ function main(argv) {
       throw new Error('--entitlements and --info-plist go together');
     }
     subject = `${entitlementsFile} + ${infoPlistFile}`;
-    entitlementsXml = fs.readFileSync(entitlementsFile, 'utf8');
+    bundles = [
+      { subject: entitlementsFile, entitlementsXml: fs.readFileSync(entitlementsFile, 'utf8') },
+    ];
     infoPlistXml = fs.readFileSync(infoPlistFile, 'utf8');
   } else {
     const appPath = argv.find((arg) => !arg.startsWith('--'));
@@ -175,20 +218,24 @@ function main(argv) {
       );
     }
     subject = appPath;
-    entitlementsXml = extractEntitlements(appPath);
+    bundles = [appPath, ...helperBundlePaths(appPath)].map((bundlePath) => ({
+      subject: bundlePath === appPath ? 'the signed app' : path.basename(bundlePath),
+      entitlementsXml: extractEntitlements(bundlePath),
+    }));
     infoPlistXml = readInfoPlist(appPath);
   }
 
-  // Printed whether or not the assertions pass: when a release build fails
-  // here, the log has to show what the app actually carries.
-  console.log(`--- entitlements embedded in ${subject} ---`);
-  console.log(entitlementsXml.trim());
-
   const expectedKeys = expectedEntitlementKeys();
-  const problems = [
-    ...checkEntitlements(entitlementsXml, expectedKeys),
-    ...checkUsageDescriptions(infoPlistXml),
-  ];
+  const problems = [];
+
+  for (const bundle of bundles) {
+    // Printed whether or not the assertions pass: when a release build fails
+    // here, the log has to show what each bundle actually carries.
+    console.log(`--- entitlements embedded in ${bundle.subject} ---`);
+    console.log(bundle.entitlementsXml.trim());
+    problems.push(...checkEntitlements(bundle.entitlementsXml, expectedKeys, bundle.subject));
+  }
+  problems.push(...checkUsageDescriptions(infoPlistXml));
 
   if (problems.length > 0) {
     console.error(`\n${subject} is missing what config/entitlements.mac.plist promises:`);
@@ -201,7 +248,8 @@ function main(argv) {
   }
 
   console.log(
-    `\nOK: ${expectedKeys.length} entitlements granted (including ${REQUIRED_ENTITLEMENTS.join(', ')})` +
+    `\nOK: ${expectedKeys.length} entitlements granted in each of ${bundles.length} signed ` +
+      `bundle${bundles.length === 1 ? '' : 's'} (including ${REQUIRED_ENTITLEMENTS.join(', ')})` +
       ` and ${REQUIRED_USAGE_DESCRIPTIONS.join(' / ')} present.`
   );
   return 0;
@@ -224,6 +272,7 @@ module.exports = {
   expectedEntitlementKeys,
   grantsEntitlement,
   checkEntitlements,
+  helperBundlePaths,
   checkUsageDescriptions,
   main,
 };

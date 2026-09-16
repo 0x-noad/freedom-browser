@@ -2,7 +2,8 @@
 //
 // `scripts/check-mac-entitlements.js` runs in the macOS smoke job against the
 // signature of the app copied out of the `.dmg` and the one out of the
-// `-mac.zip`. Whether it *fails* when a key is missing cannot be shown by
+// `-mac.zip`, and against each helper bundle inside them. Whether it *fails*
+// when a key is missing cannot be shown by
 // shipping a broken plist — that would ship a release artifact with no camera
 // access. So the checks are pure functions over the two plists a signed bundle
 // carries, and this suite drives them with the real inputs, then with a copy of
@@ -13,6 +14,8 @@
 // so it stands in here for what `codesign -d --entitlements :-` prints.
 
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const {
   ENTITLEMENTS_PATH,
@@ -21,6 +24,7 @@ const {
   expectedEntitlementKeys,
   checkEntitlements,
   checkUsageDescriptions,
+  helperBundlePaths,
 } = require('./check-mac-entitlements');
 const pkg = require('../package.json');
 
@@ -96,6 +100,70 @@ describe('the packaged macOS entitlements assertion', () => {
     expect(
       checkUsageDescriptions(infoPlistFrom({ ...pkg.build.mac.extendInfo, [key]: '   ' }))
     ).toEqual([`Info.plist's ${key} is empty`]);
+  });
+
+  // The capture processes run in the helper bundles, which are signed through
+  // `entitlementsInherit` rather than `entitlements`, so reading the outer
+  // app's signature alone would pass a build whose helpers were signed without
+  // the media keys. These cover the enumeration; the per-bundle assertion is
+  // the same pure function the mutations above drive.
+  describe('the helper bundles under Contents/Frameworks', () => {
+    const roots = [];
+
+    afterAll(() => {
+      for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    // A mac build's Contents/Frameworks: the helper bundles Electron runs its
+    // GPU, plugin and renderer processes in, next to the frameworks themselves.
+    const appWithFrameworks = (entries) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-entitlements-'));
+      roots.push(root);
+      const appPath = path.join(root, 'Freedom.app');
+      const contents = path.join(appPath, 'Contents');
+      fs.mkdirSync(contents, { recursive: true });
+      if (entries) {
+        fs.mkdirSync(path.join(contents, 'Frameworks'));
+        for (const entry of entries) fs.mkdirSync(path.join(contents, 'Frameworks', entry));
+      }
+      return appPath;
+    };
+
+    test('every helper bundle is checked, and nothing else in there is', () => {
+      const helpers = [
+        'Freedom Helper (GPU).app',
+        'Freedom Helper (Plugin).app',
+        'Freedom Helper (Renderer).app',
+        'Freedom Helper.app',
+      ];
+      const appPath = appWithFrameworks([
+        ...helpers,
+        'Electron Framework.framework',
+        'Squirrel.framework',
+        'libffmpeg.dylib',
+      ]);
+
+      expect(helperBundlePaths(appPath)).toEqual(
+        helpers.map((helper) => path.join(appPath, 'Contents', 'Frameworks', helper))
+      );
+    });
+
+    test('a build whose helper bundles are gone fails rather than passing quietly', () => {
+      const appPath = appWithFrameworks(['Electron Framework.framework']);
+      expect(() => helperBundlePaths(appPath)).toThrow(/No helper app bundles/);
+    });
+
+    test('a path that is not an app bundle fails', () => {
+      const appPath = appWithFrameworks(null);
+      expect(() => helperBundlePaths(appPath)).toThrow(/No Contents\/Frameworks/);
+    });
+
+    test.each(REQUIRED_ENTITLEMENTS)('a helper signed without %s fails, naming it', (key) => {
+      const helper = 'Freedom Helper (GPU).app';
+      expect(
+        checkEntitlements(withoutEntitlement(SIGNED_ENTITLEMENTS, key), expected, helper)
+      ).toEqual([`entitlement ${key} is not granted in ${helper}`]);
+    });
   });
 
   // The expected set is read from the source plist, so it must not be able to

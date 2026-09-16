@@ -891,14 +891,18 @@ jobs:
       # through codesign, so `config/entitlements.mac.test.js` — which guards
       # the plist and the package.json paths on every pull request — cannot say
       # the shipped signature carries them. Read them back out of the bundle a
-      # user actually installs, plus the Info.plist usage descriptions the TCC
-      # prompt shows, and fail the job when one is missing.
+      # user actually installs — the outer bundle and each helper bundle under
+      # Contents/Frameworks, which host the capture processes and are signed
+      # separately through `entitlementsInherit` — plus the Info.plist usage
+      # descriptions the TCC prompt shows, and fail the job when one is missing.
       #
-      # Signed runs only, for both halves: an unsigned pipeline build has no
-      # signature at all (`codesign -d` errors out), and the Info.plist check
-      # belongs with the entitlements one — it is the same fix. The assertion
-      # itself is mutation-tested off a Mac by
-      # scripts/check-mac-entitlements.test.js.
+      # Signed runs only, for both halves: entitlements reach a bundle only
+      # through the signing pass an unsigned dispatch run skips, so there is
+      # nothing to assert there (whether `codesign -d` then errors out or prints
+      # an empty set has not been verified against an unsigned artifact — the
+      # gate does not depend on which), and the Info.plist check belongs with
+      # the entitlements one — it is the same fix. The assertion itself is
+      # mutation-tested off a Mac by scripts/check-mac-entitlements.test.js.
       - name: Assert the app from the disk image carries the media entitlements
         if: env.SIGNED == 'true'
         run: node scripts/check-mac-entitlements.js "$RUNNER_TEMP/apps-dmg/Freedom.app"
