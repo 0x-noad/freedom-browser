@@ -23,6 +23,11 @@ All notable changes to Freedom will be documented in this file.
 
 ### Fixed
 
+- Visiting a site no longer downloads its page twice
+  - Finding a site's icon used to mean fetching the page a second time behind your back — without your cookies or session — purely to read its `<link rel="icon">` tag. Every site you visited saw two requests for the same address, one signed in and one not
+  - On sites that gate content — a paywall, a paid session, a rate limit, a login — that second anonymous request could be refused, logged as a failed visit, or counted against your quota
+  - Freedom now uses the icon address the page itself already reported while loading, and fetches only the icon. Icons that a page does not declare are still looked for at the site's `/favicon.ico`, as before
+  - The icon is still fetched without your cookies or session, and a `.onion` site's icon still goes over Tor. Private windows still fetch and cache no icons at all
 - The Nodes menu no longer shows a Tor version while Tor is off
   - A stopped Tor still carried a `Version: Arti <n>` row beneath its toggle — the one section in that menu with anything under an off node, where Swarm, IPFS, Ethereum, Gnosis and Radicle all show nothing until they are running
   - A running Tor is unchanged: the SOCKS endpoint and the version read as before, and a start that fails still says why

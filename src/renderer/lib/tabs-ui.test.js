@@ -195,6 +195,15 @@ const loadTabsModule = async (options = {}) => {
     // Mirrors `page-urls.js#isNewTabPageName`, the name-keyed form the
     // internal-page singleton rules consult.
     isNewTabPageName: (pageName) => pageName === 'home' || pageName === 'private',
+    // Mirrors `page-urls.js#isHomePageUrl`: anchored to the home page's own
+    // resolved URL, never an `/pages/home.html` suffix (#376).
+    isHomePageUrl: (url) => {
+      const base = options.homeUrl || HOME_URL;
+      return (
+        typeof url === 'string' &&
+        (url === base || url.startsWith(`${base}?`) || url.startsWith(`${base}#`))
+      );
+    },
   }));
 
   const mod = await import('./tabs.js');

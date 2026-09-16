@@ -9,6 +9,7 @@ import {
   getInternalPageName,
   getOnchainInterstitialTarget,
   internalPages,
+  isHomePageUrl,
   isNewTabPageName,
   isNewTabPageUrl,
 } from './page-urls.js';
@@ -61,7 +62,11 @@ export const updateTabFavicon = async (tabId, pageUrl) => {
   // Skip for internal pages or empty URLs — internal pages that want a
   // favicon declare it via <link rel="icon"> and are picked up by the
   // page-favicon-updated webview event instead of the HTTP fetch pipeline.
-  if (!pageUrl || pageUrl.startsWith('freedom://') || pageUrl.includes('/pages/')) {
+  // Anchored (isInternalPageUrl), not an `/pages/` substring: the sibling
+  // of the split in that handler, and with a substring test a remote
+  // `https://example.com/pages/about.html` blanks the strip on every paint,
+  // dropping the cached icon main just fetched for it (#376).
+  if (!pageUrl || isInternalPageUrl(pageUrl)) {
     tab.favicon = null;
     renderTabs();
     return;
@@ -651,8 +656,13 @@ const createWebview = (tabId, initialUrl) => {
           tab.favicon = null;
           renderTabs();
         }
-        // Reset title to "New Tab" on home-page navigation (e.g., back button)
-        if (homeUrl && (event.url === homeUrl || event.url.endsWith('/pages/home.html'))) {
+        // Reset title to "New Tab" on home-page navigation (e.g., back button).
+        // Anchored (isHomePageUrl), not an `/pages/home.html` suffix: a remote
+        // page is free to serve that path, and the suffix test gave it the
+        // new-tab-page title treatment — the tab relabelled "New Tab" and the
+        // window title blanked over the site's own content (#376, same
+        // discipline as the internal-page split above).
+        if (isHomePageUrl(event.url)) {
           tab.title = 'New Tab';
           renderTabs();
           if (tabId === tabState.activeTabId) {
@@ -692,22 +702,47 @@ const createWebview = (tabId, initialUrl) => {
     'page-favicon-updated': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       if (!tab) return;
-      // Only honor this event for internal pages. External sites flow through
-      // the HTTP favicon pipeline (updateTabFavicon) which handles per-domain
-      // caching across sessions; letting this event override it would race
-      // with the cached value on subsequent loads.
-      if (!isInternalPageUrl(webview.getURL())) return;
       const icon = event.favicons?.[0];
       if (!icon) return;
-      tab.favicon = icon;
-      renderTabs();
+      const pageUrl = webview.getURL();
+      // Internal pages paint the reported URL straight into the strip: it is
+      // a URL out of our own bundle, so there is nothing to fetch or cache
+      // per domain. `isInternalPageUrl` is anchored to the shell's own
+      // resolved `pages/` base, so a remote path that merely looks like one
+      // (`https://example.com/pages/about.html`) takes the external branch
+      // and its icon still goes through the cached-copy path (#376).
+      if (isInternalPageUrl(pageUrl)) {
+        tab.favicon = icon;
+        renderTabs();
+        return;
+      }
+      // External sites: this event *is* Chromium's `<link rel="icon">` parse
+      // of the document the webview already downloaded, so it is what the
+      // main process now works from (#75). It does not become `tab.favicon`
+      // directly — the strip paints the per-domain cached copy that main
+      // fetches and stores, which is also what survives across sessions, so
+      // there is no race with the cached value on subsequent loads (the
+      // reason this event used to be ignored for external pages).
+      // Every tab forwards its report, not just the foreground one. Chromium
+      // emits this *after* did-stop-loading, so a switch inside that window
+      // would otherwise drop the report of the tab that just finished
+      // loading and leave that visit with no icon fetched at all (#376).
+      // Which tab it belongs to is carried in `tabId`: navigation.js pairs
+      // the report with the load half recorded for *that* tab, so a tab that
+      // recorded none (a background load, whose address bar never supplied a
+      // cache key, or any load in a private window) still fetches nothing.
+      if (onWebviewEvent) {
+        onWebviewEvent('page-favicon-updated', { tabId, pageUrl, iconUrl: icon });
+      }
     },
     'page-title-updated': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       if (tab) {
         const currentUrl = webview.getURL();
-        // For home page, always use "New Tab" regardless of what the page reports
-        if (homeUrl && (currentUrl === homeUrl || currentUrl.endsWith('/pages/home.html'))) {
+        // For home page, always use "New Tab" regardless of what the page
+        // reports — anchored the same way as the did-navigate reset above, so
+        // a remote `…/pages/home.html` keeps its own <title> (#376).
+        if (isHomePageUrl(currentUrl)) {
           if (tab.title !== 'New Tab') {
             tab.title = 'New Tab';
             renderTabs();
@@ -857,8 +892,32 @@ const GLOBE_ICON_SVG = `<svg class="tab-icon-default" viewBox="0 0 24 24" fill="
 // Internal pages are served from the bundled renderer (freedom:// or
 // file:///…/pages/…). The HTTP favicon fetch pipeline skips them, so their
 // favicons come in via the webview's page-favicon-updated event.
-const isInternalPageUrl = (url) =>
-  typeof url === 'string' && (url.startsWith('freedom://') || url.includes('/pages/'));
+//
+// Anchored to the shell's *resolved* `pages/` base, never an `/pages/`
+// substring: an external site is free to serve
+// `https://example.com/pages/about.html`, and treating that as chrome makes
+// the page-favicon-updated handler below paint its remote icon URL straight
+// into the tab strip — a dial of the site from the chrome renderer, with the
+// per-domain cached copy bypassed entirely (#376). Same discipline as
+// page-urls.js#matchesInternalPage (#235).
+let internalPagesBase;
+const getInternalPagesBase = () => {
+  if (internalPagesBase === undefined) {
+    try {
+      internalPagesBase = new URL('pages/', window.location?.href).toString();
+    } catch {
+      internalPagesBase = null;
+    }
+  }
+  return internalPagesBase;
+};
+
+const isInternalPageUrl = (url) => {
+  if (typeof url !== 'string') return false;
+  if (url.startsWith('freedom://')) return true;
+  const base = getInternalPagesBase();
+  return Boolean(base) && url.startsWith(base);
+};
 
 // Loading spinner (same style as address bar)
 const SPINNER_HTML = `<span class="tab-icon-spinner"></span>`;

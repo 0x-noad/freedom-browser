@@ -170,9 +170,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Favicons
   getFavicon: (url) => ipcRenderer.invoke('favicon:get', url),
   getCachedFavicon: (url) => ipcRenderer.invoke('favicon:get-cached', url),
-  fetchFavicon: (url) => ipcRenderer.invoke('favicon:fetch', url),
-  fetchFaviconWithKey: (fetchUrl, cacheKey) =>
-    ipcRenderer.invoke('favicon:fetch-with-key', fetchUrl, cacheKey),
+  // `iconUrl` is the URL the page's own webview reported through
+  // `page-favicon-updated` — main fetches that icon and nothing else (#75).
+  fetchFavicon: (url, iconUrl = null) => ipcRenderer.invoke('favicon:fetch', url, iconUrl),
+  fetchFaviconWithKey: (fetchUrl, cacheKey, iconUrl = null) =>
+    ipcRenderer.invoke('favicon:fetch-with-key', fetchUrl, cacheKey, iconUrl),
   // Tab menu handlers
   onNewTab: (callback) => {
     const handler = () => callback();

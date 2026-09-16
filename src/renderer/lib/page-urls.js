@@ -29,6 +29,15 @@ export const errorUrlBase = internalPageUrl('error.html');
 
 export const isErrorPageUrl = (url) => matchesInternalPage(url, errorUrlBase);
 
+// True for the shell's own home page, anchored to its resolved
+// `file:///…/pages/home.html` base like every other chrome-page test above —
+// never an `endsWith('/pages/home.html')` substring, which any external site
+// can satisfy by serving that path. `tabs.js` keys the "this tab is the new
+// tab page" title treatment on it, so the substring form let
+// `https://example.com/pages/home.html` reset the tab title to "New Tab" and
+// blank the window title on commit. See issue #235.
+export const isHomePageUrl = (url) => matchesInternalPage(url, homeUrl);
+
 // Internal pages map for freedom:// protocol
 export const internalPages = Object.fromEntries(
   Object.entries(ROUTABLE_PAGES).map(([name, file]) => [
