@@ -1224,6 +1224,229 @@ describe('permissions-manager private windows', () => {
     });
   });
 
+  // #366: the address-bar popover lists what applies in THIS window, so its
+  // Remove has to lift exactly that — the asking window's own run-scoped tier
+  // (and the shared stored one), never the other scope's. Before this, a
+  // Remove clicked in a private window also cleared the normal profile's
+  // run-scoped decision for the same origin+key, with no trace in the window
+  // the user was looking at (and the reverse for a normal window's Remove).
+  describe('a window-scoped revoke reaches only the asking window (#366)', () => {
+    const ORIGIN = 'https://example.com';
+    const URL = 'https://example.com/page';
+
+    // The popover's Remove: `{ scope: 'window' }` marks it window-scoped and
+    // main resolves WHICH window from the sender, exactly as the preload
+    // sends it. `partition` names a private window's chrome, null a normal
+    // window's.
+    const revokeFrom = (partition, permission = 'notifications', origin = ORIGIN) =>
+      ctx.ipcMain.handlers.get(IPC.PERMISSIONS_REVOKE)(
+        { sender: { privatePartition: partition } },
+        origin,
+        permission,
+        { scope: 'window' }
+      );
+
+    const revokeOriginFrom = (partition, origin = ORIGIN) =>
+      ctx.ipcMain.handlers.get(IPC.PERMISSIONS_REVOKE_ORIGIN)(
+        { sender: { privatePartition: partition } },
+        origin,
+        { scope: 'window' }
+      );
+
+    const dismissOn = async (session, host) => {
+      host.send.mockClear();
+      const callback = requestOn(session, 'notifications', host);
+      const prompt = lastPrompt(host);
+      expect(prompt).not.toBeNull();
+      await respond({ id: prompt.id, decision: 'dismiss' });
+      await flush();
+      expect(callback).toHaveBeenCalledWith(false);
+    };
+
+    const embargo = async (session, host) => {
+      for (let i = 0; i < 3; i += 1) await dismissOn(session, host);
+    };
+
+    // Silently denied, no prompt — the embargo is still in force here.
+    const expectStillEmbargoed = (session, host) => {
+      host.send.mockClear();
+      expect(requestOn(session, 'notifications', host)).toHaveBeenCalledWith(false);
+      expect(lastPrompt(host)).toBeNull();
+      expect(session.checkHandler(null, 'notifications', ORIGIN, { requestingUrl: URL })).toBe(
+        false
+      );
+    };
+
+    // Undecided again: the site is asked, and is a full three dismissals
+    // away from the next embargo (the counter went with the decision).
+    const expectLifted = (session, host) => {
+      host.send.mockClear();
+      expect(requestOn(session, 'notifications', host)).not.toHaveBeenCalled();
+      expect(lastPrompt(host)).not.toBeNull();
+    };
+
+    test('Remove in a private window leaves the normal profile embargoed', async () => {
+      load();
+      const normalHost = makeHost();
+      const privateHost = makeHost();
+      await embargo(normalSession, normalHost);
+      await embargo(privateSession, privateHost);
+
+      expect(await revokeFrom(PARTITION)).toBe(true);
+
+      // The private window's own embargo is lifted, counter and all…
+      expect(await decisionsIn(PARTITION)).toEqual({});
+      expect(
+        ctx.mod._getDismissCount(ORIGIN, 'notifications', { privatePartition: PARTITION })
+      ).toBe(0);
+      expectLifted(privateSession, privateHost);
+
+      // …and the normal window's is untouched: still denied silently, still
+      // shown in its own chrome, still at the embargo threshold (so its next
+      // dismissal is not re-embargoing a counter someone else reset).
+      expect(await decisionsIn(null)).toEqual({
+        notifications: { decision: 'deny', remembered: false, embargoed: true },
+      });
+      expect(ctx.mod._getDismissCount(ORIGIN, 'notifications')).toBe(3);
+      expectStillEmbargoed(normalSession, normalHost);
+    });
+
+    test('Remove in a normal window leaves a live private-window decision standing', async () => {
+      load();
+      const normalHost = makeHost();
+      const privateHost = makeHost();
+
+      // A grant the user made inside the private window…
+      requestOn(privateSession, 'notifications', privateHost);
+      await respond({ id: lastPrompt(privateHost).id, decision: 'allow', remember: true });
+      await flush();
+      // …and an embargo in a normal window, on the same origin+key.
+      await embargo(normalSession, normalHost);
+
+      expect(await revokeFrom(null)).toBe(true);
+
+      expect(await decisionsIn(null)).toEqual({});
+      expect(ctx.mod._getDismissCount(ORIGIN, 'notifications')).toBe(0);
+      expectLifted(normalSession, normalHost);
+
+      // The private window keeps granting — silently, no re-prompt.
+      privateHost.send.mockClear();
+      const again = requestOn(privateSession, 'notifications', privateHost);
+      await flush();
+      expect(again).toHaveBeenCalledWith(true);
+      expect(lastPrompt(privateHost)).toBeNull();
+      expect(await decisionsIn(PARTITION)).toEqual({
+        notifications: { decision: 'allow', remembered: false },
+      });
+    });
+
+    // Same split for the whole-origin form behind `sitePermissions.revokeOrigin`
+    // — the popover's sibling entry point, marked window-scoped in the same
+    // preload, so it must not drift from the per-permission one.
+    test('a window-scoped revokeOrigin is scoped the same way', async () => {
+      load();
+      const normalHost = makeHost();
+      const privateHost = makeHost();
+      await embargo(normalSession, normalHost);
+      await embargo(privateSession, privateHost);
+
+      expect(await revokeOriginFrom(PARTITION)).toBe(true);
+
+      expect(await decisionsIn(PARTITION)).toEqual({});
+      expectLifted(privateSession, privateHost);
+      expect(await decisionsIn(null)).toEqual({
+        notifications: { decision: 'deny', remembered: false, embargoed: true },
+      });
+      expect(ctx.mod._getDismissCount(ORIGIN, 'notifications')).toBe(3);
+      expectStillEmbargoed(normalSession, normalHost);
+    });
+
+    // The store is the one tier BOTH windows read, and a private window's
+    // popover lists it because it inherits it — so a Remove there has to
+    // clear it, or the row the user clicked simply stays. That is #366's open
+    // question answered: a window-scoped revoke deletes from the shared
+    // stored tier, never from another window's run-scoped tier.
+    test('Remove in a private window clears the stored decision it inherited', async () => {
+      load();
+      const normalHost = makeHost();
+      const privateHost = makeHost();
+
+      requestOn(normalSession, 'notifications', normalHost);
+      await respond({ id: lastPrompt(normalHost).id, decision: 'allow', remember: true });
+      await flush();
+      expect(await decisionsIn(PARTITION)).toEqual({
+        notifications: { decision: 'allow', remembered: true },
+      });
+
+      expect(await revokeFrom(PARTITION)).toBe(true);
+
+      const storeCtx = loadMainModule(require.resolve('./permissions-store'), { userDataDir });
+      expect(storeCtx.mod.getAllDecisions()).toEqual({});
+      expect(await decisionsIn(PARTITION)).toEqual({});
+      expect(await decisionsIn(null)).toEqual({});
+      expectLifted(privateSession, privateHost);
+    });
+
+    // The Settings path has no scope marker and stays profile-wide, including
+    // the sweep through live private partitions that "Revoke all" exists for
+    // — even when Settings is open INSIDE a private window (it lists the
+    // stored, profile-level tier either way).
+    test('the Settings revoke stays profile-wide, from a private window too', async () => {
+      load();
+      const normalHost = makeHost();
+      const privateHost = makeHost();
+
+      requestOn(privateSession, 'notifications', privateHost);
+      await respond({ id: lastPrompt(privateHost).id, decision: 'allow', remember: true });
+      await flush();
+      requestOn(normalSession, 'notifications', normalHost);
+      await respond({ id: lastPrompt(normalHost).id, decision: 'allow', remember: false });
+      await flush();
+
+      // No `{ scope: 'window' }` — this is webview-preload's settings call,
+      // here made by a settings page hosted in the private window.
+      expect(
+        await ctx.ipcMain.handlers.get(IPC.PERMISSIONS_REVOKE)(
+          { sender: { privatePartition: PARTITION } },
+          ORIGIN,
+          'notifications'
+        )
+      ).toBe(true);
+
+      expect(await decisionsIn(PARTITION)).toEqual({});
+      expect(await decisionsIn(null)).toEqual({});
+      expectLifted(privateSession, privateHost);
+      expectLifted(normalSession, normalHost);
+    });
+
+    // The scope marker says "this window"; it never says WHICH. A renderer
+    // naming another scope in the payload must not be able to aim a revoke
+    // at it — main resolves the partition from the sender, the same way
+    // `permissions:get-for-origin` does.
+    test('the partition comes from the sender, not from the renderer payload', async () => {
+      load();
+      const privateHost = makeHost();
+      await embargo(privateSession, privateHost);
+
+      expect(
+        await ctx.ipcMain.handlers.get(IPC.PERMISSIONS_REVOKE)(
+          { sender: { privatePartition: null } },
+          ORIGIN,
+          'notifications',
+          { scope: 'window', privatePartition: PARTITION }
+        )
+      ).toBe(false);
+
+      expect(await decisionsIn(PARTITION)).toEqual({
+        notifications: { decision: 'deny', remembered: false, embargoed: true },
+      });
+      expect(
+        ctx.mod._getDismissCount(ORIGIN, 'notifications', { privatePartition: PARTITION })
+      ).toBe(3);
+      expectStillEmbargoed(privateSession, privateHost);
+    });
+  });
+
   // #364: the dismissal embargo is a decision like any other private-window
   // decision — partition-scoped, never persisted, gone when the window is.
   describe('dismissal embargo in a private window', () => {

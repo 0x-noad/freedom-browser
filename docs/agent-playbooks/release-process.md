@@ -214,23 +214,27 @@ git push origin release/<version> v<version>-rc.1
 
 What `.github/workflows/release.yml` then does:
 
-| Job                 | Runner             | Output                                                                                                                      |
-| ------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `mac-arm64`         | `macos-14`         | signed + notarized `.dmg` / `-mac.zip`, `latest-mac.yml`                                                                    |
-| `linux-x64`         | `ubuntu-latest`    | `Freedom-<v>.AppImage`, `freedom-browser_<v>_amd64.deb`, `latest-linux.yml`                                                 |
-| `linux-arm64`       | `ubuntu-24.04-arm` | `Freedom-<v>-arm64.AppImage`, `freedom-browser_<v>_arm64.deb`, `latest-linux-arm64.yml`                                     |
-| `windows-x64`       | `windows-latest`   | `Freedom-Setup-<v>.exe`, `Freedom-<v>-win.zip`, `latest-win-x64.yml` (unsigned)                                             |
-| `smoke-mac-arm64`   | `macos-14`         | §6 steps 1/2/6 + site permissions + the signed app's media entitlements, against the app from the `.dmg` and the `-mac.zip` |
-| `smoke-linux-x64`   | `ubuntu-latest`    | §6 steps 1/2/6 + site permissions against the installed `.deb` and the extracted AppImage                                   |
-| `smoke-linux-arm64` | `ubuntu-24.04-arm` | the same two legs on arm64 hardware                                                                                         |
-| `smoke-windows-x64` | `windows-latest`   | §6 steps 1/2/6 + site permissions against the silently installed NSIS package and the portable zip                          |
-| `release`           | `ubuntu-latest`    | after **all four builds and all four smoke jobs** succeeded: one GitHub Release with every file above and the `.blockmap`s  |
+| Job                 | Runner             | Output                                                                                                                        |
+| ------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `mac-arm64`         | `macos-14`         | signed + notarized `.dmg` / `-mac.zip`, `latest-mac.yml`                                                                      |
+| `linux-x64`         | `ubuntu-latest`    | `Freedom-<v>.AppImage`, `freedom-browser_<v>_amd64.deb`, `freedom-browser-<v>.pacman`, `latest-linux.yml`                     |
+| `linux-arm64`       | `ubuntu-24.04-arm` | `Freedom-<v>-arm64.AppImage`, `freedom-browser_<v>_arm64.deb`, `freedom-browser-<v>-aarch64.pacman`, `latest-linux-arm64.yml` |
+| `windows-x64`       | `windows-latest`   | `Freedom-Setup-<v>.exe`, `Freedom-<v>-win.zip`, `latest-win-x64.yml` (unsigned)                                               |
+| `smoke-mac-arm64`   | `macos-14`         | §6 steps 1/2/6 + site permissions + the signed app's media entitlements, against the app from the `.dmg` and the `-mac.zip`   |
+| `smoke-linux-x64`   | `ubuntu-latest`    | §6 steps 1/2/6 + site permissions against the installed `.deb` and the extracted AppImage                                     |
+| `smoke-linux-arm64` | `ubuntu-24.04-arm` | the same two legs on arm64 hardware                                                                                           |
+| `smoke-windows-x64` | `windows-latest`   | §6 steps 1/2/6 + site permissions against the silently installed NSIS package and the portable zip                            |
+| `release`           | `ubuntu-latest`    | after **all four builds and all four smoke jobs** succeeded: one GitHub Release with every file above and the `.blockmap`s    |
 
 - **Candidate tag** (`v<version>-rc.N`, anything with a hyphen): the release is created as a draft, the assets are uploaded, then it is flipped to a published **Pre-release**. Public, direct download links, excluded from "Latest release". Hand these to testers.
 - **Final tag** (`v<version>`): the release stays a **draft** until you publish it in §7. Drafts are visible and downloadable only to people with write access to the repo.
 - A failed leg means no release. Fix the cause, then "Re-run failed jobs" on that run: the successful legs' artifacts are kept and the `release` job runs again. If the fix needs a code change, it lands on the release branch as a PR and the next candidate (`rc.N+1`) picks it up; never move a tag.
 - Re-running onto a tag whose release is already published fails on purpose rather than overwriting files people may have downloaded.
 - Expect 20–30 minutes per run, plus a few minutes for the smoke job that follows each build. macOS takes longest (two notarizations: electron-builder staples the `.app`, a dedicated step then notarizes and staples the `.dmg` and refreshes its hash in `latest-mac.yml`). Arti (Tor) is compiled from crates.io on the macOS, Linux and Windows x64 runners; that step took 8m30s on the Windows runner in the 2026-09-09 dispatch that first exercised it (17m for the whole `windows-x64` job, against its 90-minute limit).
+
+**The Linux `.pacman` name, and where it comes from.** electron-builder's fpm target expands `${name}-${version}-${arch}.${ext}` for `pacman` and drops the `-${arch}` half on the default architecture, and `${name}` is the package `name`, not the product name — so x64 is `freedom-browser-<version>.pacman` and arm64 is `freedom-browser-<version>-aarch64.pacman` — not `-arm64`, because `builder-util`'s `getArtifactArchName` maps `arm64` to `aarch64` for the `pacman` extension the same way it does for `rpm` (`app-builder-lib/out/targets/FpmTarget.js`, `builder-util/out/arch.js`; `build.linux.artifactName` is unset, and setting it would rename the AppImage and the deb with it). The version _inside_ the package is not the same string either: fpm rejects a hyphen in `pkgver`, so electron-builder replaces every `-` with `_`, and fpm then appends its default iteration, so a `0.8.6-dev` build records `pkgver = 0.8.6_dev-1` in a file still named `…-0.8.6-dev.pacman`. `build.pacman.depends` **replaces** electron-builder's default dependency list rather than merging with it, which is the reason it is set at all: the default names `http-parser`, which is not in the official Arch repositories, so the package would refuse to install. Keep the override in step with what Electron actually needs — `gtk3`, `libnotify`, `nss`, `libxss`, `libxtst`, `xdg-utils`, `at-spi2-core`, `alsa-lib`, `libsecret` (the last one mirrors the deb default's `libsecret-1-0`: without it Chromium's `safeStorage` silently falls back to its hardcoded-key `basic_text` backend instead of the keyring, which is what quick-unlock's stored credential is encrypted with). `build.pacman.synopsis` is set because fpm's `pacman.erb` writes `pkgdesc` from only the first line of the `--description` electron-builder passes, and that line _is_ the synopsis — leaving it unset ships a package whose `pacman -Qi` description reads `None`.
+
+**Arch does get in-app updates.** `.pacman` is an auto-update target: `FpmTarget.supportsAutoUpdate()` lists it beside `deb` and `rpm`, so the package carries `resources/app-update.yml` and a `resources/package-type` file reading `pacman`, and electron-builder writes a `.pacman` entry into `<channel>-linux[-arm64].yml` next to the AppImage and deb entries. electron-updater reads that `package-type` at startup and picks its `PacmanUpdater`, which downloads the `.pacman` and runs `pacman -U --noconfirm <file>` through `pkexec`/`sudo`. That only works once §7 has uploaded the `.pacman` files alongside the manifests; a build whose `.pacman` was never published leaves Arch users installing the next release's package by hand (`sudo pacman -U <file>`).
 
 Windows arm64 is intentionally not built (never shipped on `freedom.baby`, no Myotis addon), so no Windows ARM64 artifact bundles Tor either — it would need the same Arti build step on an ARM64 Windows runner. No Windows code-signing certificate exists, so the installer is unsigned and SmartScreen prompts on first run. The installer is named `Freedom-Setup-<v>.exe` (`build.nsis.artifactName`), not electron-builder's default with spaces, because GitHub rewrites spaces in release-asset names to dots, which would break the `url:` in `latest-win-x64.yml`.
 
@@ -247,6 +251,7 @@ CI now launches every artifact it packages (steps 1, 2, 3, 5 and 6 below), but o
 - Real-network retrieval over the bundled nodes (`bzz://`, `ipfs://`, `rad://`, onion) — CI asserts the nodes start, not that they fetch
 - macOS actually handing the camera and microphone to the signed app after an in-app Allow: that is the TCC privacy dialog, and a hosted Mac runner has no camera, cannot drive the dialog headlessly, and cannot pre-seed the TCC database (SIP blocks it). Chromium's `--use-fake-device-for-media-stream` would bypass the exact OS path [#362](https://github.com/solardev-xyz/freedom-browser/issues/362) fixed, so it proves nothing. CI gets as far as asserting the entitlements and usage descriptions are in the signed bundle (step 7 below is the rest)
 - Upgrade in place from the previous final with a real profile
+- Installing the `.pacman` at all: no GitHub-hosted runner has `pacman`, so no smoke leg touches that artifact. `sudo pacman -U` on a real Arch Linux or Omarchy system is the only check it gets
 
 Test the **candidate** pre-releases in full; re-check the **final** draft in short form (launch + version on each platform), since it is the same tree plus the version and changelog commits.
 
@@ -284,7 +289,7 @@ Run the checklist twice per candidate where it matters: as a fresh install (empt
 
 ### Test environments
 
-- **Linux**: a VM or bare-metal Linux machine matching the target arch. `Freedom-<version>.AppImage` runs without install (`chmod +x` then double-click or launch from a terminal); `freedom-browser_<version>_amd64.deb` installs via `sudo apt install ./freedom-browser_<version>_amd64.deb`. Repeat for the arm64 artifacts on an arm64 Linux instance (e.g. a Raspberry Pi or a UTM arm64 VM on Apple Silicon).
+- **Linux**: a VM or bare-metal Linux machine matching the target arch. `Freedom-<version>.AppImage` runs without install (`chmod +x` then double-click or launch from a terminal); `freedom-browser_<version>_amd64.deb` installs via `sudo apt install ./freedom-browser_<version>_amd64.deb`; on Arch Linux or Omarchy, `freedom-browser-<version>.pacman` installs via `sudo pacman -U ./freedom-browser-<version>.pacman`. Repeat for the arm64 artifacts on an arm64 Linux instance (e.g. a Raspberry Pi or a UTM arm64 VM on Apple Silicon).
 - **Windows**: a Windows VM (UTM, Parallels, VMware Fusion) or a separate Windows host. The NSIS installer (`Freedom-Setup-<version>.exe`) runs unprivileged; the portable `Freedom-<version>-win.zip` extracts and runs without install. The installer is unsigned (no Windows certificate exists), so SmartScreen shows "Windows protected your PC" — More info → Run anyway is the expected path; outright "blocked by your administrator" is not.
 - **macOS**: any Apple Silicon Mac — install the `.dmg` and run the same checklist. The workflow already ran `spctl` / `stapler` on the runner; on the test Mac just confirm the app opens with no Gatekeeper warning.
 
@@ -431,7 +436,7 @@ To leave the nightly channel, uninstall and install a release — there is no in
 
 ### Installing one
 
-Same artifacts as a release, from the `nightly` release page: the signed and notarized macOS `.dmg`, the Linux `.AppImage` / `.deb` for x64 and arm64, and the unsigned Windows `Freedom-Setup-<version>.exe` or portable `-win.zip` (SmartScreen prompts; More info → Run anyway).
+Same artifacts as a release, from the `nightly` release page: the signed and notarized macOS `.dmg`, the Linux `.AppImage` / `.deb` / `.pacman` for x64 and arm64, and the unsigned Windows `Freedom-Setup-<version>.exe` or portable `-win.zip` (SmartScreen prompts; More info → Run anyway).
 
 **Internal testing only.** A nightly is whatever was on `main` at 03:23 UTC. It has passed the packaged smoke tests and nothing else — no §6 pass, no manual checklist, no changelog. Do not hand it to users.
 
@@ -491,7 +496,7 @@ npm run dist:linux:x64:docker
 npm run dist:linux:arm64:docker
 ```
 
-Both run `electron-builder` inside a Linux container and download the matching Radicle addon for the target arch.
+Both run `electron-builder` inside a Linux container and download the matching Radicle addon for the target arch. Each invocation produces the `.AppImage`, the `.deb` and the `.pacman` for that arch. The container installs `libarchive-tools` alongside `fpm` for the same reason the release workflow's Linux legs do — fpm writes a pacman package's `.MTREE` manifest by shelling out to `bsdtar --format=mtree`, which `node:24-trixie` does not ship, and a missing one fails the build at the pacman step with a bare `/bin/sh failed (exit code 127)`.
 
 ### Windows
 
