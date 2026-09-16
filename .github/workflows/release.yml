@@ -9,9 +9,9 @@ run-name: >-
    || format('Pipeline test on {0} (no publish)', github.ref_name) }}
 
 # Builds every distributable Freedom ships — macOS arm64 (signed + notarized),
-# Linux x64/arm64 (AppImage + deb) and Windows x64 (NSIS installer + portable
-# zip, unsigned) — on GitHub-hosted runners and attaches them all to one
-# GitHub Release for the pushed tag. Windows arm64 is deliberately not built
+# Linux x64/arm64 (AppImage + deb + pacman) and Windows x64 (NSIS installer +
+# portable zip, unsigned) — on GitHub-hosted runners and attaches them all to
+# one GitHub Release for the pushed tag. Windows arm64 is deliberately not built
 # (never shipped on freedom.baby; no Myotis addon for it).
 #
 # Triggers:
@@ -492,12 +492,18 @@ jobs:
       # electron-builder's bundled fpm is x64-only; the arm64 Docker recipe in
       # package.json (`dist:linux:arm64:docker`) installs fpm from RubyGems and
       # sets USE_SYSTEM_FPM=true. Do the same on both runners so both legs
-      # build the .deb the identical way.
-      - name: Install fpm for the .deb target
+      # build the .deb and the .pacman the identical way. fpm drives both
+      # (`-t deb` / `-t pacman`) and needs xz for either one's compression.
+      # libarchive-tools is for the pacman target specifically: fpm builds the
+      # package's .MTREE manifest by shelling out to `bsdtar --format=mtree`,
+      # which the ubuntu runner images do not ship, and a missing one fails the
+      # build with a bare `/bin/bash failed (exit code 127)`.
+      - name: Install fpm for the .deb and .pacman targets
         run: |
-          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install ruby ruby-dev build-essential xz-utils
+          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install ruby ruby-dev build-essential xz-utils libarchive-tools
           sudo gem install fpm --no-document
           fpm --version
+          bsdtar --version
 
       - name: Install dependencies
         run: npm ci
@@ -555,7 +561,7 @@ jobs:
           fi
           npm run tor:download
 
-      - name: Build AppImage and deb
+      - name: Build AppImage, deb and pacman
         run: npm run dist -- --linux --${{ matrix.arch }}
         env:
           USE_SYSTEM_FPM: 'true'
@@ -567,6 +573,25 @@ jobs:
           test -f "$manifest" || { echo "Expected $manifest (update manifest for this arch and channel)" >&2; exit 1; }
           for deb in dist/*.deb; do dpkg-deb -f "$deb" Package Version Architecture; done
           ls dist/*.AppImage
+          # No runner has pacman, so the package cannot be installed here — read
+          # its own metadata out of the tarball instead. `pacman -U` on real Arch
+          # stays a manual check (release-process.md §6).
+          ls dist/*.pacman
+          for pac in dist/*.pacman; do
+            info=$(tar -xOf "$pac" .PKGINFO)
+            echo "$info" | grep -E '^(pkgname|pkgver|pkgdesc|arch|depend) '
+            # fpm writes pkgdesc from the first line only of the deb-shaped
+            # --description electron-builder passes, and that line is
+            # build.pacman.synopsis: leave it unset and the shipped package
+            # reports "Description : None" under pacman -Qi.
+            echo "$info" | grep -qE '^pkgdesc = .' \
+              || { echo "$pac has an empty pkgdesc; set build.pacman.synopsis" >&2; exit 1; }
+            # Without libsecret, Chromium's safeStorage downgrades to its
+            # hardcoded-key basic_text backend with no warning, and the
+            # quick-unlock credential is encrypted with that instead of the keyring.
+            echo "$info" | grep -qx 'depend = libsecret' \
+              || { echo "$pac does not depend on libsecret" >&2; exit 1; }
+          done
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -575,6 +600,7 @@ jobs:
           path: |
             dist/*.AppImage
             dist/*.deb
+            dist/*.pacman
             dist/*.blockmap
             dist/${{ env.FREEDOM_UPDATE_CHANNEL }}-${{ matrix.manifest_suffix }}.yml
           if-no-files-found: error
@@ -590,7 +616,9 @@ jobs:
   # This and the mac/windows jobs below automate steps 1 (launch), 2 (version)
   # and 6 (persistence) of the manual checklist in
   # docs/agent-playbooks/release-process.md §6 on every platform the release
-  # ships; navigation, the bundled nodes, the headline feature and
+  # ships, and re-check the site-permission fixes #361/#364 in the built app
+  # (test-e2e/packaged/permissions.spec.js); navigation, the bundled nodes, the
+  # headline feature, the macOS camera/microphone TCC pass and
   # upgrade-from-previous are still tested by hand there.
   smoke-linux:
     needs: [plan, linux]
@@ -885,6 +913,26 @@ jobs:
               ;;
           esac
 
+      # The camera and microphone entitlements (#362) only reach the app
+      # through codesign, so `config/entitlements.mac.test.js` — which guards
+      # the plist and the package.json paths on every pull request — cannot say
+      # the shipped signature carries them. Read them back out of the bundle a
+      # user actually installs — the outer bundle and each helper bundle under
+      # Contents/Frameworks, which host the capture processes and are signed
+      # separately through `entitlementsInherit` — plus the Info.plist usage
+      # descriptions the TCC prompt shows, and fail the job when one is missing.
+      #
+      # Signed runs only, for both halves: entitlements reach a bundle only
+      # through the signing pass an unsigned dispatch run skips, so there is
+      # nothing to assert there (whether `codesign -d` then errors out or prints
+      # an empty set has not been verified against an unsigned artifact — the
+      # gate does not depend on which), and the Info.plist check belongs with
+      # the entitlements one — it is the same fix. The assertion itself is
+      # mutation-tested off a Mac by scripts/check-mac-entitlements.test.js.
+      - name: Assert the app from the disk image carries the media entitlements
+        if: env.SIGNED == 'true'
+        run: node scripts/check-mac-entitlements.js "$RUNNER_TEMP/apps-dmg/Freedom.app"
+
       # No --no-sandbox here: macOS needs no sandbox opt-out, and passing one
       # would smoke-test a configuration no user runs.
       - name: Smoke-test the app from the disk image
@@ -919,6 +967,14 @@ jobs:
             exit 1
           fi
           echo "Bundled arti present ($(stat -f %z "$arti") bytes)"
+
+      # Same assertion as for the disk image: the two artifacts are signed and
+      # packed separately, and the `-mac.zip` is what electron-updater installs
+      # over an existing app, so an entitlement lost on that path would take the
+      # camera away from users who only ever updated in place.
+      - name: Assert the app from the zip carries the media entitlements
+        if: env.SIGNED == 'true'
+        run: node scripts/check-mac-entitlements.js "$RUNNER_TEMP/apps-zip/Freedom.app"
 
       - name: Smoke-test the app from the zip
         env:
@@ -1332,14 +1388,14 @@ jobs:
             *-*)
               prerelease=true
               title="Freedom ${version} (pre-release)"
-              notes="Pre-release build of Freedom ${version}: macOS Apple Silicon (signed and notarized), Linux x64/arm64 (AppImage, deb) and Windows x64 (installer and portable zip, unsigned — expect a SmartScreen prompt). Not for general use: test it against a separate profile (FREEDOM_TEST_USER_DATA) and report problems on the release branch.
+              notes="Pre-release build of Freedom ${version}: macOS Apple Silicon (signed and notarized), Linux x64/arm64 (AppImage, deb and pacman — on Arch or Omarchy install the pacman package with \`sudo pacman -U ./<file>\`) and Windows x64 (installer and portable zip, unsigned — expect a SmartScreen prompt). Not for general use: test it against a separate profile (FREEDOM_TEST_USER_DATA) and report problems on the release branch.
 
           Changelog so far: ${changelog}"
               ;;
             *)
               prerelease=false
               title="Freedom ${version}"
-              notes="Freedom ${version} for macOS Apple Silicon (signed and notarized), Linux x64/arm64 (AppImage, deb) and Windows x64 (installer and portable zip).
+              notes="Freedom ${version} for macOS Apple Silicon (signed and notarized), Linux x64/arm64 (AppImage, deb and pacman — on Arch or Omarchy install the pacman package with \`sudo pacman -U ./<file>\`) and Windows x64 (installer and portable zip).
 
           Changelog: ${changelog}"
               ;;
@@ -1504,7 +1560,7 @@ jobs:
           ## Install
 
           - **macOS (Apple Silicon)**: the \`.dmg\`, signed and notarized like a release, so it opens without a Gatekeeper override. The \`-mac.zip\` is what the updater downloads; you do not need it.
-          - **Linux**: the \`.AppImage\` (\`chmod +x\` and run) or the \`.deb\` (\`sudo apt install ./<file>\`), x64 and arm64.
+          - **Linux**: the \`.AppImage\` (\`chmod +x\` and run), the \`.deb\` (\`sudo apt install ./<file>\`) or, on Arch Linux and Omarchy, the \`.pacman\` (\`sudo pacman -U <file>\`), x64 and arm64.
           - **Windows x64**: \`Freedom-Setup-${VERSION}.exe\`. Unsigned, so SmartScreen prompts on first run — "More info" then "Run anyway". The \`-win.zip\` is the portable build.
 
           ## Before you install
