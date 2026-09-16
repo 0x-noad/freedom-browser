@@ -319,7 +319,16 @@ function getCachedFavicon(url) {
 }
 
 /**
- * Get favicon - returns cached or fetches new
+ * Get favicon - returns the cached icon, or fetches one on a cache miss.
+ *
+ * NOTE (#75): there is no icon *discovery* left in this module, so a cache
+ * miss here can only probe `<content root>/favicon.ico` — a site whose icon
+ * is declared at any other path resolves to nothing. The declared path is
+ * Chromium's parse of the document the webview loaded, which only a caller
+ * holding a `page-favicon-updated` report has; such a caller should hand it
+ * to `fetchFavicon`/`IPC.FAVICON_FETCH`(`_WITH_KEY`) instead of calling this.
+ * Kept as the no-report entry point (exposed as `electronAPI.getFavicon`,
+ * currently with no renderer caller) rather than re-downloading the page.
  */
 async function getFavicon(url) {
   // Check cache first
@@ -343,7 +352,8 @@ function registerFaviconsIpc() {
   // belt-and-braces.
   const isPrivateSender = (event) => isPrivateWebContents(event?.sender);
 
-  // Get favicon (returns cached or fetches)
+  // Get favicon (returns cached, or probes /favicon.ico on a miss — see the
+  // note on getFavicon: this entry point does no icon discovery since #75).
   ipcMain.handle(IPC.FAVICON_GET, async (event, url) => {
     if (isPrivateSender(event)) {
       return getCachedFavicon(url);

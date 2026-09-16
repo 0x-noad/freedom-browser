@@ -2622,17 +2622,24 @@ export const initNavigation = () => {
         break;
 
       case 'page-favicon-updated': {
-        // The active tab's webview reported the icon URL Chromium parsed out
-        // of the page it already loaded (#75). Pairs with the `faviconLoad`
-        // half recorded at did-stop-loading above; whichever lands second
-        // fires the single icon fetch.
+        // A tab's webview reported the icon URL Chromium parsed out of the
+        // page it already loaded (#75). Pairs with the `faviconLoad` half
+        // recorded at did-stop-loading above; whichever lands second fires
+        // the single icon fetch.
+        //
+        // Resolved by tab id, not "is this the active tab": Chromium emits
+        // the report after did-stop-loading, so the user can have switched
+        // away in between — and the tab that finished loading is still the
+        // one the report describes and the one whose load half it completes
+        // (#376). A tab with no load half (a background load, a private
+        // window) pairs with nothing and fetches nothing.
         //
         // PRIVATE MODE GUARD (favicons): nothing to guard here — a private
         // window never records the load half (shouldCacheFavicons() above),
         // so the pair never completes and no fetch is made. The main process
         // refuses a private sender's fetch anyway (src/main/favicons.js).
-        const tab = getActiveTab();
-        if (!tab || tab.id !== data.tabId) break;
+        const tab = getTabById(data.tabId);
+        if (!tab) break;
         noteReportedFavicon(tab, { pageUrl: data.pageUrl, iconUrl: data.iconUrl });
         break;
       }

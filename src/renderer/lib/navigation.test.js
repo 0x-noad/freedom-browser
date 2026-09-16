@@ -1061,7 +1061,7 @@ describe('navigation', () => {
       expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
     });
 
-    test('a report for a tab that is no longer active is ignored', async () => {
+    test('a report for a tab that no longer exists is ignored', async () => {
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();
       await flushMicrotasks();
@@ -1074,6 +1074,69 @@ describe('navigation', () => {
         tabId: ctx.activeRef.tab.id + 99,
         pageUrl: 'https://shop.example/item',
         iconUrl: 'https://shop.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+    });
+
+    // Chromium emits the report *after* did-stop-loading, so the user can
+    // switch tabs in between. The report still belongs to the tab that
+    // finished loading, and completes the half that load recorded — keying
+    // this on "is it the active tab" dropped the icon for that whole visit,
+    // which only a reload recovered (#376).
+    test('a report landing after a tab switch still fetches for the tab that loaded', async () => {
+      const loaded = createTab(1, 'https://shop.example/item');
+      const other = createTab(2, 'https://other.example/');
+      const ctx = await loadNavigationModule({
+        tabs: [loaded, other],
+        activeTab: loaded,
+        firstTab: loaded,
+      });
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      // The user switches to the other tab before the icon is reported.
+      ctx.activeRef.tab = other;
+      await reportFavicon(ctx, {
+        tabId: loaded.id,
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(1);
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledWith(
+        'https://shop.example/item',
+        'https://shop.example/item',
+        'https://shop.example/icon.png'
+      );
+      expect(ctx.tabsMocks.updateTabFavicon).toHaveBeenCalledWith(
+        loaded.id,
+        'https://shop.example/item'
+      );
+    });
+
+    // The mirror case: a tab that never recorded a load half — a background
+    // load, whose address bar never supplied a cache key — reports its icon
+    // and nothing is fetched, exactly as before.
+    test('a report from a tab that recorded no load half fetches nothing', async () => {
+      const foreground = createTab(1, 'https://shop.example/item');
+      const background = createTab(2, 'https://other.example/');
+      const ctx = await loadNavigationModule({
+        tabs: [foreground, background],
+        activeTab: foreground,
+        firstTab: foreground,
+      });
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await reportFavicon(ctx, {
+        tabId: background.id,
+        pageUrl: 'https://other.example/',
+        iconUrl: 'https://other.example/icon.png',
       });
 
       expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
@@ -1209,7 +1272,7 @@ describe('navigation', () => {
     // "Leaves the tab alone" is the whole tab, not just its webview: the entry
     // bookkeeping at the top of loadTarget acts on the tab being navigated, so
     // it has to run *after* the routing decision, never before it.
-    test('a routed-away open keeps the current tab\'s uncommitted draft (#314)', async () => {
+    test("a routed-away open keeps the current tab's uncommitted draft (#314)", async () => {
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();
       await flushMicrotasks();
@@ -2217,10 +2280,17 @@ describe('navigation', () => {
 
     test('DNS ENS pointing to IPNS loads its key instead of resolving the ENS name as DNSLink', async () => {
       const ctx = await setupEnsDispatch();
-      ctx.pageUrlsMocks.parseEnsInput.mockReturnValueOnce({ name: 'example.com', suffix: '/docs', assertedTransport: null });
+      ctx.pageUrlsMocks.parseEnsInput.mockReturnValueOnce({
+        name: 'example.com',
+        suffix: '/docs',
+        assertedTransport: null,
+      });
       ctx.urlUtilsMocks.buildEnsDisplayUri.mockReturnValueOnce('ens://example.com/docs');
       const loadCalls = await dispatchEns(ctx, 'ens://example.com/docs', {
-        type: 'ok', name: 'example.com', protocol: 'ipns', uri: 'ipns://k51qtest',
+        type: 'ok',
+        name: 'example.com',
+        protocol: 'ipns',
+        uri: 'ipns://k51qtest',
         trust: { level: 'verified', agreed: ['a', 'b'] },
       });
       expect(loadCalls).toContainEqual(['ipns://k51qtest/docs']);
