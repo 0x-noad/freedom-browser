@@ -39,6 +39,15 @@ const isExternalTorMode = () => state.registry?.tor?.mode === 'external';
 // attempt failed. An errored node with nothing to say renders
 // nothing, same as a stopped one — never a lone version row, which is the shape
 // this issue was about.
+//
+// Known gap, tracked in #377: one refusal path reports STOPPED rather than
+// `error` and so loses its message here — a profile with Tor mode `disabled`
+// answers a start click via `startDisabledTor()` (tor-manager.js), which sets
+// "Tor disabled for this profile" with STATUS.STOPPED. That predates this gate
+// (the pre-existing `stopped` branch in `updateTorUi` already stripped the
+// status row's `visible` class), and closing it means changing what the main
+// process reports or adding a second writer here, so it is deliberately not
+// carved out below.
 const updateTorInfoVisibility = () => {
   if (!torInfoPanel) return;
   const status = state.currentTorStatus;
