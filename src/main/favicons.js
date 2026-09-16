@@ -116,6 +116,15 @@ async function fetchWithTimeout(url, timeout = 5000) {
     request.on('response', (response) => {
       if (response.statusCode !== 200) {
         clearTimeout(timer);
+        // The body is abandoned unread. An `IncomingMessage` is an
+        // EventEmitter, so a connection error emitted on it after this point
+        // (the server resetting the socket once the 404's headers are out)
+        // would be an unhandled `'error'` — a main-process crash, not a
+        // failed fetch. Take a no-op listener and abort the request rather
+        // than leaving it dialling, same as the abandoned-response paths in
+        // `src/main/ipfs/gateway-transport.js` (#358).
+        response.on?.('error', () => {});
+        request.abort();
         reject(new Error(`HTTP ${response.statusCode}`));
         return;
       }

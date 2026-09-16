@@ -246,6 +246,24 @@ const noteReportedFavicon = (tab, reported) => {
   runFaviconFetch(tab);
 };
 
+// Both halves describe one document, so a committed navigation ends their
+// life: `did-navigate` drops whatever either of them still holds.
+//
+// Being consumed by a fetch is otherwise the *only* way a half is cleared,
+// so a document that reports several icon candidates (a JS-driven favicon
+// swap, a late-injected `apple-touch-icon`) leaves the extra report sitting
+// on the tab. Without this reset, a revisit of that same URL pairs its
+// `did-stop-loading` half with that leftover *instantly* — fetching the
+// previous visit's candidate before the fresh report lands, and leaving the
+// fresh report over in turn, so the tab stays one visit behind for good
+// (#376). A `did-navigate-in-page` keeps the same document, and its icon,
+// so it deliberately does not clear anything.
+const clearFaviconPairing = (tab) => {
+  if (!tab) return;
+  tab.faviconLoad = null;
+  tab.reportedFavicon = null;
+};
+
 // Experimental opt-in (Settings → Experimental, default off). Mirrors the
 // `showIpfsProgressStatus` setting, seeded in initNavigation and kept live via
 // the `settings:updated` broadcast. While off, the IPFS progress poller never
@@ -2680,6 +2698,9 @@ export const initNavigation = () => {
         break;
 
       case 'did-navigate':
+        // A committed navigation replaces the document, so neither favicon
+        // pairing half can belong to the load that follows (#376).
+        clearFaviconPairing(getTabById(data.tabId));
         if (webview) webview.classList.add('hidden');
         // Update bookmarks bar visibility based on destination
         updateBookmarkBarState(data.event?.url);

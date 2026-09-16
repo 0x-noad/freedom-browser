@@ -221,6 +221,27 @@ describe('favicon fetching makes exactly one request and never re-fetches the pa
     expect(dialled(net)).toEqual(['https://shop.example/missing.png']);
   });
 
+  // A non-200 answer abandons the response unread. An `IncomingMessage` is
+  // an EventEmitter, so a socket error emitted on it afterwards — the server
+  // resetting the connection once the 404's headers are out — is an
+  // unhandled `'error'` in the main process, which is a crash rather than a
+  // failed favicon fetch (the shape PR #358 fixed on two abandoned-response
+  // paths in `src/main/ipfs/gateway-transport.js`).
+  test('a non-200 icon response is aborted, and a later error on it cannot crash main', async () => {
+    let response = null;
+    const net = createNetMock((request) => {
+      response = emitResponse(request, { status: 404 });
+    });
+    const { mod } = loadFavicons(net);
+
+    const result = await mod.fetchFavicon(PAGE, null, 'https://shop.example/missing.png');
+
+    expect(result).toBeNull();
+    // The dial is not left running on a body nobody is reading.
+    expect(net.requests[0].aborted).toBe(true);
+    expect(() => response.emit('error', new Error('net::ERR_CONNECTION_RESET'))).not.toThrow();
+  });
+
   test('a root-relative icon on a gateway path resolves against the content root', async () => {
     const net = makeServingNet();
     const { mod } = loadFavicons(net);

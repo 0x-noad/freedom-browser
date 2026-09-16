@@ -1142,6 +1142,116 @@ describe('navigation', () => {
       expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
     });
 
+    // Both halves are otherwise cleared only by being consumed, so an extra
+    // icon report for one document (a JS favicon swap, a late
+    // `apple-touch-icon`) is left sitting on the tab. A committed navigation
+    // has to drop it, or the next visit to the same URL pairs with it before
+    // its own report ever lands — fetching the previous visit's candidate and
+    // leaving the fresh one over in turn, one visit behind for good (#376).
+    const navigateTo = async (ctx, url, tabId) => {
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        tabId: tabId ?? ctx.activeRef.tab.id,
+        event: { url },
+      });
+      await flushMicrotasks();
+    };
+
+    test('a revisit fetches its own reported icon, not the previous visit’s leftover', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      // Visit 1: the document reports two candidates. The first pairs and is
+      // fetched; the second is recorded with nothing left to pair with.
+      await navigateTo(ctx, 'https://shop.example/item');
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/apple-touch-icon.png',
+      });
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(1);
+
+      // Away, and back to the same URL — the site has changed its icon since.
+      await navigateTo(ctx, 'https://other.example/');
+      await navigateTo(ctx, 'https://shop.example/item');
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      // Nothing may fire before this visit's own report lands.
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(1);
+
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon-v2.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(2);
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenLastCalledWith(
+        'https://shop.example/item',
+        'https://shop.example/item',
+        'https://shop.example/icon-v2.png'
+      );
+    });
+
+    // The load half is dropped by the same reset. A page that finishes
+    // loading without reporting an icon leaves its half on the tab; once the
+    // tab has committed a new document, a straggling report for the page it
+    // left must not complete that half and cache an icon under the old
+    // page's key.
+    test('a report for the page a tab has navigated away from fetches nothing', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await navigateTo(ctx, 'https://shop.example/item');
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await navigateTo(ctx, 'https://other.example/');
+
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+    });
+
+    // A same-document navigation (in-page anchor, history.pushState) keeps
+    // the document and its reported icon, so it clears neither half.
+    test('an in-page navigation keeps the pairing halves', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await navigateTo(ctx, 'https://shop.example/item');
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      ctx.tabsMocks.webviewEventHandler('did-navigate-in-page', {
+        tabId: ctx.activeRef.tab.id,
+        event: { url: 'https://shop.example/item#reviews' },
+      });
+      await flushMicrotasks();
+
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(1);
+    });
+
     // PRIVATE MODE GUARD (favicons): a private window records no load half,
     // so a reported icon can never complete a pair and nothing is fetched or
     // cached. Main refuses a private sender's fetch too (favicons.test.js).
