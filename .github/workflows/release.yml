@@ -1,4 +1,12 @@
 name: Release
+# Every run of this file used to show up as "Release #N" whether it was a tag
+# release, a nightly or a throwaway pipeline test. Name each run by what it is.
+run-name: >-
+  ${{ github.event_name == 'push' && format('Release {0}', github.ref_name)
+   || github.event_name == 'schedule' && 'Nightly build (scheduled)'
+   || (inputs.nightly && inputs.publish_nightly) && format('Nightly build (manual, {0})', github.ref_name)
+   || inputs.nightly && format('Nightly pipeline test on {0} (no publish)', github.ref_name)
+   || format('Pipeline test on {0} (no publish)', github.ref_name) }}
 
 # Builds every distributable Freedom ships — macOS arm64 (signed + notarized),
 # Linux x64/arm64 (AppImage + deb) and Windows x64 (NSIS installer + portable
