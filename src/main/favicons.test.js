@@ -310,4 +310,73 @@ describe('favicon fetching makes exactly one request and never re-fetches the pa
 
     expect(dialled(net)).toEqual(['https://shop.example/i.png']);
   });
+
+  // The renderer pipeline never sends a raw `href`: what reaches this module
+  // is whatever Chromium reported, and Chromium resolves both the declared
+  // href and the implicit /favicon.ico candidate against the page *origin*
+  // first. On a path-gateway load that origin is the gateway, so the reports
+  // below are the only shapes a real http(s) dweb page produces (#376).
+  describe('reports resolved against a path gateway origin', () => {
+    const GATEWAY_PAGE = 'http://127.0.0.1:8080/ipfs/bafycid/docs/index.html';
+    const KEY = 'ipfs://bafycid';
+
+    test("a declared root-relative icon is dialled inside the site's CID, not at the gateway root", async () => {
+      const net = makeServingNet();
+      const { mod, fakeDb } = loadFavicons(net);
+
+      // `<link rel="icon" href="/icon.png">` as Chromium reports it.
+      await mod.fetchFavicon(GATEWAY_PAGE, KEY, 'http://127.0.0.1:8080/icon.png');
+
+      expect(dialled(net)).toEqual(['http://127.0.0.1:8080/ipfs/bafycid/icon.png']);
+      expect(fakeDb.rows.get('ipfs://bafycid')).toBeDefined();
+    });
+
+    test("the implicit /favicon.ico candidate is not probed, and the gateway's own icon is never cached", async () => {
+      const net = makeServingNet();
+      const { mod, fakeDb } = loadFavicons(net);
+
+      // What a content-addressed page declaring no icon at all produces.
+      const result = await mod.fetchFavicon(GATEWAY_PAGE, KEY, 'http://127.0.0.1:8080/favicon.ico');
+
+      expect(result).toBeNull();
+      expect(net.request).not.toHaveBeenCalled();
+      expect(fakeDb.rows.get('ipfs://bafycid')).toBeUndefined();
+    });
+
+    test('an icon already inside the content root is dialled as reported', async () => {
+      const net = makeServingNet();
+      const { mod } = loadFavicons(net);
+
+      await mod.fetchFavicon(GATEWAY_PAGE, KEY, 'http://127.0.0.1:8080/ipfs/bafycid/docs/i.png');
+
+      expect(dialled(net)).toEqual(['http://127.0.0.1:8080/ipfs/bafycid/docs/i.png']);
+    });
+
+    test('an icon naming a gateway path of its own is not prefixed again', async () => {
+      const net = makeServingNet();
+      const { mod } = loadFavicons(net);
+
+      await mod.fetchFavicon(GATEWAY_PAGE, KEY, 'http://127.0.0.1:8080/ipfs/othercid/i.png');
+
+      expect(dialled(net)).toEqual(['http://127.0.0.1:8080/ipfs/othercid/i.png']);
+    });
+
+    test('a cross-origin icon is dialled untouched', async () => {
+      const net = makeServingNet();
+      const { mod } = loadFavicons(net);
+
+      await mod.fetchFavicon(GATEWAY_PAGE, KEY, 'https://cdn.example/i.png');
+
+      expect(dialled(net)).toEqual(['https://cdn.example/i.png']);
+    });
+
+    test('an ordinary http site still dials its own reported /favicon.ico', async () => {
+      const net = makeServingNet();
+      const { mod } = loadFavicons(net);
+
+      await mod.fetchFavicon(PAGE, null, 'https://shop.example/favicon.ico');
+
+      expect(dialled(net)).toEqual(['https://shop.example/favicon.ico']);
+    });
+  });
 });

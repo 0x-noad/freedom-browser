@@ -207,43 +207,90 @@ function extractContentRoot(pageUrl) {
 }
 
 /**
+ * Pull a gateway-root-resolved icon URL back under the page's content root.
+ *
+ * Chromium never hands us the raw `href`: it resolves `<link rel="icon"
+ * href="/icon.png">` against the page's *origin* before reporting it, and it
+ * synthesises the implicit `<origin>/favicon.ico` candidate for a page that
+ * declares no icon at all the same way. On a path-gateway load
+ * (`http://127.0.0.1:8080/ipfs/<cid>/index.html`) that origin is the
+ * *gateway*, not the site, so both reports point at the gateway's own root —
+ * a 404 on Kubo/Bee, or, on a public gateway that serves a root favicon, the
+ * *gateway's* icon cached under the site's key. Remap them onto
+ * `<origin>/ipfs/<cid>`, which is exactly what the pre-#75 HTML parser
+ * resolved a root-relative href against.
+ *
+ * Left untouched: a cross-origin icon, a page whose content root *is* its
+ * origin (an ordinary http site), an icon already inside the content root,
+ * and one that names a gateway path of its own (`/ipfs/<other-cid>/…`) —
+ * prefixing that would only double the path.
+ */
+function remapToContentRoot(iconUrl, contentRoot) {
+  if (!contentRoot) return iconUrl;
+  try {
+    const parsed = new URL(iconUrl);
+    if (contentRoot === parsed.origin) return iconUrl;
+    if (!contentRoot.startsWith(`${parsed.origin}/`)) return iconUrl;
+    if (iconUrl.startsWith(`${contentRoot}/`)) return iconUrl;
+    if (extractContentRoot(iconUrl) !== parsed.origin) return iconUrl;
+    return `${contentRoot}${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return iconUrl;
+  }
+}
+
+/**
  * Resolve the icon URL a page load should fetch.
  *
  * `reportedIconUrl` is what Chromium's own `<link rel="icon">` parse produced
- * for the document the webview already has (#75) — normally already absolute.
- * A relative one is resolved the same way the old in-module parser did: a
- * root-relative path against the *content root* (so an `/icon.png` on an
- * IPFS/Swarm gateway path stays inside `/ipfs/<cid>` instead of jumping to
- * the gateway root), anything else against the page URL.
+ * for the document the webview already has (#75) — in practice always
+ * absolute and already resolved against the page origin, which is why it
+ * goes through `remapToContentRoot`. A relative one (a direct caller of this
+ * module, not the renderer pipeline) is resolved the same way the old
+ * in-module parser did: root-relative against the *content root*, anything
+ * else against the page URL.
  *
  * With nothing reported, fall back to `<content root>/favicon.ico` — except
  * on content-addressed roots, where the manifest usually has no favicon.ico
- * and probing it just produces a Bee/IPFS gateway error.
+ * and probing it just produces a Bee/IPFS gateway error. That guard has to
+ * cover the *reported* URL too: Chromium synthesises the implicit
+ * /favicon.ico candidate itself and reports it like any other, so a
+ * report-only guard would probe every content-addressed page view once and
+ * cache whatever a public gateway answers with under the site's own key.
+ * An explicit `<link rel="icon" href="/favicon.ico">` on such a page is
+ * indistinguishable from the synthesised candidate and is skipped with it —
+ * the same trade the pre-#75 fallback made.
  *
  * Returns null when there is nothing fetchable. Never returns the page URL:
  * that is the whole point of #75.
  */
 function resolveIconUrl(pageUrl, reportedIconUrl) {
   const contentRoot = extractContentRoot(pageUrl);
+  const isContentAddressed = Boolean(contentRoot) && /\/(bzz|ipfs|ipns)\//.test(contentRoot);
+  const isContentAddressedProbe = (url) =>
+    isContentAddressed && url === `${contentRoot}/favicon.ico`;
 
   if (reportedIconUrl) {
     // Data URLs carry the icon inline — nothing to fetch.
     if (reportedIconUrl.startsWith('data:')) return reportedIconUrl;
+
+    let resolved;
     if (reportedIconUrl.startsWith('http://') || reportedIconUrl.startsWith('https://')) {
-      return reportedIconUrl;
-    }
-    try {
-      if (reportedIconUrl.startsWith('/') && contentRoot) {
-        return contentRoot + reportedIconUrl;
+      resolved = remapToContentRoot(reportedIconUrl, contentRoot);
+    } else if (reportedIconUrl.startsWith('/') && contentRoot) {
+      resolved = `${contentRoot}${reportedIconUrl}`;
+    } else {
+      try {
+        resolved = new URL(reportedIconUrl, pageUrl).toString();
+      } catch {
+        return null;
       }
-      return new URL(reportedIconUrl, pageUrl).toString();
-    } catch {
-      return null;
     }
+    return isContentAddressedProbe(resolved) ? null : resolved;
   }
 
   if (!contentRoot) return null;
-  if (/\/(bzz|ipfs|ipns)\//.test(contentRoot)) return null;
+  if (isContentAddressed) return null;
   return `${contentRoot}/favicon.ico`;
 }
 
