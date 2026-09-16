@@ -1,4 +1,12 @@
 name: Release
+# Every run of this file used to show up as "Release #N" whether it was a tag
+# release, a nightly or a throwaway pipeline test. Name each run by what it is.
+run-name: >-
+  ${{ github.event_name == 'push' && format('Release {0}', github.ref_name)
+   || github.event_name == 'schedule' && 'Nightly build (scheduled)'
+   || (inputs.nightly && inputs.publish_nightly) && format('Nightly build (manual, {0})', github.ref_name)
+   || inputs.nightly && format('Nightly pipeline test on {0} (no publish)', github.ref_name)
+   || format('Pipeline test on {0} (no publish)', github.ref_name) }}
 
 # Builds every distributable Freedom ships — macOS arm64 (signed + notarized),
 # Linux x64/arm64 (AppImage + deb + pacman) and Windows x64 (NSIS installer +
@@ -18,7 +26,7 @@ name: Release
 #     default, set `signed: false` for a pipeline test without secrets.
 #     Dispatch runs only upload workflow artifacts, never a release —
 #     unless `nightly` + `publish_nightly` are ticked (see below).
-#   - schedule (03:00 UTC daily): a nightly build of `main` for internal
+#   - schedule (03:23 UTC daily): a nightly build of `main` for internal
 #     testers. The `plan` job stamps a
 #     `<version>-nightly.<date>.<sha>` version, every build job is signed
 #     and bundles Tor exactly like a tag push, the artifacts publish to the
@@ -48,9 +56,12 @@ on:
     tags:
       - 'v*'
   schedule:
-    # 03:00 UTC (05:00 CEST / 04:00 CET) — after the European working day,
-    # so a tester picks the night's build up in the morning.
-    - cron: '0 3 * * *'
+    # 03:23 UTC (05:23 CEST / 04:23 CET) — after the European working day,
+    # so a tester picks the night's build up in the morning. Off the top of
+    # the hour on purpose: GitHub queues scheduled runs and the :00 minute is
+    # its most congested slot; on this repo the 03:00 schedule fired ~5 hours
+    # late on 2026-09-15 and not at all by 07:15 UTC on 2026-09-16.
+    - cron: '23 3 * * *'
   workflow_dispatch:
     inputs:
       nightly:
@@ -1524,7 +1535,7 @@ jobs:
 
           ## Before you install
 
-          - **Internal testing only.** A nightly is whatever was on \`main\` at 03:00 UTC. It has passed the packaged smoke tests on every platform and nothing else; expect breakage, and do not hand these out.
+          - **Internal testing only.** A nightly is whatever was on \`main\` at 03:23 UTC. It has passed the packaged smoke tests on every platform and nothing else; expect breakage, and do not hand these out.
           - **Updates come from the \`nightly\` channel.** A nightly updates itself to the next nightly. It never offers a stable release, and no stable install on freedom.baby is ever offered a nightly. To go back to stable, uninstall the nightly and install the latest release.
           - **Use a separate profile.** Nightly and stable share an app id and a profile directory, so run the nightly against a scratch one and a broken migration cannot touch your real data: set \`FREEDOM_TEST_USER_DATA\` to a throwaway directory when launching (see docs/agent-playbooks/release-process.md §6).
           NOTES
@@ -1549,28 +1560,23 @@ jobs:
           git push -f origin refs/tags/nightly
 
           title="Freedom nightly ${VERSION}"
+
+          # Recreate the release object rather than editing it: GitHub sets a
+          # release's "released this <date>" once, when it is first published,
+          # and never on edit, so an edited rolling release would say the date
+          # of the very first nightly forever. Deleting and recreating costs a
+          # minute or two in which the nightly page is empty and an updater
+          # check 404s (it retries on its next interval) — acceptable for an
+          # internal nightly, and a fresh release also starts with no stale
+          # assets from the previous night. The download URLs are keyed by tag
+          # name, so nothing a tester or the updater holds changes.
           if [ "${NIGHTLY_RELEASE_EXISTS:-false}" = 'true' ]; then
-            gh release edit nightly --repo "$GH_REPO" \
-              --title "$title" --notes-file nightly-notes.md --prerelease --draft=false
-          else
-            gh release create nightly --repo "$GH_REPO" --target "$GITHUB_SHA" \
-              --prerelease --title "$title" --notes-file nightly-notes.md
+            gh release delete nightly --repo "$GH_REPO" --yes
           fi
+          gh release create nightly --repo "$GH_REPO" --target "$GITHUB_SHA" \
+            --prerelease --title "$title" --notes-file nightly-notes.md
 
-          gh release upload nightly --repo "$GH_REPO" --clobber release/*
-
-          # Every file name carries the version, so last night's assets are not
-          # overwritten by this night's — they would pile up and a tester could
-          # download a stale build from the same page. Drop anything this run
-          # did not just upload.
-          gh release view nightly --repo "$GH_REPO" --json assets --jq '.assets[].name' > uploaded.txt
-          while read -r name; do
-            [ -n "$name" ] || continue
-            if [ ! -e "release/$name" ]; then
-              echo "Deleting stale asset $name"
-              gh release delete-asset nightly "$name" --yes --repo "$GH_REPO"
-            fi
-          done < uploaded.txt
+          gh release upload nightly --repo "$GH_REPO" release/*
 
           echo "Published ${GITHUB_SERVER_URL}/${GH_REPO}/releases/tag/nightly"
 

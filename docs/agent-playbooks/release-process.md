@@ -377,7 +377,7 @@ Nightly builds exist so internal testers can run what is on `main` without build
 
 ### What runs, when
 
-`.github/workflows/release.yml` also runs on a schedule, `0 3 * * *` — **03:00 UTC, 05:00 CEST / 04:00 CET**. The schedule only fires on `main` (GitHub runs scheduled workflows from the default branch).
+`.github/workflows/release.yml` also runs on a schedule, `23 3 * * *` — **03:23 UTC, 05:23 CEST / 04:23 CET**. The schedule only fires on `main` (GitHub runs scheduled workflows from the default branch).
 
 | Job              | What it does on a nightly run                                                                                       |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -412,7 +412,7 @@ The version is the `package.json` version with any pre-release suffix dropped, p
 
 Valid semver that sorts **below** `0.8.6`, so a nightly never looks newer than the stable build of the same version, and each night's build sorts above the previous one. The `plan` job computes it; each build job stamps it with `npm version --no-git-tag-version` before packaging. `main`'s committed version is never changed.
 
-There is one nightly tag and one nightly release, both called `nightly`, both rolling: the `nightly` job force-moves the tag to the built commit, replaces the assets, deletes the previous night's (their names carry the version, so they would otherwise pile up), and rewrites the notes with the version, the `commit: <sha>` line the next run's skip check reads, and the merge commits since the previous nightly.
+There is one nightly tag and one nightly release, both called `nightly`, both rolling: the `nightly` job force-moves the tag to the built commit, then deletes the previous release object and creates a fresh one on it with the new assets and notes (the version, the `commit: <sha>` line the next run's skip check reads, and the merge commits since the previous nightly). Recreating rather than editing is what keeps the release page's "released this <date>" current — GitHub sets that once at first publish and never on edit. The page is empty for the minute or two the upload takes; an updater check in that window gets a 404 and retries on its next interval.
 
 ```
 https://github.com/solardev-xyz/freedom-browser/releases/tag/nightly
@@ -436,7 +436,7 @@ To leave the nightly channel, uninstall and install a release — there is no in
 
 Same artifacts as a release, from the `nightly` release page: the signed and notarized macOS `.dmg`, the Linux `.AppImage` / `.deb` / `.pacman` for x64 and arm64, and the unsigned Windows `Freedom-Setup-<version>.exe` or portable `-win.zip` (SmartScreen prompts; More info → Run anyway).
 
-**Internal testing only.** A nightly is whatever was on `main` at 03:00 UTC. It has passed the packaged smoke tests and nothing else — no §6 pass, no manual checklist, no changelog. Do not hand it to users.
+**Internal testing only.** A nightly is whatever was on `main` at 03:23 UTC. It has passed the packaged smoke tests and nothing else — no §6 pass, no manual checklist, no changelog. Do not hand it to users.
 
 Run it against a scratch profile, for the same reason a release candidate gets one (§6, "Use a separate profile"): a nightly shares its app id and profile directory with an installed stable Freedom, so a half-finished migration on `main` would otherwise touch real data.
 
