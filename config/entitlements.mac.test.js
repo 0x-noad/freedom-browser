@@ -13,37 +13,15 @@
 // refactor. This guards them.
 
 const fs = require('fs');
-const path = require('path');
 
-const ENTITLEMENTS_PATH = path.join(__dirname, 'entitlements.mac.plist');
+// The same parser the packaged-app assertion reads the expected key list with
+// (scripts/check-mac-entitlements.js, #370), so the source plist is understood
+// the one way in both places rather than by two copies that can drift.
+const {
+  ENTITLEMENTS_PATH,
+  parseEntitlementsPlist: parseEntitlements,
+} = require('../scripts/check-mac-entitlements');
 const pkg = require('../package.json');
-
-// Read the file without a plist library on purpose: `plist` is not declared
-// in this repo's dependencies, it only resolves through electron-builder's
-// hoisted copy, so requiring it would let an unrelated dependency bump break
-// this suite with `Cannot find module 'plist'`. The entitlements file is a
-// flat <dict> of <key>…</key><true/>/<false/> pairs, which is all a signing
-// entitlements file needs; anything else in there is a shape this parser
-// refuses loudly rather than skipping past (a silent skip would let a key
-// that no longer says <true/> pass the assertions below).
-function parseEntitlements(xml) {
-  const dict = xml.match(/<dict>([\s\S]*?)<\/dict>/);
-  if (!dict) throw new Error('entitlements plist: no top-level <dict>');
-
-  let rest = dict[1].replace(/<!--[\s\S]*?-->/g, '').trim();
-  const entitlements = {};
-  while (rest.length > 0) {
-    const pair = rest.match(/^<key>([^<]+)<\/key>\s*<(true|false)\s*\/>\s*/);
-    if (!pair) {
-      throw new Error(
-        `entitlements plist: expected a <key>/<true|false> pair, got ${rest.slice(0, 60)}`
-      );
-    }
-    entitlements[pair[1]] = pair[2] === 'true';
-    rest = rest.slice(pair[0].length);
-  }
-  return entitlements;
-}
 
 describe('macOS media entitlements and usage descriptions', () => {
   const entitlements = parseEntitlements(fs.readFileSync(ENTITLEMENTS_PATH, 'utf8'));
