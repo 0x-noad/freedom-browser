@@ -533,6 +533,8 @@ contextBridge.exposeInMainWorld('vaultData', {
   respondConsent: (id, decision) => ipcRenderer.send('datavault:consent-response', { id, decision }),
   /** Register this window as the consent target (also solves the boot race). */
   signalReady: () => ipcRenderer.send('datavault:ui-ready'),
+  /** cb({ namespace }) — a site wrote to its partition; listed sizes are stale. */
+  onPartitionChanged: (cb) => ipcRenderer.on('datavault:partition-changed', (_e, ev) => cb(ev)),
 
   // Unlock flow — the launcher page (freedom://dapps) is a webview and cannot
   // reach the sidebar's unlock screen, so main asks this window to show it.

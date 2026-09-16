@@ -42,6 +42,11 @@ module.exports = {
   VAULT_HOME_OPEN: 'datavault:home-open',
   VAULT_HOME_UNLOCK: 'datavault:home-unlock',
 
+  // Main -> "Data" pane: a site wrote to its partition, so the listed size is
+  // stale. Without this the list renders at consent time — before the site's
+  // first write — and shows 0 B until something else happens to refresh it.
+  VAULT_PARTITION_CHANGED: 'datavault:partition-changed',
+
   // Preload bootstrap (sync): fetch the window.vault inject source.
   VAULT_GET_INJECT_SOURCE: 'internal:get-vault-inject-source',
 };

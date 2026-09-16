@@ -355,5 +355,19 @@ export function initVaultData(opts = {}) {
     window.vaultData.signalReady();
   }
 
+  // A site wrote to its partition. The list renders at consent time — before
+  // the site's first write — so its sizes go stale the moment the site saves.
+  // Re-list while the list is showing; a detail or request view is left alone.
+  // Debounced: a site saving in a burst would otherwise re-stat every partition
+  // per write.
+  let partitionRefreshTimer = null;
+  if (window.vaultData && window.vaultData.onPartitionChanged) {
+    window.vaultData.onPartitionChanged(() => {
+      if (listView.classList.contains('hidden')) return;
+      clearTimeout(partitionRefreshTimer);
+      partitionRefreshTimer = setTimeout(refresh, 250);
+    });
+  }
+
   return { refresh, updateConnectionBanner };
 }

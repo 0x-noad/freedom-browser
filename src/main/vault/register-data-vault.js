@@ -143,6 +143,13 @@ function registerDataVault() {
     },
     isHomeFrame,
     nativeImage,
+    // Keep the "Data" pane's listed sizes live. Same window the consent sheet
+    // renders in; nothing to do if it hasn't registered yet.
+    onPartitionChanged: (namespace) => {
+      if (consentTarget && !consentTarget.isDestroyed()) {
+        consentTarget.webContents.send('datavault:partition-changed', { namespace });
+      }
+    },
   });
 
   manager.register();

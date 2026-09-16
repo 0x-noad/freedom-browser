@@ -84,14 +84,19 @@ class DataVaultManager {
    * @param {{ createFromBuffer: Function }} [deps.nativeImage]
    *   Electron's `nativeImage`, used to re-encode site-supplied icons. Omitted in
    *   headless tests, where validated original bytes are kept instead.
+   * @param {(namespace: string) => void} [deps.onPartitionChanged]
+   *   A site wrote to its partition. The "Data" pane lists partitions with their
+   *   on-disk size and renders at consent time — before the site's first write —
+   *   so without this it shows 0 B until the user happens to re-open the list.
    * @param {() => number} [deps.now]  Injectable clock (tests).
    */
-  constructor({ dataDir, identityVault, promptConsent, openUrl, isHomeFrame, nativeImage, now }) {
+  constructor({ dataDir, identityVault, promptConsent, openUrl, isHomeFrame, nativeImage, onPartitionChanged, now }) {
     this._now = now || (() => Date.now());
     this._promptConsent = promptConsent;
     this._openUrl = openUrl || null;
     this._isHomeFrame = typeof isHomeFrame === 'function' ? isHomeFrame : null;
     this._nativeImage = nativeImage || null;
+    this._onPartitionChanged = typeof onPartitionChanged === 'function' ? onPartitionChanged : () => {};
     this._storage = new DataVaultStorage(dataDir);
     this._keystore = new DataVaultKeystore(identityVault);
 
@@ -177,7 +182,7 @@ class DataVaultManager {
       }
       // All data-plane methods carry a sessionId that MUST belong to this frame.
       const sessionId = params && params.sessionId;
-      this._requireOwnedSession(event, origin, sessionId);
+      const session = this._requireOwnedSession(event, origin, sessionId);
 
       // A site that only uses window.vault is otherwise invisible to the
       // identity vault's auto-lock timer, so writing to the vault would let it
@@ -188,14 +193,19 @@ class DataVaultManager {
         resetVaultAutoLockTimer();
         return value;
       };
+      // Writes also change what the "Data" pane shows for this partition.
+      const written = (value) => {
+        this._onPartitionChanged(session.namespace);
+        return active(value);
+      };
 
       switch (method) {
         case M.getData:
           return ok(active(await this._engine.localGet(sessionId, params.paths || [])));
         case M.setData:
-          return ok(active(await this._engine.localSet(sessionId, params.values || {}, params.baseVersion)));
+          return ok(written(await this._engine.localSet(sessionId, params.values || {}, params.baseVersion)));
         case M.patchData:
-          return ok(active(await this._engine.localPatch(sessionId, params.ops || [], params.baseVersion)));
+          return ok(written(await this._engine.localPatch(sessionId, params.ops || [], params.baseVersion)));
         case M.subscribe:
           return ok(active(await this._engine.localSubscribe(sessionId, params.paths || [])));
         case M.unsubscribe:
