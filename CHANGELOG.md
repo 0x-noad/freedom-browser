@@ -19,7 +19,7 @@ All notable changes to Freedom will be documented in this file.
   - After three dismissals in a row it is blocked for the rest of the session instead, so a page can no longer put the prompt back up every time you close it
   - The block shows in the address-bar indicator as "Blocked after repeated dismissals"; Remove there lets the site ask again. It is never saved to disk, and a private window's dismissals stay in that window
 - Linux pacman distribution target for Arch Linux and Omarchy users, next to the existing AppImage and deb, for x64 and arm64
-  - Install it with `sudo pacman -U <file>`; Arch users update by installing the next release's package, since electron-updater has no pacman path
+  - Install it with `sudo pacman -U <file>`; in-app updates work from there on, the same as they do for the deb, asking for your password when the new package is installed
 
 ### Fixed
 

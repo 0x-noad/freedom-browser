@@ -566,7 +566,21 @@ jobs:
           # its own metadata out of the tarball instead. `pacman -U` on real Arch
           # stays a manual check (release-process.md §6).
           ls dist/*.pacman
-          for pac in dist/*.pacman; do tar -xOf "$pac" .PKGINFO | grep -E '^(pkgname|pkgver|arch|depend) '; done
+          for pac in dist/*.pacman; do
+            info=$(tar -xOf "$pac" .PKGINFO)
+            echo "$info" | grep -E '^(pkgname|pkgver|pkgdesc|arch|depend) '
+            # fpm writes pkgdesc from the first line only of the deb-shaped
+            # --description electron-builder passes, and that line is
+            # build.pacman.synopsis: leave it unset and the shipped package
+            # reports "Description : None" under pacman -Qi.
+            echo "$info" | grep -qE '^pkgdesc = .' \
+              || { echo "$pac has an empty pkgdesc; set build.pacman.synopsis" >&2; exit 1; }
+            # Without libsecret, Chromium's safeStorage downgrades to its
+            # hardcoded-key basic_text backend with no warning, and the
+            # quick-unlock credential is encrypted with that instead of the keyring.
+            echo "$info" | grep -qx 'depend = libsecret' \
+              || { echo "$pac does not depend on libsecret" >&2; exit 1; }
+          done
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
