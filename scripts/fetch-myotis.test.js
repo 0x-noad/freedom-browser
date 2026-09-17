@@ -1,7 +1,44 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const https = require('https');
+const { PassThrough } = require('stream');
+
+jest.mock('https');
+
 const { release, sha256, selectedTargets, verifyBytes, validateInstalledAddon, download, pruneLeftoverAddons } = require('./fetch-myotis');
+
+// Scripted `https.get` responses (fetch-ant.test.js convention). The download
+// goes through scripts/lib/fetch-with-retry.js, whose own suite pins the retry
+// policy; what matters here is that this script's rules still hold through it.
+function mockResponses(responses) {
+  const calls = [];
+  https.get.mockImplementation((url, options, callback) => {
+    const scripted = responses[calls.length];
+    const req = new PassThrough();
+    req.setTimeout = jest.fn();
+    req.destroy = jest.fn();
+    calls.push({ url, headers: options.headers, req });
+    if (!scripted) throw new Error(`Unexpected request #${calls.length} to ${url}`);
+    process.nextTick(() => {
+      const res = new PassThrough();
+      res.statusCode = scripted.statusCode;
+      res.headers = scripted.headers || {};
+      res.complete = true;
+      callback(res);
+      process.nextTick(() => {
+        if (scripted.body !== undefined) res.write(Buffer.from(scripted.body));
+        res.end();
+      });
+    });
+    return req;
+  });
+  return calls;
+}
+
+const noWait = { sleep: () => Promise.resolve(), log: () => {} };
+
+afterEach(() => jest.resetAllMocks());
 
 test('selects official assets for all five targets, including cross-target downloads', () => {
   expect(release.abi).toBe(26);
@@ -33,13 +70,38 @@ test('removes replaced and abandoned addon copies without touching the installed
 });
 
 test('refuses HTTP redirects before requesting their content', async () => {
-  const mocked = jest.spyOn(global, 'fetch').mockResolvedValue({
-    status: 302, headers: new Map([['location', 'http://untrusted.invalid/addon']]),
-    body: { cancel: jest.fn() },
-  });
-  try {
-    await expect(download('https://github.com/example')).rejects.toThrow('Invalid Myotis download redirect');
-    expect(mocked).toHaveBeenCalledTimes(1);
-    expect(mocked.mock.calls[0][1].headers).not.toHaveProperty('Authorization');
-  } finally { mocked.mockRestore(); }
+  const calls = mockResponses([
+    { statusCode: 302, headers: { location: 'http://untrusted.invalid/addon' } },
+  ]);
+  await expect(download('https://github.com/example', noWait)).rejects.toThrow(
+    'Refusing non-HTTPS redirect'
+  );
+  expect(calls).toHaveLength(1);
+  expect(calls[0].headers).not.toHaveProperty('Authorization');
+});
+
+test('retries a transient GitHub failure and refuses an over-size body', async () => {
+  const calls = mockResponses([
+    { statusCode: 500 },
+    { statusCode: 429, headers: { 'retry-after': '1' } },
+    { statusCode: 200, body: 'addon-bytes' },
+  ]);
+  await expect(download('https://github.com/example', noWait)).resolves.toEqual(
+    Buffer.from('addon-bytes')
+  );
+  expect(calls).toHaveLength(3);
+
+  jest.resetAllMocks();
+  const oversize = mockResponses([{ statusCode: 200, body: 'x'.repeat(64) }]);
+  await expect(download('https://github.com/example', { ...noWait, maxBytes: 16 })).rejects.toThrow(
+    /exceeds the 16-byte limit/
+  );
+  expect(oversize).toHaveLength(1);
+});
+
+// A missing asset is an answer: four attempts would only delay the failure.
+test('never retries a 404', async () => {
+  const calls = mockResponses([{ statusCode: 404 }]);
+  await expect(download('https://github.com/example', noWait)).rejects.toThrow(/HTTP 404/);
+  expect(calls).toHaveLength(1);
 });

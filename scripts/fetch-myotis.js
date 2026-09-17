@@ -4,8 +4,12 @@ const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const release = require('./myotis-release.json');
+const { fetchBuffer, TIMEOUTS } = require('./lib/fetch-with-retry');
 const PINNED_RELEASE_TAG = release.releaseTag;
 const OUTPUT_DIR = path.join(__dirname, '..', 'myotis-bin');
+// The published addons are ~10 MB; anything an order of magnitude larger is
+// not the asset this script came for, and is refused rather than buffered.
+const MAX_ASSET_BYTES = 32 * 1024 * 1024;
 
 function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
@@ -34,44 +38,22 @@ function validateInstalledAddon(directory) {
   }
 }
 
-async function download(url, redirects = 0) {
-  if (new URL(url).protocol !== 'https:' || redirects > 5) throw new Error('Invalid Myotis download redirect');
-  const response = await fetch(url, {
-    redirect: 'manual', signal: AbortSignal.timeout(60000),
+// Bounded and retried by scripts/lib/fetch-with-retry.js: 5xx/429/connection
+// failures and per-attempt timeouts buy another attempt, any other 4xx and a
+// non-HTTPS redirect do not. The checksum comparisons below stay outside that
+// loop — a mismatch is tampering or corruption, never weather.
+function download(url, options = {}) {
+  return fetchBuffer(url, {
+    label: `Myotis ${url.split('/').pop()}`,
     headers: { 'User-Agent': 'Freedom-Myotis-Downloader' },
+    timeoutMs: TIMEOUTS.binary,
+    maxBytes: MAX_ASSET_BYTES,
+    ...options,
   });
-  if ([301, 302, 303, 307, 308].includes(response.status)) {
-    await response.body?.cancel();
-    const location = response.headers.get('location');
-    if (!location) throw new Error('Missing Myotis download redirect');
-    return download(new URL(location, url).href, redirects + 1);
-  }
-  if (!response.ok) throw new Error(`Myotis download returned HTTP ${response.status}`);
-  const reader = response.body.getReader();
-  const chunks = [];
-  let size = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.length;
-    if (size > 32 * 1024 * 1024) {
-      await reader.cancel();
-      throw new Error('Myotis download exceeds the 32 MiB limit');
-    }
-    chunks.push(Buffer.from(value));
-  }
-  return Buffer.concat(chunks);
 }
 
-async function fetchAsset(asset) {
-  const url = `https://github.com/${release.repository}/releases/download/${release.releaseTag}/${asset}`;
-  for (let attempt = 1; ; attempt++) {
-    try { return await download(url); } catch (error) {
-      if (attempt === 3) throw error;
-      console.warn(`Myotis download attempt ${attempt} failed; retrying`);
-      await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
-    }
-  }
+function fetchAsset(asset, options) {
+  return download(`https://github.com/${release.repository}/releases/download/${release.releaseTag}/${asset}`, options);
 }
 
 // A replaced or half-installed addon copy would otherwise be left behind on
