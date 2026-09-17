@@ -262,7 +262,7 @@ jobs:
       # Full install (with lifecycle scripts): `electron-builder install-app-deps`
       # rebuilds the native modules against Electron on the arm64 host.
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       # A nightly has no tag to take a version from, and `main`'s package.json
       # says `<next>-dev`, which is not a version anything should ship. Stamp
@@ -506,7 +506,7 @@ jobs:
           bsdtar --version
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       # Same as the mac job: `main`'s package.json says `<next>-dev`, so a
       # nightly gets the version the plan job computed stamped in before the
@@ -653,7 +653,9 @@ jobs:
       # an already-built artifact, so there is nothing to rebuild against
       # Electron and no bundled binary to download.
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -797,7 +799,9 @@ jobs:
       # an already-built artifact, so there is nothing to rebuild against
       # Electron and no bundled binary to download.
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       # Signed and unsigned runs upload under different names, so match both
       # and let the step below read the signing state back off the name that
@@ -1040,7 +1044,7 @@ jobs:
           fi
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       # Same as the mac and Linux jobs: stamp the nightly version before
       # anything reads package.json's `<next>-dev`.
@@ -1184,7 +1188,9 @@ jobs:
       # an already-built artifact, so there is nothing to rebuild against
       # Electron and no bundled binary to download.
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Download the win x64 artifact
         uses: actions/download-artifact@v4
@@ -1454,7 +1460,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
