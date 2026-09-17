@@ -798,4 +798,87 @@ test.describe('Search settings (#281)', () => {
       )
       .toEqual(['colibri', 'Colibri']);
   });
+
+  // The results panel replaces the open section but is deliberately not one
+  // of the nav's own sections, so nothing but the search itself can hide it:
+  // every way of leaving for a section — a nav click, back/forward, a deep
+  // link — has to close the search, or the page paints a stale result list
+  // stacked above the section that just opened.
+  test('leaving for a section closes the search rather than stacking it', async ({
+    window,
+    electronApp,
+  }) => {
+    await openSettings(window, expect);
+    let page;
+    await expect
+      .poll(() => {
+        page = electronApp
+          .windows()
+          .find((candidate) => candidate.url().includes('/pages/settings.html'));
+        return Boolean(page);
+      })
+      .toBe(true);
+
+    const field = page.locator('#settings-search');
+    const panel = page.locator('#settings-search-results');
+    const navItem = (target) => page.locator(`.nav-item[data-target="${target}"]`);
+
+    // 1. A nav item for another section: the hash changes under the results.
+    await field.click();
+    await field.pressSequentially('tor');
+    await expect(panel).toBeVisible();
+    await navItem('downloads').click();
+    await expect(panel).toBeHidden();
+    await expect(page.locator('#downloads')).toBeVisible();
+    await expect(field).toHaveValue('');
+    expect(await page.evaluate(() => location.hash)).toBe('#downloads');
+
+    // 2. The nav item of the section the results are already covering: that
+    // click changes no hash at all, so `hashchange` never fires and the
+    // click itself has to close the search.
+    await field.pressSequentially('tor');
+    await expect(panel).toBeVisible();
+    await expect(page.locator('#downloads')).toBeHidden();
+    await navItem('downloads').click();
+    await expect(panel).toBeHidden();
+    await expect(page.locator('#downloads')).toBeVisible();
+    await expect(field).toHaveValue('');
+    expect(await page.evaluate(() => location.hash)).toBe('#downloads');
+
+    // 3. Back/forward and outer-chrome deep links arrive as a bare hash
+    // change with no click behind them.
+    await field.pressSequentially('tor');
+    await expect(panel).toBeVisible();
+    await page.evaluate(() => history.back());
+    await expect(panel).toBeHidden();
+    await expect(page.locator('#appearance')).toBeVisible();
+    await expect(field).toHaveValue('');
+    expect(
+      await page.evaluate(() => document.querySelectorAll('.settings-search-hit').length)
+    ).toBe(0);
+
+    // A revealed row's highlight goes with it: the answer belonged to a
+    // query the user has left.
+    await field.pressSequentially('tor');
+    const startTor = page
+      .locator('#settings-search-list .settings-search-result')
+      .filter({ hasText: 'Start Tor when Freedom opens' });
+    await startTor.click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            document.getElementById('start-tor-row')?.classList.contains('settings-search-hit') ===
+            true
+        )
+      )
+      .toBe(true);
+    await navItem('appearance').click();
+    await expect(page.locator('#appearance')).toBeVisible();
+    await expect(panel).toBeHidden();
+    await expect(field).toHaveValue('');
+    expect(
+      await page.evaluate(() => document.querySelectorAll('.settings-search-hit').length)
+    ).toBe(0);
+  });
 });

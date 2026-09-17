@@ -2341,6 +2341,13 @@
           location.hash = result.sectionId;
         };
 
+        const clearSearch = () => {
+          input.value = '';
+          revealToken += 1;
+          closeResults();
+          clearHighlight();
+        };
+
         window.addEventListener('hashchange', () => {
           const queued = pending;
           pending = null;
@@ -2348,18 +2355,30 @@
             revealResult(queued.result, queued.token);
             return;
           }
-          // The user went somewhere else (a nav item, a deep link): the
-          // highlight is about a query they have moved on from.
-          revealToken += 1;
-          clearHighlight();
+          // The user went somewhere else (a nav item, back/forward, a deep
+          // link from the outer chrome): the search is about a query they
+          // have moved on from, so the field, the results and the highlight
+          // all go. Closing the results is this handler's job and not
+          // `showSection`'s — the panel is deliberately not one of
+          // `SECTIONS`, so nothing else on the page can hide it, and left up
+          // it would stack a stale result list above the section the nav's
+          // own handler just opened.
+          clearSearch();
         });
 
-        const clearSearch = () => {
-          input.value = '';
-          revealToken += 1;
-          closeResults();
-          clearHighlight();
-        };
+        // A nav item whose section the hash already names changes no hash at
+        // all — its own click handler returns early — so no `hashchange`
+        // reaches the handler above and the click has to close the results
+        // itself: clicking "Appearance" while the results cover an open
+        // `#appearance` is a user asking for that section back. Registered
+        // after the nav's own listener, so by the time this runs
+        // `location.hash` already reads the section being opened.
+        navItems.forEach((item) => {
+          if (!item.dataset.target) return;
+          item.addEventListener('click', () => {
+            if (showing || input.value) clearSearch();
+          });
+        });
 
         // An emptied field is a cleared search however it was emptied — the
         // `<input type="search">` clear button and a selection deleted by
