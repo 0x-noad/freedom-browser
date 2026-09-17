@@ -35,7 +35,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Run lint
         run: npm run lint
@@ -75,7 +77,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Run migration + profile suites
         run: npm run test:migration
@@ -111,7 +115,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Assert shipped native-addon target
         run: node -e "const target = process.platform + '-' + process.arch; const expected = process.env.EXPECTED_TARGET; if (target !== expected) { console.error('Expected ' + expected + ' runner, got ' + target); process.exit(1); } console.log(target);"
@@ -178,7 +184,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Download this runner's libradicle addon
         run: npm run radicle:download -- ${{ matrix.flags }}
@@ -230,7 +238,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Download this runner's official Myotis addon
         run: npm run myotis:download
@@ -296,7 +306,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
@@ -440,7 +450,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -486,7 +496,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -531,7 +541,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Electron system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -587,7 +597,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -645,7 +655,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -697,7 +707,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
@@ -767,7 +777,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -821,7 +831,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
@@ -875,7 +885,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
@@ -936,7 +946,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
@@ -1034,7 +1044,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -1082,7 +1092,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
