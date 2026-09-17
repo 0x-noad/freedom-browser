@@ -580,3 +580,222 @@ test('no rendered control bakes a glyph into its label, and removals follow the 
   await settingsEval(window, `window.freedomAPI.removeEndpointSource('user-glyph')`);
   await settingsEval(window, `window.freedomAPI.removeChain('424242')`);
 });
+
+// ---------------------------------------------------------------------------
+// #281: Settings had exactly one search field and it searched one section
+// (the Shortcuts list), so a user who found it reasonably concluded Settings
+// has no search. The page-wide field has to find a control by a word in its
+// label wherever it lives — Tor's startup toggle is under Experimental, not
+// Startup — say which section that is, take you there, and get out of the way
+// on Escape. The matcher itself is unit-tested in
+// `src/renderer/pages/settings-search.test.js`; this is the live DOM, which
+// is the only place the sections rendered from IPC state exist.
+// ---------------------------------------------------------------------------
+test.describe('Search settings (#281)', () => {
+  // Enabling the Tor integration is what keeps the two `[data-tor]` rows on
+  // a build that bundles no Arti binary, so this leg reads the same on a
+  // release checkout and on a source tree that skipped `npm run tor:download`
+  // (the search index skips a row the page has switched off).
+  test.use({ seedSettings: { enableTorIntegration: true } });
+
+  test('finds a setting in a section you would not guess, reveals it, clears on Escape', async ({
+    window,
+    electronApp,
+  }) => {
+    await openSettings(window, expect);
+    let page;
+    await expect
+      .poll(() => {
+        page = electronApp
+          .windows()
+          .find((candidate) => candidate.url().includes('/pages/settings.html'));
+        return Boolean(page);
+      })
+      .toBe(true);
+
+    const field = page.locator('#settings-search');
+    // The house style for a search placeholder, ellipsis included (#257).
+    await expect(field).toHaveAttribute('placeholder', 'Search settings…');
+    // The page opens on Appearance; the Shortcuts field is untouched and
+    // still the only search inside a section.
+    await expect(page.locator('#appearance')).toBeVisible();
+    await expect(page.locator('#settings-search-results')).toBeHidden();
+    await expect(page.locator('#start-tor-row')).toBeAttached();
+
+    await field.click();
+    await field.pressSequentially('tor');
+
+    // The results replace whichever section was open, the way Chrome's do.
+    await expect(page.locator('#settings-search-results')).toBeVisible();
+    await expect(page.locator('#appearance')).toBeHidden();
+
+    const results = page.locator('#settings-search-list .settings-search-result');
+    await expect(results.first()).toBeVisible();
+    const startTor = results.filter({ hasText: 'Start Tor when Freedom opens' });
+    await expect(startTor).toHaveCount(1);
+    // Which is the whole point: the result says where the setting lives.
+    await expect(startTor.locator('.settings-search-section')).toHaveText('Experimental');
+    await expect(page.locator('#settings-search-summary')).toContainText('match “tor”');
+
+    await startTor.click();
+
+    // Clicking it opens Experimental — the section the row is really in —
+    // and flashes the row itself, not just the section.
+    await expect(page.locator('#experimental')).toBeVisible();
+    await expect(page.locator('#settings-search-results')).toBeHidden();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            document.getElementById('start-tor-row')?.classList.contains('settings-search-hit') ===
+            true
+        )
+      )
+      .toBe(true);
+    expect(await page.evaluate(() => location.hash)).toBe('#experimental');
+    // The row is on screen (its checkbox is the visually-hidden input behind
+    // the slider, so the row is what "revealed" means here).
+    await expect(page.locator('#start-tor-row')).toBeVisible();
+    await expect(page.locator('#start-tor-at-launch')).toBeAttached();
+
+    // Escape clears the field, drops the highlight, and hands back the
+    // section the URL says is open.
+    await field.click();
+    await field.press('Escape');
+    await expect(field).toHaveValue('');
+    await expect(page.locator('#settings-search-results')).toBeHidden();
+    await expect(page.locator('#experimental')).toBeVisible();
+    expect(
+      await page.evaluate(() => document.querySelectorAll('.settings-search-hit').length)
+    ).toBe(0);
+
+    // Escape works from inside the result list too, where the field's own
+    // native clear-on-Escape cannot reach: ArrowDown hands the keyboard to
+    // the first result, Escape hands it back to an empty field.
+    await field.pressSequentially('tor');
+    await expect(results.first()).toBeVisible();
+    await field.press('ArrowDown');
+    expect(
+      await page.evaluate(() =>
+        document.activeElement?.classList.contains('settings-search-result')
+      )
+    ).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect(field).toHaveValue('');
+    await expect(page.locator('#settings-search-results')).toBeHidden();
+    expect(await page.evaluate(() => document.activeElement?.id)).toBe('settings-search');
+  });
+
+  test('Enter opens the top result, and the index reaches a section rendered from IPC state', async ({
+    window,
+    electronApp,
+  }) => {
+    await openSettings(window, expect);
+    let page;
+    await expect
+      .poll(() => {
+        page = electronApp
+          .windows()
+          .find((candidate) => candidate.url().includes('/pages/settings.html'));
+        return Boolean(page);
+      })
+      .toBe(true);
+
+    // The Shortcuts rows are built from the shortcut registry over IPC, so
+    // they exist only in the live DOM — the index is rebuilt from it on every
+    // keystroke rather than snapshotted at load.
+    await expect
+      .poll(() => page.locator('#shortcuts-view .row .row-label').count())
+      .toBeGreaterThan(20);
+
+    const field = page.locator('#settings-search');
+    await field.click();
+    await field.pressSequentially('actual size');
+    const results = page.locator('#settings-search-list .settings-search-result');
+    await expect(results).toHaveCount(1);
+    await expect(results.first().locator('.row-label')).toHaveText('Actual size');
+    await expect(results.first().locator('.settings-search-section')).toHaveText('Shortcuts');
+
+    await field.press('Enter');
+    await expect(page.locator('#shortcuts')).toBeVisible();
+    await expect(page.locator('#settings-search-results')).toBeHidden();
+    expect(await page.evaluate(() => location.hash)).toBe('#shortcuts');
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const hit = document.querySelector('.settings-search-hit');
+          return hit ? hit.querySelector('.row-label')?.textContent?.trim() : null;
+        })
+      )
+      .toBe('Actual size');
+
+    // A query that matches nothing says so rather than showing an empty card.
+    await field.click();
+    await field.fill('zzzznothing');
+    await expect(page.locator('#settings-search-summary')).toHaveText(
+      'No settings match “zzzznothing”.'
+    );
+    await expect(page.locator('#settings-search-list')).toBeHidden();
+
+    // …and the Shortcuts section's own search still filters only that list.
+    await field.press('Escape');
+    await expect(page.locator('#shortcuts')).toBeVisible();
+    const shortcutSearch = page.locator('#shortcut-search');
+    await shortcutSearch.fill('actual size');
+    await expect(page.locator('#shortcuts-view .row .row-label')).toHaveCount(1);
+    await expect(page.locator('#settings-search-results')).toBeHidden();
+  });
+
+  // Name Resolution's method list and a chain's read order are drag-to-reorder
+  // `.resolver-method` rows, not `.row`s, and they are where "Colibri",
+  // "Myotis" and "RPC quorum" are named — the resolution policy would be
+  // unsearchable if the index only read cards.
+  test('a resolver method is findable by name, and reveals its own row', async ({
+    window,
+    electronApp,
+  }) => {
+    await openSettings(window, expect);
+    let page;
+    await expect
+      .poll(() => {
+        page = electronApp
+          .windows()
+          .find((candidate) => candidate.url().includes('/pages/settings.html'));
+        return Boolean(page);
+      })
+      .toBe(true);
+
+    await page.evaluate(() => {
+      location.hash = 'ens';
+    });
+    await expect.poll(() => page.locator('#ens-method-list .row-label').count()).toBeGreaterThan(2);
+    // Then leave, so clicking the result is a real hash change — which is the
+    // case that matters: Name Resolution rebuilds its method list from IPC
+    // state on `hashchange`, *after* the jump has already run, replacing the
+    // row the result was built from. The reveal has to land on the new one.
+    await page.evaluate(() => {
+      location.hash = 'appearance';
+    });
+    await expect(page.locator('#appearance')).toBeVisible();
+
+    const field = page.locator('#settings-search');
+    await field.click();
+    await field.pressSequentially('colibri');
+    const results = page.locator('#settings-search-list .settings-search-result');
+    const colibri = results.filter({ hasText: 'Colibri' }).first();
+    await expect(colibri.locator('.settings-search-section')).toHaveText('Name Resolution');
+
+    await colibri.click();
+    await expect(page.locator('#ens')).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const hit = document.querySelector('.settings-search-hit');
+          return hit
+            ? [hit.dataset.method, hit.querySelector('.row-label')?.textContent?.trim()]
+            : null;
+        })
+      )
+      .toEqual(['colibri', 'Colibri']);
+  });
+});

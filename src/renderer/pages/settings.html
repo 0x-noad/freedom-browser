@@ -107,6 +107,20 @@
         flex-shrink: 0;
       }
 
+      /* Search settings (#281). The field sits in the sidebar header, where
+         Chrome keeps its own, and is the same control as `#shortcut-search`:
+         an `.rpc-input` in a flex wrapper that sizes it, with the page font
+         put back (a search box is not a URL or a key — see
+         docs/agent-playbooks/ui-consistency.md). */
+      .sidebar-search {
+        display: flex;
+      }
+
+      .sidebar-search input {
+        flex: 1;
+        font-family: inherit;
+      }
+
       /* Content */
       .content {
         padding: 48px 56px 80px 56px;
@@ -161,6 +175,32 @@
          also has to centre it against the button. */
       .section-header .section-title {
         margin: 0;
+      }
+
+      /* One search result: a `.row` that is also a button, so the whole line
+         is the target, plus the section it lives in on the right — the answer
+         to "I know the word, I don't know the section" (#281). */
+      .settings-search-result {
+        width: 100%;
+        border-left: 0;
+        border-right: 0;
+        border-top: 0;
+        background: transparent;
+        color: var(--text);
+        font-family: inherit;
+        font-size: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .settings-search-result:hover {
+        background: var(--bg-elev);
+      }
+
+      .settings-search-section {
+        flex-shrink: 0;
+        font-size: 12px;
+        color: var(--text-muted);
       }
 
       .card {
@@ -223,6 +263,17 @@
 
       .row.disabled {
         opacity: 0.55;
+      }
+
+      /* The row a search result jumped to (#281), marked so the eye lands on
+         the control rather than on the section it is somewhere inside. The
+         accent wash alone is 12% alpha and disappears under `.row.sub`'s own
+         fill, hence the accent edge; the selector carries `.row` so it wins
+         against `.row.sub`, declared just above. */
+      .settings-search-hit,
+      .row.settings-search-hit {
+        background: var(--accent-muted);
+        box-shadow: inset 3px 0 0 var(--accent);
       }
 
       .resolver-list {
@@ -840,6 +891,17 @@
           </svg>
           Settings
         </h2>
+        <div class="sidebar-search">
+          <input
+            type="search"
+            id="settings-search"
+            class="rpc-input"
+            placeholder="Search settings…"
+            spellcheck="false"
+            autocomplete="off"
+            aria-label="Search settings"
+          />
+        </div>
         <nav class="nav" id="nav">
           <button type="button" class="nav-item" data-target="appearance">
             <svg
@@ -1084,6 +1146,15 @@
       </aside>
 
       <main class="content">
+        <!-- Search results (#281). Not a nav target: it replaces whichever
+             section is open while the field has a query, and hands that
+             section back when the field is cleared. -->
+        <section class="section hidden" id="settings-search-results">
+          <h2 class="section-title">Search results</h2>
+          <p class="row-help" id="settings-search-summary" style="margin-bottom: 16px"></p>
+          <div class="card" id="settings-search-list"></div>
+        </section>
+
         <!-- Appearance -->
         <section class="section" id="appearance">
           <h2 class="section-title">Appearance</h2>
@@ -2013,6 +2084,321 @@
         history.replaceState(null, '', `#${initialSection}`);
       }
       showSection(initialSection);
+
+      // ── Search settings (#281) ──────────────────────────────────────────
+      // Chrome has kept a persistent "Search settings" field in its header
+      // since 2016, and on a 14-section page that is how most people
+      // navigate. Freedom's page is the harder case, not the easier one:
+      // several settings are not under the heading their subject suggests
+      // (Tor's startup toggle is under Experimental, a chain's API keys under
+      // RPC Providers), so "I know the word, I don't know the section" is the
+      // normal state. Until #281 the page's only search box was the
+      // Shortcuts one, which searches that list and nothing else.
+      //
+      // The two helpers below are pure — an element and a query in, ranked
+      // entries out — so `settings-search.test.js` can lift them out of this
+      // file (it slices between the markers) and drive them over the shipped
+      // markup. They walk the tree with `children`, `classList.contains` and
+      // `textContent` only: no selector engine and nothing from this page's
+      // scope, which is what keeps that test reading the real code.
+      /* settings-search helpers: start */
+      const settingsSearchText = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+
+      // Every element under `el` carrying one of `names` (a class, or a list
+      // of them), not descending into a match: rows never nest, and a
+      // `.row-help` belongs to the row it is under.
+      const settingsSearchCollect = (el, names, out = []) => {
+        const wanted = Array.isArray(names) ? names : [names];
+        for (const child of Array.from(el?.children || [])) {
+          if (wanted.some((name) => child.classList?.contains(name))) out.push(child);
+          else settingsSearchCollect(child, names, out);
+        }
+        return out;
+      };
+
+      const settingsSearchFirst = (el, names) => settingsSearchCollect(el, names)[0] || null;
+
+      // What counts as one setting: a card row, and the drag-to-reorder rows
+      // of Name Resolution's method list and a chain's read/broadcast order,
+      // which carry the same `.row-label` / `.row-help` pair without the
+      // `.row` class. Those are where "Colibri", "RPC quorum" and "Myotis"
+      // are named, so leaving them out would make the whole resolution
+      // policy unsearchable.
+      const SETTINGS_SEARCH_ROWS = ['row', 'resolver-method'];
+
+      // One entry per section plus one per labelled row, in document order.
+      // `sectionLabels` maps a section id to its nav label, the fallback for
+      // the sections whose `<h2>` comes from a view template that has not
+      // rendered yet (Chains, RPC Providers, Site Permissions).
+      const buildSettingsSearchIndex = (content, { sectionLabels = {}, skip = [] } = {}) => {
+        const index = [];
+        for (const section of Array.from(content?.children || [])) {
+          if (section.tagName !== 'SECTION' || !section.classList?.contains('section')) continue;
+          if (!section.id || skip.includes(section.id)) continue;
+          const sectionLabel =
+            settingsSearchText(settingsSearchFirst(section, 'section-title')) ||
+            sectionLabels[section.id] ||
+            section.id;
+          // A section's own intro paragraph is a direct child, outside every
+          // card, so it describes the section rather than any one row.
+          const intro = Array.from(section.children)
+            .filter((child) => child.classList?.contains('row-help'))
+            .map(settingsSearchText)
+            .join(' ');
+          index.push({
+            sectionId: section.id,
+            section: sectionLabel,
+            label: sectionLabel,
+            help: intro,
+            element: section,
+          });
+          for (const row of settingsSearchCollect(section, SETTINGS_SEARCH_ROWS)) {
+            // A row this build has switched off is not a setting the user
+            // has, and offering it would jump to nothing: the `[data-tor]`
+            // rows on a build that bundles no Arti binary, `[data-linux-only]`
+            // off Linux. Both are hidden by writing `style.display`, which is
+            // why an inline read answers for them.
+            if (row.style?.display === 'none') continue;
+            const label = settingsSearchText(settingsSearchFirst(row, 'row-label'));
+            if (!label) continue;
+            index.push({
+              sectionId: section.id,
+              section: sectionLabel,
+              label,
+              help: settingsSearchCollect(row, 'row-help').map(settingsSearchText).join(' '),
+              element: row,
+            });
+          }
+        }
+        return index;
+      };
+
+      // Case-insensitive substring, no fuzzy matching. A label the query
+      // starts ranks above a label that merely contains it, which ranks above
+      // a hit in the help line under it; ties keep document order, so the
+      // list reads in the order the page does. Every match is listed — a
+      // silent top-N would read as "that setting does not exist".
+      const matchSettingsSearch = (index, rawQuery) => {
+        const query = (rawQuery || '').trim().toLowerCase();
+        if (!query) return [];
+        const hits = [];
+        index.forEach((entry, order) => {
+          const label = (entry.label || '').toLowerCase();
+          const rank = label.startsWith(query)
+            ? 0
+            : label.includes(query)
+              ? 1
+              : (entry.help || '').toLowerCase().includes(query)
+                ? 2
+                : -1;
+          if (rank >= 0) hits.push({ entry, rank, order });
+        });
+        hits.sort((a, b) => a.rank - b.rank || a.order - b.order);
+        return hits.map(({ entry, rank }) => ({ ...entry, rank }));
+      };
+      /* settings-search helpers: end */
+
+      (() => {
+        const input = $('settings-search');
+        const panel = $('settings-search-results');
+        const list = $('settings-search-list');
+        const summary = $('settings-search-summary');
+        const content = document.querySelector('main.content');
+        if (!input || !panel || !list || !summary || !content) return;
+
+        const NAV_LABELS = Object.fromEntries(
+          navItems.map((item) => [item.dataset.target, settingsSearchText(item)])
+        );
+
+        let results = [];
+        let showing = false;
+        let highlighted = null;
+        let pending = null; // reveal waiting on the hash change it asked for
+        let revealToken = 0; // invalidates the retries of an earlier reveal
+
+        // The highlight stays up while it is still the answer to the query on
+        // screen — the way Chrome keeps its own — and is dropped on the next
+        // search, on Escape, and when the user navigates somewhere else.
+        const clearHighlight = () => {
+          highlighted?.classList.remove('settings-search-hit');
+          highlighted = null;
+        };
+
+        const resultRow = (result, position) => {
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.className = 'row settings-search-result';
+          row.dataset.result = String(position);
+          const body = document.createElement('div');
+          body.className = 'row-body';
+          const label = document.createElement('p');
+          label.className = 'row-label';
+          label.textContent = result.label;
+          body.appendChild(label);
+          if (result.help) {
+            const help = document.createElement('p');
+            help.className = 'row-help';
+            help.textContent = result.help;
+            body.appendChild(help);
+          }
+          const section = document.createElement('span');
+          section.className = 'settings-search-section';
+          section.textContent = result.section;
+          row.append(body, section);
+          return row;
+        };
+
+        // The index is rebuilt from the live DOM on every keystroke, so a
+        // section that paints later from IPC state is searchable as soon as
+        // it is there. It is a few hundred elements — cheaper than keeping a
+        // cache honest against four views that repaint on their own.
+        const render = () => {
+          const query = input.value.trim();
+          results = matchSettingsSearch(
+            buildSettingsSearchIndex(content, { sectionLabels: NAV_LABELS, skip: [panel.id] }),
+            query
+          );
+          list.replaceChildren(...results.map(resultRow));
+          list.hidden = results.length === 0;
+          summary.textContent = results.length
+            ? `${results.length} ${results.length === 1 ? 'setting' : 'settings'} match “${query}”.`
+            : `No settings match “${query}”.`;
+        };
+
+        // While the field has a query the results replace whichever section
+        // is open; clearing it hands that section back.
+        const openResults = () => {
+          revealToken += 1;
+          clearHighlight();
+          render();
+          for (const id of SECTIONS) document.getElementById(id)?.classList.add('hidden');
+          panel.classList.remove('hidden');
+          showing = true;
+          window.scrollTo({ top: 0 });
+        };
+
+        const closeResults = ({ restoreSection = true } = {}) => {
+          results = [];
+          list.replaceChildren();
+          panel.classList.add('hidden');
+          if (showing && restoreSection) showSection(resolveSection(location.hash));
+          showing = false;
+        };
+
+        // Re-found by label rather than kept as a node: Chains, RPC Providers
+        // and Site Permissions rebuild their view from IPC state on
+        // `hashchange`, so the node the result was built from can be gone.
+        const locateRow = (result) => {
+          const section = document.getElementById(result.sectionId);
+          if (!section) return null;
+          if (result.element === section) return section;
+          return (
+            settingsSearchCollect(section, SETTINGS_SEARCH_ROWS).find(
+              (row) => settingsSearchText(settingsSearchFirst(row, 'row-label')) === result.label
+            ) || null
+          );
+        };
+
+        const applyHighlight = (row) => {
+          clearHighlight();
+          row.scrollIntoView({ block: 'center' });
+          row.classList.add('settings-search-hit');
+          highlighted = row;
+        };
+
+        // Those same views repaint *after* this runs — the nav's own
+        // `hashchange` handler is registered first, and a repaint can be one
+        // await away — which would rebuild the highlight away. So a highlight
+        // that stops being connected is re-applied, bounded to four tries
+        // over ~0.5s, after which the open section is the answer.
+        const revealResult = (result, token, attempt = 0) => {
+          if (token !== revealToken) return;
+          const row = locateRow(result);
+          if (row) applyHighlight(row);
+          if (attempt >= 3) return;
+          setTimeout(() => {
+            if (token === revealToken && !highlighted?.isConnected) {
+              revealResult(result, token, attempt + 1);
+            }
+          }, 150);
+        };
+
+        // Jumping to a result leaves the result list behind and opens the
+        // section the control is in, the way clicking its nav item would.
+        const reveal = (result) => {
+          if (!result?.sectionId) return;
+          closeResults({ restoreSection: false });
+          revealToken += 1;
+          const current = location.hash.replace(/^#/, '').toLowerCase();
+          if (current === result.sectionId || current.startsWith(result.sectionId + '/')) {
+            showSection(result.sectionId);
+            revealResult(result, revealToken);
+            return;
+          }
+          // The hash change repaints and scrolls the content to the top, so
+          // the scroll-and-flash waits for it (see the handler below).
+          pending = { result, token: revealToken };
+          location.hash = result.sectionId;
+        };
+
+        window.addEventListener('hashchange', () => {
+          const queued = pending;
+          pending = null;
+          if (queued) {
+            revealResult(queued.result, queued.token);
+            return;
+          }
+          // The user went somewhere else (a nav item, a deep link): the
+          // highlight is about a query they have moved on from.
+          revealToken += 1;
+          clearHighlight();
+        });
+
+        const clearSearch = () => {
+          input.value = '';
+          revealToken += 1;
+          closeResults();
+          clearHighlight();
+        };
+
+        // An emptied field is a cleared search however it was emptied — the
+        // `<input type="search">` clear button and a selection deleted by
+        // hand both land here rather than on the Escape handler below.
+        input.addEventListener('input', () => {
+          if (input.value.trim()) openResults();
+          else {
+            revealToken += 1;
+            closeResults();
+            clearHighlight();
+          }
+        });
+
+        input.addEventListener('keydown', (event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            clearSearch();
+          } else if (event.key === 'Enter') {
+            event.preventDefault();
+            if (results.length) reveal(results[0]);
+          } else if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            list.firstElementChild?.focus();
+          }
+        });
+
+        list.addEventListener('click', (event) => {
+          const row = event.target.closest?.('.settings-search-result');
+          if (!row) return;
+          reveal(results[Number(row.dataset.result)]);
+        });
+
+        list.addEventListener('keydown', (event) => {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          clearSearch();
+          input.focus();
+        });
+      })();
 
       // The Tor rows follow the bundled Arti binary, not the platform: every
       // platform the release workflow builds compiles Arti (Windows x64
