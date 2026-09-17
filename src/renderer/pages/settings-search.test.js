@@ -100,6 +100,9 @@ const element = (tagName, attrs = '') => {
     id: (attrs.match(/\bid="([^"]*)"/) || [])[1] || '',
     classList: { contains: (name) => classes.has(name) },
     style,
+    // The IDL property, which is what `el.hidden = true` writes and what the
+    // attribute in this markup reflects — the other way a row is switched off.
+    hidden: /(^|\s)hidden(\s|=|$)/.test(attrs),
     children: [],
     // Text and elements in source order, so `textContent` reads the way the
     // browser's does — a `<code>` inside a sentence has to stay put.
@@ -306,6 +309,104 @@ describe('buildSettingsSearchIndex', () => {
       label: 'Colibri',
       rank: 2,
     });
+  });
+
+  test('ignores a row switched off through the `hidden` attribute as well', () => {
+    // The other way this page switches a row off: the two Myotis startup rows
+    // are hidden with the IDL property on a build where Myotis is
+    // unsupported, which writes the attribute rather than `style.display`.
+    // Offered as a result, they would open Startup and mark an invisible row.
+    expect(SOURCE).toContain('launchRow.hidden = !supported;');
+    expect(SOURCE).toContain('gnosisLaunchRow.hidden = !supported;');
+    const fragment = parseFragment(
+      '<section class="section" id="startup"><h2 class="section-title">Startup</h2>' +
+        '<div class="card">' +
+        '<div class="row" id="myotis-launch-row" hidden><div class="row-body">' +
+        '<p class="row-label">Start Ethereum node</p></div></div>' +
+        '<div class="row"><div class="row-body"><p class="row-label">Live</p></div></div>' +
+        '</div></section>'
+    );
+    expect(buildSettingsSearchIndex(fragment).map((entry) => entry.label)).toEqual([
+      'Startup',
+      'Live',
+    ]);
+    // …and a class called `hidden`, or an `aria-hidden` decoration, is not
+    // that attribute and must not take a row out of the index.
+    const decorated = parseFragment(
+      '<section class="section" id="startup"><h2 class="section-title">Startup</h2>' +
+        '<div class="card"><div class="row" aria-hidden="false"><div class="row-body">' +
+        '<p class="row-label">Still here</p></div></div></div></section>'
+    );
+    expect(buildSettingsSearchIndex(decorated).map((entry) => entry.label)).toContain('Still here');
+  });
+
+  test('indexes the config panel a resolver method opens under itself', () => {
+    // Colibri's prover endpoint and the quorum agreement threshold are the
+    // two settings of the resolution policy itself. They render as a
+    // `.resolver-config` sibling of the `.resolver-method` row rather than
+    // inside it, so an index that only read rows and methods would answer
+    // "prover" with the Colibri method's help text and "threshold" with
+    // nothing at all.
+    expect(SOURCE).toContain('<div class="resolver-config" data-method-config="colibri">');
+    expect(SOURCE).toContain('<div class="resolver-config" data-method-config="quorum">');
+    expect(SOURCE).toContain('<p class="row-label">Prover endpoint</p>');
+    expect(SOURCE).toContain('<p class="row-label">Agreement threshold</p>');
+    const fragment = parseFragment(
+      '<section class="section" id="ens"><h2 class="section-title">Name Resolution</h2>' +
+        '<div class="card"><div class="resolver-list">' +
+        '<div class="resolver-method" data-method="quorum"><div class="row-body">' +
+        '<div class="resolver-title-line"><p class="row-label">RPC quorum</p></div>' +
+        '<p class="row-help">Requires matching responses.</p></div></div>' +
+        '<div class="resolver-config" data-method-config="quorum">' +
+        '<div class="resolver-config-line"><div class="row-body">' +
+        '<p class="row-label">Agreement threshold</p>' +
+        '<p class="row-help">Require matching responses from independently configured RPC providers.</p>' +
+        '</div></div></div>' +
+        '</div></div></section>'
+    );
+    const entries = buildSettingsSearchIndex(fragment);
+    expect(entries.map((entry) => entry.label)).toEqual([
+      'Name Resolution',
+      'RPC quorum',
+      'Agreement threshold',
+    ]);
+    expect(matchSettingsSearch(entries, 'agreement')[0]).toMatchObject({
+      label: 'Agreement threshold',
+      section: 'Name Resolution',
+      rank: 0,
+    });
+    // The method row's help does not swallow the panel under it, the way a
+    // `.row-help` belongs to its own row everywhere else on the page.
+    expect(entries.find((entry) => entry.label === 'RPC quorum').help).toBe(
+      'Requires matching responses.'
+    );
+  });
+
+  test('numbers same-labelled rows so a jump can tell them apart', () => {
+    // A chain's detail page lists "Direct RPC" twice — once in its read and
+    // verification order, once in its transaction broadcast order. The reveal
+    // re-finds the row after the view has repainted, so a result has to carry
+    // which of the two it is or both jump to the first.
+    expect(SOURCE).toContain("accessRows(cid, 'read', readOrder)");
+    expect(SOURCE).toContain("accessRows(cid, 'broadcast', broadcastOrder)");
+    const method = (kind, label) =>
+      `<div class="resolver-method" data-access-kind="${kind}"><div class="row-body">` +
+      `<p class="row-label">${label}</p></div></div>`;
+    const fragment = parseFragment(
+      '<section class="section" id="chains"><h2 class="section-title">Ethereum</h2>' +
+        `<div class="card">${method('read', 'Myotis P2P light client')}${method('read', 'Direct RPC')}</div>` +
+        `<div class="card">${method('broadcast', 'Direct RPC')}</div>` +
+        '</section>'
+    );
+    const entries = buildSettingsSearchIndex(fragment);
+    expect(
+      entries.filter((entry) => entry.label === 'Direct RPC').map((entry) => entry.labelIndex)
+    ).toEqual([0, 1]);
+    // The first of a label is 0, not undefined — `locateRow` indexes with it.
+    expect(entries.find((entry) => entry.label === 'Myotis P2P light client').labelIndex).toBe(0);
+    // And the numbering is per section, so an unrelated section's "Direct RPC"
+    // would start over at 0 rather than continuing this one's count.
+    expect(entries.filter((entry) => entry.labelIndex === 0)).toHaveLength(2);
   });
 
   test('ignores a row with no label of its own', () => {

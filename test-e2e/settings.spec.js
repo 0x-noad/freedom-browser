@@ -799,6 +799,172 @@ test.describe('Search settings (#281)', () => {
       .toEqual(['colibri', 'Colibri']);
   });
 
+  // The two settings of the resolution policy itself — Colibri's prover
+  // endpoint and the quorum agreement threshold — render as a
+  // `.resolver-config` panel under the method they belong to, a third row
+  // shape again. And the index has to skip a row the page switched off with
+  // the `hidden` attribute (how the Myotis startup rows go on a build with no
+  // Myotis support), not only one hidden through `style.display`.
+  test('the resolver methods own settings are findable, and a switched-off row is not', async ({
+    window,
+    electronApp,
+  }) => {
+    await openSettings(window, expect);
+    let page;
+    await expect
+      .poll(() => {
+        page = electronApp
+          .windows()
+          .find((candidate) => candidate.url().includes('/pages/settings.html'));
+        return Boolean(page);
+      })
+      .toBe(true);
+
+    await page.evaluate(() => {
+      location.hash = 'ens';
+    });
+    await expect
+      .poll(() => page.locator('#ens-method-list .resolver-config .row-label').count())
+      .toBeGreaterThan(0);
+
+    const field = page.locator('#settings-search');
+    const results = page.locator('#settings-search-list .settings-search-result');
+
+    // "Agreement threshold" is a word in no method's label — before this it
+    // answered with nothing at all.
+    await field.click();
+    await field.pressSequentially('agreement');
+    const threshold = results.filter({ hasText: 'Agreement threshold' });
+    await expect(threshold).toHaveCount(1);
+    await expect(threshold.locator('.settings-search-section')).toHaveText('Name Resolution');
+    // The one-result summary agrees with its own count.
+    await expect(page.locator('#settings-search-summary')).toHaveText(
+      '1 setting matches “agreement”.'
+    );
+    await threshold.click();
+    await expect(page.locator('#ens')).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const hit = document.querySelector('.settings-search-hit');
+          return hit
+            ? [hit.dataset.methodConfig, hit.querySelector('.row-label').textContent]
+            : null;
+        })
+      )
+      .toEqual(['quorum', 'Agreement threshold']);
+
+    // …and "prover" reaches the endpoint field, not just the Colibri method
+    // row whose help line happens to mention one.
+    await field.click();
+    await field.fill('');
+    await field.pressSequentially('prover endpoint');
+    const prover = results.filter({ hasText: 'Prover endpoint' });
+    await expect(prover).toHaveCount(1);
+    await prover.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          document
+            .querySelector('.settings-search-hit')
+            ?.contains(document.getElementById('ens-prover-url'))
+        )
+      )
+      .toBe(true);
+
+    // The Myotis startup row, hidden the way `updateMyotis` hides it on a
+    // build where Myotis is unsupported (`launchRow.hidden = !supported`): a
+    // result for it would open Startup and mark a row with no box on screen.
+    // Hidden, searched and read back inside one `evaluate`, because this
+    // harness reports Myotis as supported and the page's own 5s status poll
+    // would otherwise show the row again mid-assertion.
+    expect(
+      await page.evaluate(() => {
+        const row = document.getElementById('myotis-launch-row');
+        const search = document.getElementById('settings-search');
+        row.hidden = true;
+        search.value = 'start ethereum node';
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        const summary = document.getElementById('settings-search-summary').textContent;
+        const count = document.querySelectorAll(
+          '#settings-search-list .settings-search-result'
+        ).length;
+        row.hidden = false;
+        return { summary, count };
+      })
+    ).toEqual({ summary: 'No settings match “start ethereum node”.', count: 0 });
+
+    // Visible again, it is found — the skip reads the live row, and this is
+    // the row the query is about.
+    await field.click();
+    await field.fill('');
+    await field.pressSequentially('start ethereum node');
+    const ethereumNode = results.filter({ hasText: 'Start Ethereum node' });
+    await expect(ethereumNode).toHaveCount(1);
+    await expect(ethereumNode.locator('.settings-search-section')).toHaveText('Startup');
+  });
+
+  // A label alone does not identify a row: a chain's detail page lists
+  // "Direct RPC" once in its read and verification order and again in its
+  // transaction broadcast order, and the reveal re-finds the row by what the
+  // result carries — so both used to jump to the read-order row.
+  test('two rows with the same label reveal the one that was clicked', async ({
+    window,
+    electronApp,
+  }) => {
+    await openSettings(window, expect);
+    let page;
+    await expect
+      .poll(() => {
+        page = electronApp
+          .windows()
+          .find((candidate) => candidate.url().includes('/pages/settings.html'));
+        return Boolean(page);
+      })
+      .toBe(true);
+
+    await page.evaluate(() => {
+      location.hash = 'chains/1';
+    });
+    await expect
+      .poll(() => page.locator('#chains-view [data-access-kind="broadcast"]').count())
+      .toBeGreaterThan(0);
+
+    const field = page.locator('#settings-search');
+    await field.click();
+    await field.pressSequentially('direct rpc');
+    const results = page.locator('#settings-search-list .settings-search-result');
+    // Name Resolution names a "Direct RPC" method of its own; the two that
+    // belong to this chain are the ambiguous pair.
+    const chainResults = results.filter({
+      has: page.locator('.settings-search-section', {
+        hasText: 'Ethereum',
+      }),
+    });
+    await expect(chainResults).toHaveCount(2);
+
+    const revealed = () =>
+      page.evaluate(() => {
+        const hit = document.querySelector('.settings-search-hit');
+        return hit ? [hit.dataset.accessKind, hit.querySelector('.row-label').textContent] : null;
+      });
+
+    // The second is the broadcast one, and clicking it marks that row.
+    await chainResults.nth(1).click();
+    await expect(page.locator('#chains')).toBeVisible();
+    await expect.poll(revealed).toEqual(['broadcast', 'Direct RPC']);
+
+    // …and the first still marks the read-order row, so the fix did not just
+    // move the collapse onto the other one. (A jump leaves the query in the
+    // field, the way Chrome does, so searching again starts by clearing it.)
+    await field.click();
+    await field.fill('');
+    await field.pressSequentially('direct rpc');
+    await expect(chainResults).toHaveCount(2);
+    await chainResults.nth(0).click();
+    await expect.poll(revealed).toEqual(['read', 'Direct RPC']);
+  });
+
   // The results panel replaces the open section but is deliberately not one
   // of the nav's own sections, so nothing but the search itself can hide it:
   // every way of leaving for a section — a nav click, back/forward, a deep

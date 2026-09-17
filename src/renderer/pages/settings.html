@@ -2118,13 +2118,35 @@
 
       const settingsSearchFirst = (el, names) => settingsSearchCollect(el, names)[0] || null;
 
-      // What counts as one setting: a card row, and the drag-to-reorder rows
-      // of Name Resolution's method list and a chain's read/broadcast order,
-      // which carry the same `.row-label` / `.row-help` pair without the
-      // `.row` class. Those are where "Colibri", "RPC quorum" and "Myotis"
-      // are named, so leaving them out would make the whole resolution
-      // policy unsearchable.
-      const SETTINGS_SEARCH_ROWS = ['row', 'resolver-method'];
+      // What counts as one setting: a card row, the drag-to-reorder rows of
+      // Name Resolution's method list and a chain's read/broadcast order, and
+      // the `.resolver-config` panel a method opens under itself (Colibri's
+      // prover endpoint, the quorum agreement threshold) — all of which carry
+      // the same `.row-label` / `.row-help` pair without the `.row` class.
+      // Those are where "Colibri", "RPC quorum", "Myotis" and the two
+      // resolver settings are named, so leaving them out would make the whole
+      // resolution policy unsearchable.
+      const SETTINGS_SEARCH_ROWS = ['row', 'resolver-method', 'resolver-config'];
+
+      // A row this build has switched off is not a setting the user has, and
+      // offering it would jump to nothing: the `[data-tor]` rows on a build
+      // that bundles no Arti binary and the `[data-linux-only]` row off Linux
+      // are hidden by writing `style.display`, while the Myotis startup rows
+      // on a build with no Myotis support are hidden through the `hidden`
+      // attribute (`launchRow.hidden = !supported`). Both shapes read here.
+      const settingsSearchHidden = (row) => Boolean(row?.hidden) || row?.style?.display === 'none';
+
+      // The rows a section contributes to the index, in document order, each
+      // with the label it is found by. Shared with the page's `locateRow` so
+      // the two walk the same rows: a result is "the nth row in this section
+      // labelled X", which is the only thing that tells two same-labelled
+      // rows apart (a chain lists "Direct RPC" in both its read order and its
+      // broadcast order) once the view they came from has repainted.
+      const settingsSearchRows = (section) =>
+        settingsSearchCollect(section, SETTINGS_SEARCH_ROWS)
+          .filter((row) => !settingsSearchHidden(row))
+          .map((row) => ({ row, label: settingsSearchText(settingsSearchFirst(row, 'row-label')) }))
+          .filter((entry) => entry.label);
 
       // One entry per section plus one per labelled row, in document order.
       // `sectionLabels` maps a section id to its nav label, the fallback for
@@ -2152,19 +2174,15 @@
             help: intro,
             element: section,
           });
-          for (const row of settingsSearchCollect(section, SETTINGS_SEARCH_ROWS)) {
-            // A row this build has switched off is not a setting the user
-            // has, and offering it would jump to nothing: the `[data-tor]`
-            // rows on a build that bundles no Arti binary, `[data-linux-only]`
-            // off Linux. Both are hidden by writing `style.display`, which is
-            // why an inline read answers for them.
-            if (row.style?.display === 'none') continue;
-            const label = settingsSearchText(settingsSearchFirst(row, 'row-label'));
-            if (!label) continue;
+          const seen = new Map();
+          for (const { row, label } of settingsSearchRows(section)) {
+            const labelIndex = seen.get(label) || 0;
+            seen.set(label, labelIndex + 1);
             index.push({
               sectionId: section.id,
               section: sectionLabel,
               label,
+              labelIndex,
               help: settingsSearchCollect(row, 'row-help').map(settingsSearchText).join(' '),
               element: row,
             });
@@ -2261,7 +2279,7 @@
           list.replaceChildren(...results.map(resultRow));
           list.hidden = results.length === 0;
           summary.textContent = results.length
-            ? `${results.length} ${results.length === 1 ? 'setting' : 'settings'} match “${query}”.`
+            ? `${results.length} ${results.length === 1 ? 'setting matches' : 'settings match'} “${query}”.`
             : `No settings match “${query}”.`;
         };
 
@@ -2285,18 +2303,22 @@
           showing = false;
         };
 
-        // Re-found by label rather than kept as a node: Chains, RPC Providers
-        // and Site Permissions rebuild their view from IPC state on
-        // `hashchange`, so the node the result was built from can be gone.
+        // Re-found rather than kept as a node: Chains, RPC Providers and Site
+        // Permissions rebuild their view from IPC state on `hashchange`, so
+        // the node the result was built from can be gone. A label alone does
+        // not identify it — a chain names "Direct RPC" once in its read order
+        // and again in its broadcast order — so the result's position among
+        // its section's same-labelled rows picks which one it was, walking
+        // the same rows the index was built from. If the repaint left fewer
+        // of them than there were, the first is still better than nothing.
         const locateRow = (result) => {
           const section = document.getElementById(result.sectionId);
           if (!section) return null;
           if (result.element === section) return section;
-          return (
-            settingsSearchCollect(section, SETTINGS_SEARCH_ROWS).find(
-              (row) => settingsSearchText(settingsSearchFirst(row, 'row-label')) === result.label
-            ) || null
+          const matches = settingsSearchRows(section).filter(
+            (entry) => entry.label === result.label
           );
+          return (matches[result.labelIndex || 0] || matches[0])?.row || null;
         };
 
         const applyHighlight = (row) => {
