@@ -20,8 +20,10 @@ const {
   defaultBudget,
   electronCacheDir,
   installWithRetries,
+  killTree,
   resolveBudget,
   spawnBounded,
+  spawnShape,
 } = require('./npm-ci-hardening');
 
 /** Injected runner returning a scripted sequence of attempt outcomes. */
@@ -241,7 +243,59 @@ describe('npm-ci-hardening Electron cache directory', () => {
   });
 });
 
-// POSIX only: the Windows leg kills through `taskkill /T`, which has no
+// The Windows spawn/kill shapes cannot be exercised on this runner, so they are
+// asserted through the two seams that decide them. Both are platform arguments
+// rather than `process.platform` reads precisely so a Linux/macOS CI leg still
+// pins the Windows behaviour.
+describe('npm-ci-hardening platform spawn shape', () => {
+  test('POSIX spawns argv directly, detached so the group can be signalled', () => {
+    expect(spawnShape('npm', ['ci', '--ignore-scripts'], 'linux')).toEqual({
+      command: 'npm',
+      args: ['ci', '--ignore-scripts'],
+      shell: false,
+      detached: true,
+    });
+  });
+
+  // Node 24 (which CI pins) warns DEP0190 for an args array under `shell: true`,
+  // so the Windows leg has to pass one already-joined command string. A shell is
+  // still required there: `npm` is `npm.cmd`, which Node will not spawn directly.
+  test('Windows joins the command itself instead of passing args under a shell', () => {
+    expect(spawnShape('npm', ['ci', '--ignore-scripts'], 'win32')).toEqual({
+      command: 'npm ci --ignore-scripts',
+      args: [],
+      shell: true,
+      detached: false,
+    });
+  });
+});
+
+describe('npm-ci-hardening Windows kill', () => {
+  const taskkillArgsFor = (signal) => {
+    const spawnFn = jest.fn(() => ({ on: () => {} }));
+    killTree({ pid: 4321 }, signal, { platform: 'win32', spawnFn });
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+    return spawnFn.mock.calls[0][1];
+  };
+
+  // `taskkill /T` without `/F` posts WM_CLOSE, which npm/node/cmd have no window
+  // to receive: the soft stage would kill nothing and only burn the 30s SIGKILL
+  // grace, after the "killed it and retrying" warning had already printed. So
+  // both stages force, and a timed-out Windows attempt really does end at its
+  // bound.
+  test('both kill stages force, because there is no graceful taskkill for a console process', () => {
+    expect(taskkillArgsFor('SIGTERM')).toEqual(['/pid', '4321', '/T', '/F']);
+    expect(taskkillArgsFor('SIGKILL')).toEqual(['/pid', '4321', '/T', '/F']);
+  });
+
+  test('a child that never started is not killed at all', () => {
+    const spawnFn = jest.fn(() => ({ on: () => {} }));
+    killTree({ pid: undefined }, 'SIGTERM', { platform: 'win32', spawnFn });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+});
+
+// POSIX only: the Windows leg kills through `taskkill /T /F`, which has no
 // equivalent to assert here.
 const describeTree = process.platform === 'win32' ? describe.skip : describe;
 

@@ -100,7 +100,13 @@ function defaultBudget(platform = process.platform) {
   return PLATFORM_DEFAULTS[platform] || PLATFORM_DEFAULTS.default;
 }
 
-/** Grace between SIGTERM and SIGKILL for a timed-out attempt. */
+/**
+ * Grace between SIGTERM and SIGKILL for a timed-out attempt.
+ *
+ * POSIX only in practice: Windows has no SIGTERM for a console process, so the
+ * Windows kill is forceful in one stage and never spends this grace. See
+ * `killTree`.
+ */
 const KILL_GRACE_MS = 30_000;
 
 /** A retry that starts with less than this left in the budget cannot finish. */
@@ -165,19 +171,26 @@ function resolveBudget(env = process.env, platform = process.platform) {
  * detached, which puts it in its own process group we can signal as a unit; on
  * Windows `taskkill /T` walks the tree instead.
  *
+ * Windows always gets `/F`, on the soft stage too. `taskkill` without it asks
+ * politely by posting `WM_CLOSE` to the tree's *windows*, which a console
+ * process (cmd, npm, node, the Electron postinstall download) has none of, so
+ * it refuses with "could not be terminated" and nothing dies — the soft stage
+ * would be pure decoration that spends the whole `KILL_GRACE_MS` before the
+ * forceful stage did the actual work, while the warning claiming we killed it
+ * printed 30s earlier. There is no Windows equivalent of SIGTERM here to wait
+ * for, so the graceful stage is skipped rather than faked.
+ *
  * @param {import('child_process').ChildProcess} child
  * @param {NodeJS.Signals} signal
+ * @param {{ platform?: NodeJS.Platform, spawnFn?: typeof spawn }} [deps]
  */
-function killTree(child, signal) {
+function killTree(child, signal, { platform = process.platform, spawnFn = spawn } = {}) {
   if (!child.pid) {
     return;
   }
-  if (process.platform === 'win32') {
-    const args = ['/pid', String(child.pid), '/T'];
-    if (signal === 'SIGKILL') {
-      args.push('/F');
-    }
-    spawn('taskkill', args, { stdio: 'ignore' }).on('error', () => {});
+  if (platform === 'win32') {
+    const args = ['/pid', String(child.pid), '/T', '/F'];
+    spawnFn('taskkill', args, { stdio: 'ignore' }).on('error', () => {});
     return;
   }
   try {
@@ -188,6 +201,34 @@ function killTree(child, signal) {
 }
 
 /**
+ * Shape the `spawn` call for the platform we are on.
+ *
+ * Windows has to go through a shell, because `npm` is really `npm.cmd` and
+ * Node refuses to spawn a `.cmd` directly (CVE-2024-27980). Under `shell: true`
+ * an args *array* is deprecated — Node 24, which this repo's CI pins, prints
+ * `DEP0190 DeprecationWarning` on every Windows install — because the shell
+ * concatenates the array without escaping it. So the Windows leg does the
+ * concatenation itself and passes one command string: every argument this
+ * script spawns is a fixed literal (`ci`, `--ignore-scripts`), so there is
+ * nothing to escape and nothing to inject.
+ *
+ * `detached` is the POSIX half of the same story: it puts the child in its own
+ * process group `killTree` can signal as a unit. The two are mutually
+ * exclusive — Windows kills through `taskkill /T /F` instead.
+ *
+ * @param {string} command
+ * @param {string[]} args
+ * @param {NodeJS.Platform} [platform]
+ * @returns {{ command: string, args: string[], shell: boolean, detached: boolean }}
+ */
+function spawnShape(command, args, platform = process.platform) {
+  if (platform === 'win32') {
+    return { command: [command, ...args].join(' '), args: [], shell: true, detached: false };
+  }
+  return { command, args, shell: false, detached: true };
+}
+
+/**
  * Run a command under a wall-clock bound.
  *
  * @param {{ command: string, args: string[], cwd: string, timeoutMs: number, env?: NodeJS.ProcessEnv }} options
@@ -195,15 +236,13 @@ function killTree(child, signal) {
  */
 function spawnBounded({ command, args, cwd, timeoutMs, env = process.env }) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, {
+    const shape = spawnShape(command, args);
+    const child = spawn(shape.command, shape.args, {
       cwd,
       env,
       stdio: 'inherit',
-      // `shell` so `npm` resolves to `npm.cmd` on Windows; `detached` so the
-      // POSIX kill above can signal the whole group. The two are mutually
-      // exclusive in practice — Windows kills through taskkill /T instead.
-      shell: process.platform === 'win32',
-      detached: process.platform !== 'win32',
+      shell: shape.shell,
+      detached: shape.detached,
     });
 
     let timedOut = false;
@@ -378,9 +417,11 @@ module.exports = {
   MIN_ATTEMPT_MS,
   electronCacheDir,
   installWithRetries,
+  killTree,
   removeNodeModules,
   resolveBudget,
   spawnBounded,
+  spawnShape,
 };
 
 if (require.main === module) {
