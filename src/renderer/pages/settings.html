@@ -2223,6 +2223,18 @@
       };
       /* settings-search helpers: end */
 
+      // A section that filters rows out of its own DOM has to put them back
+      // before the index is read, and not only on the way out (`hashchange`):
+      // the page-wide field can be used without leaving the section at all —
+      // the results panel hides the sections without touching the hash — and
+      // a row the index cannot see is a setting this page reports as missing.
+      // Shortcuts' "Search shortcuts…" is the one view like that; it registers
+      // its reset here and the search calls it before every index build. Only
+      // a filter belongs in this list: it is a query the page-wide field is
+      // superseding, so dropping it loses nothing, which is not true of the
+      // half-filled forms Chains and RPC Providers park in the same way.
+      const settingsSearchResets = [];
+
       (() => {
         const input = $('settings-search');
         const panel = $('settings-search-results');
@@ -2278,6 +2290,7 @@
         // it is there. It is a few hundred elements — cheaper than keeping a
         // cache honest against four views that repaint on their own.
         const render = () => {
+          for (const reset of settingsSearchResets) reset();
           const query = input.value.trim();
           results = matchSettingsSearch(
             buildSettingsSearchIndex(content, { sectionLabels: NAV_LABELS, skip: [panel.id] }),
@@ -3177,6 +3190,7 @@
         let conflictState = null; // { id, accelerator, formatted, conflict }
         let rowNotice = null; // { id, message } transient validation notice
         let recordingHandler = null;
+        let recordingFocusHandler = null;
 
         const REASON_MESSAGES = {
           reserved: 'That combination is reserved and cannot be assigned.',
@@ -3311,6 +3325,10 @@
             window.removeEventListener('keydown', recordingHandler, true);
             recordingHandler = null;
           }
+          if (recordingFocusHandler) {
+            document.removeEventListener('focusin', recordingFocusHandler, true);
+            recordingFocusHandler = null;
+          }
           recordingId = null;
         };
 
@@ -3338,6 +3356,21 @@
           setStatus('');
           recordingId = id;
           render();
+
+          // Chrome's own recorder gives up when the row it is recording loses
+          // focus, and here it has to: the `keydown` listener below is on
+          // `window` in the capture phase, so it sees every keystroke on the
+          // page and calls `preventDefault()` on each one. A recording still
+          // armed once the user has clicked into another field eats what they
+          // type there — the page-wide search field included, where the first
+          // swallowed key is the one that would have covered this section and
+          // told the recording it was over.
+          recordingFocusHandler = (event) => {
+            if (view.contains(event.target)) return;
+            stopRecording();
+            render();
+          };
+          document.addEventListener('focusin', recordingFocusHandler, true);
 
           recordingHandler = async (event) => {
             event.preventDefault();
@@ -3426,6 +3459,34 @@
         searchInput?.addEventListener('input', () => {
           query = searchInput.value || '';
           render();
+        });
+
+        // This section stays in the DOM when it is hidden, and the page-wide
+        // search reads every section's live markup (`buildSettingsSearchIndex`
+        // above): a filter still applied here keeps every shortcut it excludes
+        // out of that index, so "zoom" answers "No settings match" from
+        // anywhere else on the page for the rest of the session — and a filter
+        // that matched nothing takes the whole section with it. So the view is
+        // put back whenever it is not the one on screen: on the way out of the
+        // section (the contract Chains and RPC Providers keep below) and
+        // before the page-wide field reads the page, which it can do without
+        // the hash ever changing. The transient row state goes the same way —
+        // a conflict banner is a `.row-label` the index would offer as a
+        // setting — and so does an armed recording, whose window-level
+        // `keydown` capture would otherwise go on swallowing every keystroke
+        // on the page.
+        const resetView = () => {
+          if (!query && !recordingId && !conflictState && !rowNotice) return;
+          stopRecording();
+          conflictState = null;
+          rowNotice = null;
+          query = '';
+          if (searchInput) searchInput.value = '';
+          render();
+        };
+        settingsSearchResets.push(resetView);
+        window.addEventListener('hashchange', () => {
+          if (resolveSection(location.hash) !== 'shortcuts') resetView();
         });
 
         restoreBtn?.addEventListener('click', async () => {

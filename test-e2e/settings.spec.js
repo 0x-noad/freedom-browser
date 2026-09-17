@@ -1067,6 +1067,167 @@ test.describe('Search settings (#281)', () => {
     await expect(page.locator('#pkey-alchemy')).toHaveCount(0);
   });
 
+  // The same contract from the other side: Shortcuts does not park a
+  // sub-route's view, it *removes rows*. Its own "Search shortcuts…" filter
+  // re-renders the section with the matches alone, so a filter still applied
+  // takes every shortcut it excludes out of the page-wide index — "zoom"
+  // answering "No settings match" for the rest of the session, and a filter
+  // that matched nothing taking the whole section with it. A filter is a
+  // query, not an edit, so it goes whenever this view is not the one on
+  // screen: on the way out of the section, and before the page-wide field
+  // reads the page — which it can do without the hash ever changing, since
+  // the results panel covers the section in place.
+  test('a shortcuts filter never takes the shortcuts it hides out of the search', async ({
+    window,
+    electronApp,
+  }) => {
+    await openSettings(window, expect);
+    let page;
+    await expect
+      .poll(() => {
+        page = electronApp
+          .windows()
+          .find((candidate) => candidate.url().includes('/pages/settings.html'));
+        return Boolean(page);
+      })
+      .toBe(true);
+
+    const search = (query) =>
+      page.evaluate((q) => {
+        const field = document.getElementById('settings-search');
+        field.value = q;
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        return Array.from(
+          document.querySelectorAll('#settings-search-list .settings-search-result'),
+          (row) => [
+            row.querySelector('.row-label').textContent,
+            row.querySelector('.settings-search-section').textContent,
+          ]
+        );
+      }, query);
+    const clearSearch = () =>
+      page.evaluate(() => {
+        const field = document.getElementById('settings-search');
+        field.value = '';
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    const filterShortcuts = (query) =>
+      page.evaluate((q) => {
+        const field = document.getElementById('shortcut-search');
+        field.value = q;
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      }, query);
+
+    await page.evaluate(() => {
+      location.hash = 'shortcuts';
+    });
+    await expect.poll(() => page.locator('#shortcuts-view .row').count()).toBeGreaterThan(1);
+    const rows = await page.locator('#shortcuts-view .row').count();
+    const control = { zoom: await search('zoom'), newTab: await search('new tab') };
+    expect(control.zoom).toEqual([
+      ['Zoom in', 'Shortcuts'],
+      ['Zoom out', 'Shortcuts'],
+    ]);
+    expect(control.newTab).toContainEqual(['New tab', 'Shortcuts']);
+    await clearSearch();
+
+    // Filtered down to one row, then left behind: the hidden section is back
+    // to the full list and answers as it did before.
+    await filterShortcuts('find');
+    expect(await page.locator('#shortcuts-view .row').count()).toBeLessThan(rows);
+    await page.evaluate(() => {
+      location.hash = 'appearance';
+    });
+    await expect(page.locator('#appearance')).toBeVisible();
+    expect(await page.locator('#shortcuts-view .row').count()).toBe(rows);
+    expect(await page.inputValue('#shortcut-search')).toBe('');
+    expect(await search('zoom')).toEqual(control.zoom);
+    await clearSearch();
+
+    // A filter matching nothing renders an empty-state card in place of every
+    // row, so it used to take the whole section out of the index with it.
+    await page.evaluate(() => {
+      location.hash = 'shortcuts';
+    });
+    await filterShortcuts('no shortcut is called this');
+    await expect(page.locator('#shortcuts-view .profile-node-empty')).toBeVisible();
+    await page.evaluate(() => {
+      location.hash = 'appearance';
+    });
+    await expect(page.locator('#appearance')).toBeVisible();
+    expect(await search('new tab')).toEqual(control.newTab);
+    await clearSearch();
+
+    // …and without leaving at all: the page-wide field covers the section in
+    // place, changing no hash, and still reads it unfiltered.
+    await page.evaluate(() => {
+      location.hash = 'shortcuts';
+    });
+    await filterShortcuts('find');
+    expect(await search('zoom')).toEqual(control.zoom);
+    await clearSearch();
+    await expect(page.locator('#shortcuts')).toBeVisible();
+  });
+
+  // A recording listens for `keydown` on `window` in the capture phase and
+  // calls `preventDefault()` on everything it sees, so one left armed once the
+  // user has moved on eats every keystroke on the page — the page-wide search
+  // field included, which would then answer nothing because nothing reached
+  // it.
+  test('a shortcut recording left armed does not swallow the page-wide search', async ({
+    window,
+    electronApp,
+  }) => {
+    await openSettings(window, expect);
+    let page;
+    await expect
+      .poll(() => {
+        page = electronApp
+          .windows()
+          .find((candidate) => candidate.url().includes('/pages/settings.html'));
+        return Boolean(page);
+      })
+      .toBe(true);
+
+    await page.evaluate(() => {
+      location.hash = 'shortcuts';
+    });
+    await expect
+      .poll(() => page.locator('#shortcuts-view .shortcut-binding').count())
+      .toBeGreaterThan(0);
+
+    // Arm a recording, then leave the section by hash (a nav click).
+    await page.locator('#shortcuts-view .shortcut-binding').first().click();
+    await expect(page.locator('#shortcuts-view .shortcut-binding.recording')).toHaveCount(1);
+    await page.evaluate(() => {
+      location.hash = 'appearance';
+    });
+    await expect(page.locator('#appearance')).toBeVisible();
+    await expect(page.locator('#shortcuts-view .shortcut-binding.recording')).toHaveCount(0);
+
+    const field = page.locator('#settings-search');
+    await field.click();
+    await page.keyboard.type('zoom');
+    await expect(field).toHaveValue('zoom');
+    await expect(
+      page.locator('#settings-search-list .settings-search-result').first()
+    ).toBeVisible();
+
+    // Same again without leaving: the results panel covers the section in
+    // place, so the recording has to stand down on the first key it sees
+    // rather than eating it.
+    await field.fill('');
+    await page.evaluate(() => {
+      location.hash = 'shortcuts';
+    });
+    await page.locator('#shortcuts-view .shortcut-binding').first().click();
+    await expect(page.locator('#shortcuts-view .shortcut-binding.recording')).toHaveCount(1);
+    await field.click();
+    await page.keyboard.type('zoom in');
+    await expect(field).toHaveValue('zoom in');
+    await expect(page.locator('#shortcuts-view .shortcut-binding.recording')).toHaveCount(0);
+  });
+
   // The results panel replaces the open section but is deliberately not one
   // of the nav's own sections, so nothing but the search itself can hide it:
   // every way of leaving for a section — a nav click, back/forward, a deep
