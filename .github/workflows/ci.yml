@@ -807,6 +807,58 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # Issue #346 — a Chrome Web Store page killed the browser process on Electron
+  # 44.3.0: Chromium 152 exposes `chrome.webstorePrivate` to ordinary web pages
+  # on the store origin, and Electron has no delegate behind it. Live, because
+  # the exposure is keyed on the real origin — no fixture page can stand in for
+  # it. Unlike e2e-ant this needs no bundled node, so there is nothing to
+  # download first and the spec seeds node autostart off.
+  e2e-chrome-webstore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      # electron 44 ships no postinstall script: `node_modules/electron/index.js`
+      # downloads the binary on the first `require('electron')`, which is what
+      # Playwright does when it launches the app. Pull it here so a cold
+      # download cannot eat into the fixture's 60s launch budget — and so this
+      # step, not a test failure, is what reports a broken download.
+      - name: Warm the Electron binary download
+        run: node -e "require('electron')"
+
+      - name: Run Chrome Web Store live E2E (headless)
+        run: xvfb-run -a npm run test:e2e:live -- test-e2e/live/chrome-webstore.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-chrome-webstore-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Issue #69 — address-bar clipboard: Win/Linux menu wiring + chrome context menu (all platforms).
   e2e-address-bar-clipboard:
     strategy:

@@ -73,9 +73,9 @@ runs:
       run: |
         set -euo pipefail
         if [ "$CACHE_HIT" = 'true' ]; then
-          echo "[install-node-deps] Electron download cache HIT for ${CACHE_VERSION} (${CACHE_DIR}) — postinstall will not download Electron"
+          echo "[install-node-deps] Electron download cache HIT for ${CACHE_VERSION} (${CACHE_DIR}) — the binary will not be downloaded again"
         else
-          echo "[install-node-deps] Electron download cache MISS for ${CACHE_VERSION} (${CACHE_DIR}) — postinstall will download it and this job will populate the cache"
+          echo "[install-node-deps] Electron download cache MISS for ${CACHE_VERSION} (${CACHE_DIR}) — it will be downloaded on first use and this job will populate the cache"
         fi
 
     # `scripts/better-sqlite3-prebuilds.js`, the other half of `postinstall`,
