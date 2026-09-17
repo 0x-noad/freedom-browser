@@ -520,9 +520,12 @@ jobs:
   # jest mock can stand in for (that is exactly how #355 happened: the external
   # IPFS gateway proxy used undici, whose sockets never see the session). This
   # runs the one suite that spawns a real Electron process to check it. The
-  # `test` job installs with `--ignore-scripts` and therefore has no Electron
-  # binary, so the suite self-skips there; `FREEDOM_ELECTRON_NET_TEST=1` makes a
-  # missing binary a failure here rather than a silent skip.
+  # suite self-skips wherever the Electron binary cannot be resolved;
+  # `FREEDOM_ELECTRON_NET_TEST=1` makes a missing binary a failure here rather
+  # than a silent skip. (`--ignore-scripts` is not what decides that: the
+  # `electron` package has no postinstall, so `require('electron')` downloads
+  # the binary on first use in whichever job asks for it — including the
+  # `test` job, where it lands uncached.)
   ipfs-gateway-proxy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
