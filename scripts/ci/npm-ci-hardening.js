@@ -39,23 +39,36 @@
  *
  * Sizing (measured, not round numbers)
  * ------------------------------------
- * Across two healthy CI runs (35154835232, 35150253743) the "Install
- * dependencies" step took 7-44s on Linux, 10-75s on macOS and 30-251s on
- * Windows — the slow end being a full `npm ci` whose Electron postinstall
- * downloads the zip. The per-attempt default of 420s is ~1.7x the slowest
- * healthy install observed, and the Electron download cache the composite
- * action restores removes most of what made that install slow in the first
- * place. The 600s total means the step reports a real failure around the
- * 10-minute mark, comfortably inside the smallest job cap (15 minutes) even
- * after checkout, setup-node and the apt legs have taken their share.
+ * Windows gets its own, larger numbers because its measured distribution is a
+ * different animal, not because the platform feels slow. Healthy `npm ci`
+ * durations observed across CI runs 35154835232, 35150253743 and 35205465778:
+ *
+ *   Linux    7-44s      macOS   10-77s      Windows   30-337s
+ *
+ * The Windows tail is real rather than a one-off — 251s before this change and
+ * 337s after it, on a run where the Electron download was a *cache hit* and
+ * three sibling Windows jobs finished the same install in 106-122s. So a bound
+ * generous enough for Windows would be ~7x the whole healthy range everywhere
+ * else, and one tight enough elsewhere would false-kill a healthy Windows
+ * install. Hence:
+ *
+ *                 per attempt   step budget   headroom over the slowest
+ *   Windows       540s          660s          1.6x (337s)
+ *   Linux/macOS   300s          600s          3.9x (77s)
+ *
+ * Both budgets have to leave the job's own `timeout-minutes` room to report a
+ * real failure rather than cancelling: the tightest cap on any job that
+ * installs is 15 minutes (`.github/workflows/ci.yml`), and the slowest observed
+ * checkout + setup-node preflight is 102s — 660 + 102 is 12.7 minutes, inside
+ * it. Do not raise the step budget without re-checking that sum.
  *
  * Usage:
  *   node scripts/ci/npm-ci-hardening.js [--ignore-scripts]
  *
  * Tunables (environment):
  *   FREEDOM_CI_NPM_ATTEMPTS          attempts                (default 3)
- *   FREEDOM_CI_NPM_ATTEMPT_TIMEOUT   seconds per attempt     (default 420)
- *   FREEDOM_CI_NPM_TOTAL_TIMEOUT     seconds for all of them (default 600)
+ *   FREEDOM_CI_NPM_ATTEMPT_TIMEOUT   seconds per attempt     (default 540/300)
+ *   FREEDOM_CI_NPM_TOTAL_TIMEOUT     seconds for all of them (default 660/600)
  */
 
 const { spawn } = require('child_process');
@@ -66,8 +79,26 @@ const path = require('path');
 const REPO_ROOT = path.join(__dirname, '..', '..');
 
 const DEFAULT_ATTEMPTS = 3;
-const DEFAULT_ATTEMPT_TIMEOUT_MS = 420_000;
-const DEFAULT_TOTAL_TIMEOUT_MS = 600_000;
+
+/**
+ * Per-platform wall-clock defaults. See the "Sizing" section of the header for
+ * where each number comes from; the short version is that a healthy Windows
+ * install has been measured at up to 337s and a healthy install anywhere else
+ * at up to 77s, so one bound cannot serve both without either false-killing
+ * Windows or letting a Linux stall run for minutes it does not need.
+ */
+const PLATFORM_DEFAULTS = {
+  win32: { attemptTimeoutMs: 540_000, totalBudgetMs: 660_000 },
+  default: { attemptTimeoutMs: 300_000, totalBudgetMs: 600_000 },
+};
+
+/**
+ * @param {NodeJS.Platform} [platform]
+ * @returns {{ attemptTimeoutMs: number, totalBudgetMs: number }}
+ */
+function defaultBudget(platform = process.platform) {
+  return PLATFORM_DEFAULTS[platform] || PLATFORM_DEFAULTS.default;
+}
 
 /** Grace between SIGTERM and SIGKILL for a timed-out attempt. */
 const KILL_GRACE_MS = 30_000;
@@ -112,14 +143,16 @@ function readPositiveInt(env, name, fallback) {
  * Resolve the attempt/timeout budget from the environment.
  *
  * @param {NodeJS.ProcessEnv} [env]
+ * @param {NodeJS.Platform} [platform]
  * @returns {{ attempts: number, attemptTimeoutMs: number, totalBudgetMs: number }}
  */
-function resolveBudget(env = process.env) {
+function resolveBudget(env = process.env, platform = process.platform) {
+  const defaults = defaultBudget(platform);
   const attempts = readPositiveInt(env, 'FREEDOM_CI_NPM_ATTEMPTS', DEFAULT_ATTEMPTS);
   const attemptTimeoutMs =
-    readPositiveInt(env, 'FREEDOM_CI_NPM_ATTEMPT_TIMEOUT', DEFAULT_ATTEMPT_TIMEOUT_MS / 1000) * 1000;
+    readPositiveInt(env, 'FREEDOM_CI_NPM_ATTEMPT_TIMEOUT', defaults.attemptTimeoutMs / 1000) * 1000;
   const totalBudgetMs =
-    readPositiveInt(env, 'FREEDOM_CI_NPM_TOTAL_TIMEOUT', DEFAULT_TOTAL_TIMEOUT_MS / 1000) * 1000;
+    readPositiveInt(env, 'FREEDOM_CI_NPM_TOTAL_TIMEOUT', defaults.totalBudgetMs / 1000) * 1000;
   return { attempts, attemptTimeoutMs, totalBudgetMs };
 }
 
@@ -265,8 +298,8 @@ function electronCacheDir({ platform = process.platform, env = process.env, home
 async function installWithRetries({
   ignoreScripts = false,
   attempts = DEFAULT_ATTEMPTS,
-  attemptTimeoutMs = DEFAULT_ATTEMPT_TIMEOUT_MS,
-  totalBudgetMs = DEFAULT_TOTAL_TIMEOUT_MS,
+  attemptTimeoutMs = defaultBudget().attemptTimeoutMs,
+  totalBudgetMs = defaultBudget().totalBudgetMs,
   cwd = REPO_ROOT,
   run = spawnBounded,
   clean = removeNodeModules,
@@ -340,8 +373,8 @@ async function installWithRetries({
 
 module.exports = {
   DEFAULT_ATTEMPTS,
-  DEFAULT_ATTEMPT_TIMEOUT_MS,
-  DEFAULT_TOTAL_TIMEOUT_MS,
+  PLATFORM_DEFAULTS,
+  defaultBudget,
   MIN_ATTEMPT_MS,
   electronCacheDir,
   installWithRetries,

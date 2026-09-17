@@ -16,8 +16,8 @@ const path = require('path');
 
 const {
   DEFAULT_ATTEMPTS,
-  DEFAULT_ATTEMPT_TIMEOUT_MS,
-  DEFAULT_TOTAL_TIMEOUT_MS,
+  PLATFORM_DEFAULTS,
+  defaultBudget,
   electronCacheDir,
   installWithRetries,
   resolveBudget,
@@ -118,9 +118,10 @@ describe('npm-ci-hardening install loop', () => {
   });
 
   // The retry loop is only useful if the whole of it still fits inside the
-  // job's timeout-minutes: three unbounded 420s attempts would add up to 21
-  // minutes, and most jobs in ci.yml cap themselves at 15. The step budget is
-  // what turns that into a reported failure instead of a cancellation.
+  // job's timeout-minutes: three full-length attempts always add up to more
+  // than the step budget (and, on Windows, to 27 minutes against a 15-minute
+  // cap). The budget is what turns that into a reported failure rather than a
+  // cancellation, by clamping the attempt that would overrun it.
   test('the step budget caps a later attempt rather than starting a full one', async () => {
     const clock = fakeClock();
     const { run, calls } = scriptedRunner([{ timedOut: true }, { timedOut: true }], { clock });
@@ -141,43 +142,68 @@ describe('npm-ci-hardening install loop', () => {
     expect(result.reason).toMatch(/ran out of its 600s budget after 2 attempts/);
   });
 
-  test('the defaults keep the whole step inside the smallest job cap', () => {
-    // ci.yml's tightest `timeout-minutes` is 15; checkout + setup-node + the
-    // apt legs run before this one.
-    expect(DEFAULT_ATTEMPTS * DEFAULT_ATTEMPT_TIMEOUT_MS).toBeGreaterThan(DEFAULT_TOTAL_TIMEOUT_MS);
-    expect(DEFAULT_TOTAL_TIMEOUT_MS).toBeLessThan(15 * 60 * 1000);
-    // ...and still leave room for the slowest healthy install observed on a
-    // Windows runner (251s on run 35150253743).
-    expect(DEFAULT_ATTEMPT_TIMEOUT_MS).toBeGreaterThan(251_000);
+  // Every number below is measured; see the module header. This test exists so
+  // that a future edit to one of them has to face the constraint that sized it.
+  test.each([
+    // platform, slowest healthy install observed, slowest preflight observed
+    ['win32', 337_000, 102_000],
+    ['linux', 44_000, 102_000],
+    ['darwin', 77_000, 102_000],
+  ])('the %s defaults bound the step inside the job cap without false-killing a healthy install', (
+    platform,
+    slowestHealthyMs,
+    slowestPreflightMs
+  ) => {
+    const { attemptTimeoutMs, totalBudgetMs } = defaultBudget(platform);
+
+    // A healthy install must fit in one attempt, with room to spare.
+    expect(attemptTimeoutMs).toBeGreaterThan(slowestHealthyMs * 1.5);
+    // The retry loop must be the thing that gives up, not timeout-minutes:
+    // ci.yml's tightest cap is 15 minutes and the preflight runs before us.
+    expect(totalBudgetMs + slowestPreflightMs).toBeLessThan(15 * 60 * 1000);
+    // ...and the budget has to be the binding constraint, or it is decoration.
+    expect(DEFAULT_ATTEMPTS * attemptTimeoutMs).toBeGreaterThan(totalBudgetMs);
+  });
+
+  test('an unknown platform falls back to the non-Windows defaults', () => {
+    expect(defaultBudget('freebsd')).toEqual(PLATFORM_DEFAULTS.default);
   });
 });
 
 describe('npm-ci-hardening budget resolution', () => {
-  test('defaults apply when nothing is set', () => {
-    expect(resolveBudget({})).toEqual({
+  test('defaults apply when nothing is set, per platform', () => {
+    expect(resolveBudget({}, 'linux')).toEqual({
       attempts: DEFAULT_ATTEMPTS,
-      attemptTimeoutMs: DEFAULT_ATTEMPT_TIMEOUT_MS,
-      totalBudgetMs: DEFAULT_TOTAL_TIMEOUT_MS,
+      ...PLATFORM_DEFAULTS.default,
+    });
+    expect(resolveBudget({}, 'win32')).toEqual({
+      attempts: DEFAULT_ATTEMPTS,
+      ...PLATFORM_DEFAULTS.win32,
     });
   });
 
   test('environment overrides are read in seconds', () => {
     expect(
-      resolveBudget({
-        FREEDOM_CI_NPM_ATTEMPTS: '2',
-        FREEDOM_CI_NPM_ATTEMPT_TIMEOUT: '30',
-        FREEDOM_CI_NPM_TOTAL_TIMEOUT: '90',
-      })
+      resolveBudget(
+        {
+          FREEDOM_CI_NPM_ATTEMPTS: '2',
+          FREEDOM_CI_NPM_ATTEMPT_TIMEOUT: '30',
+          FREEDOM_CI_NPM_TOTAL_TIMEOUT: '90',
+        },
+        'win32'
+      )
     ).toEqual({ attempts: 2, attemptTimeoutMs: 30_000, totalBudgetMs: 90_000 });
   });
 
   test('a nonsense override falls back to the default instead of disabling the bound', () => {
-    expect(resolveBudget({ FREEDOM_CI_NPM_ATTEMPT_TIMEOUT: '0' }).attemptTimeoutMs).toBe(
-      DEFAULT_ATTEMPT_TIMEOUT_MS
+    expect(resolveBudget({ FREEDOM_CI_NPM_ATTEMPT_TIMEOUT: '0' }, 'linux').attemptTimeoutMs).toBe(
+      PLATFORM_DEFAULTS.default.attemptTimeoutMs
     );
-    expect(resolveBudget({ FREEDOM_CI_NPM_ATTEMPTS: 'lots' }).attempts).toBe(DEFAULT_ATTEMPTS);
-    expect(resolveBudget({ FREEDOM_CI_NPM_TOTAL_TIMEOUT: ' ' }).totalBudgetMs).toBe(
-      DEFAULT_TOTAL_TIMEOUT_MS
+    expect(resolveBudget({ FREEDOM_CI_NPM_ATTEMPTS: 'lots' }, 'linux').attempts).toBe(
+      DEFAULT_ATTEMPTS
+    );
+    expect(resolveBudget({ FREEDOM_CI_NPM_TOTAL_TIMEOUT: ' ' }, 'linux').totalBudgetMs).toBe(
+      PLATFORM_DEFAULTS.default.totalBudgetMs
     );
   });
 });
