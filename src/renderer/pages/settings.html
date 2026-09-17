@@ -2152,6 +2152,13 @@
       // `sectionLabels` maps a section id to its nav label, the fallback for
       // the sections whose `<h2>` comes from a view template that has not
       // rendered yet (Chains, RPC Providers, Site Permissions).
+      //
+      // The heading is read from the section's *live* DOM, which is only the
+      // right answer if a hidden section's markup still describes where its
+      // rows are. That is the controllers' side of the contract: a view
+      // rendered per sub-route has to render itself back when the sub-route
+      // is left, or its heading and its rows both go on answering for the
+      // section after the user has gone (see Chains' `hashchange` below).
       const buildSettingsSearchIndex = (content, { sectionLabels = {}, skip = [] } = {}) => {
         const index = [];
         for (const section of Array.from(content?.children || [])) {
@@ -4292,16 +4299,26 @@
           }
         });
 
-        // The hash drives list↔detail; entering the section also re-syncs
-        // (config may have changed elsewhere). The transient add/edit form
-        // is cleared on any navigation.
+        // The hash drives list↔detail, so every hash change re-renders —
+        // leaving the section included, not only entering it. The section
+        // stays in the DOM when it is hidden and `render()` reads the
+        // sub-route off the hash, which by now names somewhere else, so this
+        // is what puts the view back to the chain list. Returning early
+        // instead parks the visited chain's detail in the hidden section for
+        // the rest of the session, and the page-wide search indexes every
+        // section's live markup: it would go on offering that chain's
+        // endpoint rows as results that jump to a list holding no such row,
+        // under an `<h2>` reading the chain's name where the section's own
+        // "Chains" heading belongs. Only the re-sync is gated on entering —
+        // leaving is not a visit. The transient add/edit form is cleared on
+        // any navigation either way.
         window.addEventListener('hashchange', () => {
-          if (resolveSection(location.hash) !== 'chains') return;
+          const entering = resolveSection(location.hash) === 'chains';
           clearTimeout(searchTimer);
           endpointForm = null;
           addState = null;
           render(); // instant list<->detail swap from cached config
-          reload(); // then re-sync in case it changed elsewhere
+          if (entering) reload(); // then re-sync in case it changed elsewhere
         });
 
         reload();
@@ -5018,9 +5035,19 @@
           }
         });
 
-        // Re-sync on navigation into this section.
+        // Re-sync on navigation into this section. Navigating *away* drops
+        // the open key field too — the same shape as Chains above: this
+        // section stays in the DOM when hidden, so an abandoned edit would
+        // otherwise sit there with a typed API key in it until the user came
+        // back.
         window.addEventListener('hashchange', () => {
-          if (resolveSection(location.hash) !== 'rpc') return;
+          if (resolveSection(location.hash) !== 'rpc') {
+            if (keyFor !== null) {
+              keyFor = null;
+              render();
+            }
+            return;
+          }
           keyFor = null;
           reload();
         });

@@ -965,6 +965,108 @@ test.describe('Search settings (#281)', () => {
     await expect.poll(revealed).toEqual(['read', 'Direct RPC']);
   });
 
+  // The index is built from every section's live DOM, hidden ones included —
+  // which is what makes a setting findable before you have ever opened the
+  // section it is in. The cost is that a section left painted in a state the
+  // URL has moved on from goes on answering for itself: a visited chain's
+  // detail used to sit parked in the hidden Chains section for the rest of
+  // the session, offering that chain's endpoint rows as results that jump to
+  // a chain list holding no such row, under an `<h2>` reading the chain's
+  // name where "Chains" belongs. The section has to render itself back — and
+  // so does its sibling, RPC Providers, whose own transient view state (a
+  // provider's key field, opened by "Add key") was cleared on the way in but
+  // not on the way out.
+  test('a section you have left is not left painted in the state you left it in', async ({
+    window,
+    electronApp,
+  }) => {
+    await openSettings(window, expect);
+    let page;
+    await expect
+      .poll(() => {
+        page = electronApp
+          .windows()
+          .find((candidate) => candidate.url().includes('/pages/settings.html'));
+        return Boolean(page);
+      })
+      .toBe(true);
+
+    // What a fresh page answers, before any chain detail has been opened.
+    const search = (query) =>
+      page.evaluate((q) => {
+        const field = document.getElementById('settings-search');
+        field.value = q;
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        return Array.from(
+          document.querySelectorAll('#settings-search-list .settings-search-result'),
+          (row) => [
+            row.querySelector('.row-label').textContent,
+            row.querySelector('.settings-search-section').textContent,
+          ]
+        );
+      }, query);
+    const control = { chains: await search('chains'), direct: await search('direct rpc') };
+    expect(control.chains).toContainEqual(['Chains', 'Chains']);
+    expect(control.direct).toEqual([['Direct RPC', 'Name Resolution']]);
+    await page.evaluate(() => {
+      const field = document.getElementById('settings-search');
+      field.value = '';
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    // Open Ethereum's detail, wait for it to paint, then leave.
+    await page.evaluate(() => {
+      location.hash = 'chains/1';
+    });
+    await expect
+      .poll(() => page.locator('#chains-view [data-access-kind="broadcast"]').count())
+      .toBeGreaterThan(0);
+    await page.evaluate(() => {
+      location.hash = 'appearance';
+    });
+    await expect(page.locator('#appearance')).toBeVisible();
+
+    // The hidden section is back to the list it would show if you opened it.
+    await expect
+      .poll(() => page.locator('#chains-view .section-title').textContent())
+      .toBe('Chains');
+    expect(await page.locator('#chains-view [data-access-kind]').count()).toBe(0);
+
+    // …so the search reads exactly as it did before the detour: no stale
+    // endpoint rows, and "chains" still reaches the Chains section.
+    expect(await search('direct rpc')).toEqual(control.direct);
+    expect(await search('chains')).toEqual(control.chains);
+    expect(await search('ethereum.publicnode.com')).toEqual([]);
+
+    // And the list is not a one-way door: the detail still opens.
+    await page.evaluate(() => {
+      const field = document.getElementById('settings-search');
+      field.value = '';
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+      location.hash = 'chains/1';
+    });
+    await expect
+      .poll(() => page.locator('#chains-view [data-access-kind="broadcast"]').count())
+      .toBeGreaterThan(0);
+
+    // The sibling: an abandoned "Add key" edit does not stay open in the
+    // hidden RPC Providers section with whatever was typed into it.
+    await page.evaluate(() => {
+      location.hash = 'rpc';
+    });
+    await expect
+      .poll(() => page.locator('#rpc-view [data-action="edit-key"]').count())
+      .toBeGreaterThan(0);
+    await page.locator('#rpc-view [data-action="edit-key"][data-id="alchemy"]').click();
+    await expect(page.locator('#pkey-alchemy')).toBeVisible();
+    await page.locator('#pkey-alchemy').fill('secret-key');
+    await page.evaluate(() => {
+      location.hash = 'appearance';
+    });
+    await expect(page.locator('#appearance')).toBeVisible();
+    await expect(page.locator('#pkey-alchemy')).toHaveCount(0);
+  });
+
   // The results panel replaces the open section but is deliberately not one
   // of the nav's own sections, so nothing but the search itself can hide it:
   // every way of leaving for a section — a nav click, back/forward, a deep
