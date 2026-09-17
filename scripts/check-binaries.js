@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { validateInstalledAddon } = require('./fetch-myotis');
+const { checkInstalledElectronVersion } = require('./check-electron-version');
 
 const ANT_BIN_DIR = path.join(__dirname, '..', 'ant-bin');
 const FREEDOM_IPFS_NATIVE_PREBUILDS_DIR = path.join(
@@ -168,6 +169,19 @@ function ensureOptionalArti(platforms) {
 function main() {
   const platforms = getPlatformArch();
   console.log(`Checking binaries for: ${platforms.map((p) => `${p.os}-${p.arch}`).join(', ')}`);
+
+  // electron-builder packages whatever Electron is in node_modules
+  // (app-builder-lib's computeElectronVersion() reads
+  // node_modules/electron/package.json), not what the lockfile pins. A stale
+  // install ships — and gets smoke-tested as — a different Electron from the
+  // one CI tested (issue #346).
+  const electronProblems = checkInstalledElectronVersion();
+  if (electronProblems.length > 0) {
+    console.error('\n❌ Build cannot proceed. Electron version mismatch:\n');
+    electronProblems.forEach((p) => console.error(`  - ${p}`));
+    console.error('');
+    process.exit(1);
+  }
 
   const missing = checkBinaries(platforms);
 

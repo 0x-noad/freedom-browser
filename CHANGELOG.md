@@ -23,6 +23,11 @@ All notable changes to Freedom will be documented in this file.
 
 ### Fixed
 
+- Opening a Chrome Web Store page no longer crashes Freedom
+  - Visiting an extension's page on `chromewebstore.google.com` — by clicking a card on the store, or by going straight to the address — closed the whole browser about a second later, taking every open tab and window with it
+  - The store was being handed an internal Chrome extension-installation API that Freedom does not implement, and the store's first call into it brought the browser down. The page is now served the same way any other site is, with no such API in it
+  - Freedom still cannot install Chrome extensions; the store's pages simply read like any other website now
+
 - Visiting a site no longer downloads its page twice
   - Finding a site's icon used to mean fetching the page a second time behind your back — without your cookies or session — purely to read its `<link rel="icon">` tag. Every site you visited saw two requests for the same address, one signed in and one not
   - On sites that gate content — a paywall, a paid session, a rate limit, a login — that second anonymous request could be refused, logged as a failed visit, or counted against your quota
