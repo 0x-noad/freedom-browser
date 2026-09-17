@@ -26,7 +26,7 @@ run-name: >-
 #     default, set `signed: false` for a pipeline test without secrets.
 #     Dispatch runs only upload workflow artifacts, never a release —
 #     unless `nightly` + `publish_nightly` are ticked (see below).
-#   - schedule (03:23 UTC daily): a nightly build of `main` for internal
+#   - schedule (22:07 UTC daily): a nightly build of `main` for internal
 #     testers. The `plan` job stamps a
 #     `<version>-nightly.<date>.<sha>` version, every build job is signed
 #     and bundles Tor exactly like a tag push, the artifacts publish to the
@@ -56,12 +56,14 @@ on:
     tags:
       - 'v*'
   schedule:
-    # 03:23 UTC (05:23 CEST / 04:23 CET) — after the European working day,
-    # so a tester picks the night's build up in the morning. Off the top of
-    # the hour on purpose: GitHub queues scheduled runs and the :00 minute is
-    # its most congested slot; on this repo the 03:00 schedule fired ~5 hours
-    # late on 2026-09-15 and not at all by 07:15 UTC on 2026-09-16.
-    - cron: '23 3 * * *'
+    # 22:07 UTC (00:07 CEST / 23:07 CET). GitHub has fired this repo's
+    # schedule ~5 hours late on every observed night whatever the minute
+    # (03:00 → 08:04, 03:23 → 08:45 UTC), and a signed nightly takes ~35 min.
+    # Scheduling just after the European day ends puts the build in testers'
+    # hands by 07:00 CEST even with a six-hour delay, and simply lands it
+    # earlier on a night GitHub is punctual; the skip check makes a late or
+    # duplicate fire harmless.
+    - cron: '7 22 * * *'
   workflow_dispatch:
     inputs:
       nightly:
@@ -1571,7 +1573,7 @@ jobs:
 
           ## Before you install
 
-          - **Internal testing only.** A nightly is whatever was on \`main\` at 03:23 UTC. It has passed the packaged smoke tests on every platform and nothing else; expect breakage, and do not hand these out.
+          - **Internal testing only.** A nightly is whatever was on \`main\` when the schedule fired (22:07 UTC, often hours later). It has passed the packaged smoke tests on every platform and nothing else; expect breakage, and do not hand these out.
           - **Updates come from the \`nightly\` channel.** A nightly updates itself to the next nightly. It never offers a stable release, and no stable install on freedom.baby is ever offered a nightly. To go back to stable, uninstall the nightly and install the latest release.
           - **Use a separate profile.** Nightly and stable share an app id and a profile directory, so run the nightly against a scratch one and a broken migration cannot touch your real data: set \`FREEDOM_TEST_USER_DATA\` to a throwaway directory when launching (see docs/agent-playbooks/release-process.md §6).
           NOTES
