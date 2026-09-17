@@ -201,6 +201,42 @@ describe('cargo network failures', () => {
   ])('classifies %s', (output, retryable) => {
     expect(isRetryableCargoFailure(output)).toBe(retryable);
   });
+
+  // The classifier reads a 64KB *tail*, not the last line: a network hiccup
+  // cargo recovered from on its own can still be sitting in it when the build
+  // later dies of something deterministic. Retrying that spends four
+  // multi-minute builds on a failure that reproduces identically.
+  test.each([
+    [
+      'MSRV failure right after a recovered download',
+      'warning: spurious network error (3 tries remaining): [7] Could not connect to server\n' +
+        '    Downloaded 412 crates in 21.03s\n' +
+        'error: package `arti v2.6.0` cannot be built because it requires rustc 1.91.0',
+    ],
+    [
+      'compile error right after a recovered download',
+      'warning: spurious network error (2 tries remaining): [28] Timeout was reached\n' +
+        'error[E0433]: failed to resolve: use of undeclared crate or module `tor_rtcompat`\n' +
+        'error: could not compile `tor-proto` (lib) due to 1 previous error',
+    ],
+    [
+      'Windows link failure right after a recovered download',
+      'warning: spurious network error (3 tries remaining): connection reset\n' +
+        "LINK : fatal error LNK1181: cannot open input file 'sqlite3.lib'",
+    ],
+  ])('does not retry a deterministic failure: %s', (_name, output) => {
+    expect(isRetryableCargoFailure(output)).toBe(false);
+  });
+
+  // The veto must not swallow the case this retry loop exists for. `cargo
+  // install` wraps a *download* failure in its own `failed to compile` line,
+  // which is why that phrase is deliberately not a deterministic marker.
+  test('still retries a crate download failure cargo wrapped as a compile failure', () => {
+    const output =
+      'error: failed to compile `arti v2.6.0`, intermediate artifacts can be found at `/tmp/arti-install-x`\n' +
+      '\nCaused by:\n  failed to download from `https://static.crates.io/crates/tor-proto/2.6.0/download`';
+    expect(isRetryableCargoFailure(output)).toBe(true);
+  });
 });
 
 describe('buildArti', () => {

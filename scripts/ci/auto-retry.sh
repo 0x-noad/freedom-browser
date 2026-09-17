@@ -10,8 +10,12 @@
 #
 # The rules, and why:
 #
-#   - Only `failure` and `cancelled` runs. A job that hits `timeout-minutes`
-#     reports as *cancelled*, and a hang is exactly the case worth retrying.
+#   - Only `failure`, `cancelled` and `timed_out` runs. A job that hits
+#     `timeout-minutes` reports as *cancelled* today (verified on run
+#     35130040315), and a hang is exactly the case worth retrying; `timed_out`
+#     is accepted alongside it because it is the conclusion the REST API
+#     documents for that state and nothing but the accept-list decides whether
+#     a hang is absorbed.
 #   - Only `run_attempt == 1`. A run that fails twice is a real signal; a
 #     retry loop would hide it and burn runner minutes.
 #   - Not when a newer run for the same workflow, branch and event already
@@ -51,7 +55,7 @@ EVENT_NAME="${EVENT_NAME:?EVENT_NAME must be set}"
 log() { printf 'auto-retry: %s\n' "$*"; }
 
 case "$CONCLUSION" in
-  failure | cancelled) ;;
+  failure | cancelled | timed_out) ;;
   *)
     log "$WORKFLOW_NAME run $RUN_ID concluded '$CONCLUSION' — nothing to re-run. $RUN_URL"
     exit 0
@@ -77,10 +81,10 @@ fi
 
 failed_jobs="$(
   gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/1/jobs?per_page=100" \
-    --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled") | .name'
+    --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | .name'
 )"
 if [ -z "$failed_jobs" ]; then
-  log "$WORKFLOW_NAME run $RUN_ID has no failed or cancelled jobs on attempt 1 — nothing to re-run. $RUN_URL"
+  log "$WORKFLOW_NAME run $RUN_ID has no failed, cancelled or timed-out jobs on attempt 1 — nothing to re-run. $RUN_URL"
   exit 0
 fi
 

@@ -182,9 +182,29 @@ function checkRustVersion(cargoVersionOutput, artiVersion = ARTI_VERSION) {
 const RETRYABLE_CARGO_OUTPUT =
   /(spurious network error|failed to download|failed to fetch|network failure|error sending request|connection reset|connection closed|could not resolve host|temporary failure in name resolution|operation timed out|timed out|unexpected eof|failed to get 200 response|failed to update registry)/i;
 
+/**
+ * Deterministic failures, which *veto* the network match above. The tail is a
+ * window over the whole build, not just its last line, so a network hiccup
+ * cargo recovered from on its own ("warning: spurious network error (3 tries
+ * remaining)") can still be sitting in it when the build later dies of an MSRV
+ * or compile error — a positive network match alone would then spend four
+ * multi-minute attempts on a failure that reproduces identically. A build that
+ * got far enough to emit one of these reached rustc or the linker, so whatever
+ * the network did earlier it recovered from.
+ *
+ * Only markers that rustc, the linker or the MSRV check emit are listed.
+ * Cargo's own `failed to compile \`arti v2.6.0\`` wrapper is deliberately *not*
+ * here: `cargo install` wraps a crate *download* failure in it too, so vetoing
+ * on it would stop retrying the exact class this loop exists for.
+ */
+const DETERMINISTIC_CARGO_OUTPUT =
+  /(error\[E\d+\]|LNK\d{4}|requires rustc|could not compile|linking with .* failed)/i;
+
 /** @param {string} output cargo's stderr (tail) */
 function isRetryableCargoFailure(output) {
-  return RETRYABLE_CARGO_OUTPUT.test(String(output || ''));
+  const text = String(output || '');
+  if (DETERMINISTIC_CARGO_OUTPUT.test(text)) return false;
+  return RETRYABLE_CARGO_OUTPUT.test(text);
 }
 
 // Enough of cargo's stderr to classify the failure, without holding a whole

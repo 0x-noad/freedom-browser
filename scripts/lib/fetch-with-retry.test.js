@@ -27,6 +27,7 @@ const {
   MAX_ATTEMPTS,
   TIMEOUTS,
   IDLE_TIMEOUT_MS,
+  STALE_TEMP_FILE_MS,
   HttpStatusError,
   isRetryableStatus,
   isRetryableError,
@@ -428,6 +429,64 @@ describe('downloadToFile', () => {
     );
     expect(fs.existsSync(destination)).toBe(false);
     expect(fs.readdirSync(path.dirname(destination))).toEqual([]);
+  });
+
+  // A SIGKILL mid-download (a cancelled CI job, a Ctrl-C) runs no cleanup, and
+  // every attempt picks a fresh random suffix, so nothing later would ever
+  // overwrite the orphan — it just sits in `ant-bin/<os>-<arch>/` until a
+  // packaged build's `**/*` extraResources glob ships it.
+  test('sweeps the .part-* files a killed download orphaned', async () => {
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    const orphan = `${destination}.part-deadbeefcafe`;
+    fs.writeFileSync(orphan, 'half an archive');
+    const longAgo = Date.now() / 1000 - STALE_TEMP_FILE_MS / 1000 - 60;
+    fs.utimesSync(orphan, longAgo, longAgo);
+
+    mockResponses([{ statusCode: 200, body: 'payload' }]);
+    await downloadToFile(URL_UNDER_TEST, destination, quiet);
+
+    expect(fs.readdirSync(path.dirname(destination))).toEqual(['asset.bin']);
+  });
+
+  // Another process may be downloading the same asset right now; its temp file
+  // is being written to, so it is young, and deleting it would break a download
+  // this one knows nothing about.
+  test('leaves a young .part-* file alone — it may belong to a live download', async () => {
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    const inFlight = `${destination}.part-0123456789ab`;
+    fs.writeFileSync(inFlight, 'someone else is mid-download');
+
+    mockResponses([{ statusCode: 200, body: 'payload' }]);
+    await downloadToFile(URL_UNDER_TEST, destination, quiet);
+
+    expect(fs.readdirSync(path.dirname(destination)).sort()).toEqual([
+      'asset.bin',
+      path.basename(inFlight),
+    ]);
+  });
+
+  // The sweep is keyed to one destination: an unrelated asset's temp file, and
+  // anything that merely looks similar, are none of its business.
+  test('sweeps only this destination’s own temp files', async () => {
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    const longAgo = Date.now() / 1000 - STALE_TEMP_FILE_MS / 1000 - 60;
+    const others = [
+      path.join(path.dirname(destination), 'other.bin.part-deadbeefcafe'),
+      path.join(path.dirname(destination), 'asset.bin.partial'),
+    ];
+    for (const other of others) {
+      fs.writeFileSync(other, 'not mine');
+      fs.utimesSync(other, longAgo, longAgo);
+    }
+
+    mockResponses([{ statusCode: 200, body: 'payload' }]);
+    await downloadToFile(URL_UNDER_TEST, destination, quiet);
+
+    expect(fs.readdirSync(path.dirname(destination)).sort()).toEqual([
+      'asset.bin',
+      'asset.bin.partial',
+      'other.bin.part-deadbeefcafe',
+    ]);
   });
 
   test('replaces an existing file only once the new one is complete', async () => {

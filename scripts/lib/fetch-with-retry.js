@@ -34,7 +34,9 @@
  *   - Streaming downloads write to a temp file next to the destination and
  *     rename on success, deleting it on failure — an interrupted attempt can
  *     never leave a partial file where the next step expects a complete one,
- *     and the rename is atomic on the same filesystem.
+ *     and the rename is atomic on the same filesystem. A download whose process
+ *     was killed outright never runs that cleanup, so each download also sweeps
+ *     the temp files a previous run orphaned (`removeStaleTempFiles`).
  *
  * **Checksum verification stays outside the retry loop.** A body that does not
  * match its pinned digest is not a transient failure: it is either corruption
@@ -495,6 +497,53 @@ async function fetchJson(url, options = {}) {
   }
 }
 
+/**
+ * Age past which a `<destination>.part-*` file cannot belong to a live
+ * download: an attempt is bounded by the longest deadline this module hands
+ * out, and a running one touches its temp file at least every
+ * `IDLE_TIMEOUT_MS`. Anything older was orphaned by a process that never got
+ * to clean up.
+ */
+const STALE_TEMP_FILE_MS = TIMEOUTS.binary;
+
+/**
+ * Delete `<destination>.part-*` files left behind by a download that was killed
+ * outright — a cancelled CI job, a Ctrl-C — rather than failing: that process
+ * never reached its own cleanup, and since every attempt picks a fresh random
+ * suffix, nothing later ever overwrites or removes the orphan. It then ships:
+ * the packaged build's `extraResources` globs (`ant-bin/**\/*` and friends) take
+ * whatever is in the directory, junk partial archives included.
+ *
+ * Only files older than `STALE_TEMP_FILE_MS` are touched, so a download of the
+ * same destination running in another process cannot have its in-flight temp
+ * file deleted out from under it. Best-effort throughout: a temp file that
+ * cannot be read or removed is not worth failing a download over.
+ *
+ * @param {string} destination
+ * @param {{now?: number}} [options]
+ */
+function removeStaleTempFiles(destination, options = {}) {
+  const now = options.now ?? Date.now();
+  const directory = path.dirname(destination);
+  const prefix = `${path.basename(destination)}.part-`;
+  let entries;
+  try {
+    entries = fs.readdirSync(directory);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix)) continue;
+    const orphan = path.join(directory, entry);
+    try {
+      if (now - fs.statSync(orphan).mtimeMs < STALE_TEMP_FILE_MS) continue;
+      fs.unlinkSync(orphan);
+    } catch {
+      // best-effort cleanup
+    }
+  }
+}
+
 /** A single streamed download to `destination`, with no retry. */
 function downloadToFileOnce(url, destination, options = {}) {
   // Temp file in the destination directory so the rename is atomic (same
@@ -502,6 +551,7 @@ function downloadToFileOnce(url, destination, options = {}) {
   // under the name the next step reads.
   const tempPath = `${destination}.part-${crypto.randomBytes(6).toString('hex')}`;
   fs.mkdirSync(path.dirname(destination), { recursive: true });
+  removeStaleTempFiles(destination);
   return runAttempt(url, options, { destination, tempPath }).then(() => {
     fs.renameSync(tempPath, destination);
   });
@@ -524,6 +574,7 @@ module.exports = {
   RETRY_AFTER_CAP_MS,
   TIMEOUTS,
   IDLE_TIMEOUT_MS,
+  STALE_TEMP_FILE_MS,
   MAX_REDIRECTS,
   REDIRECT_STATUS_CODES,
   RETRYABLE_ERROR_CODES,
@@ -538,6 +589,7 @@ module.exports = {
   fetchBuffer,
   fetchText,
   fetchJson,
+  removeStaleTempFiles,
   downloadToFileOnce,
   downloadToFile,
 };
