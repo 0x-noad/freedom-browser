@@ -1470,7 +1470,126 @@ test.describe('Search settings (#281)', () => {
     await expect(page.locator('#appearance')).toBeVisible();
     await expect(page.locator('#chains-view .section-title')).toHaveText('Chains');
 
+    // 4. The scope of all of that, which docs/features.md now states and
+    // `settings-search.test.js` pins the wording of: a chain is named on this
+    // page only in the master list, so while Chains has a single chain's own
+    // page up instead, no chain answers from there — and leaving puts the
+    // list, and the rows, back.
+    expect(await search('searchnet')).toEqual([['Searchnet', 'Chains']]);
+    await clear();
+    await page.evaluate(() => {
+      location.hash = 'chains/1';
+    });
+    await expect.poll(() => page.locator('#chains-view .net-row').count()).toBe(0);
+    expect((await search('searchnet')).filter(([, section]) => section === 'Chains')).toEqual([]);
+    await clear();
+    await page.evaluate(() => {
+      location.hash = 'appearance';
+    });
+    await expect(page.locator('#appearance')).toBeVisible();
+    expect(await search('searchnet')).toEqual([['Searchnet', 'Chains']]);
+    await clear();
+
     // Leave the shared fixture as it was found.
     await page.evaluate(() => window.freedomAPI.removeChain('424243'));
+  });
+
+  // A section entry marks the whole `<section>`, and `scrollIntoView({ block:
+  // 'center' })` aligns an element's middle with the viewport's — so a section
+  // taller than the window landed with its own `<h2>` above the fold. Name
+  // Resolution is the one that already is; the user who searched for it by
+  // name arrived at a view whose title was off screen.
+  test('a section taller than the window is revealed by its heading, not its middle', async ({
+    window,
+    electronApp,
+  }) => {
+    await openSettings(window, expect);
+    let page;
+    await expect
+      .poll(() => {
+        page = electronApp
+          .windows()
+          .find((candidate) => candidate.url().includes('/pages/settings.html'));
+        return Boolean(page);
+      })
+      .toBe(true);
+
+    const headingTop = () =>
+      page.evaluate(() =>
+        Math.round(document.querySelector('#ens .section-title').getBoundingClientRect().top)
+      );
+
+    // Where clicking the nav item puts that heading — the answer the jump has
+    // to match, since both are "take me to Name Resolution".
+    await page.locator('.nav-item[data-target="ens"]').click();
+    await expect(page.locator('#ens')).toBeVisible();
+    const byNavClick = await headingTop();
+    expect(byNavClick).toBeGreaterThan(0);
+    await page.locator('.nav-item[data-target="appearance"]').click();
+    await expect(page.locator('#appearance')).toBeVisible();
+
+    const field = page.locator('#settings-search');
+    await field.click();
+    await field.pressSequentially('name resolution');
+    const results = page.locator('#settings-search-list .settings-search-result');
+    await expect(results.first().locator('.row-label')).toHaveText('Name Resolution');
+    await field.press('Enter');
+    await expect(page.locator('#ens')).toBeVisible();
+    expect(await page.evaluate(() => location.hash)).toBe('#ens');
+
+    // The precondition this leg exists for: if the section ever fits, the
+    // assertions below pass for a reason that has nothing to do with the fix.
+    expect(
+      await page.evaluate(
+        () => document.getElementById('ens').getBoundingClientRect().height > window.innerHeight
+      )
+    ).toBe(true);
+
+    // The section is what was marked, and its heading is on screen — at the
+    // top, exactly where the nav item leaves it (`.section`'s scroll margin
+    // keeps the content's own padding above it).
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          document.getElementById('ens').classList.contains('settings-search-hit')
+        )
+      )
+      .toBe(true);
+    expect(await headingTop()).toBe(byNavClick);
+    await expect(page.locator('#ens .section-title')).toBeInViewport();
+    await expect(page.locator('#ens .section-title')).toHaveText('Name Resolution');
+
+    // A row reveal still centres: the answer wants its neighbours around it,
+    // and a row always fits. Measured against what the page itself would do
+    // either way rather than against a pixel count, and in Shortcuts — long
+    // enough that the two alignments provably land somewhere different, so
+    // the check can tell them apart rather than reading a clamped scroll.
+    await field.click();
+    await field.press('Escape');
+    await field.pressSequentially('actual size');
+    await expect(results.first().locator('.row-label')).toHaveText('Actual size');
+    await field.press('Enter');
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            document.querySelector('.settings-search-hit')?.querySelector('.row-label')
+              ?.textContent === 'Actual size'
+        )
+      )
+      .toBe(true);
+    const scrolls = await page.evaluate(() => {
+      const row = document.querySelector('.settings-search-hit');
+      const revealed = Math.round(window.scrollY);
+      window.scrollTo(0, 0);
+      row.scrollIntoView({ block: 'center' });
+      const centred = Math.round(window.scrollY);
+      window.scrollTo(0, 0);
+      row.scrollIntoView({ block: 'start' });
+      const topped = Math.round(window.scrollY);
+      return { revealed, centred, topped };
+    });
+    expect(scrolls.centred).not.toBe(scrolls.topped);
+    expect(scrolls.revealed).toBe(scrolls.centred);
   });
 });

@@ -38,11 +38,11 @@ function loadHelpers() {
   const body = SOURCE.slice(start + START.length, end);
   return new Function(
     `${body}\nreturn { settingsSearchText, settingsSearchCollect, settingsSearchFirst,` +
-      ` buildSettingsSearchIndex, matchSettingsSearch };`
+      ` buildSettingsSearchIndex, matchSettingsSearch, settingsSearchScrollBlock };`
   )();
 }
 
-const { buildSettingsSearchIndex, matchSettingsSearch } = loadHelpers();
+const { buildSettingsSearchIndex, matchSettingsSearch, settingsSearchScrollBlock } = loadHelpers();
 
 // ---------------------------------------------------------------------------
 // A minimal element reader for the page's own markup.
@@ -580,5 +580,78 @@ describe('matchSettingsSearch', () => {
     expect(results.length).toBeGreaterThan(0);
     expect(results.every((result) => result.rank === 2)).toBe(true);
     expect(labelsOf(results)).toContain('Tabs in title bar');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// What docs/features.md promises the field does.
+// ---------------------------------------------------------------------------
+
+// The index is the live DOM, so what it can answer for is whatever each
+// section currently has painted. That is invisible for the 13 sections whose
+// rows are static markup, and it is the whole story for the chain master list:
+// a chain is named on this page only as a `.net-row`, and Chains replaces that
+// list with a chain's own page or with the add-chain form. So "a chain is
+// findable by its own name" holds in list state and nowhere else, and the
+// feature doc has to say which — an unscoped claim reads as "search cannot
+// find the chain I am looking at", the exact silent miss the field exists to
+// stop. The gap self-heals on leaving Chains, which is what makes documenting
+// it the right answer rather than a second, cached source of chain names.
+describe('docs/features.md "Search settings"', () => {
+  const DOC_PATH = path.join(__dirname, '..', '..', '..', 'docs', 'features.md');
+  const bullet = fs
+    .readFileSync(DOC_PATH, 'utf8')
+    .split('\n')
+    .find((line) => line.startsWith('- **Search settings**:'));
+
+  test('the bullet is there to be checked', () => {
+    expect(bullet).toBeTruthy();
+  });
+
+  test('it scopes the chain-by-name claim to the list the rows live in', () => {
+    expect(bullet).toMatch(/chain is findable by its own name from the Chains list/i);
+    // …and says when it is not, naming both views that replace that list.
+    expect(bullet).toMatch(/add-chain form/i);
+    expect(bullet).toMatch(/not while/i);
+  });
+
+  test('the two searches on the page are still told apart', () => {
+    expect(bullet).toMatch(/Shortcuts section keeps its own search field/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Where a revealed result is scrolled to.
+// ---------------------------------------------------------------------------
+
+describe('settingsSearchScrollBlock', () => {
+  const sized = (height, tagName = 'DIV') => ({
+    tagName,
+    getBoundingClientRect: () => ({ height }),
+  });
+
+  test('a row is centred, with its neighbours around it', () => {
+    expect(settingsSearchScrollBlock(sized(64), 712)).toBe('center');
+    // Right up to the point where it stops fitting.
+    expect(settingsSearchScrollBlock(sized(712), 712)).toBe('center');
+  });
+
+  // The bug: `center` lines an element's own middle up with the viewport's, so
+  // a section taller than the window lands with the `<h2>` that names it above
+  // the fold — `#ens` is 845px against a 712px viewport.
+  test('a section entry is aligned to its top, so its heading stays on screen', () => {
+    expect(settingsSearchScrollBlock(sized(845, 'SECTION'), 712)).toBe('start');
+    // A section entry reveals a place, so its title leads the view whether or
+    // not the section happens to fit today.
+    expect(settingsSearchScrollBlock(sized(200, 'SECTION'), 712)).toBe('start');
+  });
+
+  test('so is any other element too tall to fit, section or not', () => {
+    expect(settingsSearchScrollBlock(sized(713), 712)).toBe('start');
+  });
+
+  test('an element it cannot measure is centred rather than throwing', () => {
+    expect(settingsSearchScrollBlock(null, 712)).toBe('center');
+    expect(settingsSearchScrollBlock({ tagName: 'DIV' }, 712)).toBe('center');
   });
 });

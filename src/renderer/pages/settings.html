@@ -129,6 +129,12 @@
 
       .section {
         margin-bottom: 48px;
+        /* A search result that reveals a whole section aligns it to the top of
+           the view (`settingsSearchScrollBlock`). Without this the heading
+           lands flush against the window edge, 48px higher than the same
+           section sits after a nav click — this keeps `.content`'s own top
+           padding under it, so both ways in look the same. */
+        scroll-margin-top: 48px;
       }
 
       .section.hidden {
@@ -2250,6 +2256,22 @@
         hits.sort((a, b) => a.rank - b.rank || a.order - b.order);
         return hits.map(({ entry, rank }) => ({ ...entry, rank }));
       };
+
+      // Where a revealed element should sit in the view. `center` is right for
+      // a row — the answer lands in the middle with its neighbours around it.
+      // It is wrong for anything taller than the window: `center` lines the
+      // element's own middle up with the viewport's, so the top goes above the
+      // fold. A section entry reveals the whole `<section>`, and Name
+      // Resolution is already taller than a default window — centring it put
+      // the `<h2>` that names it off screen, leaving the user who asked where
+      // that section is looking at a view with no title on it. Those are
+      // aligned to their top instead, which is where clicking the nav item
+      // puts them.
+      const settingsSearchScrollBlock = (element, viewportHeight) => {
+        if (element?.tagName === 'SECTION') return 'start';
+        const height = element?.getBoundingClientRect?.().height;
+        return height > viewportHeight ? 'start' : 'center';
+      };
       /* settings-search helpers: end */
 
       // A section that filters rows out of its own DOM has to put them back
@@ -2370,9 +2392,12 @@
           return (matches[result.labelIndex || 0] || matches[0])?.row || null;
         };
 
+        // A row is centred, a section entry (what `locateRow` returns when the
+        // result *is* the section) and anything else too tall to fit is
+        // aligned to its top — see `settingsSearchScrollBlock` above.
         const applyHighlight = (row) => {
           clearHighlight();
-          row.scrollIntoView({ block: 'center' });
+          row.scrollIntoView({ block: settingsSearchScrollBlock(row, window.innerHeight) });
           row.classList.add('settings-search-hit');
           highlighted = row;
         };
