@@ -8667,6 +8667,35 @@ var init_document_store = __esm({
         this.keystore = keystore;
         this.storage = storage;
       }
+      /**
+       * Every mutation runs through this one queue. A per-namespace lock would not
+       * be enough, for two reasons:
+       *
+       *  1. `save` does a read-modify-write on the SHARED manifest, so two saves to
+       *     different namespaces can each load the manifest, each add their own
+       *     entry, and the second write drops the first's.
+       *  2. Nothing lets the store assume the adapter makes overlapping writes to
+       *     one key atomic against each other; a real filesystem adapter with a
+       *     shared temp path tore blobs in practice.
+       *
+       * Vault writes are small and rare — a dapp saving a profile — so strict
+       * serialisation costs nothing measurable and is obviously correct.
+       */
+      writeQueue = Promise.resolve();
+      /**
+       * Run `fn` after every previously queued mutation has settled, and before any
+       * queued after it. Callers that do load → modify → `save` MUST wrap the whole
+       * sequence, or two of them can both load the same version and the second save
+       * silently discards the first's changes.
+       */
+      serialize(fn) {
+        const run = this.writeQueue.then(fn, fn);
+        this.writeQueue = run.then(
+          () => void 0,
+          () => void 0
+        );
+        return run;
+      }
       async loadManifest() {
         const blob = await this.storage.get(MANIFEST_KEY);
         if (!blob) return {};
@@ -8693,7 +8722,10 @@ var init_document_store = __esm({
         if (parsed.v < expected) throw VaultError.of("KeyInvalidated", "namespace blob is stale (rollback)");
         return { doc: parsed.doc, version: parsed.v };
       }
-      /** Persist a new version of a namespace document and advance the manifest. */
+      /**
+       * Persist a new version of a namespace document and advance the manifest.
+       * Call only inside `serialize` — see the note there.
+       */
       async save(storageKey, doc, newVersion) {
         const payload = { v: newVersion, doc };
         const blob = await this.keystore.sealNamespace(storageKey, docAad(storageKey), utf8ToBytes2(JSON.stringify(payload)));
@@ -8708,14 +8740,21 @@ var init_document_store = __esm({
        * later absence as "never existed" rather than a rollback/deletion attack. This
        * is the ONLY legitimate way to drop a namespace; a bare `storage.delete` would
        * leave the manifest expecting the blob and brick every future load.
+       *
+       * The manifest is loaded BEFORE the blob is removed. In the other order, a
+       * manifest that fails to open leaves the blob already gone with the manifest
+       * still expecting it — the exact bricked state this method exists to prevent.
+       * Serialised with every other mutation.
        */
       async deleteNamespace(storageKey) {
-        await this.storage.delete(docStorageId(storageKey));
-        const manifest = await this.loadManifest();
-        if (storageKey in manifest) {
-          delete manifest[storageKey];
-          await this.saveManifest(manifest);
-        }
+        await this.serialize(async () => {
+          const manifest = await this.loadManifest();
+          await this.storage.delete(docStorageId(storageKey));
+          if (storageKey in manifest) {
+            delete manifest[storageKey];
+            await this.saveManifest(manifest);
+          }
+        });
       }
     };
   }
@@ -9216,6 +9255,14 @@ var init_engine = __esm({
           if (!ok) throw VaultError.of("BiometricFailed");
           session.writeApprovedThisSession = true;
         }
+        const { doc, changedPaths, newVersion } = await this.docStore.serialize(
+          () => this.applyChangesLocked(session, changes, values, baseVersion)
+        );
+        this.fanOutChanges(session, changedPaths, doc, newVersion);
+        return newVersion;
+      }
+      /** The serialised half of applyChanges: load, apply, validate, save. */
+      async applyChangesLocked(session, changes, values, baseVersion) {
         const loaded = await this.docStore.load(session.storageKey);
         const baseV = etagToVersion(baseVersion);
         if (baseV !== void 0 && baseV !== loaded.version) {
@@ -9252,8 +9299,7 @@ var init_engine = __esm({
         }
         const newVersion = loaded.version + 1;
         await this.docStore.save(session.storageKey, doc, newVersion);
-        this.fanOutChanges(session, changedPaths, doc, newVersion);
-        return newVersion;
+        return { doc, changedPaths, newVersion };
       }
       fanOutChanges(source, changedPaths, doc, version) {
         if (!this.emitter || changedPaths.length === 0) return;
