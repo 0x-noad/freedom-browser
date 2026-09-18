@@ -22,6 +22,7 @@ const path = require('path');
 const fs = require('fs');
 const { RADICLE_ADDON_RELEASE_TAG } = require('../src/shared/radicle-addon-version');
 const { fetchBuffer, TIMEOUTS, MAX_ATTEMPTS } = require('./lib/fetch-with-retry');
+const { hostArch: detectHostArch } = require('./host-arch');
 
 const RELEASE_BASE = `https://github.com/solardev-xyz/libradicle/releases/download/${RADICLE_ADDON_RELEASE_TAG}`;
 
@@ -41,7 +42,7 @@ const PINNED_SHA256SUMS = {
 function platformKey(
   args = process.argv.slice(2),
   hostPlatform = process.platform,
-  hostArch = process.arch
+  hostArch = detectHostArch()
 ) {
   const requestedPlatforms = ['mac', 'linux', 'win'].filter((name) => args.includes(`--${name}`));
   const requestedArchs = ['arm64', 'x64'].filter((arch) => args.includes(`--${arch}`));

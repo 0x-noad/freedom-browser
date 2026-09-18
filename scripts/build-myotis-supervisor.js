@@ -2,8 +2,13 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { hostArch } = require('./host-arch');
 
-function buildSupervisor(arch = process.arch) {
+// Defaults to the MACHINE's architecture, not the running Node's: an x64 Node
+// under Rosetta must still build the arm64 helper the arm64 Electron will load.
+// (The non-darwin guard below stays on process.arch — there, the compiler's
+// native output is the constraint and Rosetta does not exist.)
+function buildSupervisor(arch = hostArch()) {
   if (!['darwin', 'linux', 'win32'].includes(process.platform)) {
     throw new Error('Unsupported Myotis supervisor build host');
   }

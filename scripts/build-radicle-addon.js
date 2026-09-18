@@ -13,6 +13,7 @@
 const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { hostArchOrX64 } = require('./host-arch');
 
 const repoRoot = path.join(__dirname, '..');
 const libradicleDir = process.argv[2] || path.join(repoRoot, '..', 'libradicle');
@@ -40,7 +41,7 @@ const artifact = path.join(
   `${prefix}libradicle_napi.${ext}`
 );
 
-const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+const arch = hostArchOrX64();
 const platformKey =
   process.platform === 'darwin'
     ? `mac-${arch}`

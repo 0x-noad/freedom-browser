@@ -40,6 +40,7 @@ const path = require('path');
 const os = require('os');
 const { execFileSync, spawn } = require('child_process');
 const { withRetry, MAX_ATTEMPTS } = require('./lib/fetch-with-retry');
+const { hostArch } = require('./host-arch');
 
 // Pin a known-good Arti release. Bump deliberately and re-test the SOCKS flags
 // (`arti proxy -c <config>`) and the `arti.toml` keys tor-manager.js writes.
@@ -63,7 +64,7 @@ const OUTPUT_DIR = path.join(__dirname, '..', 'arti-bin');
  * @param {NodeJS.Platform} [platform]
  * @param {string} [arch]
  */
-function platformKey(platform = process.platform, arch = process.arch) {
+function platformKey(platform = process.platform, arch = hostArch()) {
   const platformMap = { darwin: 'mac', linux: 'linux', win32: 'win' };
   return `${platformMap[platform] || platform}-${arch}`;
 }

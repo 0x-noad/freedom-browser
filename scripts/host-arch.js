@@ -28,9 +28,11 @@ function macIsAppleSilicon(env = process.env) {
     encoding: 'utf-8',
     env,
   });
-  if (result.status === 0 && String(result.stdout).trim() === '1') return true;
-  // Weaker fallback: the arch Node itself was built for. Right on an arm64 Node
-  // whose sysctl is unavailable, silent on a translated one.
+  // A definite answer either way is authoritative — an explicit 0 is an Intel
+  // Mac, and no weaker signal should override it.
+  if (result.status === 0) return String(result.stdout).trim() === '1';
+  // sysctl unavailable: fall back to the arch Node itself was built for. Right
+  // on a native arm64 Node, silent on a translated one.
   return process.config?.variables?.host_arch === 'arm64';
 }
 

@@ -35,7 +35,16 @@ describe('host-arch', () => {
     setHost('darwin', 'x64');
     sysctlSays('0');
 
+    // An explicit 0 is authoritative: the host_arch fallback must not override it.
     expect(hostArch({})).toBe('x64');
+  });
+
+  test('falls back to the Node build arch only when sysctl is unavailable', () => {
+    setHost('darwin', 'x64');
+    spawnSync.mockReturnValue({ status: 1, stdout: '' });
+
+    const expected = process.config?.variables?.host_arch === 'arm64' ? 'arm64' : 'x64';
+    expect(hostArch({})).toBe(expected);
   });
 
   test('trusts process.arch when it already reports arm64', () => {
