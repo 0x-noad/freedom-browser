@@ -10,8 +10,10 @@
 > **What this fork adds on top of upstream:**
 >
 > - **VAULT data vault** — per-site encrypted storage with per-field consent:
->   `window.vault`, the wallet **Data** tab, and the `freedom://dapps` launcher.
->   Engine + reference glue:
+>   `window.vault` for pages, the wallet **Data** tab for the owner, and the
+>   `freedom://dapps` launcher. One unlock covers wallet and vault; the grant
+>   store is sealed with the OS keychain where one exists; export/import carries
+>   sealed blobs — no plaintext data or site list. Engine + reference glue:
 >   [`absolutions19/vault3r-code-public`](https://github.com/absolutions19/vault3r-code-public)
 > - **`window.ens`** — ENS (`.eth`), WNS (`.wei`) and GNS (`.gwei`) resolution for
 >   pages, through the browser's own quorum-checked resolver and caches, with a
@@ -26,9 +28,19 @@
 > - **Actionable Swarm readiness** — capability reasons carry `reasonMessage` (the
 >   action that clears them) and `setupAvailable`, instead of naming a state and
 >   stopping there
+> - **Vault data safety** — concurrent writes to one partition can no longer tear
+>   its sealed blob: unique temp files in the storage adapter, every engine
+>   mutation serialised through one write queue, and delete loads the manifest
+>   before touching the blob. A partition that still will not open is attributed
+>   — sealed under a different identity, corrupt, or unknown — instead of a raw
+>   `KeyInvalidated`, with a different next step for each
 > - **Vault usability fixes** — data-plane use keeps the vault unlocked,
->   `vault_getPermissions` is granted with every grant, and the Data tab carries a
->   per-tab connection banner matching the wallet's
+>   `vault_getPermissions` is granted with every grant, the Data tab shows the
+>   current tab's partition in a banner matching the wallet's, and listed sizes
+>   update live as a site writes
+> - **Dev partitions keyed by port** — `*.localhost` origins include the port in
+>   their namespace, so two dev servers on one hostname never share a partition.
+>   Real origins are unchanged
 > - **Site-author documentation** — [`docs/site-authors.md`](docs/site-authors.md)
 >   covers all four providers together, with type definitions in
 >   [`types/freedom-providers.d.ts`](types/freedom-providers.d.ts)
