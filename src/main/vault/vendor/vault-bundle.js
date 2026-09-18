@@ -4594,6 +4594,10 @@ function normalizeHost(input) {
   if (hostname === "localhost") throw new NamespaceError("localhost is not a valid identity");
   return hostname;
 }
+function isLoopbackName(hostname) {
+  const h = hostname.toLowerCase().replace(/\.+$/, "");
+  return h === "localhost" || h.endsWith(".localhost");
+}
 function registrableDomain(host) {
   return (0, import_tldts.getDomain)(host);
 }
@@ -4647,7 +4651,13 @@ function deriveOriginNamespace(origin, granularity = "registrable-domain") {
   }
   const scheme = url.protocol.replace(/:$/, "").toLowerCase();
   if (scheme === "http" || scheme === "https") {
-    return deriveNamespace(url.hostname, granularity);
+    const derived = deriveNamespace(url.hostname, granularity);
+    if (url.port.length > 0 && isLoopbackName(url.hostname)) {
+      const canonicalKey2 = `${derived.canonicalKey}:${url.port}`;
+      const namespace2 = `${NS_PREFIX_WEB}:${canonicalKey2}`;
+      return { namespace: namespace2, canonicalKey: canonicalKey2, storageKey: storageKeyForNamespace(namespace2) };
+    }
+    return derived;
   }
   if (!DWEB_SCHEMES.has(scheme)) throw new NamespaceError(`unsupported origin scheme: ${scheme}`);
   const rawAuthority = url.host;
@@ -8246,6 +8256,7 @@ __export(src_exports, {
   hchacha20: () => hchacha20,
   hkdfSha256: () => hkdfSha256,
   isAuthoritativeForHost: () => isAuthoritativeForHost,
+  isLoopbackName: () => isLoopbackName,
   isMixedScript: () => isMixedScript,
   isValidRecoveryMnemonic: () => isValidRecoveryMnemonic,
   normalizeHost: () => normalizeHost,
@@ -8653,7 +8664,7 @@ function etagToVersion(etag) {
   const m = /^etag:(\d+)$/.exec(etag);
   return m ? Number(m[1]) : void 0;
 }
-var MANIFEST_KEY, MANIFEST_STORAGE_KEY, MANIFEST_AAD, DocumentStore;
+var MANIFEST_KEY, MANIFEST_STORAGE_KEY, MANIFEST_AAD, OWNER_KEY, OWNER_DOMAIN, DocumentStore;
 var init_document_store = __esm({
   "packages/vault-core/src/document-store.ts"() {
     "use strict";
@@ -8662,6 +8673,8 @@ var init_document_store = __esm({
     MANIFEST_KEY = "manifest";
     MANIFEST_STORAGE_KEY = "__vault_manifest__";
     MANIFEST_AAD = utf8ToBytes2("vault-manifest/1");
+    OWNER_KEY = "manifest-owner";
+    OWNER_DOMAIN = "vault-owner/1|";
     DocumentStore = class {
       constructor(keystore, storage) {
         this.keystore = keystore;
@@ -8700,12 +8713,46 @@ var init_document_store = __esm({
         const blob = await this.storage.get(MANIFEST_KEY);
         if (!blob) return {};
         const pt = await this.keystore.openNamespace(MANIFEST_STORAGE_KEY, MANIFEST_AAD, blob);
-        if (pt === null) throw VaultError.of("KeyInvalidated", "manifest failed to authenticate (tampering?)");
+        if (pt === null) throw await this.authFailure("manifest");
         return JSON.parse(bytesToUtf8(pt));
       }
       async saveManifest(m) {
         const blob = await this.keystore.sealNamespace(MANIFEST_STORAGE_KEY, MANIFEST_AAD, utf8ToBytes2(JSON.stringify(m)));
         await this.storage.put(MANIFEST_KEY, blob);
+        await this.recordOwner();
+      }
+      /** The current keystore's owner fingerprint, or null if it cannot be read (locked). */
+      ownerFingerprint() {
+        let id;
+        try {
+          id = this.keystore.vaultId();
+        } catch {
+          return null;
+        }
+        if (typeof id !== "string" || id.length === 0) return null;
+        return toHex(sha2562(utf8ToBytes2(OWNER_DOMAIN + id)));
+      }
+      /** Write the owner fingerprint if absent or stale. One read per save; a write only on change. */
+      async recordOwner() {
+        const current = this.ownerFingerprint();
+        if (!current) return;
+        const stored = await this.storage.get(OWNER_KEY);
+        if (stored && bytesToUtf8(stored) === current) return;
+        await this.storage.put(OWNER_KEY, utf8ToBytes2(current));
+      }
+      /**
+       * Build the KeyInvalidated error for a blob that failed to authenticate, naming
+       * the cause when the owner fingerprint lets us: sealed by a different identity,
+       * or corrupt under the right one. `unknown` when no fingerprint was recorded
+       * (stores written before this existed) or the keystore is locked.
+       */
+      async authFailure(what) {
+        const stored = await this.storage.get(OWNER_KEY);
+        const current = this.ownerFingerprint();
+        let reason = "unknown";
+        if (stored && current) reason = bytesToUtf8(stored) === current ? "corrupt" : "wrong-identity";
+        const message = reason === "wrong-identity" ? `${what} was sealed under a different identity (mnemonic) than the one unlocked now` : reason === "corrupt" ? `${what} is corrupt \u2014 it failed to authenticate under the identity that sealed it` : `${what} failed to authenticate`;
+        return VaultError.of("KeyInvalidated", message, { reason });
       }
       /** Load a namespace document, enforcing anti-rollback against the manifest. */
       async load(storageKey) {
@@ -8717,7 +8764,7 @@ var init_document_store = __esm({
           return { doc: {}, version: 0 };
         }
         const pt = await this.keystore.openNamespace(storageKey, docAad(storageKey), blob);
-        if (pt === null) throw VaultError.of("KeyInvalidated", "namespace blob failed to authenticate");
+        if (pt === null) throw await this.authFailure("namespace blob");
         const parsed = JSON.parse(bytesToUtf8(pt));
         if (parsed.v < expected) throw VaultError.of("KeyInvalidated", "namespace blob is stale (rollback)");
         return { doc: parsed.doc, version: parsed.v };

@@ -201,6 +201,20 @@ and the namespace survives every release. `ens://name.eth` and `bzz://name.eth`
 share one namespace by design, so moving between them is safe; moving between
 content references is not.
 
+**Dev hosts are keyed by port.** For `*.localhost` hosts only, the port is part
+of the namespace: `http://app.localhost:8765` and `:8766` are two partitions,
+so two dev servers never share — or race on — one another's data. Real origins
+keep the port out, so a production redeploy on a new port keeps its namespace.
+
+### If a partition will not open
+
+Wrong identity and corruption look identical to the cipher. The vault records a
+fingerprint of the identity that sealed each store, so the Data tab can tell you
+which it was: **sealed under a different identity** (unlock with that mnemonic,
+or delete), **corrupt** (unrecoverable — delete so the site can start over), or
+**unknown** for stores written before fingerprints existed. A site sees the same
+attribution as `error.data.reason` on any `KeyInvalidated` (4311) rejection.
+
 ### Connecting
 
 ```js
