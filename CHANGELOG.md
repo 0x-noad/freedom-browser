@@ -23,6 +23,7 @@ All notable changes to Freedom will be documented in this file.
 - A "Search settings" field in the Settings sidebar, covering the whole page the way Chrome's does
   - Type a word and every setting whose label or description contains it is listed with the section it lives in, so finding one no longer means knowing which of the 14 sections it is under — Tor's startup toggle is under Experimental, a chain's API keys under RPC Providers
   - Enter, or clicking a result, opens that section and marks the row it found; Esc clears the field and puts the section you were on back
+  - What it searches is what each section has on the page at that moment, so a chain is findable by its own name from the Chains list — but not while that list is replaced by a single chain's own page or by the add-chain form; leaving Chains puts the list, and those rows, back
   - The Shortcuts section keeps its own search field, which still filters only that list
 
 ### Fixed

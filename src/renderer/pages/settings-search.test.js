@@ -620,6 +620,30 @@ describe('docs/features.md "Search settings"', () => {
   });
 });
 
+// The release notes describe the same field to the same reader, so the scope
+// above has to hold there too: a CHANGELOG that still promises every setting
+// unconditionally sends a user searching a chain's name from that chain's own
+// page straight into "No settings match".
+describe('CHANGELOG "Search settings" entry', () => {
+  const CHANGELOG_PATH = path.join(__dirname, '..', '..', '..', 'CHANGELOG.md');
+  const lines = fs.readFileSync(CHANGELOG_PATH, 'utf8').split('\n');
+  const start = lines.findIndex((line) => line.startsWith('- A "Search settings" field'));
+  // The entry is that bullet plus its own indented sub-bullets.
+  const entry = lines.slice(start + 1).findIndex((line) => !line.startsWith('  '));
+  const text = start === -1 ? '' : lines.slice(start, start + 1 + entry).join('\n');
+
+  test('the entry is there to be checked', () => {
+    expect(start).toBeGreaterThan(-1);
+    expect(text).toMatch(/Shortcuts section keeps its own search field/i);
+  });
+
+  test('it scopes the chain-by-name claim the same way the feature doc does', () => {
+    expect(text).toMatch(/chain is findable by its own name from the Chains list/i);
+    expect(text).toMatch(/add-chain form/i);
+    expect(text).toMatch(/not while/i);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Where a revealed result is scrolled to.
 // ---------------------------------------------------------------------------
