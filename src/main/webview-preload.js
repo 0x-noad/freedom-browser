@@ -8,6 +8,16 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+// PRIVATE MODE GUARD (providers): webviews in private windows never get
+// the wallet providers. `window.ethereum` / `window.swarm` are not
+// injected and the request/response bridges are not installed, so a dApp
+// probing for a wallet sees nothing and EIP-6963's requestProvider gets
+// no announcement (silent). Resolved synchronously, before any page
+// script can run, via the main process (src/main/ipc-handlers.js), which
+// checks this webContents' session/window against the private-window
+// registry (src/main/private/private-windows.js).
+const IS_PRIVATE_WINDOW = ipcRenderer.sendSync('private:is-private') === true;
+
 // The webview preload runs in a sandbox — require() is restricted to a small
 // whitelist (electron, events, timers, url), so we cannot read provider
 // injection sources from disk here. The main process reads them and serves
@@ -101,6 +111,85 @@ if (typeof window !== 'undefined') {
   });
 }
 
+// APPEARANCE THEME (internal pages only)
+//
+// Settings > Appearance promises to apply to "both the browser chrome and
+// internal pages", but the chrome is the only renderer that reads the
+// setting: every internal page used to style itself from
+// `@media (prefers-color-scheme: …)` alone. `nativeTheme.themeSource` does
+// not reach `prefers-color-scheme` in the renderer on every platform (Linux
+// in particular — see #233), so on a system whose scheme differs from the
+// app setting the result was a dark toolbar over white pages.
+//
+// The preload runs at document-start, before any page script or first paint,
+// so it resolves the setting here and stamps the answer on <html> as
+// `data-theme="dark" | "light"`. Pages carry their light palette under
+// `:where(html[data-theme='light'])` and declare `color-scheme` from the same
+// attribute, so scrollbars and form controls follow too.
+//
+// 'system' keeps behaving exactly as it does today: it resolves through
+// `prefers-color-scheme` and tracks OS changes live.
+const THEME_ATTRIBUTE = 'data-theme';
+const prefersDarkQuery =
+  typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-color-scheme: dark)')
+    : null;
+
+// Dark is every internal page's default palette, so an unreadable/unknown
+// setting and a missing matchMedia both fall back to it.
+const resolveTheme = (theme) => {
+  if (theme === 'light' || theme === 'dark') return theme;
+  return prefersDarkQuery && !prefersDarkQuery.matches ? 'light' : 'dark';
+};
+
+function installInternalPageTheme() {
+  let configuredTheme = 'system';
+  try {
+    configuredTheme = ipcRenderer.sendSync('internal:get-theme') || 'system';
+  } catch {
+    // Main process unavailable (teardown): fall through to 'system'.
+  }
+
+  const applyTheme = () => {
+    const root = document.documentElement;
+    if (!root) return false;
+    root.setAttribute(THEME_ATTRIBUTE, resolveTheme(configuredTheme));
+    return true;
+  };
+
+  // At document-start <html> may not exist yet. Observing `document` lets us
+  // stamp the attribute the instant the element is parsed, still before the
+  // stylesheet paints, instead of waiting for DOMContentLoaded (which would
+  // flash the wrong theme).
+  if (!applyTheme() && typeof MutationObserver === 'function') {
+    const observer = new MutationObserver(() => {
+      if (applyTheme()) observer.disconnect();
+    });
+    observer.observe(document, { childList: true });
+  }
+
+  // Live updates: the Appearance dropdown saves through the settings store,
+  // which broadcasts to every webContents including these webviews.
+  const onSettingsUpdated = (_event, settings) => {
+    configuredTheme = settings?.theme || 'system';
+    applyTheme();
+  };
+  ipcRenderer.on('settings:updated', onSettingsUpdated);
+  const unsubscribe = () => {
+    ipcRenderer.removeListener('settings:updated', onSettingsUpdated);
+    activeSubscriptions.delete(unsubscribe);
+  };
+  activeSubscriptions.add(unsubscribe);
+
+  prefersDarkQuery?.addEventListener('change', () => {
+    if (configuredTheme !== 'light' && configuredTheme !== 'dark') applyTheme();
+  });
+}
+
+if (isInternalPage()) {
+  installInternalPageTheme();
+}
+
 const guardInternalSubscription = (name, channel) => (callback) => {
   if (!isInternalPage()) {
     console.warn(`[freedomAPI] blocked subscription "${name}" on non-internal page`);
@@ -128,7 +217,39 @@ const findClosestAnchor = (start) => {
 const getRawDwebHref = (anchor) => {
   const rawHref = anchor?.getAttribute?.('href')?.trim();
   if (!rawHref) return null;
-  if (/^(ipfs|ipns):\/\//i.test(rawHref)) return rawHref;
+  if (/^(ipfs|ipns|web3):\/\//i.test(rawHref)) return rawHref;
+  return null;
+};
+
+const getHostRoutedHref = (anchor) => {
+  const rawHref = anchor?.getAttribute?.('href')?.trim();
+  if (!rawHref) return null;
+  const rawDwebHref = getRawDwebHref(anchor);
+  if (rawDwebHref) return rawDwebHref;
+  if (globalThis.location?.protocol === 'web3:') {
+    if (anchor?.hasAttribute?.('download')) return null;
+    try {
+      const resolved = new URL(rawHref, globalThis.location.href);
+      if (
+        [
+          'web3:',
+          'http:',
+          'https:',
+          'bzz:',
+          'ipfs:',
+          'ipns:',
+          'rad:',
+          'ens:',
+          'freedom:',
+          'ethereum:',
+        ].includes(resolved.protocol)
+      ) {
+        return resolved.toString();
+      }
+    } catch {
+      return null;
+    }
+  }
   return null;
 };
 
@@ -142,6 +263,9 @@ const getRawDwebHref = (anchor) => {
 // both handled here so the new-window code path (Chromium →
 // setWindowOpenHandler → tab:new-with-url in the main process) never gets
 // the lowercased URL — see `src/main/webcontents-setup.js#setWindowOpenHandler`.
+// The same early path preserves Freedom's friendly
+// `web3://<contract>:<chain>` input before Chromium rejects the bare all-hex
+// host; renderer navigation canonicalizes it to `<contract>.eip155-<chain>`.
 //
 // Two listeners — one each for `click` (primary button) and `auxclick`
 // (non-primary, i.e. middle/right). Per the UI Events spec, modern
@@ -158,16 +282,26 @@ const handleDwebLinkActivation = (event) => {
   if (event.button !== 0 && event.button !== 1) return;
 
   const anchor = findClosestAnchor(event.target);
-  const href = getRawDwebHref(anchor);
+  const href = getHostRoutedHref(anchor);
   if (!href) return;
 
-  // Mirror Chromium's link disposition heuristic: middle-click,
-  // ctrl/cmd-click, shift-click, or `target="_blank"` open in a new tab;
-  // a named `target` (anything not starting with `_`) reuses an existing
-  // tab with that name (or opens a new one if none exists); everything
-  // else navigates the current tab. (We don't distinguish foreground vs
-  // background tab here — same as freedom's existing `tab:new-with-url`
-  // flow which always opens foreground.)
+  // Onchain documents cannot navigate themselves. Only a real user
+  // activation may ask the browser chrome to leave the isolated app; a page
+  // dispatching a synthetic click is equivalent to a scripted redirect.
+  if (globalThis.location?.protocol === 'web3:' && event.isTrusted !== true) return;
+
+  // Mirror Chromium's link disposition heuristic (#303):
+  //
+  //   Ctrl/Cmd+click, middle-click        → background tab (stay on this page)
+  //   Ctrl/Cmd+Shift+click, Shift+middle  → foreground tab
+  //   Shift+click                         → new window
+  //   target="_blank" / named target      → foreground tab
+  //   anything else                       → this tab
+  //
+  // The modifiers win over the target attribute for foreground-vs-background,
+  // as in Chrome: Ctrl+clicking a `target="_blank"` link still leaves you on
+  // the current page. A named target is still forwarded in every case so the
+  // renderer can reuse that name's tab.
   //
   // The target attribute is forwarded so the host renderer can route
   // through the same named-tab reuse path that Chromium's
@@ -180,18 +314,24 @@ const handleDwebLinkActivation = (event) => {
   const target = anchor.getAttribute?.('target') || '';
   const isBlank = /^_blank$/i.test(target);
   const isNamedTarget = target && !target.startsWith('_');
-  const wantsNewTab =
-    event.button === 1 ||
-    event.metaKey ||
-    event.ctrlKey ||
-    event.shiftKey ||
-    isBlank ||
-    isNamedTarget;
+  const isMiddleClick = event.button === 1;
+  const wantsNewTab = isMiddleClick || event.metaKey || event.ctrlKey;
+
+  let disposition;
+  if (wantsNewTab) {
+    disposition = event.shiftKey ? 'newTab' : 'newBackgroundTab';
+  } else if (event.shiftKey) {
+    disposition = 'newWindow';
+  } else if (isBlank || isNamedTarget) {
+    disposition = 'newTab';
+  } else {
+    disposition = 'currentTab';
+  }
 
   event.preventDefault();
   ipcRenderer.sendToHost('link:navigate', {
     url: href,
-    disposition: wantsNewTab ? 'newTab' : 'currentTab',
+    disposition,
     target: target || null,
   });
 };
@@ -245,6 +385,30 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   removeHistory: guardInternal('removeHistory', (id) => ipcRenderer.invoke('history:remove', id)),
   clearHistory: guardInternal('clearHistory', () => ipcRenderer.invoke('history:clear')),
 
+  // Downloads (freedom://downloads page). Open / show-in-folder resolve the
+  // file path in the main process from the stored row id — no path crosses
+  // this boundary.
+  getDownloads: guardInternal('getDownloads', (options) =>
+    ipcRenderer.invoke('downloads:get', options)
+  ),
+  pauseDownload: guardInternal('pauseDownload', (id) => ipcRenderer.invoke('downloads:pause', id)),
+  resumeDownload: guardInternal('resumeDownload', (id) =>
+    ipcRenderer.invoke('downloads:resume', id)
+  ),
+  cancelDownload: guardInternal('cancelDownload', (id) =>
+    ipcRenderer.invoke('downloads:cancel', id)
+  ),
+  openDownloadedFile: guardInternal('openDownloadedFile', (id) =>
+    ipcRenderer.invoke('downloads:open-file', id)
+  ),
+  showDownloadInFolder: guardInternal('showDownloadInFolder', (id) =>
+    ipcRenderer.invoke('downloads:show-in-folder', id)
+  ),
+  removeDownload: guardInternal('removeDownload', (id) =>
+    ipcRenderer.invoke('downloads:remove', id)
+  ),
+  clearDownloads: guardInternal('clearDownloads', () => ipcRenderer.invoke('downloads:clear')),
+
   // Unified payment history (read-only — producers record in main directly).
   getPayments: guardInternal('getPayments', (filters) =>
     ipcRenderer.invoke('payments:get-recent', filters)
@@ -267,11 +431,50 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   ),
   relaunchApp: guardInternal('relaunchApp', () => ipcRenderer.send('app:relaunch')),
 
+  // Ad blocking (settings page)
+  adblockGetStatus: guardInternal('adblockGetStatus', () =>
+    ipcRenderer.invoke('adblock:get-status')
+  ),
+  adblockGetAllowlist: guardInternal('adblockGetAllowlist', () =>
+    ipcRenderer.invoke('adblock:get-allowlist')
+  ),
+  adblockAddAllowlistHost: guardSettingsPage('adblockAddAllowlistHost', (host) =>
+    ipcRenderer.invoke('adblock:add-allowlist-host', host)
+  ),
+  adblockRemoveAllowlistHost: guardSettingsPage('adblockRemoveAllowlistHost', (host) =>
+    ipcRenderer.invoke('adblock:remove-allowlist-host', host)
+  ),
+  // Keyboard shortcuts (Settings > Shortcuts). Reads are internal-page
+  // wide; anything that changes bindings is settings-only, matching the
+  // profile-write guards. previewShortcutBinding is a pure computation
+  // (validation + conflict lookup for a captured keydown) but only the
+  // settings page has any business calling it.
+  getShortcuts: guardInternal('getShortcuts', () => ipcRenderer.invoke('shortcuts:get-state')),
+  previewShortcutBinding: guardSettingsPage('previewShortcutBinding', (payload) =>
+    ipcRenderer.invoke('shortcuts:preview-binding', payload)
+  ),
+  setShortcutOverride: guardSettingsPage('setShortcutOverride', (payload) =>
+    ipcRenderer.invoke('shortcuts:set-override', payload)
+  ),
+  resetShortcut: guardSettingsPage('resetShortcut', (id) =>
+    ipcRenderer.invoke('shortcuts:reset', { id })
+  ),
+  resetAllShortcuts: guardSettingsPage('resetAllShortcuts', () =>
+    ipcRenderer.invoke('shortcuts:reset', {})
+  ),
+
   // Platform / environment info needed by settings page
   getPlatform: guardInternal('getPlatform', () => ipcRenderer.invoke('window:get-platform')),
   getActiveProfile: guardInternal('getActiveProfile', () =>
     ipcRenderer.invoke('profile:get-active')
   ),
+  checkRadicleBinary: guardSettingsPage('checkRadicleBinary', () =>
+    ipcRenderer.invoke('radicle:checkBinary')
+  ),
+  // Whether this build bundles an Arti binary — the settings page shows the
+  // Tor rows only where there is one to drive (or where the integration is
+  // already enabled). Same shape as checkRadicleBinary: `{ available }`.
+  checkTorBinary: guardSettingsPage('checkTorBinary', () => ipcRenderer.invoke('tor:checkBinary')),
   onProfileUpdated: guardInternalSubscription('onProfileUpdated', 'profile:updated'),
   listProfiles: guardInternal('listProfiles', () => ipcRenderer.invoke('profile:list')),
   createProfile: guardProfileManagerPage('createProfile', (profile) =>
@@ -320,6 +523,9 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   restoreEndpointSource: guardInternal('restoreEndpointSource', (id) =>
     ipcRenderer.invoke('networks:restore-source', id)
   ),
+  resetEndpointSourceCoverage: guardInternal('resetEndpointSourceCoverage', (id, chainId) =>
+    ipcRenderer.invoke('networks:reset-source-coverage', id, chainId)
+  ),
   setNetworkApiKey: guardInternal('setNetworkApiKey', (providerId, apiKey) =>
     ipcRenderer.invoke('networks:set-api-key', providerId, apiKey)
   ),
@@ -346,6 +552,11 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   getServiceRegistry: guardInternal('getServiceRegistry', () =>
     ipcRenderer.invoke('service-registry:get')
   ),
+  getMyotisStatus: guardInternal('getMyotisStatus', (chainId) =>
+    chainId == null
+      ? ipcRenderer.invoke('myotis:getStatus')
+      : ipcRenderer.invoke('myotis:getStatus', chainId)
+  ),
 
   // Opens the sidebar publish-setup checklist in the host window.
   openPublishSetup: guardInternal('openPublishSetup', () =>
@@ -354,9 +565,31 @@ contextBridge.exposeInMainWorld('freedomAPI', {
 
   // Auto-unsubscribed on pagehide.
   onSettingsUpdated: guardInternalSubscription('onSettingsUpdated', 'settings:updated'),
+  // freedom://downloads uses this for live progress — the row is already
+  // written when it fires, so the page just re-queries.
+  onDownloadsChanged: guardInternalSubscription('onDownloadsChanged', 'downloads:changed'),
   // freedom://payments uses this for live refresh on settlements (no
   // user-driven event for a server-acknowledged paid request).
   onPaymentRecorded: guardInternalSubscription('onPaymentRecorded', 'payments:tx-recorded'),
+
+  // Site permissions (web permission prompts). Reads are internal-page
+  // wide; revokes are settings-only, matching the profile-write guards.
+  getSitePermissions: guardInternal('getSitePermissions', () =>
+    ipcRenderer.invoke('permissions:get-all')
+  ),
+  revokeSitePermission: guardSettingsPage('revokeSitePermission', (origin, permission) =>
+    ipcRenderer.invoke('permissions:revoke', origin, permission)
+  ),
+  revokeSitePermissionOrigin: guardSettingsPage('revokeSitePermissionOrigin', (origin) =>
+    ipcRenderer.invoke('permissions:revoke-origin', origin)
+  ),
+  revokeAllSitePermissions: guardSettingsPage('revokeAllSitePermissions', () =>
+    ipcRenderer.invoke('permissions:revoke-all')
+  ),
+  onSitePermissionsChanged: guardInternalSubscription(
+    'onSitePermissionsChanged',
+    'permissions:changed'
+  ),
 
   // Bookmarks (read-only for internal pages)
   getBookmarks: guardInternal('getBookmarks', () => ipcRenderer.invoke('bookmarks:get')),
@@ -379,6 +612,19 @@ contextBridge.exposeInMainWorld('freedomAPI', {
     ipcRenderer.sendToHost('ens:open-settings');
   }),
 
+  // Signals from the onchain-app trust interstitial. The opaque approval
+  // token is minted and consumed by the web3: protocol handler; the shell
+  // only carries it back on the next top-level navigation.
+  onchainContinueUnverified: guardInternal('onchainContinueUnverified', (payload) => {
+    ipcRenderer.sendToHost('onchain:continue-unverified', payload);
+  }),
+  onchainRetry: guardInternal('onchainRetry', (target) => {
+    ipcRenderer.sendToHost('onchain:retry', { target });
+  }),
+  onchainOpenRpcSettings: guardInternal('onchainOpenRpcSettings', () => {
+    ipcRenderer.sendToHost('onchain:open-rpc-settings');
+  }),
+
   // Favicons
   getCachedFavicon: guardInternal('getCachedFavicon', (url) =>
     ipcRenderer.invoke('favicon:get-cached', url)
@@ -389,12 +635,13 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   getRadicleStatus: guardInternal('getRadicleStatus', () =>
     ipcRenderer.invoke('radicle:getStatus')
   ),
-  getRadicleRepoPayload: guardInternal('getRadicleRepoPayload', (rid) =>
-    ipcRenderer.invoke('radicle:getRepoPayload', rid)
-  ),
   syncRadicleRepo: guardInternal('syncRadicleRepo', (rid) =>
     ipcRenderer.invoke('radicle:syncRepo', rid)
   ),
+  getRadicleSeedStatus: guardInternal('getRadicleSeedStatus', (rid) =>
+    ipcRenderer.invoke('radicle:getSeedStatus', rid)
+  ),
+  onRadicleSeedStatus: guardInternalSubscription('onRadicleSeedStatus', 'radicle:seedStatusUpdate'),
 
   // Clipboard
   copyText: guardInternal('copyText', (text) => ipcRenderer.invoke('clipboard:copy-text', text)),
@@ -433,6 +680,56 @@ contextBridge.exposeInMainWorld('freedomAPI', {
 // Context Menu Handler (works on all pages)
 // ============================================
 
+// The elements a `contextmenu` really passed through, innermost first, up to
+// (but not including) `document.body` — the same bound the plain ancestor walk
+// this replaces stopped at. Falls back to the ancestor chain if the event
+// carries no `composedPath` (a hand-rolled object in a unit test).
+const composedElementPath = (event) => {
+  const path = [];
+  const composed = typeof event.composedPath === 'function' ? event.composedPath() : null;
+  if (composed && composed.length) {
+    for (const node of composed) {
+      if (node === document.body) break;
+      // Elements only: the path also carries shadow roots, the document and
+      // the window, none of which have tagName/parentElement.
+      if (node && node.nodeType === 1) path.push(node);
+    }
+    return path;
+  }
+  let element = event.target;
+  while (element && element !== document.body) {
+    path.push(element);
+    element = element.parentElement;
+  }
+  return path;
+};
+
+// The element that really holds focus. `document.activeElement` retargets to
+// the shadow host for a node inside an open shadow root, so a password field a
+// site renders in a shadow tree would read as an ordinary `<div>`/custom
+// element here; each root's own `activeElement` walks the rest of the way down.
+//
+// A *closed* root has no `shadowRoot` to walk, so the descent stops at the host
+// and the real field stays unidentifiable — which is why the caller withholds
+// the selection instead of reading a type off whatever it landed on.
+const deepActiveElement = () => {
+  let element = document.activeElement;
+  while (element?.shadowRoot?.activeElement) {
+    element = element.shadowRoot.activeElement;
+  }
+  return element;
+};
+
+// Whether `element` is a form control whose own selection this preload can
+// actually read and classify. A shadow host is not: for a closed root there is
+// nothing behind `element.shadowRoot` to look at.
+const isReadableFormField = (element) =>
+  element?.tagName === 'INPUT' || element?.tagName === 'TEXTAREA';
+
+// ...and whether that control is a password field.
+const isPasswordInput = (element) =>
+  element?.tagName === 'INPUT' && String(element.type).toLowerCase() === 'password';
+
 // Get context information when right-clicking.
 //
 // Registered on window in the capture phase: window is the first node in the
@@ -456,6 +753,9 @@ window.addEventListener(
       imageSrc: null,
       imageAlt: null,
       isEditable: false,
+      // Set once chrome must not publish `selectedText` — see the withholding
+      // rule at the end of this handler. #330.
+      withholdSelection: false,
       mediaType: null,
     };
 
@@ -465,9 +765,16 @@ window.addEventListener(
       context.selectedText = selection.toString();
     }
 
-    // Walk up the DOM tree to find links, images, etc.
-    let element = event.target;
-    while (element && element !== document.body) {
+    // Walk from the real target outwards to find links, images, etc.
+    //
+    // `event.target` is retargeted to the shadow *host* for anything inside an
+    // open shadow root, and `element.parentElement` is null at a shadow
+    // boundary anyway, so an ancestor walk alone never sees the element a site
+    // actually rendered inside a shadow tree (LWC/Stencil components, embedded
+    // auth widgets). `composedPath()` is the event's real capture path — the
+    // inner nodes first, then each host, in the same inner-to-outer order the
+    // walk used — so it covers the light DOM and every open root above it. #330.
+    for (const element of composedElementPath(event)) {
       // Check for links
       if (element.tagName === 'A' && element.href) {
         context.linkUrl = getRawDwebHref(element) || element.href;
@@ -508,9 +815,52 @@ window.addEventListener(
         element.isContentEditable
       ) {
         context.isEditable = true;
+        // Chromium reports a selection inside a password field as the masking
+        // bullets, not the password (probed in the shipping app on Electron
+        // 44, 2026-09), so `selectedText` above is already `••••••`. Withhold
+        // it from anything that would publish that string — "Search <Engine>
+        // for "•••••"" is not an offer Chrome makes and not a query worth
+        // sending to a search engine. #330.
+        if (isPasswordInput(element)) {
+          context.withholdSelection = true;
+        }
       }
+    }
 
-      element = element.parentElement;
+    // The walk above only sees the field the menu was raised over, but the
+    // selection Chromium reports comes from the focused field wherever that
+    // is: a page can select a password field's contents and then dispatch a
+    // synthetic `contextmenu` at some unrelated element, and the bullets would
+    // reach chrome unflagged.
+    //
+    // Which source a selection has is readable off the *document's* own range.
+    // A selection reported while that range is collapsed did not come from the
+    // document at all — it is the internal selection of the focused form
+    // control, which the document range never covers. Probed in the shipping
+    // app on Electron 44 (2026-09): a password field in the light DOM, in an
+    // open shadow root and in a closed shadow root all report
+    // `isCollapsed: true` with `anchorNode` on `<body>` while `toString()`
+    // returns the masking bullets, for a real mouse drag as much as for
+    // `setSelectionRange`; a genuine page selection (including one inside a
+    // contenteditable) reports `isCollapsed: false` with `anchorNode` in the
+    // selected content.
+    //
+    // So a collapsed range means the focused control is the only source of the
+    // text, and the selection may only be published once that control has been
+    // identified as an ordinary, non-password field. That identification can
+    // fail outright: `deepActiveElement()` descends open roots, but a closed
+    // one exposes no `shadowRoot` to descend and `composedPath()` stops at the
+    // host, so a login form inside `attachShadow({ mode: 'closed' })` is
+    // unreachable from every angle. Text whose source cannot be attributed is
+    // withheld rather than published — losing the item over a closed
+    // component's field is a far smaller cost than handing a password's exact
+    // length to the configured search engine and to the local history and
+    // autocomplete index. #330.
+    if (context.selectedText && selection?.isCollapsed !== false) {
+      const focused = deepActiveElement();
+      if (!isReadableFormField(focused) || isPasswordInput(focused)) {
+        context.withholdSelection = true;
+      }
     }
 
     // Decide after page handlers have run (setTimeout fires after the
@@ -556,11 +906,21 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 // Providers must exist before ANY page script runs. `<script type="module">` is
 // deferred by definition and deferred scripts execute BEFORE DOMContentLoaded,
 // so injecting on that event hands the most ordinary modern dapp an undefined
-// window.ethereum / window.swarm / window.vault at boot. The preload itself runs
-// at document-start, so insert into the document element the moment it exists —
-// normally immediately, with a MutationObserver covering the narrow window where
-// the parser has not produced <html> yet. Injection order is preserved so the
-// `freedom#initialized` signal always fires last.
+// window.ethereum / window.swarm / window.vault at boot.
+//
+// Primary path: `contextBridge.executeInMainWorld` runs our packaged source
+// synchronously in the page's main world while the preload is still executing —
+// before Chromium runs the document's first inline script. `new Function` only
+// ever compiles source fetched over sync IPC from main; page HTML contributes
+// nothing to it.
+//
+// Fallback (an Electron/runtime regression): insert a <script> into the
+// document element the moment it exists — normally immediately, with a
+// MutationObserver covering the narrow window where the parser has not produced
+// <html> yet. Insertion order is preserved so `freedom#initialized` fires last.
+//
+// PRIVATE MODE GUARD (providers): nothing is installed in private windows — no
+// providers, no bridges, nothing announces via EIP-6963.
 const pendingPageScripts = [];
 let pageRealmObserver = null;
 let pageRealmRetryArmed = false;
@@ -588,6 +948,13 @@ const flushPendingPageScripts = () => {
 };
 
 const injectIntoPageRealm = (source, label) => {
+  if (IS_PRIVATE_WINDOW) return;
+  try {
+    contextBridge.executeInMainWorld({ func: new Function(source) });
+    return;
+  } catch (err) {
+    console.error(`[webview-preload] Failed early ${label} provider injection:`, err);
+  }
   try {
     const script = document.createElement('script');
     script.textContent = source;
@@ -620,46 +987,49 @@ const injectIntoPageRealm = (source, label) => {
 // The preload realm only bridges messages to/from the host renderer (below).
 injectIntoPageRealm(ETHEREUM_INJECT_SOURCE, 'ethereum');
 
-// Bridge postMessage from page to IPC
-window.addEventListener('message', (event) => {
-  if (event.source !== window) return;
-  if (event.data.type === 'FREEDOM_ETHEREUM_REQUEST') {
-    const { id, method, params } = event.data;
-    const origin = window.location.origin;
+// PRIVATE MODE GUARD (bridges): no provider was installed, so no bridge either.
+if (!IS_PRIVATE_WINDOW) {
+  // Bridge postMessage from page to IPC
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data.type === 'FREEDOM_ETHEREUM_REQUEST') {
+      const { id, method, params } = event.data;
+      const origin = window.location.origin;
 
-    ipcRenderer.sendToHost('dapp:provider-request', {
-      id,
-      method,
-      params,
-      origin,
-    });
-  }
-});
+      ipcRenderer.sendToHost('dapp:provider-request', {
+        id,
+        method,
+        params,
+        origin,
+      });
+    }
+  });
 
-// Bridge IPC responses back to page
-ipcRenderer.on('dapp:provider-response', (_event, { id, result, error }) => {
-  console.log('[webview-preload] Received provider response:', { id, result, error });
-  window.postMessage(
-    {
-      type: 'FREEDOM_ETHEREUM_RESPONSE',
-      id,
-      result,
-      error,
-    },
-    window.location.origin
-  );
-});
+  // Bridge IPC responses back to page
+  ipcRenderer.on('dapp:provider-response', (_event, { id, result, error }) => {
+    console.log('[webview-preload] Received provider response:', { id, result, error });
+    window.postMessage(
+      {
+        type: 'FREEDOM_ETHEREUM_RESPONSE',
+        id,
+        result,
+        error,
+      },
+      window.location.origin
+    );
+  });
 
-ipcRenderer.on('dapp:provider-event', (_event, { event, data }) => {
-  window.postMessage(
-    {
-      type: 'FREEDOM_ETHEREUM_EVENT',
-      event,
-      data,
-    },
-    window.location.origin
-  );
-});
+  ipcRenderer.on('dapp:provider-event', (_event, { event, data }) => {
+    window.postMessage(
+      {
+        type: 'FREEDOM_ETHEREUM_EVENT',
+        event,
+        data,
+      },
+      window.location.origin
+    );
+  });
+}
 
 // ============================================
 // Swarm Provider (window.swarm)
@@ -669,7 +1039,7 @@ const SWARM_INJECT_SOURCE = `
     (function() {
       const pendingRequests = new Map();
       let requestId = 0;
-      const eventListeners = { connect: [], disconnect: [] };
+      const eventListeners = { connect: [], disconnect: [], message: [] };
 
       function emitEvent(event, data) {
         if (eventListeners[event]) {
@@ -687,11 +1057,14 @@ const SWARM_INJECT_SOURCE = `
             pendingRequests.set(id, { resolve, reject });
             window.postMessage({ type: 'FREEDOM_SWARM_REQUEST', id, method, params: params || {} }, '*');
             const longRunning = method.startsWith('swarm_publish') ||
+              method.startsWith('swarm_send') ||
               method === 'swarm_createFeed' ||
               method === 'swarm_updateFeed' ||
               method === 'swarm_writeFeedEntry' ||
               method === 'swarm_writeSingleOwnerChunk' ||
-              method === 'swarm_getSigningIdentity';
+              method === 'swarm_getSigningIdentity' ||
+              method === 'swarm_getMessagingIdentity' ||
+              method === 'swarm_subscribe';
             const timeout = longRunning ? 300000 : 60000;
             setTimeout(() => {
               if (pendingRequests.has(id)) {
@@ -721,6 +1094,11 @@ const SWARM_INJECT_SOURCE = `
         getSigningIdentity() { return this.request({ method: 'swarm_getSigningIdentity' }); },
         isRetrievable(params) { return this.request({ method: 'swarm_isRetrievable', params: params }); },
         getBatch(params) { return this.request({ method: 'swarm_getBatch', params: params }); },
+        getMessagingIdentity() { return this.request({ method: 'swarm_getMessagingIdentity' }); },
+        subscribe(params) { return this.request({ method: 'swarm_subscribe', params: params }); },
+        unsubscribe(params) { return this.request({ method: 'swarm_unsubscribe', params: params }); },
+        sendPss(params) { return this.request({ method: 'swarm_sendPss', params: params }); },
+        sendGsoc(params) { return this.request({ method: 'swarm_sendGsoc', params: params }); },
 
         on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
         removeListener(event, handler) {
@@ -763,43 +1141,189 @@ const SWARM_INJECT_SOURCE = `
 
 injectIntoPageRealm(SWARM_INJECT_SOURCE, 'swarm');
 
-// Bridge postMessage from page to IPC (Swarm)
-window.addEventListener('message', (event) => {
-  if (event.source !== window) return;
-  if (event.data.type === 'FREEDOM_SWARM_REQUEST') {
-    const { id, method, params } = event.data;
-    ipcRenderer.sendToHost('swarm:provider-request', { id, method, params });
-  }
-});
+if (!IS_PRIVATE_WINDOW) {
+  // Bridge postMessage from page to IPC (Swarm)
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data.type === 'FREEDOM_SWARM_REQUEST') {
+      const { id, method, params } = event.data;
+      ipcRenderer.sendToHost('swarm:provider-request', { id, method, params });
+    }
+  });
 
-// Bridge IPC responses back to page (Swarm)
-ipcRenderer.on('swarm:provider-response', (_event, { id, result, error }) => {
-  window.postMessage(
-    {
-      type: 'FREEDOM_SWARM_RESPONSE',
-      id,
-      result,
-      error,
-    },
-    window.location.origin
-  );
-});
+  // Bridge IPC responses back to page (Swarm)
+  ipcRenderer.on('swarm:provider-response', (_event, { id, result, error }) => {
+    window.postMessage(
+      {
+        type: 'FREEDOM_SWARM_RESPONSE',
+        id,
+        result,
+        error,
+      },
+      window.location.origin
+    );
+  });
 
-ipcRenderer.on('swarm:provider-event', (_event, { event, data }) => {
-  window.postMessage(
-    {
-      type: 'FREEDOM_SWARM_EVENT',
-      event,
-      data,
-    },
-    window.location.origin
-  );
-});
+  ipcRenderer.on('swarm:provider-event', (_event, { event, data }) => {
+    window.postMessage(
+      {
+        type: 'FREEDOM_SWARM_EVENT',
+        event,
+        data,
+      },
+      window.location.origin
+    );
+  });
+}
+
+// ============================================
+// Radicle Provider (window.radicle)
+// ============================================
+// Actions-only provider: reads of public repo data are plain
+// fetch('rad:<rid>/…') calls resolved by the main-process rad: protocol
+// handler — no provider involvement. See docs/radicle-provider-api.md.
+
+const RADICLE_INJECT_SOURCE = `
+    (function() {
+      const pendingRequests = new Map();
+      let requestId = 0;
+      const eventListeners = { connect: [], disconnect: [], seedStatus: [] };
+
+      function emitEvent(event, data) {
+        if (eventListeners[event]) {
+          eventListeners[event].forEach(h => { try { h(data); } catch(e) {} });
+        }
+      }
+
+      window.radicle = {
+        isFreedomBrowser: true,
+
+        async request({ method, params }) {
+          if (!method) throw new Error('method is required');
+          const id = ++requestId;
+          return new Promise((resolve, reject) => {
+            pendingRequests.set(id, { resolve, reject });
+            window.postMessage({ type: 'FREEDOM_RADICLE_REQUEST', id, method, params: params || {} }, '*');
+            // Execution itself is prompt — seed/sync hand the network fetch
+            // to a background tracker (seedStatus events report progress;
+            // radicle_getSeedStatus restores a snapshot after reload). But the
+            // methods below can first block on a consent prompt while the
+            // user deliberates; timing those out at 60s rejects the page
+            // promise while the grant and the write still land in main, so
+            // the dApp retries and duplicates the COB. Match the swarm
+            // sibling's 300s budget for anything that can prompt.
+            const canPrompt = method === 'radicle_requestAccess' ||
+              method === 'radicle_seed' ||
+              method === 'radicle_getIdentity' ||
+              method === 'radicle_createIssue' ||
+              method === 'radicle_commentIssue' ||
+              method === 'radicle_editIssueState' ||
+              method === 'radicle_commentPatch';
+            const timeout = canPrompt ? 300000 : 60000;
+            setTimeout(() => {
+              if (pendingRequests.has(id)) {
+                pendingRequests.delete(id);
+                const err = new Error('Request timed out');
+                err.code = -32603;
+                reject(err);
+              }
+            }, timeout);
+          });
+        },
+
+        requestAccess() { return this.request({ method: 'radicle_requestAccess' }); },
+        disconnect() { return this.request({ method: 'radicle_disconnect' }); },
+        getCapabilities() { return this.request({ method: 'radicle_getCapabilities' }); },
+        getNodeStatus() { return this.request({ method: 'radicle_getNodeStatus' }); },
+        listSeededRepos() { return this.request({ method: 'radicle_listSeededRepos' }); },
+        seed(params) { return this.request({ method: 'radicle_seed', params: params }); },
+        unseed(params) { return this.request({ method: 'radicle_unseed', params: params }); },
+        sync(params) { return this.request({ method: 'radicle_sync', params: params }); },
+        getSeedStatus(params) { return this.request({ method: 'radicle_getSeedStatus', params: params }); },
+        getIdentity() { return this.request({ method: 'radicle_getIdentity' }); },
+        createIssue(params) { return this.request({ method: 'radicle_createIssue', params: params }); },
+        commentIssue(params) { return this.request({ method: 'radicle_commentIssue', params: params }); },
+        editIssueState(params) { return this.request({ method: 'radicle_editIssueState', params: params }); },
+        commentPatch(params) { return this.request({ method: 'radicle_commentPatch', params: params }); },
+
+        on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
+        removeListener(event, handler) {
+          if (eventListeners[event]) {
+            const i = eventListeners[event].indexOf(handler);
+            if (i > -1) eventListeners[event].splice(i, 1);
+          }
+          return this;
+        },
+        addListener(event, handler) { return this.on(event, handler); },
+        removeAllListeners(event) {
+          if (event && eventListeners[event]) eventListeners[event] = [];
+          if (!event) Object.keys(eventListeners).forEach((key) => { eventListeners[key] = []; });
+          return this;
+        },
+      };
+
+      window.addEventListener('message', function(event) {
+        if (event.source !== window) return;
+        if (event.data.type === 'FREEDOM_RADICLE_RESPONSE') {
+          const pending = pendingRequests.get(event.data.id);
+          if (pending) {
+            pendingRequests.delete(event.data.id);
+            if (event.data.error) {
+              const err = new Error(event.data.error.message);
+              err.code = event.data.error.code;
+              err.data = event.data.error.data;
+              pending.reject(err);
+            } else {
+              pending.resolve(event.data.result);
+            }
+          }
+        } else if (event.data.type === 'FREEDOM_RADICLE_EVENT') {
+          emitEvent(event.data.event, event.data.data);
+        }
+      });
+    })();
+  `;
+
+injectIntoPageRealm(RADICLE_INJECT_SOURCE, 'radicle');
+
+if (!IS_PRIVATE_WINDOW) {
+  // Bridge postMessage from page to IPC (Radicle)
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data.type === 'FREEDOM_RADICLE_REQUEST') {
+      const { id, method, params } = event.data;
+      ipcRenderer.sendToHost('radicle:provider-request', { id, method, params });
+    }
+  });
+
+  // Bridge IPC responses back to page (Radicle)
+  ipcRenderer.on('radicle:provider-response', (_event, { id, result, error }) => {
+    window.postMessage(
+      {
+        type: 'FREEDOM_RADICLE_RESPONSE',
+        id,
+        result,
+        error,
+      },
+      window.location.origin
+    );
+  });
+
+  ipcRenderer.on('radicle:provider-event', (_event, { event, data }) => {
+    window.postMessage(
+      {
+        type: 'FREEDOM_RADICLE_EVENT',
+        event,
+        data,
+      },
+      window.location.origin
+    );
+  });
+}
 
 // Note: transient 404/500 recovery for bzz:// sub-resources is handled by the
 // main-process `bzz:` protocol handler in `src/main/swarm/bzz-protocol.js`,
 // not by in-page JavaScript. See README "Swarm Content Retrieval".
-
 
 // ============================================
 // VAULT Data Vault (window.vault) + vault home page bridge
@@ -878,49 +1402,52 @@ const ENS_INJECT_SOURCE = `
 
 injectIntoPageRealm(ENS_INJECT_SOURCE, 'ens');
 
-window.addEventListener('message', async (event) => {
-  if (event.source !== window) return;
-  if (!event.data || event.data.type !== 'FREEDOM_ENS_REQUEST') return;
-  const { id, method, params } = event.data;
-  let payload;
-  try {
-    payload = await ipcRenderer.invoke('ens:provider-request', { method, params });
-  } catch (err) {
-    payload = { error: { code: err.code || -32603, message: err.message } };
-  }
-  window.postMessage(
-    { type: 'FREEDOM_ENS_RESPONSE', id, result: payload.result, error: payload.error },
-    window.location.origin
+// PRIVATE MODE GUARD (bridges): matches the ethereum / swarm / radicle bridges.
+if (!IS_PRIVATE_WINDOW) {
+  window.addEventListener('message', async (event) => {
+    if (event.source !== window) return;
+    if (!event.data || event.data.type !== 'FREEDOM_ENS_REQUEST') return;
+    const { id, method, params } = event.data;
+    let payload;
+    try {
+      payload = await ipcRenderer.invoke('ens:provider-request', { method, params });
+    } catch (err) {
+      payload = { error: { code: err.code || -32603, message: err.message } };
+    }
+    window.postMessage(
+      { type: 'FREEDOM_ENS_RESPONSE', id, result: payload.result, error: payload.error },
+      window.location.origin
+    );
+  });
+
+  // One signal for all providers, following the EIP-1193 `ethereum#initialized`
+  // convention. A site that boots before the providers exist (or is unsure
+  // whether it did) waits for this instead of polling.
+  injectIntoPageRealm(
+    `window.dispatchEvent(new Event('freedom#initialized'));`,
+    'freedom-initialized'
   );
-});
 
-// One signal for all providers, following the EIP-1193 `ethereum#initialized`
-// convention. A site that boots before the providers exist (or is unsure
-// whether it did) waits for this instead of polling.
-injectIntoPageRealm(
-  `window.dispatchEvent(new Event('freedom#initialized'));`,
-  'freedom-initialized'
-);
+  window.addEventListener('message', async (event) => {
+    if (event.source !== window) return;
+    if (!event.data || event.data.type !== 'FREEDOM_VAULT_REQUEST') return;
+    const { id, method, params } = event.data;
+    let payload;
+    try {
+      payload = await ipcRenderer.invoke('vault:provider-request', { method, params });
+    } catch (err) {
+      payload = { error: { code: err.code || -32603, message: err.message } };
+    }
+    window.postMessage(
+      { type: 'FREEDOM_VAULT_RESPONSE', id, result: payload.result, error: payload.error },
+      window.location.origin
+    );
+  });
 
-window.addEventListener('message', async (event) => {
-  if (event.source !== window) return;
-  if (!event.data || event.data.type !== 'FREEDOM_VAULT_REQUEST') return;
-  const { id, method, params } = event.data;
-  let payload;
-  try {
-    payload = await ipcRenderer.invoke('vault:provider-request', { method, params });
-  } catch (err) {
-    payload = { error: { code: err.code || -32603, message: err.message } };
-  }
-  window.postMessage(
-    { type: 'FREEDOM_VAULT_RESPONSE', id, result: payload.result, error: payload.error },
-    window.location.origin
-  );
-});
-
-ipcRenderer.on('vault:provider-event', (_event, { notification }) => {
-  window.postMessage({ type: 'FREEDOM_VAULT_EVENT', notification }, window.location.origin);
-});
+  ipcRenderer.on('vault:provider-event', (_event, { notification }) => {
+    window.postMessage({ type: 'FREEDOM_VAULT_EVENT', notification }, window.location.origin);
+  });
+}
 
 // Owner-plane bridge for freedom://dapps (the vault home page). Enumerating the
 // sites you hold data for is exactly the cross-origin history leak the vault
@@ -951,4 +1478,195 @@ contextBridge.exposeInMainWorld('vaultHome', {
   requestUnlock: guardVaultHome('requestUnlock', () => ipcRenderer.invoke('datavault:home-unlock')),
 });
 
-console.log('[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + vault + ens provider)');
+// ============================================
+// Ad blocking — cosmetic filtering (element hiding)
+// ============================================
+//
+// The filter engine lives in the main process (it can't be required in this
+// sandboxed preload). This thin client extracts DOM features, asks the engine
+// for matching element-hiding CSS over IPC, and injects it as a <style>.
+// Two phases: an initial request for the frame's hostname-specific rules, then
+// generic rules for the classes/ids/hrefs actually present, refreshed as the
+// DOM mutates. Network blocking already removes the requests; this hides the
+// leftover ad containers/placeholders.
+(function setupCosmeticFiltering() {
+  const loc = globalThis.location;
+  // Only real web frames — internal pages and dweb hashes carry no ad markup.
+  if (!loc || (loc.protocol !== 'http:' && loc.protocol !== 'https:')) return;
+  if (isInternalPage()) return;
+
+  const IGNORED_TAGS = new Set(['br', 'head', 'link', 'meta', 'script', 'style', 's']);
+  let active = true;
+  let styleEl = null;
+  let observer = null;
+
+  const stopObserving = () => {
+    if (observer) {
+      observer.disconnect();
+      observer = null;
+    }
+  };
+
+  const injectStyles = (css) => {
+    if (!css) return;
+    if (styleEl === null) {
+      styleEl = document.createElement('style');
+      styleEl.setAttribute('data-freedom-adblock', 'cosmetic');
+    }
+    styleEl.appendChild(document.createTextNode(`${css}\n`));
+    if (!styleEl.isConnected) {
+      const parent = document.head || document.documentElement;
+      if (parent) parent.appendChild(styleEl);
+    }
+  };
+
+  const newFeatures = () => ({ classes: new Set(), ids: new Set(), hrefs: new Set() });
+
+  // Read one element's own class/id/href (mirrors the per-element half of
+  // @ghostery/adblocker-content's extractFeaturesFromDOM, kept self-contained
+  // because sandboxed preloads can't require it).
+  const collectOwn = (el, out) => {
+    if (!el || !el.nodeName || IGNORED_TAGS.has(el.nodeName.toLowerCase())) return;
+    const id = el.getAttribute?.('id');
+    if (id) out.ids.add(id);
+    if (el.classList) for (const cls of el.classList) out.classes.add(cls);
+    const href = el.getAttribute?.('href');
+    if (href) out.hrefs.add(href);
+  };
+
+  // Scan an element and its subtree. Used only for added nodes — an attribute
+  // change touches only its target, so those take collectOwn (no re-walk).
+  const collectSubtree = (root, out) => {
+    if (!root) return;
+    collectOwn(root, out);
+    if (root.querySelectorAll) {
+      for (const el of root.querySelectorAll(
+        '[id]:not(html):not(body),[class]:not(html):not(body),[href]'
+      )) {
+        collectOwn(el, out);
+      }
+    }
+  };
+
+  // Only forward tokens not seen before, so mutation batches stay small and
+  // the engine isn't re-queried for the same selectors. Capped so a page with
+  // pathologically many distinct tokens (esp. hrefs) can't grow these Sets or
+  // the query rate without bound.
+  const KNOWN_MAX = 8192;
+  const knownClasses = new Set();
+  const knownIds = new Set();
+  const knownHrefs = new Set();
+  const pick = (set, known) => {
+    const fresh = [];
+    for (const value of set) {
+      if (known.has(value)) continue;
+      if (known.size >= KNOWN_MAX) break; // cap reached — stop tracking/forwarding
+      known.add(value);
+      fresh.push(value);
+    }
+    return fresh;
+  };
+
+  const requestCosmetics = async (payload) => {
+    if (!active) return;
+    try {
+      const res = await ipcRenderer.invoke('adblock:cosmetic', { url: loc.href, ...payload });
+      if (!res || res.active === false) {
+        // Disabled, allowlisted, or no engine — stop all DOM work for this frame.
+        active = false;
+        stopObserving();
+        return;
+      }
+      injectStyles(res.styles);
+    } catch {
+      // Main process unavailable — leave the page unmodified.
+    }
+  };
+
+  // Forward whatever new tokens `out` holds, if any.
+  const forwardNew = (out) => {
+    const fresh = {
+      classes: pick(out.classes, knownClasses),
+      ids: pick(out.ids, knownIds),
+      hrefs: pick(out.hrefs, knownHrefs),
+    };
+    if (fresh.classes.length || fresh.ids.length || fresh.hrefs.length) {
+      requestCosmetics(fresh);
+    }
+  };
+
+  // Phase 1: hostname-specific rules, before the DOM is populated.
+  requestCosmetics({ initial: true });
+
+  // Phase 2: generic rules for whatever the initial DOM contains, then watch
+  // for dynamically-added nodes / attribute changes.
+  const onReady = () => {
+    if (!active || !document.documentElement) return;
+    const initial = newFeatures();
+    collectSubtree(document.documentElement, initial);
+    forwardNew(initial);
+    if (typeof MutationObserver === 'undefined') return;
+
+    const attrTargets = new Set(); // shallow: only their own attrs changed
+    const addedRoots = new Set(); // deep: scan their subtrees
+    let debounceTimer = null;
+    let maxWaitTimer = null;
+    const pendingCount = () => attrTargets.size + addedRoots.size;
+    const flush = () => {
+      clearTimeout(debounceTimer);
+      clearTimeout(maxWaitTimer);
+      maxWaitTimer = null;
+      if (!active) {
+        attrTargets.clear();
+        addedRoots.clear();
+        return;
+      }
+      if (pendingCount() === 0) return;
+      const out = newFeatures();
+      for (const el of attrTargets) collectOwn(el, out);
+      for (const root of addedRoots) collectSubtree(root, out);
+      attrTargets.clear();
+      addedRoots.clear();
+      forwardNew(out);
+    };
+    observer = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.type === 'attributes') {
+          if (m.target) attrTargets.add(m.target);
+        } else {
+          for (const node of m.addedNodes || []) {
+            if (node.nodeType === 1) addedRoots.add(node);
+          }
+        }
+      }
+      if (pendingCount() === 0) return;
+      // Bounded debounce: coalesce bursts, but cap latency and bail out if a
+      // hostile page floods mutations to keep the sets from growing unbounded.
+      if (pendingCount() > 512) {
+        flush();
+        return;
+      }
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(flush, 25);
+      if (maxWaitTimer === null) maxWaitTimer = setTimeout(flush, 1000);
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class', 'id', 'href'],
+      childList: true,
+      subtree: true,
+    });
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', onReady, { once: true });
+  } else {
+    onReady();
+  }
+})();
+
+console.log(
+  IS_PRIVATE_WINDOW
+    ? '[webview-preload] Loaded (freedomAPI + context menu — private window, providers disabled)'
+    : '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + radicle + vault + ens providers)'
+);

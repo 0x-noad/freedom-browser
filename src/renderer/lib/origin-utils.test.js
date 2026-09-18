@@ -13,6 +13,22 @@
 import * as renderer from './origin-utils.js';
 const shared = require('../../shared/origin-utils');
 
+test.each([
+  ['gregskril.com', true],
+  ['🦇.eth', true],
+  ['bücher.eth', true],
+  ['a.co', true],
+  ['foo..eth', false],
+  ['https://gregskril.com', false],
+  ['name.eth/path', false],
+  ['alice@example.com', false],
+  ['', false],
+  [null, false],
+])('ENS candidate detection agrees across processes: %s', (value, expected) => {
+  expect(renderer.isPotentialEnsName(value)).toBe(expected);
+  expect(shared.isPotentialEnsName(value)).toBe(expected);
+});
+
 // Inputs span every code path + realistic edge cases.
 const INPUTS = [
   // ENS bare names
@@ -58,6 +74,8 @@ const INPUTS = [
   'ipfs://myapp.box/path',
   'ipfs://alice.wei/path',
   'ipfs://apoorv.gwei/path',
+  'docs.example.tez/guide',
+  'ipfs://docs.example.tez/guide',
 
   // Query / fragment must not fork the permission key per route. Hash-routed
   // SPAs (#/swap) and share-link queries (?ref=...) collapse to the same
@@ -79,6 +97,12 @@ const INPUTS = [
   // Radicle
   'rad://z3gqcJUoA1n9HaHKufZs5FCSGazv5',
   'rad://z3gqcJUoA1n9HaHKufZs5FCSGazv5/tree',
+
+  // ERC-8244 apps: contract and chain jointly define the permission origin.
+  'web3://0x00000095643cffA7d9faE407A84Dfcb6406456C6.eip155-1/',
+  'web3://0x00000095643cffA7d9faE407A84Dfcb6406456C6.eip155-1/swap?x=1#route',
+  'web3://0x00000095643cffA7d9faE407A84Dfcb6406456C6.eip155-100/',
+  'web3://0x00000095643cffA7d9faE407A84Dfcb6406456C6/',
 
   // HTTP(S)
   'https://app.uniswap.org',
@@ -102,6 +126,20 @@ const INPUTS = [
 ];
 
 describe('renderer origin-utils vs shared origin-utils', () => {
+  test('onchain permissions include the contract and chain', () => {
+    const address = '0x00000095643cffA7d9faE407A84Dfcb6406456C6';
+    expect(renderer.getPermissionKey(`web3://${address}:1/swap`)).toBe(
+      `web3://${address.toLowerCase()}`
+    );
+    expect(renderer.getPermissionKey(`web3://${address}:100/swap`)).toBe(
+      `web3://${address.toLowerCase()}:100`
+    );
+    expect(renderer.getPermissionKey(`web3://${address}/`)).toBe(`web3://${address.toLowerCase()}`);
+    expect(renderer.getPermissionKey(`web3://${address.toLowerCase()}.eip155-100/swap`)).toBe(
+      `web3://${address.toLowerCase()}:100`
+    );
+  });
+
   describe('getPermissionKey', () => {
     test.each(INPUTS.map((i) => [JSON.stringify(i), i]))(
       'produces identical output for %s',

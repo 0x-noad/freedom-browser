@@ -13,12 +13,16 @@ import {
   applyEnsNamePreservation,
   buildEnsDisplayUri,
   isEnsBackedDisplay,
+  isIpfsGatewayFormUrl,
   normalizeLegacyEnsBookmarkUrl,
   isValidRadicleId,
   parseRadicleInput,
   formatRadicleUrl,
-  deriveRadBaseFromUrl,
   deriveRadicleDisplayValue,
+  formatOnchainAppUrl,
+  formatOnchainAppDisplayUrl,
+  looksLikeOnchainAppInput,
+  parseOnchainAppUrl,
 } from './url-utils.js';
 
 const BZZ_ROUTE_PREFIX = 'http://127.0.0.1:1633/bzz/';
@@ -27,6 +31,66 @@ const IPNS_ROUTE_PREFIX = 'http://127.0.0.1:8080/ipns/';
 const HOME_URL = 'file:///app/home.html';
 
 describe('url-utils', () => {
+  describe('onchain application URLs', () => {
+    const ADDRESS = '0x00000095643CFfA7D9fae407a84dfCB6406456c6';
+    const LOWER_ADDRESS = ADDRESS.toLowerCase();
+
+    test('canonicalizes the address, chain, and root path', () => {
+      expect(formatOnchainAppUrl(`web3://${ADDRESS}:1`)).toBe(
+        `web3://${LOWER_ADDRESS}.eip155-1/`
+      );
+      expect(parseOnchainAppUrl(`web3://${ADDRESS}:100/swap?x=1#route`)).toEqual({
+        address: LOWER_ADDRESS,
+        chainId: 100,
+        displayUrl: `web3://${LOWER_ADDRESS}:100/swap?x=1#route`,
+        url: `web3://${LOWER_ADDRESS}.eip155-100/swap?x=1#route`,
+      });
+    });
+
+    test('defaults an omitted chain to mainnet and makes it visible', () => {
+      expect(formatOnchainAppUrl(`web3://${ADDRESS}/`)).toBe(
+        `web3://${LOWER_ADDRESS}.eip155-1/`
+      );
+    });
+
+    test('accepts the canonical CAIP-style origin and large chain IDs', () => {
+      expect(formatOnchainAppUrl(`web3://${LOWER_ADDRESS}.eip155-11155111/`)).toBe(
+        `web3://${LOWER_ADDRESS}.eip155-11155111/`
+      );
+      expect(
+        formatOnchainAppDisplayUrl(
+          `web3://${LOWER_ADDRESS}.eip155-11155111/swap?x=1#route`
+        )
+      ).toBe(`web3://${LOWER_ADDRESS}:11155111/swap?x=1#route`);
+    });
+
+    test('keeps Chromium origin encoding out of user-facing URLs', () => {
+      expect(formatOnchainAppDisplayUrl(`web3://${LOWER_ADDRESS}.eip155-1/`)).toBe(
+        `web3://${LOWER_ADDRESS}/`
+      );
+      expect(formatOnchainAppDisplayUrl(`web3://${ADDRESS}:1/swap`)).toBe(
+        `web3://${LOWER_ADDRESS}/swap`
+      );
+      expect(
+        formatOnchainAppDisplayUrl(`view-source:web3://${LOWER_ADDRESS}.eip155-100/`)
+      ).toBe(`view-source:web3://${LOWER_ADDRESS}:100/`);
+    });
+
+    test.each([
+      'web3://not-an-address:1/',
+      `web3://${ADDRESS}:0/`,
+      `web3://user@${ADDRESS}:1/`,
+      'https://example.com',
+    ])('rejects invalid app URL %s', (url) => {
+      expect(formatOnchainAppUrl(url)).toBeNull();
+    });
+
+    test('recognizes malformed web3 input as app intent', () => {
+      expect(looksLikeOnchainAppInput(' WEB3://invalid ')).toBe(true);
+      expect(looksLikeOnchainAppInput('https://example.com')).toBe(false);
+    });
+  });
+
   describe('ensureTrailingSlash', () => {
     test('adds slash if missing', () => {
       expect(ensureTrailingSlash('http://example.com')).toBe('http://example.com/');
@@ -262,6 +326,20 @@ describe('url-utils', () => {
       });
     });
 
+    test('defaults bare .onion hosts to http:// (most are http-only)', () => {
+      expect(formatBzzUrl('abcdefghijklmnop.onion', BZZ_ROUTE_PREFIX)).toEqual({
+        targetUrl: 'http://abcdefghijklmnop.onion',
+        displayValue: 'http://abcdefghijklmnop.onion',
+        baseUrl: null,
+      });
+      // …and with a path
+      expect(formatBzzUrl('abcdefghijklmnop.onion/wiki', BZZ_ROUTE_PREFIX)).toEqual({
+        targetUrl: 'http://abcdefghijklmnop.onion/wiki',
+        displayValue: 'http://abcdefghijklmnop.onion/wiki',
+        baseUrl: null,
+      });
+    });
+
     test('passthrough for normal http urls', () => {
       const input = 'https://google.com';
       const result = formatBzzUrl(input, BZZ_ROUTE_PREFIX);
@@ -323,6 +401,24 @@ describe('url-utils', () => {
     test('returns original url for non-bzz sites', () => {
       const url = 'https://google.com';
       expect(deriveDisplayValue(url, BZZ_ROUTE_PREFIX, HOME_URL)).toBe(url);
+    });
+
+    test('reverse-maps onchain navigation origins to standard display URLs', () => {
+      const address = '0x00000095643cffa7d9fae407a84dfcb6406456c6';
+      expect(
+        deriveDisplayValue(
+          `web3://${address}.eip155-1/swap?x=1#route`,
+          BZZ_ROUTE_PREFIX,
+          HOME_URL
+        )
+      ).toBe(`web3://${address}/swap?x=1#route`);
+      expect(
+        deriveDisplayValue(
+          `web3://${address}.eip155-100/swap?x=1#route`,
+          BZZ_ROUTE_PREFIX,
+          HOME_URL
+        )
+      ).toBe(`web3://${address}:100/swap?x=1#route`);
     });
 
     test('returns empty string for null/undefined/empty input', () => {
@@ -665,6 +761,51 @@ describe('url-utils', () => {
         // The outer host stays as the (invalid) "cid", which the main-
         // process protocol handler then 400s when Kubo rejects it.
         expect(result.cid).toBe('my-gateway.example');
+      });
+    });
+
+    describe('isIpfsGatewayFormUrl', () => {
+      // `loadTarget` consults `parseEnsInput` before `formatIpfsUrl`, and
+      // every gateway hostname above (`ipfs.io`, `dweb.link`, `127.0.0.1`,
+      // …) is a perfectly well-formed DNS name. Without this predicate the
+      // ENSv2 DNS-name branch claims them and the CID never loads — the
+      // regression this pins. Kept as the *same* matcher `parseIpfsInput`
+      // rewrites with, so the two can't drift.
+      test('recognises the forms parseIpfsInput rewrites', () => {
+        expect(isIpfsGatewayFormUrl(`ipfs://ipfs.io/ipfs/${CIDV0}`)).toBe(true);
+        expect(isIpfsGatewayFormUrl(`ipfs://dweb.link/ipfs/${CIDV1}/a/b`)).toBe(true);
+        expect(isIpfsGatewayFormUrl(`ipfs://127.0.0.1/ipfs/${CIDV1}`)).toBe(true);
+        expect(isIpfsGatewayFormUrl(`ipfs://localhost:8080/ipfs/${CIDV1}/page?q=1#top`)).toBe(true);
+        expect(isIpfsGatewayFormUrl(`ipns://ipfs.io/ipfs/${CIDV1}`)).toBe(true);
+        expect(
+          isIpfsGatewayFormUrl('ipfs://gateway.pinata.cloud/ipns/docs.ipfs.tech/install')
+        ).toBe(true);
+        expect(isIpfsGatewayFormUrl(`  ipfs://IPFS.IO/ipfs/${CIDV1}  `)).toBe(true);
+      });
+
+      test('leaves everything parseIpfsInput does not rewrite alone', () => {
+        // Gateway host but no gateway-form path, unknown gateway, DNSLink
+        // content host, a non-CID embedded ref, a bare CID, and the
+        // non-IPFS schemes — none of these are the rewrite's business, so
+        // the name parser stays free to claim them.
+        expect(isIpfsGatewayFormUrl('ipfs://ipfs.io/foo')).toBe(false);
+        expect(isIpfsGatewayFormUrl(`ipfs://my-gateway.example/ipfs/${CIDV1}`)).toBe(false);
+        expect(isIpfsGatewayFormUrl(`ipns://docs.ipfs.tech/ipfs/${CIDV1}`)).toBe(false);
+        expect(isIpfsGatewayFormUrl('ipfs://ipfs.io/ipfs/not-a-cid')).toBe(false);
+        expect(isIpfsGatewayFormUrl(`ipfs://${CIDV1}/page`)).toBe(false);
+        expect(isIpfsGatewayFormUrl('ipfs://gregskril.com/docs')).toBe(false);
+        expect(isIpfsGatewayFormUrl(`bzz://ipfs.io/ipfs/${CIDV1}`)).toBe(false);
+        expect(isIpfsGatewayFormUrl(`https://ipfs.io/ipfs/${CIDV1}`)).toBe(false);
+        expect(isIpfsGatewayFormUrl('')).toBe(false);
+        expect(isIpfsGatewayFormUrl(null)).toBe(false);
+      });
+
+      test('formatIpfsUrl still loads a gateway-form URL as its embedded CID', () => {
+        // End-to-end acceptance for the regression: the pasted gateway URL
+        // must come out as the canonical CID target, not an ENS lookup.
+        const result = formatIpfsUrl(`ipfs://ipfs.io/ipfs/${CIDV0}/readme`, IPFS_ROUTE_PREFIX);
+        expect(result.displayValue).toBe(`ipfs://${CIDV1}/readme`);
+        expect(result.targetUrl).toBe(`${IPFS_ROUTE_PREFIX}${CIDV1}/readme`);
       });
     });
 
@@ -1034,6 +1175,14 @@ describe('url-utils', () => {
   });
 
   describe('buildEnsDisplayUri', () => {
+    test('keeps DNS ENS names distinct from DNSLink across reloads and bookmarks', () => {
+      expect(buildEnsDisplayUri('ipns', 'example.com', '/docs')).toBe('ens://example.com/docs');
+      expect(normalizeLegacyEnsBookmarkUrl('ens://example.com/docs')).toBe('ens://example.com/docs');
+      expect(isEnsBackedDisplay('ens://example.com/docs')).toBe(true);
+      expect(isEnsBackedDisplay('ipfs://example.com/docs')).toBe(true);
+      expect(isEnsBackedDisplay('bzz://example.com/docs')).toBe(true);
+      expect(isEnsBackedDisplay('ipns://example.com/docs')).toBe(false);
+    });
     test('builds bzz transport display for Swarm-backed ENS', () => {
       expect(buildEnsDisplayUri('bzz', 'meinhard.eth')).toBe('bzz://meinhard.eth');
       expect(buildEnsDisplayUri('bzz', 'meinhard.eth', '/docs?q=1')).toBe(
@@ -1080,6 +1229,17 @@ describe('url-utils', () => {
       expect(isEnsBackedDisplay('ipns://app.box/page')).toBe(true);
       expect(isEnsBackedDisplay('ipfs://alice.wei/page')).toBe(true);
       expect(isEnsBackedDisplay('ipfs://apoorv.gwei/page')).toBe(true);
+      expect(isEnsBackedDisplay('ipfs://docs.example.tez/page')).toBe(true);
+      expect(isEnsBackedDisplay('docs.example.tez/page')).toBe(true);
+    });
+
+    test('rejects gateway-form ipfs URLs whose host merely reads like a DNS name', () => {
+      // Mirrors the `parseEnsInput` carve-out: `ipfs.io`/`dweb.link` are
+      // gateways, not names, so this display is CID-backed content.
+      const cid = 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi';
+      expect(isEnsBackedDisplay(`ipfs://ipfs.io/ipfs/${cid}`)).toBe(false);
+      expect(isEnsBackedDisplay(`ipfs://dweb.link/ipfs/${cid}/a`)).toBe(false);
+      expect(isEnsBackedDisplay('ipfs://ipfs.io/foo')).toBe(true);
     });
 
     test('rejects raw transport URLs (hash/CID hosts) and other schemes', () => {
@@ -1125,6 +1285,7 @@ describe('url-utils', () => {
   describe('isValidRadicleId', () => {
     test('accepts valid Radicle ID', () => {
       expect(isValidRadicleId('z3gqcJUoA1n9HaHKufZs5FCSGazv5')).toBe(true);
+      expect(isValidRadicleId('z4V1sjrXqjvFdnCUbxPFqd5p4DtH5')).toBe(true);
     });
 
     test('accepts various valid RID lengths', () => {
@@ -1156,7 +1317,7 @@ describe('url-utils', () => {
   });
 
   describe('parseRadicleInput', () => {
-    const RAD_PREFIX = 'http://127.0.0.1:8780/api/v1/repos/';
+    const RAD_PREFIX = 'radapi://local/api/v1/repos/';
     const SAMPLE_RID = 'z3gqcJUoA1n9HaHKufZs5FCSGazv5';
 
     test('parses rad:RID', () => {
@@ -1198,49 +1359,27 @@ describe('url-utils', () => {
   });
 
   describe('formatRadicleUrl', () => {
+    test('formats a valid RID against the static embedded route', () => {
+      const rid = 'z4V1sjrXqjvFdnCUbxPFqd5p4DtH5';
+      const originalWindow = global.window;
+      global.window = { location: { href: 'file:///app/index.html' } };
+      try {
+        const result = formatRadicleUrl(`rad://${rid}`, 'radapi://local');
+        expect(result.displayValue).toBe(`rad://${rid}`);
+        expect(result.targetUrl).toContain(`rid=${rid}`);
+        expect(result.targetUrl).toContain('base=radapi%3A%2F%2Flocal');
+      } finally {
+        global.window = originalWindow;
+      }
+    });
+
     test('returns null when the Radicle base is not ready', () => {
       expect(formatRadicleUrl('rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5', null)).toBeNull();
     });
   });
 
-  describe('deriveRadBaseFromUrl', () => {
-    const RAD_BASE = 'http://127.0.0.1:8780/api/v1/repos/';
-    const SAMPLE_RID = 'z3gqcJUoA1n9HaHKufZs5FCSGazv5';
-
-    test('extracts base from Radicle API URL', () => {
-      const url = `${RAD_BASE}${SAMPLE_RID}/tree/main/README.md`;
-      expect(deriveRadBaseFromUrl(url)).toBe(`${RAD_BASE}${SAMPLE_RID}/`);
-    });
-
-    test('extracts base from URL object input', () => {
-      const url = new URL(`${RAD_BASE}${SAMPLE_RID}/commits`);
-      expect(deriveRadBaseFromUrl(url)).toBe(`${RAD_BASE}${SAMPLE_RID}/`);
-    });
-
-    test('returns null for legacy /projects/ path', () => {
-      const url = `http://127.0.0.1:8780/api/v1/projects/${SAMPLE_RID}/tree/main`;
-      expect(deriveRadBaseFromUrl(url)).toBeNull();
-    });
-
-    test('returns null for non-Radicle API paths', () => {
-      expect(deriveRadBaseFromUrl('http://127.0.0.1:8780/api/v1/')).toBeNull();
-      expect(deriveRadBaseFromUrl('http://127.0.0.1:8780/')).toBeNull();
-    });
-
-    test('returns null for invalid RID segment', () => {
-      const url = 'http://127.0.0.1:8780/api/v1/repos/not-a-rid/tree/main';
-      expect(deriveRadBaseFromUrl(url)).toBeNull();
-    });
-
-    test('returns null for invalid input values', () => {
-      expect(deriveRadBaseFromUrl(null)).toBeNull();
-      expect(deriveRadBaseFromUrl(undefined)).toBeNull();
-      expect(deriveRadBaseFromUrl('not-a-url')).toBeNull();
-    });
-  });
-
   describe('deriveRadicleDisplayValue', () => {
-    const RAD_PREFIX = 'http://127.0.0.1:8780/api/v1/repos/';
+    const RAD_PREFIX = 'radapi://local/api/v1/repos/';
     const SAMPLE_RID = 'z3gqcJUoA1n9HaHKufZs5FCSGazv5';
 
     test('converts API URL to rad:// display', () => {

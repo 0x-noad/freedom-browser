@@ -65,19 +65,19 @@ describe('navigation-utils extracted helpers', () => {
         homeUrlNormalized: 'file:///app/pages/home.html',
         ipfsRoutePrefix: 'http://127.0.0.1:8080/ipfs/',
         ipnsRoutePrefix: 'http://127.0.0.1:8080/ipns/',
-        radicleApiPrefix: 'http://127.0.0.1:8780/api/v1/repos/',
+        radicleApiPrefix: 'radapi://local/api/v1/repos/',
         knownEnsNames: new Map([['abcdef', 'name.eth']]),
       })
     ).toBe('bzz://name.eth/path');
 
     expect(
       mod.deriveDisplayAddress({
-        url: 'http://127.0.0.1:8780/api/v1/repos/zabc123/tree/main',
+        url: 'radapi://local/api/v1/repos/zabc123/tree/main',
         bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
         homeUrlNormalized: 'file:///app/pages/home.html',
         ipfsRoutePrefix: 'http://127.0.0.1:8080/ipfs/',
         ipnsRoutePrefix: 'http://127.0.0.1:8080/ipns/',
-        radicleApiPrefix: 'http://127.0.0.1:8780/api/v1/repos/',
+        radicleApiPrefix: 'radapi://local/api/v1/repos/',
       })
     ).toBe('rad://zabc123/tree/main');
   });
@@ -148,6 +148,81 @@ describe('navigation-utils extracted helpers', () => {
     });
   });
 
+  // #312: a private window's start page is that window's new-tab page, so it
+  // derives to an EMPTY address bar — like the home page, and unlike every
+  // other internal page, which derives to its `freedom://<page>` name. Chrome
+  // shows an empty omnibox on the Incognito NTP too.
+  test('derives an empty address bar for the private start page, both forms', async () => {
+    const mod = await loadNavigationUtils({
+      home: 'home.html',
+      private: 'private.html',
+      settings: 'settings.html',
+    });
+    const common = {
+      bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+      homeUrlNormalized: 'file:///app/pages/home.html',
+    };
+
+    // Resolved form (committed by Chromium once the page loads).
+    expect(mod.deriveSwitchedTabDisplay({ url: 'file:///app/pages/private.html', ...common })).toBe(
+      ''
+    );
+    expect(mod.deriveDisplayAddress({ url: 'file:///app/pages/private.html', ...common })).toBe('');
+
+    // Friendly form (what `tab.url` carries while the tab is still resolving —
+    // this is the one that produced `freedom://private` in the address bar).
+    expect(mod.deriveSwitchedTabDisplay({ url: 'freedom://private', ...common })).toBe('');
+    expect(mod.deriveDisplayAddress({ url: 'freedom://private', ...common })).toBe('');
+
+    // Other internal pages are unaffected.
+    expect(
+      mod.deriveSwitchedTabDisplay({ url: 'file:///app/pages/settings.html', ...common })
+    ).toBe('freedom://settings');
+
+    // An uncommitted edit still wins over the empty new-tab derivation: a
+    // private new tab the user has already typed into comes back with the
+    // draft, not blanked. #314 layered on #312.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'freedom://private',
+        ...common,
+        addressBarPendingInput: 'half-typed',
+      })
+    ).toBe('half-typed');
+  });
+
+  test('restores an uncommitted address-bar edit on tab switch (#314)', async () => {
+    const mod = await loadNavigationUtils({ history: 'history.html' });
+
+    const base = {
+      url: 'https://committed.example/page',
+      bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+      homeUrlNormalized: 'file:///app/pages/home.html',
+    };
+
+    // A draft wins over the committed URL whether or not the tab is loading —
+    // that gate is exactly what discarded the edit before.
+    expect(
+      mod.deriveSwitchedTabDisplay({ ...base, addressBarPendingInput: 'half-typed-url' })
+    ).toBe('half-typed-url');
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        ...base,
+        isLoading: true,
+        addressBarSnapshot: 'snapshot value',
+        addressBarPendingInput: 'half-typed-url',
+      })
+    ).toBe('half-typed-url');
+
+    // A bar the user emptied restores as empty, not as the committed URL.
+    expect(mod.deriveSwitchedTabDisplay({ ...base, addressBarPendingInput: '' })).toBe('');
+
+    // No draft (the normal case): unchanged behaviour.
+    expect(mod.deriveSwitchedTabDisplay({ ...base, addressBarPendingInput: null })).toBe(
+      'https://committed.example/page'
+    );
+  });
+
   test('derives switched tab display values for loading, internal pages, and view-source', async () => {
     const mod = await loadNavigationUtils({
       history: 'history.html',
@@ -202,6 +277,139 @@ describe('navigation-utils extracted helpers', () => {
         ipnsRoutePrefix: 'http://127.0.0.1:8080/ipns/',
       })
     ).toBe('ipfs://vitalik.eth');
+
+    // Same rule for the name-resolution interstitials (#235): a tab parked
+    // on one restores the blocked name, never the interstitial's file:// path.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/ens-unverified.html?name=retry.tez&uri=ipfs%3A%2F%2FQmRetryTez',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('retry.tez');
+
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/ens-conflict.html?name=lagged.tez&block=%7B%7D&groups=%5B%5D',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('lagged.tez');
+
+    // Fail-safe: an interstitial with no `name` param clears the address bar
+    // rather than falling through to its on-disk path — the same fallback the
+    // active-tab did-navigate handler applies.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/ens-conflict.html',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('');
+
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/ens-unverified.html?uri=ipfs%3A%2F%2FQmRetryTez',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('');
+
+    // The onchain trust gate follows the same rule with its own param: a tab
+    // parked on it restores the `web3://` app identity, never the gate's
+    // file:// path — which carries the single-use approval token.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1%2F&token=abc123&conflict=1',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('web3://0x00000095643cffa7d9fae407a84dfcb6406456c6/');
+
+    // A non-default chain keeps its `:<chainId>` suffix, same as the active
+    // tab's address bar.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-100%2Fswap&token=abc123',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('web3://0x00000095643cffa7d9fae407a84dfcb6406456c6:100/swap');
+
+    // Fail-safe: a gate URL with a missing/non-web3 target clears the address
+    // bar rather than falling through to its on-disk path.
+    for (const url of [
+      'file:///app/pages/onchain-unverified.html',
+      'file:///app/pages/onchain-unverified.html?target=https%3A%2F%2Fevil.example&token=abc123',
+    ]) {
+      expect(
+        mod.deriveSwitchedTabDisplay({
+          url,
+          bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+          homeUrlNormalized: 'file:///app/pages/home.html',
+        })
+      ).toBe('');
+    }
+
+    // `view-source:` of the gate is refused at dispatch, but a tab that
+    // already holds one (session restore, a pre-fix history entry) must not
+    // repaint the approval token into the address bar on switchback either:
+    // the gate test also runs on the stripped URL, and fails safe to blank.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'view-source:file:///app/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1%2F&token=aaaabbbbcccc',
+        isViewingSource: true,
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('');
+
+    // …but a remote look-alike path is real content and keeps its own URL.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'https://evil.test/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1%2F',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe(
+      'https://evil.test/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1%2F'
+    );
+
+    // The interstitial test runs on the committed URL as-is, never on the
+    // `view-source:` inner URL: viewing an interstitial's source is source
+    // text, not the block itself, and the active-tab handler's view-source
+    // branch (which runs ahead of its interstitial branch) shows
+    // `view-source:<inner display>`. Both surfaces have to agree.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'view-source:file:///app/pages/ens-conflict.html?name=lagged.tez&block=%7B%7D',
+        isViewingSource: true,
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('view-source:file:///app/pages/ens-conflict.html?name=lagged.tez&block=%7B%7D');
+
+    // #235 regression: a remote page served at a chrome-look-alike path must
+    // never dictate the switched-tab address bar. `deriveSwitchedTabDisplay`
+    // used to run both the interstitial and the error-page recovery on a bare
+    // `/<file>.html` substring test, so `https://evil.test/error.html?url=…`
+    // repainted the address bar (protocol icon included) with the attacker's
+    // chosen value while the webview rendered the attacker's page.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'https://evil.test/error.html?error=offline&url=bzz%3A%2F%2Fvitalik.eth&protocol=swarm',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('https://evil.test/error.html?error=offline&url=bzz%3A%2F%2Fvitalik.eth&protocol=swarm');
+
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'https://evil.test/ens-conflict.html?name=bank.eth',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('https://evil.test/ens-conflict.html?name=bank.eth');
   });
 
   test('computes bookmark bar state and extracts original urls from error pages', async () => {
@@ -237,7 +445,14 @@ describe('navigation-utils extracted helpers', () => {
         'file:///app/pages/error.html'
       )
     ).toBe('https://example.com');
-    expect(mod.getOriginalUrlFromErrorPage('https://example.com', 'file:///app/pages/error.html')).toBeNull();
-    expect(mod.getOriginalUrlFromErrorPage('not-a-url/error.html?', 'file:///app/pages/error.html')).toBeNull();
+    expect(mod.getOriginalUrlFromErrorPage('https://example.com')).toBeNull();
+    expect(mod.getOriginalUrlFromErrorPage('not-a-url/error.html?')).toBeNull();
+    // Only the shell's own error page counts (#235).
+    expect(
+      mod.getOriginalUrlFromErrorPage('https://evil.test/error.html?url=bzz%3A%2F%2Fvitalik.eth')
+    ).toBeNull();
+    expect(
+      mod.getOriginalUrlFromErrorPage('file:///app/pages/error.html.evil?url=https%3A%2F%2Fa.test')
+    ).toBeNull();
   });
 });

@@ -132,7 +132,7 @@ export function initVaultData(opts = {}) {
   function renderList(parts) {
     listEl.innerHTML = '';
     if (!parts.length) {
-      listEl.innerHTML = '<div class="vault-empty">No sites have stored data yet.</div>';
+      listEl.innerHTML = '<div class="vault-empty">No sites have stored data yet</div>';
       return;
     }
     for (const p of parts) {

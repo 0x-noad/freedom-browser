@@ -6,6 +6,7 @@
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
+import { refuseSubscreenWhileInFlight } from './signature-flight.js';
 import { escapeHtml } from './wallet-utils.js';
 import { showVaultUnlock } from './vault-unlock.js';
 import { showPublisherIdentityCreate } from './publisher-identity-create.js';
@@ -60,6 +61,8 @@ export function initPublisherIdentities() {
 }
 
 export async function openPublisherIdentities() {
+  if (refuseSubscreenWhileInFlight('Publisher identities screen')) return;
+
   await reloadEntries();
   if (filterInput) filterInput.value = '';
   showPublisherIdentityList();
@@ -86,7 +89,7 @@ function renderList(entries, query) {
   if (filtered.length === 0) {
     emptyMessage?.classList.remove('hidden');
     if (emptyMessage) {
-      emptyMessage.textContent = query ? 'No matching identities.' : 'No publisher identities yet.';
+      emptyMessage.textContent = query ? 'No matching identities' : 'No publisher identities yet';
     }
     return;
   }
@@ -260,5 +263,5 @@ function resetDetailState() {
 
 function truncateOrigin(origin) {
   if (origin.length <= 40) return origin;
-  return `${origin.slice(0, 20)}...${origin.slice(-17)}`;
+  return `${origin.slice(0, 20)}…${origin.slice(-17)}`;
 }

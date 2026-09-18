@@ -70,11 +70,6 @@
   font-size: 14px;
 }
 
-.form-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
 .help-text {
   margin: 6px 0 0;
   font-size: 12px;
@@ -125,6 +120,13 @@
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.external-node-trust-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .external-node-choice {

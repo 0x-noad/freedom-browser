@@ -20,10 +20,14 @@ function toAtomicDecimal(value) {
 
 /**
  * @param {object} params       Same shape as signAndSendTransaction.
- * @param {string} privateKey
+ * @param {import('./signers').Signer} signer
  * @param {object} context
  * @param {string} context.kind         paymentHistory.KINDS member
  * @param {string} [context.origin]     normalised origin (dapp sends only)
+ * @param {string} [context.fromAddress] human-visible sender; defaults to the
+ *                                      signer's address (which is the *executor*
+ *                                      for Safe txs, not the paying account —
+ *                                      pass the safe address explicitly there)
  * @param {string} [context.asset]      ERC-20 contract address (null = native)
  * @param {string} [context.amount]     atomic units; defaults to params.value
  *                                      (which is 0 for ERC-20 transfers — pass
@@ -36,8 +40,8 @@ function toAtomicDecimal(value) {
  *                                      you have the real recipient)
  * @param {object} [context.metadata]   free-form per-kind extras
  */
-async function signAndRecord(params, privateKey, context) {
-  const response = await signAndSendTransaction(params, privateKey);
+async function signAndRecord(params, signer, context) {
+  const response = await signAndSendTransaction(params, signer);
 
   let row;
   try {
@@ -45,7 +49,7 @@ async function signAndRecord(params, privateKey, context) {
       kind: context.kind,
       chainId: params.chainId,
       txHash: response.hash,
-      fromAddress: response.from,
+      fromAddress: context.fromAddress ?? response.from,
       toAddress: context.toAddress ?? params.to,
       asset: context.asset ?? null,
       amount: toAtomicDecimal(context.amount ?? params.value),

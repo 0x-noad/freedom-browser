@@ -23,6 +23,8 @@ jest.mock('../payment-history', () => ({
 
 const { signAndRecord } = require('./tx-recorder');
 
+const fakeSigner = { getAddress: async () => '0xfrom' };
+
 describe('tx-recorder', () => {
   beforeEach(() => {
     mockSignAndSendTransaction.mockReset().mockResolvedValue({
@@ -44,7 +46,7 @@ describe('tx-recorder', () => {
       to: '0xtoken',
       value: '0',
       chainId: 8453,
-    }, '0xprivate', {
+    }, fakeSigner, {
       kind: 'dapp-send',
       origin: 'https://app.example',
       asset: '0xtoken',
@@ -65,6 +67,27 @@ describe('tx-recorder', () => {
     }));
   });
 
+  test('context.fromAddress overrides the signer address (Safe txs: from = safe, executor in metadata)', async () => {
+    await signAndRecord({
+      to: '0xsafe',
+      value: '0',
+      chainId: 100,
+    }, fakeSigner, {
+      kind: 'safe-send',
+      fromAddress: '0xsafe',
+      toAddress: '0xrecipient',
+      amount: '1000',
+      metadata: { safeAddress: '0xsafe', executor: '0xfrom' },
+    });
+
+    expect(mockAppend).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'safe-send',
+      fromAddress: '0xsafe',
+      toAddress: '0xrecipient',
+      metadata: { safeAddress: '0xsafe', executor: '0xfrom' },
+    }));
+  });
+
   test('surfaces recorded:false when the broadcast succeeds but history append fails', async () => {
     mockAppend.mockImplementationOnce(() => {
       throw new Error('db closed');
@@ -74,7 +97,7 @@ describe('tx-recorder', () => {
       to: '0xrecipient',
       value: '0x2a',
       chainId: 1,
-    }, '0xprivate', {
+    }, fakeSigner, {
       kind: 'wallet-send',
     });
 

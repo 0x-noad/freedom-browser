@@ -16,11 +16,21 @@ const mockGetPostageBatches = jest.fn();
 
 jest.mock('@ethersphere/bee-js', () => ({
   Bee: jest.fn().mockImplementation(() => ({
-    uploadData: mockUploadData,
-    uploadFile: mockUploadFile,
-    uploadFilesFromDirectory: mockUploadFilesFromDirectory,
-    retrieveTag: mockRetrieveTag,
-    getPostageBatches: mockGetPostageBatches,
+    data: {
+      upload: mockUploadData,
+    },
+    file: {
+      upload: mockUploadFile,
+    },
+    collection: {
+      uploadFromDirectory: mockUploadFilesFromDirectory,
+    },
+    tag: {
+      get: mockRetrieveTag,
+    },
+    stamp: {
+      getAll: mockGetPostageBatches,
+    },
   })),
 }));
 
@@ -137,7 +147,7 @@ describe('publish-service', () => {
       jest.clearAllMocks();
     });
 
-    test('swarm:publish-data uploads via uploadFile and returns normalized result', async () => {
+    test('swarm:publish-data uploads via file.upload and returns normalized result', async () => {
       mockGetPostageBatches.mockResolvedValue([
         makeBatch('batch1', 1000000000, 86400),
       ]);
@@ -285,5 +295,40 @@ describe('publish-service', () => {
       const result = await invokeIpc('swarm:get-upload-status', 'abc');
       expect(result.success).toBe(false);
     });
+  });
+});
+
+// PRIVATE MODE GUARD coverage: publishing (and therefore publish-history
+// writing) is rejected for private-window senders. jest.mock is hoisted,
+// so this stub is in place before publish-service is required above.
+jest.mock('../private/private-windows', () => ({
+  isPrivateWebContents: (wc) => wc?.isPrivate === true,
+}));
+
+describe('private-window publish guard', () => {
+  const PRIVATE_EVENT = { sender: { isPrivate: true } };
+  const publishHistory = require('./publish-history');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test.each([
+    ['swarm:publish-data', 'hello world'],
+    ['swarm:publish-file', '/tmp/some-file.txt'],
+    ['swarm:publish-directory', '/tmp/some-dir'],
+  ])('%s rejects private senders without touching history or the node', async (channel, arg) => {
+    const handler = ipcHandlers[channel];
+    const result = await handler(PRIVATE_EVENT, arg);
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Publishing is unavailable in private windows',
+    });
+    expect(publishHistory.addEntry).not.toHaveBeenCalled();
+    expect(publishHistory.updateEntry).not.toHaveBeenCalled();
+    expect(mockUploadData).not.toHaveBeenCalled();
+    expect(mockUploadFile).not.toHaveBeenCalled();
+    expect(mockUploadFilesFromDirectory).not.toHaveBeenCalled();
   });
 });

@@ -44,7 +44,11 @@
 .vault-btn:hover { border-color: var(--accent); }
 .vault-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
 .vault-btn.full { width: 100%; margin-top: 14px; }
-.vault-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.vault-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff; /* theme-literal: the fixed contrast pair on a filled accent button, same on either palette */
+}
 .vault-btn.primary:hover { filter: brightness(1.08); }
 
 /* Consent request view */
@@ -171,12 +175,12 @@
 .vault-locked-title {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text, #e8e8ea);
+  color: var(--text);
 }
 
 .vault-locked-text {
   font-size: 12.5px;
-  color: var(--text-dim, #8a8a94);
+  color: var(--muted);
   max-width: 260px;
 }
 
@@ -192,7 +196,9 @@
   justify-content: space-between;
   padding: 10px 12px;
   margin-bottom: 12px;
+  /* theme-literal: vault identity colour, not a theme surface — violet means vault the way the sibling banners' amber means Swarm and green means wallet */
   background: rgba(139, 92, 246, 0.1);
+  /* theme-literal: the border of the pair above */
   border: 1px solid rgba(139, 92, 246, 0.3);
   border-radius: 8px;
 }
@@ -208,7 +214,7 @@
 .vault-connection-indicator {
   width: 8px;
   height: 8px;
-  background: #8b5cf6;
+  background: #8b5cf6; /* theme-literal: vault identity colour, see the banner above */
   border-radius: 50%;
   flex-shrink: 0;
 }
@@ -221,7 +227,7 @@
 .vault-connection-site {
   font-size: 13px;
   font-weight: 600;
-  color: var(--foreground);
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -234,6 +240,8 @@
   text-overflow: ellipsis;
 }
 [data-theme="light"] .vault-connection-banner {
+  /* theme-literal: the light half of the identity pair above */
   background: rgba(139, 92, 246, 0.08);
+  /* theme-literal: the light half of the identity pair above */
   border-color: rgba(139, 92, 246, 0.25);
 }

@@ -1,21 +1,22 @@
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
+const { fetchJson, downloadToFile, TIMEOUTS } = require('./lib/fetch-with-retry');
 
 // Fetches the Ant (`antd`) Swarm light node. Ant is a bee-compatible drop-in
-// published at solardev-xyz/ant; its release assets follow a bee-style os/arch
-// keyword scheme, which the per-target matcher below relies on. The binary
-// shipped is `antd` (not `bee`) and it installs into `ant-bin/<os>-<arch>/`.
+// published at freedom-hq/ant (formerly solardev-xyz/ant); its release assets
+// follow a bee-style os/arch keyword scheme, which the per-target matcher below
+// relies on. The binary shipped is `antd` (not `bee`) and it installs into
+// `ant-bin/<os>-<arch>/`.
 const OUTPUT_DIR = path.join(__dirname, '..', 'ant-bin');
-const ANT_REPO = process.env.ANT_REPO || 'solardev-xyz/ant';
+const ANT_REPO = process.env.ANT_REPO || 'freedom-hq/ant';
 // The known-good Ant release this app version is built and CI-tested against.
 // Bump deliberately (with a CI run) — do NOT float on `latest`, or releases
 // could ship a different Ant than CI validated. Override via ANT_RELEASE_TAG
 // for local testing of newer releases; set it to `latest` to resolve the
 // repo's most recent published release.
-const PINNED_RELEASE_TAG = 'v0.5.43';
+const PINNED_RELEASE_TAG = 'v0.5.44';
 // In-repo trust root for the pinned release: the sha256 of its SHA256SUMS
 // asset, recorded at pin time (trust-on-first-use by the author). The release
 // downloads its SHA256SUMS from the same GitHub release as the binaries, so
@@ -23,124 +24,77 @@ const PINNED_RELEASE_TAG = 'v0.5.43';
 // together. Verifying the sums file against a digest committed here makes
 // that tampering detectable. Update alongside PINNED_RELEASE_TAG on every
 // deliberate bump: `shasum -a 256` the freshly downloaded SHA256SUMS.
-const PINNED_SHA256SUMS_DIGEST =
-  'ba9d97564a0e8631371bf036bdb33e0a9c7986493a7dca2406907f30e9bb900d';
+const PINNED_SHA256SUMS_DIGEST = '8b29de81c31ec267ed53cdeb4eefb11e23b819f5c1abb76837060632986427ff';
 const ANT_RELEASE_TAG = process.env.ANT_RELEASE_TAG || PINNED_RELEASE_TAG;
 
-function fetchReleaseOnce() {
-  return new Promise((resolve, reject) => {
-    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-    const headers = {
-      'User-Agent': 'Freedom-Updater',
-      Accept: 'application/vnd.github+json',
-    };
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
+const API_HOST = 'api.github.com';
+// GitHub answers an API request for a *renamed* repo with a 301 to the new
+// canonical location rather than serving it, so a fetch that treats anything
+// other than 200 as fatal turns an upstream rename into a hard CI failure
+// (solardev-xyz/ant → freedom-hq/ant broke every job that downloads antd).
+// Redirects are followed by scripts/lib/fetch-with-retry.js, which makes the
+// next rename degrade to an extra hop.
 
-    const releasePath =
-      ANT_RELEASE_TAG === 'latest'
-        ? `/repos/${ANT_REPO}/releases/latest`
-        : `/repos/${ANT_REPO}/releases/tags/${ANT_RELEASE_TAG}`;
-
-    const options = {
-      hostname: 'api.github.com',
-      path: releasePath,
-      headers,
-    };
-
-    https
-      .get(options, (res) => {
-        let data = '';
-        res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => {
-          if (res.statusCode === 200) {
-            resolve(JSON.parse(data));
-          } else {
-            reject(new Error(`Failed to fetch release (${releasePath}): ${res.statusCode}`));
-          }
-        });
-      })
-      .on('error', reject);
-  });
+function releaseUrl() {
+  const releasePath =
+    ANT_RELEASE_TAG === 'latest'
+      ? `/repos/${ANT_REPO}/releases/latest`
+      : `/repos/${ANT_REPO}/releases/tags/${ANT_RELEASE_TAG}`;
+  return `https://${API_HOST}${releasePath}`;
 }
 
-async function fetchRelease() {
-  const maxAttempts = 4;
-  let lastErr;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await fetchReleaseOnce();
-    } catch (err) {
-      lastErr = err;
-      if (attempt < maxAttempts) {
-        const delayMs = 1000 * attempt;
-        console.warn(
-          `Release fetch attempt ${attempt} failed (${err.message}); retrying in ${delayMs}ms...`
-        );
-        await new Promise((r) => setTimeout(r, delayMs));
-      }
-    }
+/**
+ * Headers for one hop of the release lookup. Computed per hop, not once:
+ * only ever send the token to GitHub's own API host, because a redirect can
+ * point anywhere and forwarding Authorization off-host would leak CI's
+ * GITHUB_TOKEN to a third party.
+ * @param {string} url
+ */
+function releaseRequestHeaders(url) {
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  const headers = {
+    'User-Agent': 'Freedom-Updater',
+    Accept: 'application/vnd.github+json',
+  };
+  if (token && new URL(url).host === API_HOST) {
+    headers.Authorization = `Bearer ${token}`;
   }
-  throw lastErr;
+  return headers;
 }
 
-// Abort a stalled request instead of letting it hang until the CI job-level
-// timeout (a hung binary download can otherwise burn a whole e2e job).
-const REQUEST_TIMEOUT_MS = 60000;
-
-function downloadFileOnce(url, dest) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
-    const fail = (err) => {
-      file.close();
-      fs.unlink(dest, () => reject(err));
-    };
-    const req = https
-      .get(url, { headers: { 'User-Agent': 'Freedom-Updater' } }, (response) => {
-        if (response.statusCode === 302 || response.statusCode === 301) {
-          file.close();
-          fs.unlink(dest, () => {
-            downloadFileOnce(response.headers.location, dest).then(resolve).catch(reject);
-          });
-          return;
-        }
-        if (response.statusCode !== 200) {
-          fail(new Error(`HTTP ${response.statusCode} for ${url}`));
-          return;
-        }
-        response.pipe(file);
-        file.on('finish', () => {
-          file.close(resolve);
-        });
-        file.on('error', fail);
-      })
-      .on('error', fail);
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      req.destroy(new Error(`Download timed out after ${REQUEST_TIMEOUT_MS}ms: ${url}`));
-    });
+/**
+ * The release JSON, retried on 5xx/429/connection failures and never on a
+ * plain 404 (see scripts/lib/fetch-with-retry.js).
+ * @param {string} [url]
+ * @param {object} [options] retry-loop overrides, used by the unit tests
+ */
+function fetchRelease(url = releaseUrl(), options = {}) {
+  return fetchJson(url, {
+    label: `Ant release lookup (${ANT_REPO} @ ${ANT_RELEASE_TAG})`,
+    headers: releaseRequestHeaders,
+    timeoutMs: TIMEOUTS.metadata,
+    onRedirect: (location) => {
+      console.warn(`Release fetch redirected to ${location.href} — upstream repo may have moved`);
+    },
+    ...options,
   });
 }
 
-async function downloadFile(url, dest) {
+/**
+ * Download one release asset. `timeoutMs` is the per-attempt deadline: the
+ * archives are tens of megabytes on a runner link, SHA256SUMS is a few lines.
+ * @param {string} url
+ * @param {string} dest
+ * @param {object} [options] `timeoutMs`, plus retry-loop overrides used by the tests
+ */
+function downloadFile(url, dest, options = {}) {
   console.log(`Downloading ${url} to ${dest}...`);
-  const maxAttempts = 4;
-  let lastErr;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await downloadFileOnce(url, dest);
-    } catch (err) {
-      lastErr = err;
-      if (attempt < maxAttempts) {
-        const delayMs = 1000 * attempt;
-        console.warn(
-          `Download attempt ${attempt} failed (${err.message}); retrying in ${delayMs}ms...`
-        );
-        await new Promise((r) => setTimeout(r, delayMs));
-      }
-    }
-  }
-  throw lastErr;
+  return downloadToFile(url, dest, {
+    label: `Ant asset ${path.basename(dest)}`,
+    headers: { 'User-Agent': 'Freedom-Updater' },
+    timeoutMs: TIMEOUTS.binary,
+    ...options,
+  });
 }
 
 function sha256File(filePath) {
@@ -183,7 +137,9 @@ async function main() {
     }
     const sumsPath = path.join(OUTPUT_DIR, 'SHA256SUMS');
     if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-    await downloadFile(sumsAsset.browser_download_url, sumsPath);
+    await downloadFile(sumsAsset.browser_download_url, sumsPath, {
+      timeoutMs: TIMEOUTS.metadata,
+    });
 
     // Anchor the downloaded checksums to the in-repo trust root. Only applies
     // to the pinned tag — an ANT_RELEASE_TAG override is a local-testing
@@ -218,8 +174,7 @@ async function main() {
     for (const target of targets) {
       const asset = assets.find(
         (a) =>
-          a.name !== 'SHA256SUMS' &&
-          target.keywords.every((k) => a.name.toLowerCase().includes(k))
+          a.name !== 'SHA256SUMS' && target.keywords.every((k) => a.name.toLowerCase().includes(k))
       );
 
       if (!asset) {
@@ -245,22 +200,34 @@ async function main() {
       }
       const actual = sha256File(tempDest);
       if (actual !== expected) {
-        throw new Error(
-          `Checksum mismatch for ${asset.name}: expected ${expected}, got ${actual}`
-        );
+        throw new Error(`Checksum mismatch for ${asset.name}: expected ${expected}, got ${actual}`);
       }
       console.log(`Verified checksum for ${asset.name}`);
 
       // execFileSync with an args vector: the asset name is attacker-influenced
       // (the checksum above covers content, not filename) and must never reach
       // a shell.
+      //
+      // Archives are extracted with cwd = targetDir and a bare file name: on
+      // Windows the absolute path `D:\a\...` makes GNU tar (first on PATH in
+      // Git Bash) treat `D` as a remote host and fail. Windows also ships no
+      // `unzip`, so use its own bsdtar, which reads zip and tar.gz alike.
+      const isWindows = process.platform === 'win32';
+      const tarBin = isWindows
+        ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
+        : 'tar';
+      const extractOpts = { cwd: targetDir, stdio: 'inherit' };
       if (asset.name.endsWith('.tar.gz') || asset.name.endsWith('.tgz')) {
         console.log(`Extracting ${asset.name}...`);
-        execFileSync('tar', ['-xzf', tempDest, '-C', targetDir]);
+        execFileSync(tarBin, ['-xzf', path.basename(tempDest)], extractOpts);
         fs.unlinkSync(tempDest);
       } else if (asset.name.endsWith('.zip')) {
         console.log(`Extracting ${asset.name}...`);
-        execFileSync('unzip', ['-o', tempDest, '-d', targetDir]);
+        if (isWindows) {
+          execFileSync(tarBin, ['-xf', path.basename(tempDest)], extractOpts);
+        } else {
+          execFileSync('unzip', ['-o', path.basename(tempDest)], extractOpts);
+        }
         fs.unlinkSync(tempDest);
       } else {
         fs.renameSync(tempDest, destFile);
@@ -317,4 +284,17 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+// Exported for unit tests; `npm run ant:download` still runs main() above.
+module.exports = {
+  fetchRelease,
+  releaseRequestHeaders,
+  releaseUrl,
+  downloadFile,
+  parseChecksums,
+  ANT_REPO,
+  PINNED_RELEASE_TAG,
+};

@@ -1,7 +1,5 @@
 const log = require('./logger');
-const { activeBzzBases, activeRadBases } = require('./state');
-const { getRadicleApiUrl } = require('./service-registry');
-const { loadSettings } = require('./settings-store');
+const { activeBzzBases } = require('./state');
 const { registerWebRequestHandler } = require('./webrequest-dispatcher');
 const { URL } = require('url');
 
@@ -34,55 +32,14 @@ const sanitizeUrlForLog = (rawUrl) => {
   }
 };
 
-/**
- * Convert a custom protocol URL to a gateway URL.
- * Uses service registry for dynamic port resolution.
- * @param {string} url - The URL to check/convert
- * @returns {{ converted: boolean, url: string }} Result with converted flag and URL
- */
-function convertProtocolUrl(url) {
-  if (!url) {
-    return { converted: false, url };
-  }
-
-  // Note: `bzz://`, `ipfs://`, and `ipns://` are handled by custom
-  // protocol handlers in `src/main/swarm/bzz-protocol.js` and
-  // `src/main/ipfs/ipfs-protocol.js`; see README "Swarm Content Retrieval"
-  // and "IPFS / IPNS Content Retrieval". Requests for these schemes never
-  // reach the webRequest rewriter — they're dispatched to the protocol
-  // handlers before webRequest sees them.
-
-  // Handle rad: and rad:// protocols
-  // rad:RID or rad://RID -> <radicle-api>/api/v1/repos/RID
-  // rad:RID/tree/branch/path -> <radicle-api>/api/v1/repos/RID/tree/branch/path
-  if (url.startsWith('rad:')) {
-    if (loadSettings().enableRadicleIntegration !== true) {
-      return { converted: false, url };
-    }
-    // Handle both rad:RID and rad://RID formats
-    const remainder = url.startsWith('rad://') ? url.slice(6) : url.slice(4);
-    const radicleApiUrl = getRadicleApiUrl();
-    if (!radicleApiUrl) {
-      log.warn('[rewrite] Radicle endpoint is not ready');
-      return { converted: false, url };
-    }
-    // Parse the remainder to extract RID and optional path
-    const slashIndex = remainder.indexOf('/');
-    const rid = slashIndex === -1 ? remainder : remainder.slice(0, slashIndex);
-    const pathPart = slashIndex === -1 ? '' : remainder.slice(slashIndex);
-
-    // Validate RID: must start with z followed by base58 characters
-    if (!/^z[1-9A-HJ-NP-Za-km-z]{20,60}$/.test(rid)) {
-      log.warn(`[rewrite] Blocked invalid Radicle RID: ${rid}`);
-      return { converted: false, url };
-    }
-
-    const gatewayUrl = `${radicleApiUrl}/api/v1/repos/${rid}${pathPart}`;
-    return { converted: true, url: gatewayUrl };
-  }
-
-  return { converted: false, url };
-}
+// Note: `bzz://`, `ipfs://`, `ipns://`, and `rad:`/`rad://` are handled
+// by custom protocol handlers in `src/main/swarm/bzz-protocol.js`,
+// `src/main/ipfs/ipfs-protocol.js`, and `src/main/radicle/rad-protocol.js`;
+// see README "Swarm Content Retrieval" and "IPFS / IPNS Content
+// Retrieval". Requests for these schemes never reach the webRequest
+// rewriter — they're dispatched to the protocol handlers before
+// webRequest sees them, so this module only rewrites HTTP(S) requests
+// relative to an active bzz base.
 
 /**
  * Determines if a request should be rewritten to stay within a content-addressed context.
@@ -114,9 +71,11 @@ function shouldRewriteRequest(requestUrl, baseUrl) {
   if (normalizedPath.startsWith('/ipfs/') || normalizedPath.startsWith('/ipns/')) {
     return { shouldRewrite: false, reason: 'already_ipfs_path' };
   }
-  if (normalizedPath.startsWith('/api/v1/repos/')) {
-    return { shouldRewrite: false, reason: 'already_rad_path' };
-  }
+  // NOTE: there is deliberately no `/api/v1/repos/` exclusion here. Radicle
+  // is served in-process over the `rad:`/`radapi:` schemes, which never reach
+  // webRequest — so such a path can only be a same-origin asset of the bzz
+  // page itself (`/api/v1/repos/...` is an ordinary site path), and skipping
+  // it would send the request to the Bee node's real origin and 404.
 
   // Don't rewrite cross-origin requests
   if (requested.origin !== base.origin) {
@@ -178,14 +137,6 @@ function shouldBlockInvalidBzzRequest(url) {
 function rewriteRequestForDispatch(details) {
   const webContentsId = details.webContentsId;
 
-  const { converted, url: convertedUrl } = convertProtocolUrl(details.url);
-  if (converted) {
-    log.info(
-      `[rewrite:protocol] ${sanitizeUrlForLog(details.url)} -> ${sanitizeUrlForLog(convertedUrl)}`
-    );
-    return { redirectURL: convertedUrl };
-  }
-
   // Check for Swarm (bzz) base first
   const bzzBaseUrl = activeBzzBases.get(webContentsId);
   if (bzzBaseUrl) {
@@ -205,21 +156,6 @@ function rewriteRequestForDispatch(details) {
   // dispatched to `src/main/ipfs/ipfs-protocol.js`, so the page origin is
   // `ipfs://<cid|name>/` and same-origin sub-resources never reach
   // webRequest as gateway URLs.
-
-  // Check for Radicle base
-  const radBaseUrl = activeRadBases.get(webContentsId);
-  if (radBaseUrl && loadSettings().enableRadicleIntegration === true) {
-    const { shouldRewrite } = shouldRewriteRequest(details.url, radBaseUrl);
-    if (shouldRewrite) {
-      const redirectTarget = buildRewriteTarget(details.url, radBaseUrl);
-      if (redirectTarget) {
-        log.info(
-          `[rewrite:rad] ${sanitizeUrlForLog(details.url)} -> ${sanitizeUrlForLog(redirectTarget)}`
-        );
-        return { redirectURL: redirectTarget };
-      }
-    }
-  }
 
   // Final guard: block requests to /bzz/ with missing or invalid hash
   // to prevent "bzz download: invalid path" errors on the Bee node
@@ -243,7 +179,6 @@ module.exports = {
   rewriteRequestForDispatch,
   shouldRewriteRequest,
   buildRewriteTarget,
-  convertProtocolUrl,
   shouldBlockInvalidBzzRequest,
   sanitizeUrlForLog,
 };

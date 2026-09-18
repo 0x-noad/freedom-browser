@@ -17,6 +17,8 @@
  *   ipns://host/guide       → ipns://host      (hostname, path-insensitive)
  *   ipns://myapp.eth/guide  → myapp.eth        (transport name-keyed)
  *   rad://z123/tree         → rad://z123       (RID, path-insensitive)
+ *   web3://0xabc….eip155-1/swap → web3://0xabc… (mainnet app key)
+ *   web3://0xabc…:100/swap      → web3://0xabc…:100 (chain-scoped key)
  *   https://app.example.com → https://app.example.com
  *
  * The name-host carve-out for transport URLs keeps permissions stable across
@@ -46,6 +48,23 @@ function isEnsHost(host) {
   );
 }
 
+function isPotentialEnsName(value) {
+  return typeof value === 'string' && value.includes('.') &&
+    !/[\s/:@?#%\\]/u.test(value) &&
+    !Array.from(value).some((c) => c.codePointAt(0) < 32 || c.codePointAt(0) === 127) &&
+    value.split('.').every((label) => label.length > 0);
+}
+
+function isTezosDomainHost(host) {
+  if (!host || typeof host !== 'string') return false;
+  const lower = host.toLowerCase();
+  return lower.endsWith('.tez') && lower.split('.').every((label) => label.length > 0);
+}
+
+function isDwebNameHost(host) {
+  return isEnsHost(host) || isTezosDomainHost(host);
+}
+
 /**
  * Extract the permission key from a display URL.
  * Returns the root content identity, never including paths.
@@ -63,7 +82,7 @@ function getPermissionKey(displayUrl) {
   // Split on /, ?, and # so that hash-routed SPAs (`name.eth#/swap`) and
   // share-link queries (`name.eth?ref=...`) collapse to the same key as
   // the canonical bare name.
-  if (/^[a-z0-9-]+\.(eth|box|wei|gwei)/i.test(trimmed)) {
+  if (/^[^/?#\s]+\.(eth|box|wei|gwei|tez)(?:[/?#]|$)/i.test(trimmed)) {
     return trimmed.split(/[/?#]/, 1)[0].toLowerCase();
   }
 
@@ -81,7 +100,7 @@ function getPermissionKey(displayUrl) {
   const dwebMatch = trimmed.match(/^(ipfs|bzz|ipns):\/\/([^/?#]+)/i);
   if (dwebMatch) {
     const host = dwebMatch[2];
-    if (isEnsHost(host)) {
+    if (isDwebNameHost(host)) {
       return host.toLowerCase();
     }
     return `${dwebMatch[1].toLowerCase()}://${host}`;
@@ -91,6 +110,20 @@ function getPermissionKey(displayUrl) {
   const radMatch = trimmed.match(/^rad:\/\/([^/?#]+)/i);
   if (radMatch) {
     return `rad://${radMatch[1]}`;
+  }
+
+  // ERC-8244 application origin. Chain identity is part of the permission
+  // boundary: the same 20-byte contract address on another chain is a
+  // different app and must never inherit wallet grants.
+  const onchainMatch =
+    trimmed.match(/^web3:\/\/(0x[0-9a-f]{40})\.eip155-([0-9]+)(?:[/?#]|$)/i) ||
+    trimmed.match(/^web3:\/\/(0x[0-9a-f]{40})(?::([0-9]+))?(?:[/?#]|$)/i);
+  if (onchainMatch) {
+    const chainId = onchainMatch[2] ? Number(onchainMatch[2]) : 1;
+    if (Number.isSafeInteger(chainId) && chainId > 0) {
+      const chainSuffix = chainId === 1 ? '' : `:${chainId}`;
+      return `web3://${onchainMatch[1].toLowerCase()}${chainSuffix}`;
+    }
   }
 
   // Regular URL (https://host/path → https://host)
@@ -116,4 +149,4 @@ function normalizeOrigin(origin) {
   return getPermissionKey(origin) || '';
 }
 
-module.exports = { getPermissionKey, isEnsHost, normalizeOrigin };
+module.exports = { isPotentialEnsName, getPermissionKey, isDwebNameHost, isEnsHost, isTezosDomainHost, normalizeOrigin };

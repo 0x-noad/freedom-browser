@@ -1,22 +1,25 @@
 // Renderer process entry point
 import {
   updateRegistry,
-  setRadicleIntegrationEnabled,
-  setBlockUnverifiedEns,
+  applySettingsToState,
 } from './lib/state.js';
 import { initAntUi, updateAntStatusLine, updateAntToggleState } from './lib/ant-ui.js';
 import { initIpfsUi, updateIpfsStatusLine, updateIpfsToggleState } from './lib/ipfs-ui.js';
+import { initMyotisUi } from './lib/myotis-ui.js';
 import {
   initRadicleUi,
   updateRadicleStatusLine,
-  updateRadicleToggleState,
 } from './lib/radicle-ui.js';
+import { initTorUi, updateTorStatusLine } from './lib/tor-ui.js';
 import {
   initMenus,
   setOnOpenHistory,
   setOnNewTab,
   setOnMenuOpening,
+  setOnOpenDownloads,
   closeMenus,
+  hideProfileFlyout,
+  anchorProfileFlyout,
 } from './lib/menus.js';
 import { initSettingsEffects, initTheme } from './lib/settings-ui.js';
 import {
@@ -35,6 +38,7 @@ import {
   setOnContextMenuOpening as setOnTabContextMenuOpening,
   createTab,
   openOrFocusInternalPage,
+  getActiveWebview,
 } from './lib/tabs.js';
 import {
   initNavigation,
@@ -43,33 +47,55 @@ import {
   hardReloadPage,
   onSettingsChanged,
   setOnHistoryRecorded,
+  setSuggestionPreviewProbe,
   closeTrustPopover,
 } from './lib/navigation.js';
 import {
   initAutocomplete,
   setOnNavigate,
+  isSuggestionPreviewActive,
   refreshCache as refreshAutocompleteCache,
   hide as hideAutocomplete,
 } from './lib/autocomplete.js';
 import { initGithubBridgeUi, setOnOpenRadicleUrl } from './lib/github-bridge-ui.js';
+import { initDownloadsUi, setOnOpenDownloadsPage } from './lib/downloads-ui.js';
 import { initMenuBackdrop } from './lib/menu-backdrop.js';
 import { initLinkStatus } from './lib/link-status.js';
+import { initSitePermissionsUi } from './lib/site-permissions-ui.js';
+import { initFindBar } from './lib/find-bar.js';
 import { initPageContextMenu, hidePageContextMenu } from './lib/page-context-menu.js';
 import {
   initChromeInputContextMenu,
   hideChromeInputContextMenu,
+  CHROME_INPUT_IDS,
 } from './lib/chrome-input-context-menu.js';
 import { pushDebug } from './lib/debug.js';
 import { initOnboarding } from './lib/onboarding.js';
 import { initSidebar } from './lib/sidebar.js';
+import { renderSubscreenHeaders } from './lib/subscreen-header.js';
+import { initRadicleConsent } from './lib/radicle-consent.js';
+import { initRadicleAlias } from './lib/radicle-alias.js';
 import { initWalletUi, openPublishSetupFlow } from './lib/wallet-ui.js';
 import { attachSubmenuHover } from './lib/submenu-hover.js';
+import { isPrivateWindow } from './lib/private-mode.js';
 import { bindHoverTooltip } from './lib/hover-tooltip.js';
+import { initShortcuts } from './lib/shortcuts.js';
+import { initPopoverBounds } from './lib/popover-bounds.js';
+import { onWindowDeactivated } from './lib/window-deactivation.js';
 
 const electronAPI = window.electronAPI;
 
 // Apply theme early to avoid flash
 initTheme();
+
+// Private windows get their distinct dark chrome + "Private" badge before
+// first paint. The flag comes from the privatePartition query parameter
+// (src/renderer/lib/private-mode.js).
+if (isPrivateWindow()) {
+  document.body.classList.add('private-window');
+  const privateBadge = document.getElementById('private-badge');
+  if (privateBadge) privateBadge.hidden = false;
+}
 
 let closeProfileMenu = () => {};
 let externalNodeCandidatesHandler = null;
@@ -92,7 +118,7 @@ window.serviceRegistry?.onUpdate?.((registry) => {
   updateIpfsStatusLine();
   updateIpfsToggleState();
   updateRadicleStatusLine();
-  updateRadicleToggleState();
+  updateTorStatusLine();
 });
 
 // Fetch initial registry state
@@ -100,6 +126,9 @@ window.serviceRegistry?.getRegistry?.().then((registry) => {
   if (registry) {
     pushDebug(`[ServiceRegistry] Initial state: ${JSON.stringify(registry)}`);
     updateRegistry(registry);
+    // A profile already on an external IPFS gateway must have a usable toggle
+    // from the first paint, not only after the next registry broadcast.
+    updateIpfsToggleState();
   }
 });
 
@@ -109,9 +138,21 @@ setOnLoadTarget(loadTarget);
 setLoadTargetHandler(loadTarget);
 setReloadHandler(reloadPage);
 setHardReloadHandler(hardReloadPage);
-setOnNavigate(loadTarget);
+// autocomplete passes `loadTarget`'s own options through (a picked suggestion
+// is a `commitsAddressBar` navigation), so this stays a plain adapter.
+setOnNavigate((url, options) => loadTarget(url, null, null, options));
+// Escape ownership between the two handlers bound to the address input:
+// while a suggestion is previewed, autocomplete.js takes the press. #310.
+setSuggestionPreviewProbe(isSuggestionPreviewActive);
 setOnHistoryRecorded(refreshAutocompleteCache);
 setOnOpenHistory(() => loadTarget('freedom://history'));
+// Both Downloads entry points — the hamburger row and the shelf's Full
+// Download History action — share the internal-page singleton the application
+// menu's Downloads item already reaches through `tab:new-with-url`: an
+// existing freedom://downloads tab is focused instead of duplicated. #326
+const openDownloadsPage = () => openOrFocusInternalPage('downloads');
+setOnOpenDownloads(openDownloadsPage);
+setOnOpenDownloadsPage(openDownloadsPage);
 setOnNewTab(() => createTab());
 setOnOpenRadicleUrl((url) => loadTarget(url));
 // When any popover/menu opens, dismiss other transient surfaces so we
@@ -267,6 +308,15 @@ function initExternalNodeCandidatesModal() {
       }
 
       details.append(name, endpoints);
+      // What the user gives up by choosing the external node (IPFS: content is
+      // no longer verified by Freedom). Supplied per candidate by the main
+      // process, so the prompt and the message-box fallback say the same thing.
+      if (candidate.trustNote) {
+        const trustNote = document.createElement('p');
+        trustNote.className = 'external-node-trust-note';
+        trustNote.textContent = candidate.trustNote;
+        details.append(trustNote);
+      }
       row.append(details, choice);
       list.append(row);
     }
@@ -347,10 +397,24 @@ async function initProfileIndicator() {
   let activeProfile = null;
   let creatingProfile = false;
 
+  // Hiding routes through menus.js so every close path — this one, the
+  // hamburger closing, and a sibling row being hovered/focused (#301) — leaves
+  // exactly the same state behind (hidden, aria-expanded, row highlight).
   const setMenuOpen = (open) => {
     if (!menu) return;
-    menu.hidden = !open;
-    indicator.setAttribute('aria-expanded', String(open));
+    if (!open) {
+      hideProfileFlyout();
+      return;
+    }
+    menu.hidden = false;
+    // Keep the Profiles row highlighted while its flyout is up, the way a
+    // hovered row is — otherwise nothing says which row owns the flyout.
+    menuWrap?.classList.add('flyout-open');
+    indicator.setAttribute('aria-expanded', 'true');
+    // Position it against the Profiles row and bound it to the viewport —
+    // it is `position: fixed` so the hamburger's own scrolling can't clip
+    // it (#324). Anchoring lives with hiding, in menus.js.
+    anchorProfileFlyout();
   };
 
   const setMenuStatus = (message, kind = '') => {
@@ -494,11 +558,15 @@ async function initProfileIndicator() {
     }
   };
 
-  // macOS-style submenu: open after a short hover delay. It deliberately does
-  // NOT close on mouse-out — once open it stays until a click lands outside it
-  // (handled below). The flyout is a child of #menu-dropdown, so the hamburger's
-  // outside-click handler treats flyout clicks as inside — the hamburger stays
-  // open with it. Timing lives in the shared attachSubmenuHover helper.
+  // macOS/Chrome-style submenu: open after a short hover delay. It does NOT
+  // close on plain mouse-out; it stays until something dismisses it: a pointer
+  // or focus landing anywhere in the hamburger outside this wrapper — a sibling
+  // row, a divider, or the dropdown's own padding (menus.js, #301; the pointer
+  // path waits out SUBMENU_CLOSE_DELAY_MS, focus closes at once) — a click
+  // outside (handled below), or the hamburger closing. The flyout is a child of
+  // #menu-dropdown, so the hamburger's outside-click handler treats flyout
+  // clicks as inside — the hamburger stays open with it. Timing lives in the
+  // shared attachSubmenuHover helper.
   const openFlyout = () => {
     // Don't open while the hamburger itself is closed (the dropdown — and thus
     // this wrapper — isn't rendered), e.g. if a hover open-timer fires just
@@ -525,11 +593,11 @@ async function initProfileIndicator() {
   indicator.addEventListener('click', flyoutHover.openNow);
 
   // The flyout no longer closes on mouse-out, so dismiss it on click-out: a
-  // click inside the wrapper (trigger or flyout) keeps it open; a click on any
-  // other hamburger row collapses just the flyout. Clicks fully outside the
-  // hamburger are handled in menus.js, which hides the flyout when the dropdown
-  // closes. Pointerdown (not click) so the dismissal isn't pre-empted by a row
-  // that closes the whole menu on click.
+  // click inside the wrapper (trigger or flyout) keeps it open; a click
+  // anywhere else in the hamburger collapses just the flyout. Clicks fully
+  // outside the hamburger are handled in menus.js, which hides the flyout when
+  // the dropdown closes. Pointerdown (not click) so the dismissal isn't
+  // pre-empted by a row that closes the whole menu on click.
   document.addEventListener('pointerdown', (event) => {
     if (menu?.hidden !== false) return;
     if (menuWrap?.contains(event.target)) return;
@@ -537,11 +605,12 @@ async function initProfileIndicator() {
     setMenuOpen(false);
   });
 
-  // Also dismiss when the window loses focus (e.g. alt-tab), matching the app's
-  // other transient menus (bookmarks, tab/context menus, autocomplete) and the
-  // old profile menu's behaviour — the flyout shouldn't linger over an inactive
-  // window.
-  window.addEventListener('blur', () => {
+  // Also dismiss when the window is deactivated (e.g. alt-tab), matching the
+  // app's other transient menus (bookmarks, tab/context menus, autocomplete)
+  // and the old profile menu's behaviour — the flyout shouldn't linger over an
+  // inactive window. A `<webview>` guest taking the keyboard is not that: it
+  // raises the same `blur` while the window is still active (#328).
+  onWindowDeactivated(() => {
     if (menu?.hidden !== false) return;
     closeProfileMenu();
   });
@@ -568,7 +637,7 @@ async function initProfileIndicator() {
     }
 
     setCreateBusy(true);
-    setCreateStatus('Creating profile...', 'success');
+    setCreateStatus('Creating profile…', 'success');
     try {
       const createResult = await electronAPI.createProfile?.({ displayName });
       if (!createResult?.success) {
@@ -581,7 +650,7 @@ async function initProfileIndicator() {
         throw new Error('Profile was created but no profile id was returned');
       }
 
-      setCreateStatus(`Opening ${profile.displayName || displayName}...`, 'success');
+      setCreateStatus(`Opening ${profile.displayName || displayName}…`, 'success');
       const openResult = await electronAPI.openProfile?.(profileId);
       if (!openResult?.success) {
         throw new Error(
@@ -696,34 +765,44 @@ function initUpdateNotifications() {
   });
 }
 
-// Listen for open-url-new-tab custom event from context menu
+// Listen for open-url-new-tab custom event from context menu.
+// `detail.background` opens the tab behind the current one (a Ctrl/Cmd-clicked
+// "Search <Engine> for …", #330); every other emitter leaves it unset and gets
+// the foreground tab it always got.
 document.addEventListener('open-url-new-tab', (e) => {
   const url = e.detail?.url;
   if (url) {
-    createTab(url);
+    createTab(url, { background: e.detail?.background === true });
   }
 });
 
 // Initialize all modules
 window.addEventListener('DOMContentLoaded', async () => {
+  // First, and synchronously: every sidebar sub-screen's Back button and
+  // title only exist once this has run, and the init*() calls below cache
+  // them by id.
+  renderSubscreenHeaders();
+
   try {
-    const settings = await electronAPI.getSettings();
-    setRadicleIntegrationEnabled(settings?.enableRadicleIntegration === true);
-    setBlockUnverifiedEns(settings?.blockUnverifiedEns !== false);
+    applySettingsToState(await electronAPI.getSettings());
   } catch {
-    setRadicleIntegrationEnabled(false);
-    setBlockUnverifiedEns(true);
+    applySettingsToState(null);
   }
   window.addEventListener('settings:updated', (event) => {
-    setRadicleIntegrationEnabled(event.detail?.enableRadicleIntegration === true);
-    setBlockUnverifiedEns(event.detail?.blockUnverifiedEns !== false);
+    applySettingsToState(event.detail);
   });
 
+  initShortcuts(); // Live shortcut bindings — before any keydown consumers
+  // Every chrome popover bounds itself to the viewport and scrolls inside
+  // instead of growing past it (#324); this installs the window-level half.
+  initPopoverBounds();
   initMenuBackdrop(closeAllOverlays);
   initMenus();
   initAntUi();
   initIpfsUi();
+  initMyotisUi();
   initRadicleUi();
+  initTorUi();
   initGithubBridgeUi();
   document.getElementById('settings-btn')?.addEventListener('click', () => {
     closeMenus();
@@ -731,17 +810,29 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
   initBookmarks();
   initNavigation(); // Sets up event handler with tabs module
+  initSitePermissionsUi(); // Permission prompt + address-bar indicator
   initLinkStatus();
+  initFindBar({ getActiveWebview }); // In-page find bar (Cmd/Ctrl+F)
   initTabs(); // Creates first tab and starts loading home page
   initAutocomplete(); // Address bar autocomplete
   initPageContextMenu(); // Page context menu for webviews
-  initChromeInputContextMenu({ onOpening: onAnyMenuOpening }); // Address bar edit menu
+  // Cut/Copy/Paste/Select All for every editable chrome text field — the
+  // address bar, the find bar and the bookmark-edit dialog (#316). Passed in
+  // explicitly rather than left to the module's fallback so the list of chrome
+  // inputs is visible at the one call site that owns it.
+  initChromeInputContextMenu({
+    onOpening: onAnyMenuOpening,
+    inputs: CHROME_INPUT_IDS.map((id) => document.getElementById(id)),
+  });
   initOnboarding(); // Identity onboarding wizard
   initSidebar(); // Identity & wallet sidebar
   initWalletUi(); // Wallet & identity display in sidebar
+  initRadicleConsent(); // Radicle provider consent subscreen (sidebar)
+  initRadicleAlias(); // Radicle alias display/editing in the Nodes tab
   loadBookmarks();
   initExternalNodeCandidatesModal();
   initPlatformUI();
   initProfileIndicator();
   initUpdateNotifications();
+  initDownloadsUi(); // Download shelf cards (bottom-right)
 });

@@ -5,14 +5,23 @@ const { promisify } = require('util');
 const log = require('./logger');
 
 const execFileAsync = promisify(execFile);
-const { ipcMain, app, dialog, clipboard, nativeImage, webContents } = require('electron');
+const {
+  ipcMain,
+  app,
+  dialog,
+  clipboard,
+  nativeImage,
+  webContents,
+  ClipboardItem,
+} = require('electron');
 const { URL } = require('url');
 const path = require('path');
-const { activeBzzBases, activeRadBases } = require('./state');
-const { loadSettings } = require('./settings-store');
+const { activeBzzBases } = require('./state');
 const { fetchBuffer, fetchToFile } = require('./http-fetch');
 const { success, failure, validateWebContentsId } = require('./ipc-contract');
 const IPC = require('../shared/ipc-channels');
+const { normalizeSocksEndpoint } = require('../shared/socks-endpoint');
+const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
 const {
   startProbe: startSwarmProbe,
   cancelProbe: cancelSwarmProbe,
@@ -29,6 +38,7 @@ const {
   validateProfileDeletionForActiveApp,
 } = require('./profile-resolver');
 const { openOrFocusProfile } = require('./profile-launcher');
+const { isPrivateWebContents } = require('./private/private-windows');
 const { readProfileFocusAck, requestProfileQuitAsync } = require('./profile-focus-handoff');
 const { isProfileLocked } = require('./profile-lock');
 
@@ -156,7 +166,9 @@ function serializeActiveProfile() {
     serialized.nodes = {
       bee: metadata.nodes.bee ? { ...metadata.nodes.bee } : null,
       ipfs: metadata.nodes.ipfs ? { ...metadata.nodes.ipfs } : null,
+      myotis: metadata.nodes.myotis ? { ...metadata.nodes.myotis } : null,
       radicle: metadata.nodes.radicle ? { ...metadata.nodes.radicle } : null,
+      tor: metadata.nodes.tor ? { ...metadata.nodes.tor } : null,
     };
   }
 
@@ -207,38 +219,34 @@ function serializeProfileMutationResult(result) {
 
 const PROFILE_NODE_MODES = {
   bee: new Set(['managed', 'external', 'disabled']),
-  ipfs: new Set(['managed', 'disabled']),
-  radicle: new Set(['managed', 'external', 'disabled']),
+  ipfs: new Set(['managed', 'external', 'disabled']),
+  myotis: new Set(['managed', 'disabled']),
+  radicle: new Set(['managed', 'disabled']),
+  tor: new Set(['managed', 'external', 'disabled']),
 };
 const PROFILE_NODE_FIELDS = {
   bee: ['mode', 'externalApi'],
-  ipfs: ['mode'],
-  radicle: ['mode', 'externalHttp'],
+  ipfs: ['mode', 'externalGateway'],
+  myotis: ['mode'],
+  radicle: ['mode'],
+  tor: ['mode', 'externalSocks'],
 };
 const EXTERNAL_FIELDS = {
   bee: ['externalApi'],
-  radicle: ['externalHttp'],
+  ipfs: ['externalGateway'],
+  tor: ['externalSocks'],
+};
+const PROFILE_NODE_ENDPOINT_NORMALIZERS = {
+  externalApi: normalizeProfileNodeEndpoint,
+  externalGateway: normalizeProfileNodeEndpoint,
+  externalSocks: normalizeSocksEndpoint,
 };
 
+// The node managers normalize the stored endpoint with this same function
+// (see src/shared/http-endpoint.js), so a value accepted here is dialled
+// verbatim later — including the userinfo rejection undici's fetch requires.
 function normalizeProfileNodeEndpoint(rawValue) {
-  if (rawValue == null) return null;
-  const trimmed = String(rawValue).trim();
-  if (!trimmed) return null;
-
-  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-
-  try {
-    const parsed = new URL(withProtocol);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return null;
-    }
-    parsed.hash = '';
-    parsed.search = '';
-    parsed.pathname = parsed.pathname.replace(/\/+$/, '');
-    return parsed.toString().replace(/\/+$/, '');
-  } catch {
-    return null;
-  }
+  return normalizeHttpEndpoint(rawValue);
 }
 
 function validateProfileNodeConfigUpdate(protocol, patch = {}) {
@@ -277,7 +285,8 @@ function validateProfileNodeConfigUpdate(protocol, patch = {}) {
       continue;
     }
 
-    const normalized = normalizeProfileNodeEndpoint(patch[field]);
+    const normalizeEndpoint = PROFILE_NODE_ENDPOINT_NORMALIZERS[field] || (() => null);
+    const normalized = normalizeEndpoint(patch[field]);
     if (patch[field] && !normalized) {
       return {
         ok: false,
@@ -315,7 +324,7 @@ function validateProfileNodeConfigUpdate(protocol, patch = {}) {
   return { ok: true, sanitized };
 }
 
-function updateProfileNodeConfigFromIpc(protocol, patch) {
+async function updateProfileNodeConfigFromIpc(protocol, patch) {
   const activeProfile = getActiveProfile();
   if (!activeProfile || activeProfile.source !== 'catalog') {
     return failure('PROFILE_NOT_EDITABLE', 'The active profile cannot be edited');
@@ -331,6 +340,29 @@ function updateProfileNodeConfigFromIpc(protocol, patch) {
     }
     const profile = serializeActiveProfile();
     broadcastProfileUpdated(profile);
+    if (protocol === 'myotis') {
+      const myotisManager = require('./myotis/myotis-manager');
+      if (validation.sanitized.mode === 'disabled') {
+        await myotisManager.stopAllMyotis();
+      } else {
+        for (const chainId of myotisManager.NETWORKS.keys()) {
+          myotisManager.refreshMyotisStatus(chainId);
+        }
+      }
+    }
+    if (protocol === 'radicle') {
+      const radicleManager = require('./radicle-manager');
+      await radicleManager.syncProfileMode();
+    }
+    if (protocol === 'ipfs') {
+      // Publish the newly configured mode to the service registry. Nothing is
+      // restarted (the Settings hint tells the user to restart the node), but a
+      // profile switched to external mode has to become controllable from the
+      // nodes menu right away — otherwise, on a host where the native addon
+      // cannot load, the toggle stays disabled until the app is relaunched.
+      const ipfsManager = require('./ipfs-manager');
+      await ipfsManager.syncProfileMode();
+    }
     return success({ profile });
   } catch (err) {
     log.error('[profile] Failed to update node config:', err);
@@ -597,6 +629,40 @@ async function deleteProfileFromIpc(payload = {}, options = {}) {
   }
 }
 
+// Electron 44.0 rearchitected the main-process `clipboard` module around the
+// W3C Clipboard API: `writeText`/`readText` return promises, and
+// `writeImage`/`readImage` were removed in favour of
+// `clipboard.write([new ClipboardItem({ '<mime>': <Blob> })])`.
+//
+// Awaiting the text calls is correct on both majors - on Electron 43 they
+// return plain values and `await` passes them straight through - so those
+// call sites need no branching. The image write does: Electron 43's
+// `clipboard.write(data)` takes a `{ text, html, image, ... }` object and
+// silently ignores an array (verified on 43.6.0: `write([{ 'image/png': img }])`
+// resolves, then `readImage()` comes back empty), while 44 rejects anything
+// that is not an array of `ClipboardItem` instances. So pick the shape by
+// what the running Electron actually exposes rather than writing one form and
+// hoping - a wrong guess here fails silently on 43 and loudly on 44.
+async function writeImageToClipboard(image) {
+  if (typeof clipboard.writeImage === 'function') {
+    // Electron <= 43.
+    await clipboard.writeImage(image);
+    return;
+  }
+
+  if (typeof ClipboardItem !== 'function') {
+    throw new Error('clipboard exposes neither writeImage nor ClipboardItem');
+  }
+
+  // Electron >= 44. `ClipboardItem` payloads must be a string or a Blob -
+  // a `nativeImage` is rejected - so hand it the PNG encoding of the image
+  // we already validated with `isEmpty()`.
+  const png = image.toPNG();
+  await clipboard.write([
+    new ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) }),
+  ]);
+}
+
 function registerBaseIpcHandlers(callbacks = {}) {
   ipcMain.handle(IPC.BZZ_SET_BASE, (_event, payload = {}) => {
     const { webContentsId, baseUrl } = payload;
@@ -633,11 +699,11 @@ function registerBaseIpcHandlers(callbacks = {}) {
   // obtain the id before the probe settles (enabling mid-flight cancel
   // from the stop button / next navigation).
   ipcMain.handle(IPC.BZZ_START_PROBE, (_event, payload = {}) => {
-    const { hash } = payload;
+    const { hash, path } = payload;
     if (typeof hash !== 'string' || !hash) {
       return failure('INVALID_HASH', 'Missing hash');
     }
-    const { id, promise } = startSwarmProbe(hash);
+    const { id, promise } = startSwarmProbe(hash, { path });
     // Keep the entry until await-probe consumes it. A safety TTL drops
     // abandoned entries (e.g. the tab was closed before awaiting) without
     // racing the start→await IPC round-trip for fast-resolving probes.
@@ -674,47 +740,24 @@ function registerBaseIpcHandlers(callbacks = {}) {
     return success({ cancelled });
   });
 
-  ipcMain.handle(IPC.RAD_SET_BASE, (_event, payload = {}) => {
-    const settings = loadSettings();
-    if (!settings.enableRadicleIntegration) {
-      return failure(
-        'RADICLE_DISABLED',
-        'Radicle integration is disabled. Enable it in Settings > Experimental'
-      );
-    }
-    const { webContentsId, baseUrl } = payload;
-    if (!validateWebContentsId(webContentsId)) {
-      return failure('INVALID_WEB_CONTENTS_ID', 'Invalid webContentsId', { webContentsId });
-    }
-    if (!baseUrl) {
-      return failure('INVALID_BASE_URL', 'Missing baseUrl');
-    }
-    try {
-      const normalized = new URL(baseUrl);
-      activeRadBases.set(webContentsId, normalized);
-      return success();
-    } catch (err) {
-      log.error('Invalid Radicle base URL received from renderer', err);
-      return failure('INVALID_BASE_URL', 'Invalid baseUrl', { baseUrl });
-    }
-  });
-
-  ipcMain.handle(IPC.RAD_CLEAR_BASE, (_event, payload = {}) => {
-    const { webContentsId } = payload;
-    if (!validateWebContentsId(webContentsId)) {
-      return failure('INVALID_WEB_CONTENTS_ID', 'Invalid webContentsId', { webContentsId });
-    }
-    activeRadBases.delete(webContentsId);
-    return success();
-  });
-
   ipcMain.on(IPC.WINDOW_SET_TITLE, (event, title) => {
     const win = event.sender.getOwnerBrowserWindow();
     if (!win) return;
     const formatted = formatWindowTitle(title);
-    log.info(`[main] Setting window title to: "${formatted}" (requested: "${title}")`);
+    // PRIVATE MODE GUARD (window title): a private page's <title> — and, for
+    // view-source/error tabs, its full URL, which the renderer sends as the
+    // title — must not reach the persistent on-disk log, nor seed the
+    // process-wide `currentWindowTitle` that every later normal window
+    // inherits at ready-to-show. The private window's own native title still
+    // updates (matching Chrome/Firefox), it just stays out of shared state.
+    const isPrivate = isPrivateWebContents(event.sender);
+    if (isPrivate) {
+      log.info('[main] Setting window title for a private window (title redacted)');
+    } else {
+      log.info(`[main] Setting window title to: "${formatted}" (requested: "${title}")`);
+    }
     win.setTitle(formatted);
-    if (callbacks.onSetTitle) {
+    if (!isPrivate && callbacks.onSetTitle) {
       callbacks.onSetTitle(formatted);
     }
   });
@@ -790,11 +833,41 @@ function registerBaseIpcHandlers(callbacks = {}) {
     }
   });
 
-  ipcMain.on(IPC.WINDOW_NEW_WITH_URL, (_event, url) => {
+  // PRIVATE MODE GUARD (windows): "Open Link in New Window" carries a URL out
+  // of the window that asked for it. Asked from a private window, the link
+  // must land in another PRIVATE window — routing it through createMainWindow
+  // would load it on the persistent default session, where history records
+  // it, cookies and site data stick, and wallet providers inject. Resolve the
+  // sender through the private registry so the guard holds whatever the
+  // renderer sends.
+  ipcMain.on(IPC.WINDOW_NEW_WITH_URL, (event, url) => {
+    if (isPrivateWebContents(event?.sender)) {
+      if (callbacks.onNewPrivateWindow) {
+        callbacks.onNewPrivateWindow(url);
+      } else {
+        // Never fall back to a normal window: dropping the request is the
+        // safe failure here.
+        log.warn('[private] no private-window factory — dropping window:new-with-url');
+      }
+      return;
+    }
     if (callbacks.onNewWindow) {
       // Pass URL directly to createMainWindow to avoid home page flash
       callbacks.onNewWindow(url);
     }
+  });
+
+  ipcMain.on(IPC.WINDOW_NEW_PRIVATE, () => {
+    if (callbacks.onNewPrivateWindow) {
+      callbacks.onNewPrivateWindow();
+    }
+  });
+
+  // Sync: a webview preload asks (before any page script runs) whether it
+  // lives inside a private window, to gate wallet provider injection.
+  // PRIVATE MODE GUARD (providers): consumer is src/main/webview-preload.js.
+  ipcMain.on(IPC.PRIVATE_IS_PRIVATE, (event) => {
+    event.returnValue = isPrivateWebContents(event.sender);
   });
 
   ipcMain.on(IPC.APP_SHOW_ABOUT, () => {
@@ -914,13 +987,24 @@ function registerBaseIpcHandlers(callbacks = {}) {
     }
   });
 
-  // Copy text to clipboard
-  ipcMain.handle('clipboard:copy-text', (_event, text) => {
-    if (text) {
-      clipboard.writeText(text);
-      return { success: true };
+  // Copy text to clipboard. `writeText` returns a promise on Electron >= 44,
+  // so it has to be awaited before we can claim the write landed - and an
+  // awaited promise can reject, so it needs the same catch `clipboard:copy-image`
+  // already has. Without it a rejection escapes the `{ success, error }` reply
+  // contract as an `ipcRenderer.invoke` rejection and the renderer's
+  // navigator.clipboard fallback never runs.
+  ipcMain.handle('clipboard:copy-text', async (_event, text) => {
+    if (!text) {
+      return { success: false, error: 'No text provided' };
     }
-    return { success: false, error: 'No text provided' };
+
+    try {
+      await clipboard.writeText(text);
+      return { success: true };
+    } catch (error) {
+      log.error('[clipboard] Failed to copy text:', error);
+      return { success: false, error: error.message };
+    }
   });
 
   // Address-bar chrome context menu Paste fallback. Restricted to the
@@ -928,11 +1012,24 @@ function registerBaseIpcHandlers(callbacks = {}) {
   // could otherwise exfiltrate the user's clipboard without a paste
   // gesture by invoking this IPC directly through the exposed
   // electronAPI on a hostile page.
-  ipcMain.handle('clipboard:read-text', (event) => {
+  //
+  // `readText` returns a promise on Electron >= 44; returning it unawaited
+  // puts a Promise in the reply payload, which the IPC serializer cannot
+  // structured-clone, so `ipcRenderer.invoke` never settles at all. That
+  // promise can also reject, so the read is wrapped the same way the write is
+  // - the sender check stays outside the try, it is a trust gate and not
+  // something a clipboard failure may be allowed to reword.
+  ipcMain.handle('clipboard:read-text', async (event) => {
     if (event?.sender?.hostWebContents) {
       return { success: false, error: 'Untrusted sender' };
     }
-    return { success: true, text: clipboard.readText() };
+
+    try {
+      return { success: true, text: await clipboard.readText() };
+    } catch (error) {
+      log.error('[clipboard] Failed to read text:', error);
+      return { success: false, error: error.message };
+    }
   });
 
   // Copy image to clipboard
@@ -949,7 +1046,7 @@ function registerBaseIpcHandlers(callbacks = {}) {
         return { success: false, error: 'Failed to create image from data' };
       }
 
-      clipboard.writeImage(image);
+      await writeImageToClipboard(image);
       return { success: true };
     } catch (error) {
       log.error('[clipboard] Failed to copy image:', error);

@@ -3,6 +3,17 @@ jest.mock('electron', () => ({
   ipcMain: { handle: jest.fn() },
 }));
 
+// The persistent-log guard asserts on what reaches the logger, so the
+// logger is a mock rather than electron-log's test-mode no-op.
+const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+jest.mock('./logger', () => mockLog);
+
+// Private-ness is decided from the IPC sender; the registry itself needs a
+// real BrowserWindow, so stub the one predicate ens-resolver uses.
+jest.mock('./private/private-windows', () => ({
+  isPrivateWebContents: (webContents) => webContents?.isPrivate === true,
+}));
+
 // Mock ens-prefetch so tests can assert when it fires and when it aborts,
 // without spinning up a real net.request. Default impl returns a fresh
 // abort-recording handle each call.
@@ -73,7 +84,13 @@ jest.mock('./networks/network-registry', () => {
       return {
         chainId: 1,
         name: 'Ethereum',
-        verification: { primary },
+        verification: {
+          primary,
+          ...(Array.isArray(s.ensResolutionOrder) ? { order: s.ensResolutionOrder } : {}),
+          ...(typeof s.ensPreferVerified === 'boolean'
+            ? { preferVerified: s.ensPreferVerified }
+            : {}),
+        },
         quorum: {
           k: s.ensQuorumK ?? 3,
           m: s.ensQuorumM ?? 2,
@@ -121,6 +138,37 @@ jest.mock('./ens/colibri-resolver', () => ({
   resolveReverseViaColibri: (...args) => mockResolveReverseViaColibri(...args),
 }));
 
+// Myotis manager (experimental P2P light-client tier). Defaults to disabled
+// so every pre-existing test sees the resolver exactly as before; the
+// myotis-path suite flips these per test.
+const mockMyotisIsEnabled = jest.fn(() => false);
+const mockMyotisIsReady = jest.fn(() => false);
+const mockMyotisResolveEnsRecord = jest.fn();
+const mockMyotisEthCall = jest.fn();
+const mockMyotisGetStatus = jest.fn(() => ({ optimisticBlockNumber: 23456800 }));
+const mockMyotisGetAvailabilityEpoch = jest.fn(() => 0);
+// Captures the resolver's module-load registration so tests can fire either
+// availability direction and exercise cache/in-flight lifecycle behavior.
+const mockMyotisAvailabilityListeners = [];
+jest.mock('./myotis/myotis-manager', () => ({
+  isEnabled: (...args) => mockMyotisIsEnabled(...args),
+  isReady: (...args) => mockMyotisIsReady(...args),
+  resolveEnsRecord: (...args) => mockMyotisResolveEnsRecord(...args),
+  ethCall: (...args) => mockMyotisEthCall(...args),
+  getStatus: (...args) => mockMyotisGetStatus(...args),
+  getAvailabilityEpoch: (...args) => mockMyotisGetAvailabilityEpoch(...args),
+  onAvailabilityTransition: (cb) => mockMyotisAvailabilityListeners.push(cb),
+}));
+
+jest.mock('./ens/myotis-resolver', () => ({ resolveRecord: (...args) => mockMyotisResolveEnsRecord(...args) }));
+
+// The block-pinned CCIP loop uses the shared bounded gateway fetcher
+// (`ens/ccip-fetch`), not the provider's unbounded inherited one.
+const mockCcipReadFetch = jest.fn();
+jest.mock('./ens/ccip-fetch', () => ({
+  ccipReadFetch: (...args) => mockCcipReadFetch(...args),
+}));
+
 // Mock ethers with controllable provider and resolver behavior.
 // `mockUrResolve` is shared across all Contract instances — this is fine
 // for tests that use `mockResolvedValue(X)` (every quorum leg returns X
@@ -131,6 +179,7 @@ const mockGetBlock = jest.fn();
 const mockDestroy = jest.fn();
 const mockGetResolver = jest.fn();
 const mockResolveName = jest.fn();
+const mockProviderCall = jest.fn();
 const mockUrResolve = jest.fn();
 const mockUrReverse = jest.fn();
 const mockWnsContenthash = jest.fn();
@@ -158,6 +207,7 @@ let mockProviderAnchorMap = null;
 
 const WNS_ADDRESS = '0x0000000000696760e15f265e828db644a0c242eb';
 const GNS_ADDRESS = '0x9d51d507bc7264d4fe8ad1cf7fe191933a0a81d6';
+const ADDR_SELECTOR = '0x3b3b57de';
 
 jest.mock('ethers', () => {
   const actual = jest.requireActual('ethers').ethers;
@@ -189,6 +239,7 @@ jest.mock('ethers', () => {
           },
           getResolver: mockGetResolver,
           resolveName: mockResolveName,
+          call: mockProviderCall,
           destroy: mockDestroy,
         };
       }),
@@ -232,20 +283,27 @@ jest.mock('ethers', () => {
       encodeBase58: actual.encodeBase58,
       decodeBase58: actual.decodeBase58,
       getBytes: actual.getBytes,
+      getAddress: actual.getAddress,
       ZeroAddress: actual.ZeroAddress,
+      Interface: actual.Interface,
     },
   };
 });
 
 const { ethers } = require('ethers');
 const {
+  registerEnsIpc,
   resolveEnsContent,
   resolveEnsAddress,
   resolveEnsReverse,
   invalidateCachedProvider,
+  clearEnsResolutionCaches,
   universalResolverCall,
   isResolverNotFoundError,
 } = require('./ens-resolver');
+const resolverLog = require('./logger');
+const { ipcMain } = require('electron');
+const IPC = require('../shared/ipc-channels');
 
 // Fake block anchor — stable hash so consensus legs querying the same
 // block get deterministic agreement.
@@ -253,6 +311,7 @@ const FAKE_BLOCK = { number: 12345678, hash: '0xabcdef00000000000000000000000000
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockMyotisGetAvailabilityEpoch.mockImplementation(() => 0);
   invalidateCachedProvider();
   lastProviderUrl = null;
   mockProviderRouteMap = null;
@@ -268,6 +327,10 @@ beforeEach(() => {
   mockGnsContenthash.mockResolvedValue('0x');
   mockGnsAddr.mockResolvedValue('0x0000000000000000000000000000000000000000');
   mockGnsReverseResolve.mockResolvedValue('');
+  mockResolveViaColibri.mockResolvedValue({
+    resolvedData: actualEthers.AbiCoder.defaultAbiCoder().encode(['string'], ['']),
+    resolverAddress: WNS_ADDRESS,
+  });
   mockLoadSettings.mockReturnValue({
     enableEnsCustomRpc: false,
     ensRpcUrl: '',
@@ -598,6 +661,21 @@ describe('ens-resolver', () => {
       // Default test settings: K=3, matching TEST_PROVIDERS.length.
       expect(mockUrResolve).toHaveBeenCalledTimes(3);
     });
+
+    test('pins every short-lived RPC provider to Ethereum Mainnet', async () => {
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
+
+      await resolveEnsContent('static-network.eth');
+
+      expect(ethers.JsonRpcProvider).toHaveBeenCalled();
+      for (const call of ethers.JsonRpcProvider.mock.calls) {
+        expect(call).toEqual([
+          expect.any(String),
+          1,
+          { staticNetwork: true },
+        ]);
+      }
+    });
   });
 
   describe('custom RPC URL', () => {
@@ -684,6 +762,45 @@ describe('ens-resolver', () => {
       expect(result.trust.level).toBe('verified');
     });
 
+    test('keeps address caches and concurrent queries separate for each chain', async () => {
+      const l1 = '0x1111111111111111111111111111111111111111';
+      const base = '0x2222222222222222222222222222222222222222';
+      mockUrResolve.mockImplementation((_name, data) => data.startsWith('0xf1cb7e06')
+        ? [ethers.AbiCoder.defaultAbiCoder().encode(['bytes'], [base]), FAKE_RESOLVER]
+        : urReturnsAddress(l1));
+      const [a, b] = await Promise.all([resolveEnsAddress('test.ses.eth'), resolveEnsAddress('test.ses.eth', 8453)]);
+      expect(a.address).toBe(l1);
+      expect(b.address).toBe(base);
+      const data = mockUrResolve.mock.calls.find((args) => args[1].startsWith('0xf1cb7e06'))[1];
+      expect(BigInt('0x' + data.slice(74))).toBe(2147492101n);
+      mockUrResolve.mockClear();
+      expect((await resolveEnsAddress('test.ses.eth')).address).toBe(l1);
+      expect((await resolveEnsAddress('test.ses.eth', 8453)).address).toBe(base);
+      expect(mockUrResolve).not.toHaveBeenCalled();
+    });
+
+    test('never falls back to an Ethereum address when the chain record is absent', async () => {
+      mockUrResolve.mockResolvedValue([ethers.AbiCoder.defaultAbiCoder().encode(['bytes'], ['0x']), FAKE_RESOLVER]);
+      expect(await resolveEnsAddress('missing-base.eth', 8453)).toMatchObject({ success: false, reason: 'NO_ADDRESS' });
+      expect(mockUrResolve.mock.calls.every((args) => args[1].startsWith('0xf1cb7e06'))).toBe(true);
+    });
+
+    test.each([0, -1, 1.5, '8453', 2147483648])('rejects invalid destination chain %s before RPC', async (chain) => {
+      await expect(resolveEnsAddress('test.eth', chain)).rejects.toThrow('Invalid ENS destination');
+      expect(mockUrResolve).not.toHaveBeenCalled();
+    });
+
+    test('requests and caches primary names for the selected chain', async () => {
+      const address = '0x1111111111111111111111111111111111111111';
+      mockUrReverse.mockImplementation((_address, coinType) => [coinType === 60n ? 'l1.eth' : 'base.eth', FAKE_RESOLVER, FAKE_RESOLVER]);
+      expect((await resolveEnsReverse(address)).name).toBe('l1.eth');
+      expect((await resolveEnsReverse(address, 8453)).name).toBe('base.eth');
+      mockUrReverse.mockClear();
+      expect((await resolveEnsReverse(address)).name).toBe('l1.eth');
+      expect((await resolveEnsReverse(address, 8453)).name).toBe('base.eth');
+      expect(mockUrReverse).not.toHaveBeenCalled();
+    });
+
     test('resolves .wei name to its WNS addr record', async () => {
       mockWnsAddr.mockResolvedValue('0x1111111111111111111111111111111111111111');
 
@@ -715,6 +832,35 @@ describe('ens-resolver', () => {
       expect(mockGnsAddr).toHaveBeenCalledTimes(3);
       expect(mockWnsAddr).not.toHaveBeenCalled();
       expect(mockUrResolve).not.toHaveBeenCalled();
+    });
+
+    // A NameNFT registry has one chain-agnostic `addr(bytes32)` record and no
+    // multicoin equivalent, so there is nothing to ask it about an L2. Handing
+    // the mainnet record back as a Base recipient is the silent L1-address
+    // reuse this PR removes for ENS; refuse for WNS/GNS too.
+    test.each([
+      ['alice.wei', 'wns', 'WNS'],
+      ['apoorv.gwei', 'gns', 'GNS'],
+    ])('refuses to resolve %s off mainnet instead of reusing its L1 record', async (name, system, label) => {
+      mockWnsAddr.mockResolvedValue('0x1111111111111111111111111111111111111111');
+      mockGnsAddr.mockResolvedValue('0x2222222222222222222222222222222222222222');
+
+      const result = await resolveEnsAddress(name, 8453);
+
+      expect(result).toMatchObject({
+        success: false,
+        name,
+        system,
+        reason: 'CHAIN_UNSUPPORTED',
+      });
+      expect(result.address).toBeUndefined();
+      expect(result.error).toContain(`${label} names resolve on Ethereum mainnet only`);
+      expect(mockWnsAddr).not.toHaveBeenCalled();
+      expect(mockGnsAddr).not.toHaveBeenCalled();
+      expect(mockUrResolve).not.toHaveBeenCalled();
+
+      // Mainnet for the same name is unaffected and still answers.
+      expect(await resolveEnsAddress(name)).toMatchObject({ success: true, system });
     });
 
     test('normalizes mixed-case input to lowercase', async () => {
@@ -836,12 +982,41 @@ describe('ens-resolver', () => {
 
       const result = await resolveEnsReverse(input);
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         success: true,
         address: input.toLowerCase(),
         name: 'verified1.eth',
         system: 'ens',
+        trust: {
+          level: 'verified',
+          system: 'ens',
+          quorum: { k: 3, m: 2, achieved: true },
+        },
       });
+      expect(mockUrReverse).toHaveBeenCalledTimes(3);
+    });
+
+    test('surfaces conflicting reverse names when the RPC quorum disagrees', async () => {
+      const input = addr('1014');
+      mockUrReverse
+        .mockResolvedValueOnce(['alice.eth', RESOLVER, RESOLVER])
+        .mockResolvedValueOnce(['bob.eth', RESOLVER, RESOLVER])
+        .mockResolvedValueOnce(['carol.eth', RESOLVER, RESOLVER]);
+
+      const result = await resolveEnsReverse(input);
+
+      expect(result).toMatchObject({
+        success: false,
+        address: input.toLowerCase(),
+        system: 'ens',
+        reason: 'CONFLICT',
+        trust: {
+          level: 'conflict',
+          quorum: { k: 3, m: 2, achieved: false },
+        },
+      });
+      expect(result.groups).toHaveLength(3);
+      expect(mockUrReverse).toHaveBeenCalledTimes(3);
     });
 
     test('falls back to WNS reverse when ENS has no primary name', async () => {
@@ -859,8 +1034,8 @@ describe('ens-resolver', () => {
         system: 'wns',
       });
       expect(result.trust).toMatchObject({ level: 'verified', system: 'wns' });
-      expect(mockUrReverse).toHaveBeenCalledTimes(1);
-      expect(mockWnsReverseResolve).toHaveBeenCalledTimes(1);
+      expect(mockUrReverse).toHaveBeenCalledTimes(3);
+      expect(mockWnsReverseResolve).toHaveBeenCalledTimes(3);
       expect(mockWnsAddr).toHaveBeenCalledTimes(3);
     });
 
@@ -880,9 +1055,9 @@ describe('ens-resolver', () => {
         system: 'gns',
       });
       expect(result.trust).toMatchObject({ level: 'verified', system: 'gns' });
-      expect(mockUrReverse).toHaveBeenCalledTimes(1);
-      expect(mockWnsReverseResolve).toHaveBeenCalledTimes(1);
-      expect(mockGnsReverseResolve).toHaveBeenCalledTimes(1);
+      expect(mockUrReverse).toHaveBeenCalledTimes(3);
+      expect(mockWnsReverseResolve).toHaveBeenCalledTimes(3);
+      expect(mockGnsReverseResolve).toHaveBeenCalledTimes(3);
       expect(mockGnsAddr).toHaveBeenCalledTimes(3);
     });
 
@@ -903,7 +1078,7 @@ describe('ens-resolver', () => {
       });
       expect(result.name).toBeUndefined();
       expect(result.trust).toMatchObject({ level: 'verified', system: 'wns' });
-      expect(mockWnsReverseResolve).toHaveBeenCalledTimes(1);
+      expect(mockWnsReverseResolve).toHaveBeenCalledTimes(3);
       expect(mockWnsAddr).toHaveBeenCalledTimes(3);
     });
 
@@ -925,7 +1100,7 @@ describe('ens-resolver', () => {
       });
       expect(result.name).toBeUndefined();
       expect(result.trust).toMatchObject({ level: 'verified', system: 'gns' });
-      expect(mockGnsReverseResolve).toHaveBeenCalledTimes(1);
+      expect(mockGnsReverseResolve).toHaveBeenCalledTimes(3);
       expect(mockGnsAddr).toHaveBeenCalledTimes(3);
     });
 
@@ -940,12 +1115,12 @@ describe('ens-resolver', () => {
       try {
         await resolveEnsReverse(input);
         await resolveEnsReverse(input);
-        expect(mockWnsReverseResolve).toHaveBeenCalledTimes(1);
+        expect(mockWnsReverseResolve).toHaveBeenCalledTimes(3);
 
         now.mockReturnValue(1_061_000);
         await resolveEnsReverse(input);
 
-        expect(mockWnsReverseResolve).toHaveBeenCalledTimes(2);
+        expect(mockWnsReverseResolve).toHaveBeenCalledTimes(6);
       } finally {
         now.mockRestore();
       }
@@ -1011,13 +1186,13 @@ describe('ens-resolver', () => {
 
       mockUrReverse
         .mockRejectedValueOnce(providerError)
-        .mockResolvedValueOnce(['retry-reverse.eth', RESOLVER, RESOLVER]);
+        .mockResolvedValue(['retry-reverse.eth', RESOLVER, RESOLVER]);
 
       const result = await resolveEnsReverse(input);
 
       expect(result.success).toBe(true);
       expect(result.name).toBe('retry-reverse.eth');
-      expect(mockUrReverse).toHaveBeenCalledTimes(2);
+      expect(mockUrReverse).toHaveBeenCalledTimes(3);
     });
 
     test('caches successful verified results', async () => {
@@ -1027,7 +1202,7 @@ describe('ens-resolver', () => {
       await resolveEnsReverse(input);
       await resolveEnsReverse(input);
 
-      expect(mockUrReverse).toHaveBeenCalledTimes(1);
+      expect(mockUrReverse).toHaveBeenCalledTimes(3);
     });
 
     test('caches NO_REVERSE negative results too', async () => {
@@ -1037,7 +1212,7 @@ describe('ens-resolver', () => {
       await resolveEnsReverse(input);
       await resolveEnsReverse(input);
 
-      expect(mockUrReverse).toHaveBeenCalledTimes(1);
+      expect(mockUrReverse).toHaveBeenCalledTimes(3);
     });
 
     test('normalizes input address to lowercase for caching', async () => {
@@ -1048,7 +1223,28 @@ describe('ens-resolver', () => {
       await resolveEnsReverse(input.toLowerCase());
 
       // Second call hits the cache keyed on lowercase form.
+      expect(mockUrReverse).toHaveBeenCalledTimes(3);
+    });
+
+    test('direct reverse resolution only queries the selected custom RPC', async () => {
+      const input = addr('1013');
+      mockLoadSettings.mockReturnValue({
+        ...mockLoadSettings(),
+        enableEnsCustomRpc: true,
+        ensRpcUrl: 'https://user-rpc.example.com',
+        ensResolutionOrder: ['direct'],
+      });
+      mockUrReverse.mockResolvedValue(['direct.eth', RESOLVER, RESOLVER]);
+
+      const result = await resolveEnsReverse(input);
+
+      expect(result).toMatchObject({
+        success: true,
+        name: 'direct.eth',
+        trust: { level: 'user-configured' },
+      });
       expect(mockUrReverse).toHaveBeenCalledTimes(1);
+      expect(mockGetBlockNumber).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1094,6 +1290,101 @@ describe('ens-resolver', () => {
       await expect(
         universalResolverCall(provider, 'unregistered.eth', '0xbc1c58d1')
       ).rejects.toThrow('ResolverNotFound');
+    });
+  });
+
+  describe('CCIP at a pinned quorum block', () => {
+    const urAddress = '0xeEeEEEeE14D718C2B47D9923Deab1335E144EeEe';
+    const abi = ethers.AbiCoder.defaultAbiCoder();
+    const offchain = (sender = urAddress) => ({ data: '0x556f1830' + abi.encode(
+      ['address', 'string[]', 'bytes', 'bytes4', 'bytes'],
+      [sender, ['https://gateway.example/{data}'], '0xbeef', '0x12345678', '0xdead']
+    ).slice(2) });
+    beforeEach(() => {
+      mockCcipReadFetch.mockReset();
+      mockCcipReadFetch.mockResolvedValue('0xcafe');
+    });
+    test('verifies every callback at the original block and unwraps the UR response', async () => {
+      mockUrResolve.mockRejectedValue(offchain());
+      const provider = {
+        // Present, and deliberately never used: ethers' inherited
+        // implementation has no size cap and a 300s default timeout.
+        ccipReadFetch: jest.fn().mockResolvedValue('0xdeadbeef'),
+        call: jest.fn().mockRejectedValueOnce(offchain()).mockResolvedValue(
+          abi.encode(['bytes', 'address'], [abi.encode(['address'], [urAddress]), urAddress])
+        ),
+      };
+      const result = await universalResolverCall(provider, 'test.offchaindemo.eth', '0x1234', { blockTag: 12345 });
+      expect(result.resolverAddress).toBe(urAddress);
+      expect(mockCcipReadFetch).toHaveBeenCalledTimes(2);
+      expect(provider.ccipReadFetch).not.toHaveBeenCalled();
+      expect(mockCcipReadFetch.mock.calls[0][0]).toEqual({ to: urAddress });
+      expect(provider.call.mock.calls.every(([tx]) => tx.blockTag === 12345 && tx.enableCcipRead === false)).toBe(true);
+      expect(provider.call.mock.calls[0][0].data).toBe('0x12345678' + abi.encode(['bytes', 'bytes'], ['0xcafe', '0xdead']).slice(2));
+    });
+    test('rejects forged senders and bounds repeated lookups', async () => {
+      const provider = { ccipReadFetch: jest.fn().mockResolvedValue('0xcafe'), call: jest.fn().mockRejectedValue(offchain()) };
+      mockUrResolve.mockRejectedValue(offchain(ethers.ZeroAddress));
+      await expect(universalResolverCall(provider, 'test.eth', '0x', { blockTag: 123 })).rejects.toThrow('sender');
+      expect(mockCcipReadFetch).not.toHaveBeenCalled();
+      mockUrResolve.mockRejectedValue(offchain());
+      await expect(universalResolverCall(provider, 'test.eth', '0x', { blockTag: 123 })).rejects.toThrow('recursion');
+      expect(provider.call).toHaveBeenCalledTimes(10);
+    });
+    // A gateway that never answers must not hold a resolution open for
+    // ethers' 300s FetchRequest default — the shared helper aborts at 15s
+    // and the loop surfaces that as a failed resolution, not a hang.
+    test('surfaces an exhausted-gateway failure instead of stalling', async () => {
+      mockUrResolve.mockRejectedValue(offchain());
+      mockCcipReadFetch.mockRejectedValue(new Error('CCIP gateways unavailable or returned invalid data'));
+      const provider = { call: jest.fn() };
+      await expect(
+        universalResolverCall(provider, 'test.eth', '0x', { blockTag: 123 })
+      ).rejects.toThrow('CCIP gateways unavailable');
+      expect(provider.call).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ['quorum', 'timeout'], ['direct', 'timeout'],
+      ['quorum', 'rejection'], ['direct', 'rejection'],
+      ['quorum', 'callback-budget'], ['direct', 'callback-budget'],
+    ])('a gateway failure via %s (%s) leaves healthy RPCs available for another name', async (method, failure) => {
+      jest.useFakeTimers();
+      try {
+        mockLoadSettings.mockReturnValue({
+          ...mockLoadSettings(), ensResolutionMethod: method, ensResolutionOrder: [method],
+          ...(method === 'direct' ? { enableEnsCustomRpc: true, ensRpcUrl: TEST_PROVIDERS[0] } : {}),
+        });
+        mockUrResolve.mockRejectedValue(offchain());
+        mockProviderCall.mockImplementation(() => new Promise(() => {}));
+        const signals = [];
+        mockCcipReadFetch.mockImplementation((_tx, _data, _urls, signal) => {
+          signals.push(signal);
+          if (failure === 'rejection') {
+            return Promise.reject(Object.assign(new Error('CCIP gateway timeout'), { code: 'CCIP_GATEWAY_FAILED' }));
+          }
+          if (failure === 'callback-budget') {
+            return new Promise((resolve) => setTimeout(() => resolve('0xcafe'), 4500));
+          }
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(new Error('CCIP cancelled')));
+          });
+        });
+        const pending = resolveEnsContent('slow-gateway.eth').catch((error) => error);
+        await jest.advanceTimersByTimeAsync(5001);
+        expect(await pending).toBeInstanceOf(Error);
+        expect(signals.length).toBeGreaterThan(0);
+        expect(signals.every((signal) => signal?.aborted)).toBe(true);
+
+        // Do not reset provider health: an unrelated name must work at once,
+        // before the 60-second quarantine would have elapsed.
+        mockUrResolve.mockResolvedValue(urReturnsBytes(swarmContenthashFor('a'.repeat(64))));
+        const next = await resolveEnsContent('healthy-next.eth');
+        expect(next.type).toBe('ok');
+        expect((await resolveEnsContent('slow-gateway.eth')).type).toBe('ok');
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 
@@ -1160,6 +1451,595 @@ describe('ens-resolver', () => {
   // exist in the legacy single-provider flow: conflict, degraded K=1
   // unverified, user-configured fast-path labelling, block pinning.
   // --------------------------------------------------------------------
+  describe('experimental myotis path', () => {
+    const IPFS_V0 = 'QmW81r84Aihiqqi2Jw6nM1LnpeMfRCenRxtjwHNkXVkZYa';
+
+    const myotisUp = () => {
+      mockMyotisIsEnabled.mockImplementation(() => true);
+      mockMyotisIsReady.mockImplementation(() => true);
+    };
+
+    afterEach(() => {
+      mockMyotisIsEnabled.mockImplementation(() => false);
+      mockMyotisIsReady.mockImplementation(() => false);
+    });
+
+    test('serves verified contenthash from the local P2P node without touching RPC or colibri', async () => {
+      myotisUp();
+      mockMyotisResolveEnsRecord.mockResolvedValue({
+        status: 'ok',
+        verified: true,
+        blockNumber: 23456789,
+        dataHex: ipfsContenthashFor(IPFS_V0),
+      });
+
+      const result = await resolveEnsContent('myotis-ok.eth');
+
+      expect(result).toMatchObject({
+        type: 'ok',
+        codec: 'ipfs-ns',
+        protocol: 'ipfs',
+        uri: `ipfs://${IPFS_V0}`,
+      });
+      expect(result.trust).toMatchObject({
+        level: 'verified',
+        method: 'myotis',
+        block: 23456789,
+      });
+      expect(mockMyotisResolveEnsRecord).toHaveBeenCalledWith({
+        method: 'contenthash',
+        name: 'myotis-ok.eth',
+        coinType: 60n,
+      });
+      expect(mockUrResolve).not.toHaveBeenCalled();
+      expect(mockResolveViaColibri).not.toHaveBeenCalled();
+    });
+
+    test('serves verified ENS addr records through the same Myotis tier', async () => {
+      myotisUp();
+      const address = '0x1111111111111111111111111111111111111111';
+      mockMyotisResolveEnsRecord.mockResolvedValue({
+        status: 'ok',
+        verified: true,
+        blockNumber: 23456789,
+        addressHex: address,
+      });
+
+      const result = await resolveEnsAddress('myotis-addr.eth');
+
+      expect(result).toMatchObject({
+        success: true,
+        name: 'myotis-addr.eth',
+        address,
+        trust: { level: 'verified', method: 'myotis', block: 23456789 },
+      });
+      expect(mockMyotisResolveEnsRecord).toHaveBeenCalledWith({
+        method: 'addr',
+        name: 'myotis-addr.eth',
+        coinType: 60n,
+      });
+      expect(mockUrResolve).not.toHaveBeenCalled();
+    });
+
+    test('serves forward-verified ENS reverse records through Myotis', async () => {
+      myotisUp();
+      const address = '0x0000000000000000000000000000000000001201';
+      mockMyotisResolveEnsRecord.mockResolvedValue({
+        status: 'ok',
+        verified: true,
+        blockNumber: 23456789,
+        name: 'reverse-myotis.eth',
+      });
+
+      const result = await resolveEnsReverse(address);
+
+      expect(result).toMatchObject({
+        success: true,
+        address,
+        name: 'reverse-myotis.eth',
+        system: 'ens',
+        trust: { level: 'verified', method: 'myotis' },
+      });
+      expect(mockMyotisResolveEnsRecord).toHaveBeenCalledWith({
+        method: 'reverse',
+        addressHex: address,
+        coinType: 60n,
+      });
+      expect(mockUrReverse).not.toHaveBeenCalled();
+    });
+
+    test('accepts an optimistic beacon-verified reverse answer without duplicate fallback', async () => {
+      myotisUp();
+      const address = '0x0000000000000000000000000000000000001210';
+      mockLoadSettings.mockReturnValue({
+        ...mockLoadSettings(),
+        ensResolutionMethod: 'colibri',
+        ensResolutionOrder: ['myotis', 'colibri', 'quorum'],
+        ensPreferVerified: true,
+      });
+      mockMyotisResolveEnsRecord.mockResolvedValue({
+        status: 'ok',
+        verified: false,
+        blockNumber: 23456790,
+        name: 'optimistic.eth',
+      });
+      mockResolveReverseViaColibri.mockResolvedValue({ name: 'verified.eth' });
+
+      const result = await resolveEnsReverse(address);
+
+      expect(result).toMatchObject({
+        success: true,
+        name: 'optimistic.eth',
+        trust: { level: 'verified', method: 'myotis', finality: 'optimistic' },
+      });
+      expect(mockResolveReverseViaColibri).not.toHaveBeenCalled();
+      expect(mockUrReverse).not.toHaveBeenCalled();
+    });
+
+    test('accepts a complete optimistic Myotis reverse miss without repeating ENS remotely', async () => {
+      myotisUp();
+      const address = '0x0000000000000000000000000000000000001211';
+      mockLoadSettings.mockReturnValue({
+        ...mockLoadSettings(),
+        ensResolutionMethod: 'colibri',
+        ensResolutionOrder: ['myotis', 'colibri', 'quorum'],
+        ensPreferVerified: true,
+      });
+      mockMyotisResolveEnsRecord.mockResolvedValue({
+        status: 'noRecord',
+        verified: false,
+        blockNumber: 23456791,
+      });
+      mockMyotisEthCall.mockResolvedValue({
+        status: 'ok',
+        resultHex: actualEthers.AbiCoder.defaultAbiCoder().encode(['string'], ['']),
+      });
+
+      const result = await resolveEnsReverse(address);
+
+      expect(result).toMatchObject({
+        success: false,
+        reason: 'NO_REVERSE',
+        trust: { level: 'verified', method: 'myotis', finality: 'optimistic' },
+      });
+      expect(mockMyotisResolveEnsRecord).toHaveBeenCalledTimes(1);
+      expect(mockMyotisEthCall).toHaveBeenCalledTimes(2);
+      expect(mockResolveReverseViaColibri).not.toHaveBeenCalled();
+      expect(mockResolveViaColibri).not.toHaveBeenCalled();
+      expect(mockUrReverse).not.toHaveBeenCalled();
+    });
+
+    test('optimistic answers are verified while remaining explicitly non-finalized', async () => {
+      myotisUp();
+      mockMyotisResolveEnsRecord.mockResolvedValue({
+        status: 'ok',
+        verified: false,
+        blockNumber: 23456790,
+        dataHex: ipfsContenthashFor(IPFS_V0),
+      });
+
+      const result = await resolveEnsContent('myotis-peerhead.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust).toMatchObject({
+        level: 'verified',
+        method: 'myotis',
+        finality: 'optimistic',
+      });
+    });
+
+    test('does not repeat an optimistic Myotis answer through Colibri', async () => {
+      myotisUp();
+      mockLoadSettings.mockReturnValue({
+        ...mockLoadSettings(),
+        ensResolutionMethod: 'colibri',
+        ensResolutionOrder: ['myotis', 'colibri', 'quorum'],
+        ensPreferVerified: true,
+      });
+      mockMyotisResolveEnsRecord.mockResolvedValue({
+        status: 'ok',
+        verified: false,
+        blockNumber: 23456790,
+        dataHex: ipfsContenthashFor(IPFS_V0),
+      });
+      const result = await resolveEnsContent('prefer-verified.eth');
+
+      expect(mockMyotisResolveEnsRecord).toHaveBeenCalled();
+      expect(mockResolveViaColibri).not.toHaveBeenCalled();
+      expect(result.trust).toMatchObject({
+        level: 'verified',
+        method: 'myotis',
+        finality: 'optimistic',
+      });
+    });
+
+    test('honors custom method order and does not invoke lower-priority methods after success', async () => {
+      myotisUp();
+      mockLoadSettings.mockReturnValue({
+        ...mockLoadSettings(),
+        ensResolutionMethod: 'colibri',
+        ensResolutionOrder: ['colibri', 'myotis', 'quorum'],
+        ensPreferVerified: true,
+      });
+      const [resolvedData, resolverAddress] = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      mockResolveViaColibri.mockResolvedValue({ resolvedData, resolverAddress });
+
+      const result = await resolveEnsContent('colibri-first.eth');
+
+      expect(result.trust).toMatchObject({ level: 'verified', method: 'colibri' });
+      expect(mockMyotisResolveEnsRecord).not.toHaveBeenCalled();
+      expect(mockUrResolve).not.toHaveBeenCalled();
+    });
+
+    test('does not consult a later method after an optimistic verified answer', async () => {
+      myotisUp();
+      mockLoadSettings.mockReturnValue({
+        ...mockLoadSettings(),
+        ensResolutionMethod: 'colibri',
+        ensResolutionOrder: ['myotis', 'colibri'],
+        ensPreferVerified: true,
+      });
+      mockMyotisResolveEnsRecord.mockResolvedValue({
+        status: 'ok',
+        verified: false,
+        blockNumber: 23456790,
+        dataHex: ipfsContenthashFor(IPFS_V0),
+      });
+      const result = await resolveEnsContent('provisional-fallback.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust).toMatchObject({
+        level: 'verified',
+        method: 'myotis',
+        finality: 'optimistic',
+      });
+      expect(mockResolveViaColibri).not.toHaveBeenCalled();
+      expect(mockUrResolve).not.toHaveBeenCalled();
+    });
+
+    test('excludes disabled methods from resolution entirely', async () => {
+      myotisUp();
+      mockLoadSettings.mockReturnValue({
+        ...mockLoadSettings(),
+        ensResolutionOrder: ['quorum'],
+        ensPreferVerified: true,
+      });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
+
+      const result = await resolveEnsContent('quorum-only.eth');
+
+      expect(result.type).toBe('ok');
+      expect(mockMyotisResolveEnsRecord).not.toHaveBeenCalled();
+      expect(mockResolveViaColibri).not.toHaveBeenCalled();
+      expect(mockUrResolve).toHaveBeenCalled();
+    });
+
+    test('verified absence maps to EMPTY_CONTENTHASH', async () => {
+      myotisUp();
+      mockMyotisResolveEnsRecord.mockResolvedValue({
+        status: 'noRecord',
+        verified: true,
+        blockNumber: 23456791,
+      });
+
+      const result = await resolveEnsContent('myotis-norecord.eth');
+
+      expect(result).toMatchObject({ type: 'not_found', reason: 'EMPTY_CONTENTHASH' });
+      expect(result.trust).toMatchObject({ level: 'verified', method: 'myotis' });
+      expect(mockUrResolve).not.toHaveBeenCalled();
+    });
+
+    test('node not synced yet: silent fall-through to the quorum path', async () => {
+      mockMyotisIsEnabled.mockImplementation(() => true);
+      mockMyotisIsReady.mockImplementation(() => false);
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
+      const infoSpy = jest.spyOn(resolverLog, 'info').mockImplementation(() => {});
+
+      const result = await resolveEnsContent('myotis-notready.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust.method).not.toBe('myotis');
+      expect(mockMyotisResolveEnsRecord).not.toHaveBeenCalled();
+      expect(mockUrResolve).toHaveBeenCalled();
+      expect(infoSpy).toHaveBeenCalledWith(
+        '[ens] policy name=myotis-notready.eth kind=content ' +
+        'order=[myotis,quorum] preferVerified=false'
+      );
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /^\[ens\] method=myotis name=myotis-notready\.eth kind=content outcome=SKIP trust=none action=continue reason=not-ready durationMs=\d+$/
+        )
+      );
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /^\[ens\] method=quorum name=myotis-notready\.eth kind=content outcome=DATA trust=verified action=accept reason=none durationMs=\d+$/
+        )
+      );
+      infoSpy.mockRestore();
+    });
+
+    test('discards a Myotis read interrupted by shutdown and resolves once through Colibri', async () => {
+      let ready = true;
+      let epoch = 1;
+      let finishMyotis;
+      mockMyotisIsEnabled.mockImplementation(() => true);
+      mockMyotisIsReady.mockImplementation(() => ready);
+      mockMyotisGetAvailabilityEpoch.mockImplementation(() => epoch);
+      mockMyotisResolveEnsRecord.mockImplementation(() => new Promise((resolve) => {
+        finishMyotis = resolve;
+      }));
+      withColibri({
+        ensResolutionOrder: ['myotis', 'colibri'],
+        ensPreferVerified: true,
+      });
+      const [resolvedData, resolverAddress] = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      mockResolveViaColibri.mockResolvedValue({ resolvedData, resolverAddress });
+
+      const pending = resolveEnsContent('shutdown-race.eth');
+      await Promise.resolve();
+      expect(mockMyotisResolveEnsRecord).toHaveBeenCalledTimes(1);
+
+      ready = false;
+      epoch = 2;
+      for (const cb of mockMyotisAvailabilityListeners) {
+        cb({ chainId: 1, ready: false, reason: 'stopping', epoch });
+      }
+      finishMyotis({
+        status: 'ok',
+        verified: true,
+        blockNumber: 23456801,
+        dataHex: ipfsContenthashFor(IPFS_V0),
+      });
+
+      const result = await pending;
+
+      expect(result).toMatchObject({
+        type: 'ok',
+        uri: `ipfs://${IPFS_V0}`,
+        trust: { level: 'verified', method: 'colibri' },
+      });
+      expect(mockResolveViaColibri).toHaveBeenCalledTimes(1);
+    });
+
+    test('unavailable transition evicts a cached Myotis answer before the next lookup', async () => {
+      let ready = true;
+      let epoch = 1;
+      mockMyotisIsEnabled.mockImplementation(() => true);
+      mockMyotisIsReady.mockImplementation(() => ready);
+      mockMyotisGetAvailabilityEpoch.mockImplementation(() => epoch);
+      mockMyotisResolveEnsRecord.mockResolvedValue({
+        status: 'ok',
+        verified: true,
+        blockNumber: 23456802,
+        dataHex: ipfsContenthashFor(IPFS_V0),
+      });
+
+      const first = await resolveEnsContent('shutdown-cache.eth');
+      expect(first.trust.method).toBe('myotis');
+
+      ready = false;
+      epoch = 2;
+      for (const cb of mockMyotisAvailabilityListeners) {
+        cb({ chainId: 1, ready: false, reason: 'stopping', epoch });
+      }
+      withColibri({
+        ensResolutionOrder: ['myotis', 'colibri'],
+        ensPreferVerified: true,
+      });
+      const [resolvedData, resolverAddress] = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      mockResolveViaColibri.mockResolvedValue({ resolvedData, resolverAddress });
+
+      const second = await resolveEnsContent('shutdown-cache.eth');
+
+      expect(second.trust.method).toBe('colibri');
+      expect(mockResolveViaColibri).toHaveBeenCalledTimes(1);
+    });
+
+    test('engine failure falls through to the quorum path', async () => {
+      myotisUp();
+      mockMyotisResolveEnsRecord.mockRejectedValue(new Error('no snap peer'));
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
+
+      const result = await resolveEnsContent('myotis-enginefail.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust.method).not.toBe('myotis');
+      expect(mockUrResolve).toHaveBeenCalled();
+    });
+
+    test('ready transition sweeps cached content, address, and reverse fallback answers', async () => {
+      // 1. Node syncing: RPC paths serve and cache every lookup kind.
+      mockMyotisIsEnabled.mockImplementation(() => true);
+      mockMyotisIsReady.mockImplementation(() => false);
+      const address = '0x0000000000000000000000000000000000001203';
+      mockUrResolve.mockImplementation((_name, callData) =>
+        String(callData).startsWith(ADDR_SELECTOR)
+          ? urReturnsAddress(address)
+          : urReturnsBytes(ipfsContenthashFor(IPFS_V0))
+      );
+      mockUrReverse.mockResolvedValue(['myotis-overtake-reverse.eth']);
+      const firstContent = await resolveEnsContent('myotis-overtake.eth');
+      const firstAddress = await resolveEnsAddress('myotis-overtake-addr.eth');
+      const firstReverse = await resolveEnsReverse(address);
+      expect(firstContent.trust.method).not.toBe('myotis');
+      expect(firstAddress.trust.method).not.toBe('myotis');
+      expect(firstReverse.trust).toMatchObject({
+        level: 'verified',
+        quorum: { k: 3, m: 2, achieved: true },
+      });
+
+      // 2. Node becomes ready — but the cached fallback answers still win…
+      mockMyotisIsReady.mockImplementation(() => true);
+      mockMyotisResolveEnsRecord.mockImplementation(async (params) => {
+        if (params.method === 'contenthash') {
+          return {
+            status: 'ok',
+            verified: true,
+            blockNumber: 23456799,
+            dataHex: ipfsContenthashFor(IPFS_V0),
+          };
+        }
+        if (params.method === 'addr') {
+          return { status: 'ok', verified: true, blockNumber: 23456799, addressHex: address };
+        }
+        return {
+          status: 'ok',
+          verified: true,
+          blockNumber: 23456799,
+          name: 'myotis-overtake-reverse.eth',
+        };
+      });
+      expect((await resolveEnsContent('myotis-overtake.eth')).trust.method).not.toBe('myotis');
+      expect((await resolveEnsAddress('myotis-overtake-addr.eth')).trust.method).not.toBe('myotis');
+      expect((await resolveEnsReverse(address)).trust.method).not.toBe('myotis');
+
+      // 3. …until the ready transition sweeps all three caches.
+      expect(mockMyotisAvailabilityListeners.length).toBeGreaterThan(0);
+      for (const cb of mockMyotisAvailabilityListeners) {
+        cb({ chainId: 1, ready: true, reason: 'ready', epoch: 1 });
+      }
+      expect((await resolveEnsContent('myotis-overtake.eth')).trust).toMatchObject({
+        level: 'verified',
+        method: 'myotis',
+      });
+      expect((await resolveEnsAddress('myotis-overtake-addr.eth')).trust).toMatchObject({
+        level: 'verified',
+        method: 'myotis',
+      });
+      expect((await resolveEnsReverse(address)).trust).toMatchObject({
+        level: 'verified',
+        method: 'myotis',
+      });
+    });
+
+    test('resolves WNS content through Myotis generic verified eth_call', async () => {
+      myotisUp();
+      mockMyotisEthCall.mockResolvedValue({
+        status: 'ok',
+        resultHex: actualEthers.AbiCoder.defaultAbiCoder().encode(
+          ['bytes'],
+          [ipfsContenthashFor(IPFS_V0)]
+        ),
+      });
+
+      const result = await resolveEnsContent('myotis-wns.wei');
+
+      expect(result).toMatchObject({
+        type: 'ok',
+        system: 'wns',
+        uri: `ipfs://${IPFS_V0}`,
+        trust: {
+          level: 'verified',
+          method: 'myotis',
+          system: 'wns',
+          finality: 'optimistic',
+        },
+      });
+      expect(mockMyotisEthCall.mock.calls[0][0].to.toLowerCase()).toBe(WNS_ADDRESS);
+      expect(mockMyotisEthCall.mock.calls[0][0].block).toBe('latest');
+      expect(mockWnsContenthash).not.toHaveBeenCalled();
+    });
+
+    test('resolves GNS addr records through Myotis generic verified eth_call', async () => {
+      myotisUp();
+      const address = '0x3333333333333333333333333333333333333333';
+      mockMyotisEthCall.mockResolvedValue({
+        status: 'ok',
+        resultHex: actualEthers.AbiCoder.defaultAbiCoder().encode(['address'], [address]),
+      });
+
+      const result = await resolveEnsAddress('myotis-gns.gwei');
+
+      expect(result).toMatchObject({
+        success: true,
+        system: 'gns',
+        address,
+        trust: {
+          level: 'verified',
+          method: 'myotis',
+          system: 'gns',
+          finality: 'optimistic',
+        },
+      });
+      expect(mockMyotisEthCall.mock.calls[0][0].to.toLowerCase()).toBe(GNS_ADDRESS);
+      expect(mockMyotisEthCall.mock.calls[0][0].block).toBe('latest');
+      expect(mockGnsAddr).not.toHaveBeenCalled();
+    });
+
+    test('forward-verifies WNS reverse claims through Myotis contract calls', async () => {
+      myotisUp();
+      const address = '0x0000000000000000000000000000000000001202';
+      mockMyotisResolveEnsRecord.mockResolvedValue({
+        status: 'noRecord',
+        verified: true,
+        blockNumber: 23456794,
+      });
+      mockMyotisEthCall
+        .mockResolvedValueOnce({
+          status: 'ok',
+          resultHex: actualEthers.AbiCoder.defaultAbiCoder().encode(['string'], ['alice.wei']),
+        })
+        .mockResolvedValueOnce({
+          status: 'ok',
+          resultHex: actualEthers.AbiCoder.defaultAbiCoder().encode(['address'], [address]),
+        });
+
+      const result = await resolveEnsReverse(address);
+
+      expect(result).toMatchObject({
+        success: true,
+        name: 'alice.wei',
+        system: 'wns',
+        trust: {
+          level: 'verified',
+          method: 'myotis',
+          system: 'wns',
+          finality: 'optimistic',
+        },
+      });
+      expect(mockMyotisEthCall).toHaveBeenCalledTimes(2);
+      expect(mockUrReverse).not.toHaveBeenCalled();
+      expect(mockWnsReverseResolve).not.toHaveBeenCalled();
+    });
+
+    test('rejects a WNS reverse claim that does not forward-resolve through Myotis', async () => {
+      myotisUp();
+      const address = '0x0000000000000000000000000000000000001204';
+      mockMyotisResolveEnsRecord.mockResolvedValue({
+        status: 'noRecord',
+        verified: true,
+        blockNumber: 23456795,
+      });
+      mockMyotisEthCall
+        .mockResolvedValueOnce({
+          status: 'ok',
+          resultHex: actualEthers.AbiCoder.defaultAbiCoder().encode(['string'], ['spoof.wei']),
+        })
+        .mockResolvedValueOnce({
+          status: 'ok',
+          resultHex: actualEthers.AbiCoder.defaultAbiCoder().encode(
+            ['address'],
+            ['0x9999999999999999999999999999999999999999']
+          ),
+        })
+        .mockResolvedValueOnce({
+          status: 'ok',
+          resultHex: actualEthers.AbiCoder.defaultAbiCoder().encode(['string'], ['']),
+        });
+
+      const result = await resolveEnsReverse(address);
+
+      expect(result).toMatchObject({
+        success: false,
+        reason: 'UNVERIFIED',
+        claimedName: 'spoof.wei',
+        system: 'wns',
+        trust: { level: 'verified', method: 'myotis', finality: 'optimistic' },
+      });
+      expect(mockUrReverse).not.toHaveBeenCalled();
+    });
+  });
+
   describe('consensus quorum', () => {
     const IPFS_HASH = 'QmW81r84Aihiqqi2Jw6nM1LnpeMfRCenRxtjwHNkXVkZYa';
 
@@ -2157,7 +3037,7 @@ describe('ens-resolver', () => {
       expect(mockUrResolve).not.toHaveBeenCalled();
     });
 
-    test('CALL_EXCEPTION (verified revert, unknown selector) buckets as NO_CONTENTHASH', async () => {
+    test('proved resolver errors fall through instead of becoming absent records', async () => {
       withColibri();
       const err = Object.assign(new Error('reverted: custom resolver error'), {
         code: 'CALL_EXCEPTION',
@@ -2165,20 +3045,26 @@ describe('ens-resolver', () => {
       });
       mockResolveViaColibri.mockRejectedValue(err);
 
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
       const result = await resolveEnsContent('empty-record.eth');
 
-      expect(result.type).toBe('not_found');
-      expect(result.trust.method).toBe('colibri');
+      expect(result.type).toBe('ok');
+      expect(result.trust.method).not.toBe('colibri');
+      expect(mockUrResolve).toHaveBeenCalled();
     });
 
     test('CALL_EXCEPTION without revert data falls through to public RPC quorum', async () => {
       withColibri();
-      const err = Object.assign(new Error('missing response from Colibri prover'), {
+      const err = Object.assign(new Error(
+        'missing revert data transaction={ data: "0x' + 'ab'.repeat(200) + '" }'
+      ), {
         code: 'CALL_EXCEPTION',
-        info: { error: { code: -32603, message: 'no response' } },
+        shortMessage: 'missing revert data',
+        info: { error: { code: -32603, message: 'no response from prover' } },
       });
       mockResolveViaColibri.mockRejectedValue(err);
       mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
+      const warnSpy = jest.spyOn(resolverLog, 'warn').mockImplementation(() => {});
 
       const result = await resolveEnsContent('prover-down.eth');
 
@@ -2187,6 +3073,13 @@ describe('ens-resolver', () => {
       expect(mockUrResolve).toHaveBeenCalled();
       expect(result.trust.method).not.toBe('colibri');
       expect(result.trust.quorum).toEqual({ k: 3, m: 2, achieved: true });
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[ens] colibri-fallback name=prover-down.eth kind=content ' +
+        'error="missing revert data" code=CALL_EXCEPTION rpcCode=-32603 ' +
+        'rpcMessage="no response from prover" revert=none'
+      );
+      expect(warnSpy.mock.calls.flat().join(' ')).not.toContain('abababababababab');
+      warnSpy.mockRestore();
     });
 
     test('non-revert error falls through to the quorum path by default', async () => {
@@ -2204,7 +3097,7 @@ describe('ens-resolver', () => {
       expect(result.trust.quorum).toEqual({ k: 3, m: 2, achieved: true });
     });
 
-    test('default ensResolutionMethod=quorum leaves the legacy path untouched (regression)', async () => {
+    test('default ensResolutionMethod=quorum bypasses Colibri (regression)', async () => {
       // Don't call withColibri — defaults to 'quorum'.
       mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
 
@@ -2237,7 +3130,7 @@ describe('ens-resolver', () => {
     });
 
     test('no primary set surfaces as NO_REVERSE with trust attached', async () => {
-      withColibri();
+      withColibri({ ensResolutionOrder: ['colibri'] });
       mockResolveReverseViaColibri.mockResolvedValue({ name: '' });
 
       const result = await resolveEnsReverse(ADDR);
@@ -2245,6 +3138,41 @@ describe('ens-resolver', () => {
       expect(result.success).toBe(false);
       expect(result.reason).toBe('NO_REVERSE');
       expect(result.trust.method).toBe('colibri');
+      expect(mockResolveViaColibri).toHaveBeenCalledTimes(2);
+      expect(mockResolveViaColibri.mock.calls.map(([name]) => name)).toEqual([
+        'reverse.wei',
+        'reverse.gwei',
+      ]);
+      expect(mockGetBlockNumber).not.toHaveBeenCalled();
+      expect(mockUrReverse).not.toHaveBeenCalled();
+      expect(mockWnsReverseResolve).not.toHaveBeenCalled();
+      expect(mockGnsReverseResolve).not.toHaveBeenCalled();
+    });
+
+    test('resolves and forward-verifies WNS through Colibri without public RPC', async () => {
+      withColibri();
+      mockResolveReverseViaColibri.mockResolvedValue({ name: '' });
+      mockResolveViaColibri.mockImplementation(async (name) => {
+        const resolvedData = name === 'reverse.wei'
+          ? actualEthers.AbiCoder.defaultAbiCoder().encode(['string'], ['alice.wei'])
+          : actualEthers.AbiCoder.defaultAbiCoder().encode(['address'], [ADDR]);
+        return { resolvedData, resolverAddress: WNS_ADDRESS };
+      });
+
+      const result = await resolveEnsReverse(ADDR);
+
+      expect(result).toMatchObject({
+        success: true,
+        address: ADDR,
+        name: 'alice.wei',
+        system: 'wns',
+        trust: { level: 'verified', method: 'colibri', system: 'wns' },
+      });
+      expect(mockResolveViaColibri).toHaveBeenCalledTimes(2);
+      expect(mockGetBlockNumber).not.toHaveBeenCalled();
+      expect(mockUrReverse).not.toHaveBeenCalled();
+      expect(mockWnsReverseResolve).not.toHaveBeenCalled();
+      expect(mockWnsAddr).not.toHaveBeenCalled();
     });
 
     test('ResolverNotFound surfaces as NO_REVERSE (no record at all)', async () => {
@@ -2279,6 +3207,43 @@ describe('ens-resolver', () => {
       expect(result.trust.level).toBe('verified');
     });
 
+    test('logs why an unverified Colibri reverse result continues to quorum', async () => {
+      withColibri({
+        ensResolutionOrder: ['myotis', 'colibri', 'quorum'],
+        ensPreferVerified: true,
+      });
+      const infoSpy = jest.spyOn(resolverLog, 'info').mockImplementation(() => {});
+      const err = Object.assign(new Error('ReverseAddressMismatch'), {
+        data: '0xef9c03ce',
+      });
+      mockResolveReverseViaColibri.mockRejectedValue(err);
+      mockUrReverse.mockResolvedValue(['']);
+
+      try {
+        const result = await resolveEnsReverse(ADDR);
+
+        expect(result).toMatchObject({ success: false, reason: 'NO_REVERSE' });
+        expect(infoSpy).toHaveBeenCalledWith(
+          `[ens] reverse policy address=${ADDR} order=[myotis,colibri,quorum] ` +
+          'preferVerified=true'
+        );
+        expect(infoSpy).toHaveBeenCalledWith(
+          `[ens] reverse method=myotis address=${ADDR} outcome=UNAVAILABLE ` +
+          'system=none trust=none action=continue reason=disabled'
+        );
+        expect(infoSpy).toHaveBeenCalledWith(
+          `[ens] reverse method=colibri address=${ADDR} outcome=UNVERIFIED ` +
+          'system=ens trust=verified action=continue reason=prefer-verified'
+        );
+        expect(infoSpy).toHaveBeenCalledWith(
+          `[ens] reverse method=quorum address=${ADDR} outcome=NO_REVERSE ` +
+          'system=ens,wns,gns trust=verified action=accept'
+        );
+      } finally {
+        infoSpy.mockRestore();
+      }
+    });
+
     test('UNVERIFIED carries the decoded claimedName from revert data', async () => {
       withColibri();
       // ReverseAddressMismatch(string,bytes) — claimed name + address bytes.
@@ -2310,7 +3275,7 @@ describe('ens-resolver', () => {
       expect(result.claimedName).toBeNull();
     });
 
-    test('non-revert error falls through to the legacy path by default', async () => {
+    test('non-revert error falls through to the configured quorum path', async () => {
       withColibri();
       mockResolveReverseViaColibri.mockRejectedValue(new Error('prover unreachable'));
       mockUrReverse.mockResolvedValue(['legacy.eth']);
@@ -2319,20 +3284,26 @@ describe('ens-resolver', () => {
 
       expect(result.success).toBe(true);
       expect(result.name).toBe('legacy.eth');
-      // No trust field on the legacy path — additive design.
-      expect(result.trust).toBeUndefined();
-      expect(mockUrReverse).toHaveBeenCalled();
+      expect(result.trust).toMatchObject({
+        level: 'verified',
+        quorum: { k: 3, m: 2, achieved: true },
+      });
+      expect(mockUrReverse).toHaveBeenCalledTimes(3);
     });
 
-    test('default ensResolutionMethod=quorum leaves the legacy reverse path untouched', async () => {
+    test('default ensResolutionMethod=quorum queries the configured provider quorum', async () => {
       // Don't call withColibri — defaults to 'quorum'.
       mockUrReverse.mockResolvedValue(['legacy.eth']);
 
       const result = await resolveEnsReverse(ADDR);
 
       expect(mockResolveReverseViaColibri).not.toHaveBeenCalled();
-      expect(mockUrReverse).toHaveBeenCalled();
+      expect(mockUrReverse).toHaveBeenCalledTimes(3);
       expect(result.name).toBe('legacy.eth');
+      expect(result.trust).toMatchObject({
+        level: 'verified',
+        quorum: { k: 3, m: 2, achieved: true },
+      });
     });
 
     test('invalid address rejects before either path is hit', async () => {
@@ -2343,5 +3314,166 @@ describe('ens-resolver', () => {
       expect(mockResolveReverseViaColibri).not.toHaveBeenCalled();
       expect(mockUrReverse).not.toHaveBeenCalled();
     });
+  });
+});
+
+// PRIVATE MODE GUARD (name logging). log.info/warn/error land in the
+// persistent <userData>/logs/main.log, which outlives the private window
+// and the app — so a name resolved for a private tab (and the target it
+// resolved to) must never appear there, while normal browsing keeps the
+// full diagnostic line.
+describe('ens-resolver private-window logging', () => {
+  const IPFS_V0 = 'QmW81r84Aihiqqi2Jw6nM1LnpeMfRCenRxtjwHNkXVkZYa';
+  const SECRET = 'whistleblower-site.eth';
+  const RESOLVER_ADDR = '0x0000000000000000000000000000000000001234';
+
+  function handlerFor(channel) {
+    const entry = ipcMain.handle.mock.calls.find(([name]) => name === channel);
+    if (!entry) throw new Error(`no handler registered for ${channel}`);
+    return entry[1];
+  }
+
+  // Every string the resolver logged, across all levels.
+  function loggedText() {
+    return [mockLog.info, mockLog.warn, mockLog.error]
+      .flatMap((fn) => fn.mock.calls)
+      .map((call) => call.map((arg) => String(arg?.message || arg)).join(' '))
+      .join('\n');
+  }
+
+  const privateEvent = { sender: { isPrivate: true } };
+  const normalEvent = { sender: { isPrivate: false } };
+
+  beforeEach(() => {
+    clearEnsResolutionCaches();
+    ipcMain.handle.mockClear();
+    registerEnsIpc();
+    mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
+  });
+
+  test('a private ENS_RESOLVE logs neither the name nor the resolved target', async () => {
+    const result = await handlerFor(IPC.ENS_RESOLVE)(privateEvent, { name: SECRET });
+
+    // The resolution itself is unchanged — only the logging is redacted.
+    expect(result).toMatchObject({ type: 'ok', name: SECRET, uri: `ipfs://${IPFS_V0}` });
+    const text = loggedText();
+    expect(text).not.toContain(SECRET);
+    expect(text).not.toContain(IPFS_V0);
+    // The line is still emitted, so the log still shows a resolve happened.
+    expect(text).toContain('[ens] Resolved: <private>');
+  });
+
+  test('a normal ENS_RESOLVE keeps the full diagnostic line', async () => {
+    await handlerFor(IPC.ENS_RESOLVE)(normalEvent, { name: 'public-site.eth' });
+
+    const text = loggedText();
+    expect(text).toContain('public-site.eth');
+    expect(text).toContain(IPFS_V0);
+  });
+
+  test('the redaction covers the consensus wave, not just the final line', async () => {
+    await handlerFor(IPC.ENS_RESOLVE)(privateEvent, { name: SECRET });
+    const consensusLines = mockLog.info.mock.calls
+      .map((call) => call.join(' '))
+      .filter((line) => line.includes('[ens] consensus kind='));
+    expect(consensusLines.length).toBeGreaterThan(0);
+    for (const line of consensusLines) {
+      expect(line).toContain('name=<private>');
+      expect(line).not.toContain(SECRET);
+    }
+  });
+
+  test('a private address lookup and cache invalidation stay out of the log', async () => {
+    mockUrResolve.mockResolvedValue(
+      urReturnsAddress('0x1111111111111111111111111111111111111111')
+    );
+    await handlerFor(IPC.ENS_RESOLVE_ADDRESS)(privateEvent, { name: SECRET });
+    expect(loggedText()).not.toContain(SECRET);
+
+    // Populate the content cache from a normal window, then invalidate it
+    // from the private one: the eviction line must not name it either.
+    mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
+    await handlerFor(IPC.ENS_RESOLVE)(normalEvent, { name: SECRET });
+    mockLog.info.mockClear();
+    await handlerFor(IPC.ENS_INVALIDATE_CONTENT)(privateEvent, { name: SECRET });
+    const text = loggedText();
+    expect(text).toContain('content cache invalidated for <private>');
+    expect(text).not.toContain(SECRET);
+  });
+
+  test('a resolution that throws logs no name either', async () => {
+    // An invalid label throws out of ens_normalize, whose message quotes
+    // the offending name — the catch-all log line must not pass it through.
+    const result = await handlerFor(IPC.ENS_RESOLVE)(privateEvent, {
+      name: 'invalid_label.eth',
+    });
+
+    expect(result.reason).toBe('RESOLUTION_ERROR');
+    expect(mockLog.error).toHaveBeenCalled();
+    expect(loggedText()).not.toContain('invalid_label');
+  });
+
+  // The policy loop and the reverse dispatcher log the name/address on every
+  // method hop, not just at the final line. Those sites are newer than the
+  // redaction guard, so they get their own assertions — a regression there
+  // would leak a private lookup into main.log while every other test passed.
+  test('a private reverse lookup keeps the address out of every policy line', async () => {
+    const SECRET_ADDR = '0x00000000000000000000000000000000000019a1';
+    mockUrReverse.mockResolvedValue([SECRET, RESOLVER_ADDR, RESOLVER_ADDR]);
+
+    const result = await handlerFor(IPC.ENS_RESOLVE_REVERSE)(privateEvent, {
+      address: SECRET_ADDR,
+    });
+
+    expect(result).toMatchObject({ success: true, name: SECRET });
+    const text = loggedText();
+    expect(text).not.toContain(SECRET_ADDR);
+    expect(text).not.toContain(SECRET);
+    // The per-method reverse lines are still emitted, just redacted.
+    const reverseLines = mockLog.info.mock.calls
+      .map((call) => call.join(' '))
+      .filter((line) => line.includes('[ens] reverse '));
+    expect(reverseLines.length).toBeGreaterThan(0);
+    for (const line of reverseLines) {
+      expect(line).toContain('address=<private>');
+    }
+  });
+
+  test('a private myotis-served resolve redacts the per-method policy lines', async () => {
+    mockMyotisIsEnabled.mockImplementation(() => true);
+    mockMyotisIsReady.mockImplementation(() => true);
+    mockMyotisResolveEnsRecord.mockResolvedValue({
+      status: 'ok',
+      verified: true,
+      blockNumber: 23456789,
+      dataHex: ipfsContenthashFor(IPFS_V0),
+    });
+
+    try {
+      const result = await handlerFor(IPC.ENS_RESOLVE)(privateEvent, { name: SECRET });
+
+      expect(result).toMatchObject({
+        type: 'ok',
+        trust: { level: 'verified', method: 'myotis' },
+      });
+      const text = loggedText();
+      expect(text).not.toContain(SECRET);
+      expect(text).not.toContain(IPFS_V0);
+      // The myotis hop is still accounted for in the log, name redacted.
+      expect(text).toContain('[ens] policy name=<private>');
+      expect(text).toContain('[ens] method=myotis name=<private>');
+    } finally {
+      mockMyotisIsEnabled.mockImplementation(() => false);
+      mockMyotisIsReady.mockImplementation(() => false);
+    }
+  });
+
+  test('a private resolve does not redact a later normal resolve', async () => {
+    await handlerFor(IPC.ENS_RESOLVE)(privateEvent, { name: SECRET });
+    clearEnsResolutionCaches();
+    mockLog.info.mockClear();
+
+    await handlerFor(IPC.ENS_RESOLVE)(normalEvent, { name: 'public-site.eth' });
+    expect(loggedText()).toContain('[ens] Resolved: public-site.eth');
   });
 });

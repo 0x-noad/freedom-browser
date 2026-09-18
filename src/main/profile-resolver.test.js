@@ -54,6 +54,7 @@ describe('profile resolver', () => {
     expect(fs.existsSync(path.join(userDataDir, PROFILE_CATALOG_LOCK_TARGET))).toBe(true);
     expect(fs.existsSync(path.join(userDataDir, 'profile.json'))).toBe(true);
     expect(profile.metadata.nodes.bee.apiPort).toBe(11633);
+    expect(profile.metadata.nodes.tor.socksPort).toBe(19150);
   });
 
   test('resolves named packaged profiles under Profiles and creates the default entry', () => {
@@ -70,6 +71,7 @@ describe('profile resolver', () => {
     expect(profile.id).toBe('work');
     expect(profile.userDataDir).toBe(path.join(userDataDir, 'Profiles', 'work'));
     expect(profile.metadata.nodes.bee.apiPort).toBe(11634);
+    expect(profile.metadata.nodes.tor.socksPort).toBe(19151);
 
     const catalog = JSON.parse(
       fs.readFileSync(path.join(userDataDir, 'profile-registry.json'), 'utf-8')
@@ -202,6 +204,7 @@ describe('profile resolver', () => {
     expect(profile.appRoot).toBe(appRoot);
     expect(profile.userDataDir).toBe(path.join(appRoot, 'Profiles', 'default'));
     expect(profile.metadata.nodes.bee.apiPort).toBe(21633 + offset);
+    expect(profile.metadata.nodes.tor.socksPort).toBe(29150 + offset);
   });
 
   test('uses FREEDOM_DEV_HOME as a full dev home override', () => {
@@ -321,8 +324,8 @@ describe('profile resolver', () => {
     });
 
     updateActiveProfileNodeConfig('ipfs', {
-      mode: 'disabled',
-      externalApi: 'http://127.0.0.1:5001',
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
     });
 
     const metadata = JSON.parse(
@@ -333,18 +336,14 @@ describe('profile resolver', () => {
     );
     const record = catalog.profiles.find((entry) => entry.id === 'work');
 
-    expect(metadata.nodes.ipfs).toEqual({
-      mode: 'disabled',
+    const expectedIpfs = {
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
       backend: 'freedom-ipfs',
-    });
-    expect(record.nodes.ipfs).toEqual({
-      mode: 'disabled',
-      backend: 'freedom-ipfs',
-    });
-    expect(getActiveProfile().metadata.nodes.ipfs).toEqual({
-      mode: 'disabled',
-      backend: 'freedom-ipfs',
-    });
+    };
+    expect(metadata.nodes.ipfs).toEqual(expectedIpfs);
+    expect(record.nodes.ipfs).toEqual(expectedIpfs);
+    expect(getActiveProfile().metadata.nodes.ipfs).toEqual(expectedIpfs);
   });
 
   test('creates, lists, and renames catalog profiles for the active app root', () => {
@@ -371,6 +370,7 @@ describe('profile resolver', () => {
     expect(created.record.id).toBe('work-profile');
     expect(created.metadata.displayName).toBe('Work Profile');
     expect(created.metadata.nodes.bee.apiPort).toBe(11634);
+    expect(created.metadata.nodes.tor.socksPort).toBe(19151);
 
     const profiles = listProfilesForActiveApp();
     expect(profiles.map((profile) => profile.id)).toEqual(['default', 'work-profile']);
@@ -453,6 +453,10 @@ describe('profile resolver', () => {
       mode: 'external',
       apiPort: 11640,
       externalApi: 'http://127.0.0.1:1633',
+    });
+    expect(imported.metadata.nodes.tor).toMatchObject({
+      mode: 'managed',
+      socksPort: 19157,
     });
 
     const afterImport = listProfilesForActiveApp();

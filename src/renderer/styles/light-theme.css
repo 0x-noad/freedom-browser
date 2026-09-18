@@ -24,6 +24,10 @@
   background: rgba(0, 0, 0, 0.1);
 }
 
+[data-theme='light'] .tab-audio:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
 [data-theme='light'] .icon-btn:hover,
 [data-theme='light'] .menu-button:hover,
 [data-theme='light'] .menu-button[aria-expanded='true'] {
@@ -37,8 +41,6 @@
 
 [data-theme='light'] .address-input:focus {
   background-color: #ffffff;
-  border-color: transparent;
-  box-shadow: none;
 }
 
 [data-theme='light'] .autocomplete-dropdown {
@@ -109,8 +111,10 @@
 }
 
 /* Covers both the main hamburger rows and the flyout rows (shared .menu-item).
-   The default hover is a white overlay, invisible on the light menu bg. */
-[data-theme='light'] .menu-item:hover:not(:disabled) {
+   The default hover is a white overlay, invisible on the light menu bg. The
+   open-flyout row shares the hover treatment, as it does in the dark theme. */
+[data-theme='light'] .menu-item:hover:not(:disabled),
+[data-theme='light'] .menu-item-has-flyout.flyout-open > .menu-item {
   background: rgba(0, 0, 0, 0.1);
 }
 
@@ -124,7 +128,8 @@
 
 [data-theme='light'] .bee-toggle-knob,
 [data-theme='light'] .ipfs-toggle-knob,
-[data-theme='light'] .radicle-toggle-knob {
+[data-theme='light'] .radicle-toggle-knob,
+[data-theme='light'] .tor-toggle-knob {
   background: #ffffff;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
@@ -149,7 +154,6 @@
 
 [data-theme='light'] .form-input:focus {
   background: #ffffff;
-  border-color: var(--accent);
 }
 
 [data-theme='light'] .input-action-btn:hover {

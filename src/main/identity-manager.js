@@ -281,9 +281,12 @@ async function getUserWalletKey(walletIndex) {
     throw new Error('Wallet index must be a non-negative integer');
   }
 
-  const wallets = await getDerivedWallets();
-  if (!wallets.some((wallet) => wallet.index === walletIndex)) {
+  const record = getWalletRecord(walletIndex);
+  if (!record) {
     throw new Error(`Wallet with index ${walletIndex} does not exist`);
+  }
+  if (record.type !== WALLET_TYPES.MNEMONIC) {
+    throw new Error('This account has no derivable private key — the key never leaves its device');
   }
 
   const identity = await loadIdentityModule();
@@ -784,8 +787,136 @@ async function exportMnemonic() {
 // ============================================
 
 /**
+ * Wallet account types. Entries in vault-meta's `derivedWallets[]` without
+ * a `type` field predate hardware-wallet support and are mnemonic-derived.
+ */
+const WALLET_TYPES = {
+  MNEMONIC: 'mnemonic',
+  LEDGER: 'ledger',
+  REMOTE: 'remote', // phone / other device signing over openlv
+  SAFE: 'safe', // Safe smart account owned by other wallet records
+};
+
+/** User-facing labels for non-mnemonic account types (auto-names, error text). */
+const DEVICE_LABELS = {
+  [WALLET_TYPES.LEDGER]: 'Ledger',
+  [WALLET_TYPES.REMOTE]: 'Phone',
+  [WALLET_TYPES.SAFE]: 'Safe',
+};
+
+/** Type-specific record fields to expose through the record seams. */
+function extraRecordFields(record) {
+  const fields = {};
+  if (record.path) {
+    fields.path = record.path;
+  }
+  if (record.type === WALLET_TYPES.SAFE) {
+    fields.owners = record.owners;
+    fields.threshold = record.threshold;
+    fields.saltNonce = record.saltNonce;
+    fields.deployed = record.deployed || {};
+  }
+  return fields;
+}
+
+/**
+ * Hardware accounts are allocated from a disjoint, never-reused slice of
+ * the wallet index space, starting here.
+ *
+ * A wallet's `index` is two things at once: the account id every
+ * persisted reference stores (dApp permissions, Swarm publisher
+ * identities, `activeWalletIndex`) and — for mnemonic accounts — the
+ * BIP-44 account index its key is derived at. Letting hardware accounts
+ * take ids from that same pool breaks both roles: the mnemonic account
+ * at the squatted derivation index can never be re-created (the hardware
+ * guards block derivation at that index), stranding any funds it holds,
+ * and every persisted reference to that index silently rebinds to a
+ * different address and signing backend.
+ *
+ * @see nextHardwareWalletIndex
+ */
+const HARDWARE_INDEX_BASE = 1000000;
+
+function isHardwareWalletIndex(index) {
+  return Number.isInteger(index) && index >= HARDWARE_INDEX_BASE;
+}
+
+/**
+ * Allocate the index for a new hardware account: monotonic and never
+ * reused, so deleting a Ledger does not hand its index — and with it
+ * every dApp permission and publisher identity pinned to that index — to
+ * the next device account that gets added.
+ *
+ * The counter lives in vault-meta; the on-disk wallet list is used as a
+ * high-water mark so a missing or stale counter can never produce a
+ * collision.
+ *
+ * @param {Object} meta - Parsed vault-meta
+ * @param {Array<Object>} wallets - Current wallet list
+ * @returns {number}
+ */
+function nextHardwareWalletIndex(meta, wallets) {
+  const counter = Number.isInteger(meta.nextHardwareWalletIndex)
+    ? meta.nextHardwareWalletIndex
+    : HARDWARE_INDEX_BASE;
+  const highWater = wallets.reduce(
+    (max, wallet) => (isHardwareWalletIndex(wallet.index) ? Math.max(max, wallet.index + 1) : max),
+    HARDWARE_INDEX_BASE
+  );
+  return Math.max(counter, highWater);
+}
+
+/**
+ * The wallet list stored in vault-meta, with the implicit pre-multi-wallet
+ * default (just the main wallet) when `derivedWallets` was never written.
+ *
+ * @param {Object} meta - Parsed vault-meta
+ * @returns {Array<Object>} Raw derivedWallets entries
+ */
+function getWalletList(meta) {
+  return (
+    meta.derivedWallets || [
+      { index: 0, name: 'Main Wallet', address: meta.addresses?.userWallet || null },
+    ]
+  );
+}
+
+/**
+ * Look up a single wallet account record by index, normalized: `type`
+ * always present, address falling back to the stored main-wallet address
+ * for index 0. Returns null when the index is unknown.
+ *
+ * Used by the signer factory and the vault-access guard to decide which
+ * signing backend an index resolves to — must stay synchronous and cheap.
+ *
+ * @param {number} walletIndex
+ * @param {Object} [meta] - Already-loaded vault-meta, to skip the disk read
+ * @returns {{index: number, name: string, address: string|null, type: string, path?: string}|null}
+ */
+function getWalletRecord(walletIndex, meta = getVaultMeta()) {
+  if (!meta) {
+    return null;
+  }
+  const record = getWalletList(meta).find((wallet) => wallet.index === walletIndex);
+  if (!record) {
+    return null;
+  }
+  let address = record.address || null;
+  if (!address && record.index === 0) {
+    address = meta.addresses?.userWallet || null;
+  }
+  return {
+    index: record.index,
+    name: record.name,
+    address,
+    type: record.type || WALLET_TYPES.MNEMONIC,
+    ...extraRecordFields(record),
+  };
+}
+
+/**
  * Get list of derived user wallets
- * @returns {Array<{index: number, name: string, address: string}>}
+ * @returns {Array<{index: number, name: string, address: string, type: string}>}
  */
 async function getDerivedWallets() {
   const identity = await loadIdentityModule();
@@ -813,7 +944,7 @@ async function getDerivedWallets() {
       activeWalletIndex: 0,
     });
 
-    return wallets;
+    return wallets.map((wallet) => ({ ...wallet, type: WALLET_TYPES.MNEMONIC }));
   }
 
   // If vault is unlocked, derive addresses; otherwise use stored addresses
@@ -821,9 +952,14 @@ async function getDerivedWallets() {
   const wallets = [];
 
   for (const wallet of meta.derivedWallets) {
+    const type = wallet.type || WALLET_TYPES.MNEMONIC;
     let address = null;
 
-    if (mnemonic) {
+    if (type !== WALLET_TYPES.MNEMONIC) {
+      // Device accounts (Ledger, phone): the address was read from the
+      // device when the account was added; nothing to derive locally.
+      address = wallet.address || null;
+    } else if (mnemonic) {
       // Derive address from mnemonic
       const derived = identity.deriveUserWallet(mnemonic, wallet.index);
       address = derived.address;
@@ -840,10 +976,165 @@ async function getDerivedWallets() {
       index: wallet.index,
       name: wallet.name,
       address,
+      type,
+      ...extraRecordFields(wallet),
     });
   }
 
   return wallets;
+}
+
+/**
+ * Add a device account (Ledger, phone) to the wallet list.
+ *
+ * The address comes from the device when the account is added and is
+ * persisted — it can never be re-derived locally. Does not require the
+ * vault to be unlocked (no mnemonic involved), only that a vault exists
+ * so there is a wallet list to add to.
+ *
+ * @param {string} type - WALLET_TYPES.LEDGER or WALLET_TYPES.REMOTE
+ * @param {string} name - Display name ('' → auto "<label> N")
+ * @param {string} address - Checksummed address reported by the device
+ * @param {object} [extra] - Extra record fields (e.g. Ledger's path)
+ */
+async function addDeviceWallet(type, name, address, extra = {}) {
+  const label = DEVICE_LABELS[type];
+  const { isAddress } = require('ethers');
+  if (typeof address !== 'string' || !isAddress(address)) {
+    throw new Error(`Invalid ${label} account address`);
+  }
+
+  const meta = getVaultMeta();
+  if (!meta) {
+    throw new Error('No vault found');
+  }
+
+  const wallets = getWalletList(meta);
+
+  const duplicate = wallets.find(
+    (wallet) => wallet.address && wallet.address.toLowerCase() === address.toLowerCase()
+  );
+  if (duplicate) {
+    throw new Error(`This account is already in your wallet list as "${duplicate.name}"`);
+  }
+
+  const newIndex = nextHardwareWalletIndex(meta, wallets);
+  const sameTypeCount = wallets.filter((w) => w.type === type).length;
+  const newWallet = {
+    index: newIndex,
+    name: (name || '').trim() || `${label} ${sameTypeCount + 1}`,
+    address,
+    type,
+    ...extra,
+  };
+  wallets.push(newWallet);
+
+  saveVaultMeta({
+    ...meta,
+    derivedWallets: wallets,
+    nextHardwareWalletIndex: newIndex + 1,
+  });
+
+  return { ...newWallet };
+}
+
+/**
+ * Add a Ledger hardware-wallet account.
+ *
+ * @param {string} name - Display name ('' → auto "Ledger N")
+ * @param {string} address - Checksummed address read from the device
+ * @param {string} path - Derivation path in device format (e.g. "44'/60'/0'/0/0")
+ * @returns {Promise<{index: number, name: string, address: string, type: string, path: string}>}
+ */
+async function addLedgerWallet(name, address, path) {
+  if (typeof path !== 'string' || !path) {
+    throw new Error('Missing derivation path for Ledger account');
+  }
+  return addDeviceWallet(WALLET_TYPES.LEDGER, name, address, { path });
+}
+
+/**
+ * Add a remote (phone / other device) account, signing over openlv.
+ *
+ * @param {string} name - Display name ('' → auto "Phone N")
+ * @param {string} address - Address the phone reported via eth_requestAccounts
+ * @returns {Promise<{index: number, name: string, address: string, type: string}>}
+ */
+async function addRemoteWallet(name, address) {
+  return addDeviceWallet(WALLET_TYPES.REMOTE, name, address);
+}
+
+/**
+ * Add a Safe smart-account record.
+ *
+ * The init params (owners, threshold, saltNonce) are FROZEN once stored —
+ * they are what makes the CREATE2 address reproducible on other chains
+ * (retroactive deployment recovers funds sent there), so nothing may ever
+ * rewrite them. `owners` are wallet indexes of existing records; the
+ * caller (safe-service) resolves their addresses and predicts `address`
+ * before storing.
+ *
+ * Only the shipped presets are accepted: 1-of-2 and 2-of-3. 2-of-2 is
+ * deliberately not offered — losing either device bricks the funds.
+ *
+ * @param {string} name - Display name ('' → auto "Safe N")
+ * @param {Object} params
+ * @param {string} params.address - Predicted counterfactual address
+ * @param {number[]} params.owners - Wallet indexes of the owner records
+ * @param {number} params.threshold
+ * @param {string} params.saltNonce
+ * @returns {Promise<Object>} The stored record
+ */
+async function addSafeWallet(name, { address, owners, threshold, saltNonce }) {
+  const validPreset =
+    Array.isArray(owners) &&
+    ((owners.length === 2 && threshold === 1) || (owners.length === 3 && threshold === 2));
+  if (!validPreset) {
+    throw new Error('A Safe needs 1 of 2 or 2 of 3 owners');
+  }
+  if (new Set(owners).size !== owners.length) {
+    throw new Error('Duplicate owner accounts');
+  }
+  for (const ownerIndex of owners) {
+    const record = getWalletRecord(ownerIndex);
+    if (!record) {
+      throw new Error(`Owner wallet index ${ownerIndex} does not exist`);
+    }
+    if (record.type === WALLET_TYPES.SAFE) {
+      throw new Error('A Safe cannot own another Safe');
+    }
+  }
+  if (typeof saltNonce !== 'string' || !/^\d+$/.test(saltNonce)) {
+    throw new Error('Invalid Safe salt nonce');
+  }
+
+  return addDeviceWallet(WALLET_TYPES.SAFE, name, address, {
+    owners: [...owners],
+    threshold,
+    saltNonce,
+    deployed: {},
+  });
+}
+
+/**
+ * Record that a Safe's contract is now live on a chain. Deployment state
+ * is the ONLY mutable part of a safe record — init params stay frozen.
+ *
+ * @param {number} index - Wallet index of the safe record
+ * @param {number} chainId
+ */
+async function markSafeDeployed(index, chainId) {
+  const meta = getVaultMeta();
+  if (!meta) {
+    throw new Error('No vault found');
+  }
+  const wallets = getWalletList(meta);
+  const record = wallets.find((w) => w.index === index);
+  if (!record || record.type !== WALLET_TYPES.SAFE) {
+    throw new Error(`Wallet ${index} is not a Safe account`);
+  }
+  record.deployed = { ...(record.deployed || {}), [chainId]: true };
+  saveVaultMeta({ ...meta, derivedWallets: wallets });
 }
 
 /**
@@ -866,7 +1157,7 @@ async function setActiveWalletIndex(index) {
   }
 
   // Verify wallet exists
-  const wallets = meta.derivedWallets || [{ index: 0, name: 'Main Wallet' }];
+  const wallets = getWalletList(meta);
   const walletExists = wallets.some((w) => w.index === index);
 
   if (!walletExists) {
@@ -898,11 +1189,23 @@ async function createDerivedWallet(name) {
   }
 
   // Get current wallets
-  const wallets = meta.derivedWallets || [{ index: 0, name: 'Main Wallet' }];
+  const wallets = getWalletList(meta);
 
-  // Find next available index (use account index, starting from max + 1)
-  const maxIndex = wallets.reduce((max, w) => Math.max(max, w.index), -1);
-  const newIndex = maxIndex + 1;
+  // Find next available index (use account index, starting from max + 1).
+  // Only mnemonic accounts constrain it — this index *is* the BIP-44
+  // account index the key is derived at, and hardware accounts live in
+  // their own range (see HARDWARE_INDEX_BASE). The taken-index skip is a
+  // safety net for vault-meta written before that split, where a Ledger
+  // may still sit on a low index.
+  const taken = new Set(wallets.map((w) => w.index));
+  const maxIndex = wallets.reduce(
+    (max, w) => (isHardwareWalletIndex(w.index) ? max : Math.max(max, w.index)),
+    -1
+  );
+  let newIndex = maxIndex + 1;
+  while (taken.has(newIndex)) {
+    newIndex += 1;
+  }
 
   // Derive the new wallet
   const derived = identity.deriveUserWallet(mnemonic, newIndex);
@@ -939,7 +1242,7 @@ async function renameDerivedWallet(index, newName) {
     throw new Error('No vault found');
   }
 
-  const wallets = meta.derivedWallets || [{ index: 0, name: 'Main Wallet' }];
+  const wallets = getWalletList(meta);
   const walletIndex = wallets.findIndex((w) => w.index === index);
 
   if (walletIndex === -1) {
@@ -981,7 +1284,7 @@ async function deleteDerivedWallet(index) {
     throw new Error('No vault found');
   }
 
-  const wallets = meta.derivedWallets || [{ index: 0, name: 'Main Wallet' }];
+  const wallets = getWalletList(meta);
   const walletIndex = wallets.findIndex((w) => w.index === index);
 
   if (walletIndex === -1) {
@@ -994,6 +1297,29 @@ async function deleteDerivedWallet(index) {
     err.code = 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE';
     err.references = publisherIdentityReferences;
     throw err;
+  }
+
+  // Safe owners are referenced by index; deleting one would leave the
+  // Safe unable to collect that signature (and break executor selection).
+  const owningSafe = wallets.find(
+    (w) => w.type === WALLET_TYPES.SAFE && (w.owners || []).includes(index)
+  );
+  if (owningSafe) {
+    throw new Error(
+      `This account is an owner of "${owningSafe.name}" — delete that Safe account first`
+    );
+  }
+
+  // A Safe's half-signed state is keyed by wallet index (safe-pending.json
+  // entry, in-memory SafeMessage session). Discard both WITH the record:
+  // a later account that reuses the index must neither inherit nor be
+  // blocked by the deleted Safe's leftovers. Cleanup precedes the meta
+  // write so a failure never leaves a deleted record with live state.
+  // (Lazy requires — both modules are dependency-light — keep the Safe
+  // stack out of ordinary wallet operations.)
+  if (wallets[walletIndex].type === WALLET_TYPES.SAFE) {
+    require('./wallet/safe/message-sessions').discardSession(index);
+    require('./wallet/safe/pending-store').clearPending(index);
   }
 
   // Remove from list
@@ -1010,6 +1336,15 @@ async function deleteDerivedWallet(index) {
     derivedWallets: wallets,
     activeWalletIndex: activeIndex,
   });
+
+  // A dApp permission is a standing authorisation to sign with this one
+  // account (plus any auto-approve rules on top). It cannot outlive the
+  // account: the stored index would dangle, and for a hardware account it
+  // would dangle into an index that has no signer at all.
+  // Lazy require: dapp-permissions pulls in electron's `app` for its
+  // storage path, which identity-manager must not need at load time.
+  const { revokePermissionsForWalletIndex } = require('./wallet/dapp-permissions');
+  revokePermissionsForWalletIndex(index);
 }
 
 /**
@@ -1025,6 +1360,14 @@ async function getActiveWalletAddress() {
   }
 
   const activeIndex = meta.activeWalletIndex ?? 0;
+
+  // Hardware accounts always use the stored device address — there is
+  // no local derivation, unlocked vault or not.
+  const record = getWalletRecord(activeIndex, meta);
+  if (record && record.type !== WALLET_TYPES.MNEMONIC) {
+    return record.address;
+  }
+
   const mnemonic = identity.getMnemonic();
 
   if (mnemonic) {
@@ -1033,11 +1376,7 @@ async function getActiveWalletAddress() {
   }
 
   // Vault locked - can only return main wallet address from stored meta
-  if (activeIndex === 0) {
-    return meta.addresses?.userWallet || null;
-  }
-
-  return null;
+  return activeIndex === 0 ? (record?.address ?? null) : null;
 }
 
 /**
@@ -1190,6 +1529,16 @@ function registerIdentityIpc() {
       if (!password) {
         return { success: false, error: 'Password is required to export private key' };
       }
+      // Same two-part guard as withVaultPrivateKey: the index range alone
+      // is decisive, so a deleted device account (no record) cannot export
+      // a phantom mnemonic key derived at its index.
+      const record = getWalletRecord(accountIndex);
+      if (isHardwareWalletIndex(accountIndex) || (record && record.type !== WALLET_TYPES.MNEMONIC)) {
+        return {
+          success: false,
+          error: 'This account has no exportable private key — the key never leaves its device',
+        };
+      }
       const identity = await loadIdentityModule();
       const dataDir = getIdentityDataDir();
       await identity.verifyPassword(dataDir, password);
@@ -1274,6 +1623,26 @@ function registerIdentityIpc() {
     }
   });
 
+  // Add a Ledger hardware-wallet account (address read from the device)
+  ipcMain.handle('wallet:add-ledger-wallet', async (_event, name, address, path) => {
+    try {
+      const wallet = await addLedgerWallet(name, address, path);
+      return { success: true, wallet };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Add a remote (phone) account (address reported over openlv)
+  ipcMain.handle('wallet:add-remote-wallet', async (_event, name, address) => {
+    try {
+      const wallet = await addRemoteWallet(name, address);
+      return { success: true, wallet };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // Rename wallet
   ipcMain.handle('wallet:rename-wallet', async (_event, index, newName) => {
     try {
@@ -1329,10 +1698,18 @@ module.exports = {
   getUserWalletKey,
 
   // Multi-wallet operations
+  WALLET_TYPES,
+  HARDWARE_INDEX_BASE,
+  isHardwareWalletIndex,
+  getWalletRecord,
   getDerivedWallets,
   getActiveWalletIndex,
   setActiveWalletIndex,
   createDerivedWallet,
+  addLedgerWallet,
+  addRemoteWallet,
+  addSafeWallet,
+  markSafeDeployed,
   renameDerivedWallet,
   deleteDerivedWallet,
   getActiveWalletAddress,

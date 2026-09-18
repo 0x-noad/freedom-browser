@@ -4,6 +4,12 @@ const crypto = require('crypto');
 const { ipcMain } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const { updateActiveProfileNodeConfig } = require('./profile-resolver');
+const { probeSocks5Endpoint } = require('./socks-probe');
+const {
+  IPFS_GATEWAY_PROBE_PATH,
+  hasIpfsGatewayHeader,
+  isIpfsGatewayProbeResponse,
+} = require('./ipfs/ipfs-gateway-probe');
 
 const EXTERNAL_CANDIDATE_PROMPT_KEY = 'externalCandidatePrompt';
 
@@ -23,17 +29,41 @@ const DEFAULT_EXTERNAL_NODE_CANDIDATES = {
       },
     ],
   },
-  radicle: {
-    label: 'Radicle',
-    endpoints: ['http://127.0.0.1:8780'],
+  ipfs: {
+    label: 'IPFS',
+    endpoints: ['http://127.0.0.1:8080'],
+    // Shown with the prompt: external mode hands content integrity to the
+    // gateway, unlike the embedded node which verifies what it retrieves.
+    trustNote:
+      'Freedom does not verify content integrity in this mode — the gateway is trusted for every ipfs:// page it serves.',
     externalConfig: {
       mode: 'external',
-      externalHttp: 'http://127.0.0.1:8780',
+      externalGateway: 'http://127.0.0.1:8080',
     },
     probes: [
       {
-        url: 'http://127.0.0.1:8780/',
+        // The empty-file CID resolves locally on any gateway
+        url: `http://127.0.0.1:8080${IPFS_GATEWAY_PROBE_PATH}`,
         method: 'GET',
+        expectJson: false,
+        // A 200 alone would also match the dev server that is far more likely
+        // to be on :8080; require an IPFS-specific answer. See
+        // ipfs/ipfs-gateway-probe.js.
+        expectIpfsGateway: true,
+      },
+    ],
+  },
+  tor: {
+    label: 'Tor',
+    endpoints: ['SOCKS5 127.0.0.1:9150'],
+    externalConfig: {
+      mode: 'external',
+      externalSocks: '127.0.0.1:9150',
+    },
+    probes: [
+      {
+        type: 'socks5',
+        endpoint: '127.0.0.1:9150',
       },
     ],
   },
@@ -45,6 +75,10 @@ function getHttpClient(url) {
 
 function probeEndpoint(probe, options = {}) {
   const timeoutMs = options.timeoutMs ?? 1000;
+  if (probe.type === 'socks5') {
+    return probeSocks5Endpoint(probe.endpoint, { timeoutMs });
+  }
+
   return new Promise((resolve) => {
     const parsed = new URL(probe.url);
     const requestOptions = {
@@ -59,8 +93,21 @@ function probeEndpoint(probe, options = {}) {
 
     const req = getHttpClient(probe.url).request(requestOptions, (res) => {
       let data = '';
+      let bodyBytes = 0;
+      const ipfsHeaderSignal =
+        probe.expectIpfsGateway === true &&
+        res.statusCode === 200 &&
+        hasIpfsGatewayHeader(res.headers);
       res.on('data', (chunk) => {
+        bodyBytes += chunk.length;
         data += chunk;
+        // An IPFS gateway answers the empty-file CID with a zero-byte body, so
+        // the first byte already settles the probe against, say, a dev server
+        // returning its index.html for every path. Stop reading it.
+        if (probe.expectIpfsGateway && !ipfsHeaderSignal) {
+          resolve(false);
+          req.destroy();
+        }
       });
       res.on('end', () => {
         if (probe.acceptAnyHttpResponse) {
@@ -70,6 +117,20 @@ function probeEndpoint(probe, options = {}) {
 
         if (res.statusCode !== 200) {
           resolve(false);
+          return;
+        }
+
+        if (probe.expectIpfsGateway) {
+          // Redirects never reach here (node's http client does not follow
+          // them and a 3xx fails the status check above), so a gateway is only
+          // accepted when it answers this request itself.
+          resolve(
+            isIpfsGatewayProbeResponse({
+              status: res.statusCode,
+              headers: res.headers,
+              bodyBytes,
+            })
+          );
           return;
         }
 
@@ -138,6 +199,7 @@ function serializeCandidate(candidate) {
     protocol: candidate.protocol,
     label: candidate.label,
     endpoints: candidate.endpoints,
+    trustNote: candidate.trustNote || null,
   };
 }
 
@@ -175,6 +237,15 @@ function applyExternalCandidateDecisions(candidates, choices = {}, options = {})
 
 function managedChoicesFor(candidates) {
   return Object.fromEntries(candidates.map((candidate) => [candidate.protocol, 'managed']));
+}
+
+function singleEnabledProtocol(protocol, definitions = DEFAULT_EXTERNAL_NODE_CANDIDATES) {
+  return Object.fromEntries(
+    Object.keys(definitions).map((candidateProtocol) => [
+      candidateProtocol,
+      candidateProtocol === protocol,
+    ])
+  );
 }
 
 function waitForWindowLoad(window) {
@@ -286,7 +357,8 @@ async function promptForDefaultExternalCandidates(profile, options = {}) {
       message: `Freedom found an existing ${candidate.label} node at ${endpointText}.`,
       detail:
         `Use it for the "${profileName}" profile, or keep this profile independent ` +
-        'with a Freedom-managed node on profile-specific ports.',
+        'with a Freedom-managed node on profile-specific ports.' +
+        (candidate.trustNote ? `\n\n${candidate.trustNote}` : ''),
     });
 
     const choice = result.response === 0 ? 'external' : 'managed';
@@ -300,6 +372,15 @@ async function promptForDefaultExternalCandidates(profile, options = {}) {
   return decisions;
 }
 
+function promptForDefaultExternalCandidateProtocol(profile, protocol, options = {}) {
+  const definitions = options.candidates || DEFAULT_EXTERNAL_NODE_CANDIDATES;
+  if (!definitions[protocol]) return Promise.resolve([]);
+  return promptForDefaultExternalCandidates(profile, {
+    ...options,
+    enabledProtocols: singleEnabledProtocol(protocol, definitions),
+  });
+}
+
 module.exports = {
   DEFAULT_EXTERNAL_NODE_CANDIDATES,
   EXTERNAL_CANDIDATE_PROMPT_KEY,
@@ -308,6 +389,7 @@ module.exports = {
   detectDefaultExternalCandidates,
   probeEndpoint,
   presentExternalCandidatesInWindow,
+  promptForDefaultExternalCandidateProtocol,
   promptForDefaultExternalCandidates,
   shouldPromptForProtocol,
 };

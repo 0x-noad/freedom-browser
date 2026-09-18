@@ -49,6 +49,44 @@ const createProfileViaApi = async (window, displayName) => {
   return result.profile;
 };
 
+test('node config: Myotis is embedded per profile and can be disabled', async ({ window }) => {
+  const active = await window.evaluate(() => window.electronAPI.getActiveProfile());
+  expect(active.nodes.myotis).toEqual({ mode: 'managed', backend: 'myotis-native' });
+
+  const created = await createProfileViaApi(window, 'QA Myotis');
+  expect(created.nodes.myotis).toEqual({ mode: 'managed', backend: 'myotis-native' });
+
+  await window.evaluate(() => document.getElementById('settings-btn')?.click());
+  await expect
+    .poll(() => settingsEval(window, `typeof window.freedomAPI?.updateProfileNodeConfig`))
+    .toBe('function');
+  const result = await settingsEval(
+    window,
+    `window.freedomAPI.updateProfileNodeConfig('myotis', { mode: 'disabled' })`
+  );
+  expect(result?.success).toBe(true);
+  expect(result.profile.nodes.myotis).toEqual({
+    mode: 'disabled',
+    backend: 'myotis-native',
+  });
+
+  const updated = await window.evaluate(() => window.electronAPI.getActiveProfile());
+  expect(updated.nodes.myotis).toEqual({ mode: 'disabled', backend: 'myotis-native' });
+});
+
+const settingsEval = (window, script) =>
+  window.evaluate(async (s) => {
+    const webview = [...document.querySelectorAll('webview')].find((candidate) => {
+      try {
+        return /settings/.test(candidate.getURL() || '');
+      } catch {
+        return false;
+      }
+    });
+    if (!webview || typeof webview.executeJavaScript !== 'function') return null;
+    return webview.executeJavaScript(s);
+  }, script);
+
 // Run JS inside the profiles manager page (it loads in a <webview>; the chrome
 // can only reach it via executeJavaScript). `script` must be an expression; a
 // returned promise is awaited by Electron before resolving.
@@ -161,6 +199,40 @@ test('use: switching to another profile via the chrome menu records a launch', a
   // harness recorded the switch instead of cold-starting the target's window.
   const active = await window.evaluate(() => window.electronAPI.getActiveProfile());
   expect(active.id).not.toBe(target.id);
+});
+
+// --- flyout dismissal ------------------------------------------------------
+
+// #301: the flyout used to stay up while the pointer walked down the rest of
+// the hamburger. Chrome keeps one submenu open at a time and closes it as soon
+// as a sibling row is hovered, with a short grace period so a diagonal move
+// into the submenu isn't cut off.
+test('menu: hovering another hamburger row closes the profiles flyout', async ({ window }) => {
+  const flyout = window.locator('#profile-menu');
+  const hamburger = window.locator('#menu-dropdown');
+
+  await window.click('#menu-button');
+  await window.evaluate(() => document.getElementById('profile-menu-btn')?.click());
+  await expect(flyout).toBeVisible();
+
+  // Hovering a sibling row ("New Tab") dismisses it …
+  await window.hover('#new-tab-menu-btn');
+  await expect(flyout).toBeHidden();
+  // … and only the flyout: the hamburger it lives in stays open.
+  await expect(hamburger).toHaveClass(/\bopen\b/);
+  await expect(window.locator('#profile-menu-btn')).toHaveAttribute('aria-expanded', 'false');
+
+  // Hovering back on the Profiles row reopens it (the hover-open delay).
+  await window.hover('#profile-menu-btn');
+  await expect(flyout).toBeVisible();
+
+  // Keyboard navigation is unaffected: focus moving through the flyout's own
+  // rows keeps it open, focus landing on a sibling row closes it.
+  await window.locator('#profile-create-btn').focus();
+  await expect(flyout).toBeVisible();
+  await window.locator('#new-tab-menu-btn').focus();
+  await expect(flyout).toBeHidden();
+  await expect(hamburger).toHaveClass(/\bopen\b/);
 });
 
 // --- use / focus fast path -------------------------------------------------

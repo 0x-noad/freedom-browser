@@ -6,11 +6,22 @@
 // handlers stream through local nodes. We still pass
 // FREEDOM_TEST_USER_DATA so the test session doesn't write to the
 // user's real settings/bookmarks/history files.
+//
+// Setting FREEDOM_E2E_EXECUTABLE points this same launch at a *packaged*
+// Freedom binary — that is the `packaged-live` project
+// (test-e2e/packaged-live/), which starts the real node managers inside a
+// built artifact. Unset, everything below behaves exactly as it did before.
+// Note that the HAS_* / *_PATH exports describe the *source tree's* binary
+// layout (`npm run ant:download` and friends), so they are only meaningful
+// for the `live` project; a packaged spec has to ask the app under test
+// where its bundled binaries are (e.g. `window.tor.checkBinary()`).
 
 const { test: base, expect, _electron: electron } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+
+const { isPackagedRun, packagedLaunchTarget } = require('./packaged-launch');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -24,6 +35,16 @@ function resolveAntBinaryPath() {
   const arch = process.arch;
   const binName = process.platform === 'win32' ? 'antd.exe' : 'antd';
   return path.join(repoRoot, 'ant-bin', `${platform}-${arch}`, binName);
+}
+
+// Mirror tor-manager.js's getArtiBinaryPath() (dev layout) for the same
+// reason: `npm run tor:download` is an opt-in per-platform build step, so the
+// live Tor spec skips gracefully when the binary isn't there.
+function resolveArtiBinaryPath() {
+  const platformMap = { darwin: 'mac', linux: 'linux', win32: 'win' };
+  const platform = platformMap[process.platform] || process.platform;
+  const binName = process.platform === 'win32' ? 'arti.exe' : 'arti';
+  return path.join(repoRoot, 'arti-bin', `${platform}-${process.arch}`, binName);
 }
 
 function resolveIpfsNativeAddonPath() {
@@ -43,13 +64,35 @@ const HAS_ANT_BINARY = fs.existsSync(ANT_BINARY_PATH);
 const IPFS_NATIVE_ADDON_PATH = resolveIpfsNativeAddonPath();
 const HAS_IPFS_NATIVE_ADDON = fs.existsSync(IPFS_NATIVE_ADDON_PATH);
 
+const ARTI_BINARY_PATH = resolveArtiBinaryPath();
+const HAS_ARTI_BINARY = fs.existsSync(ARTI_BINARY_PATH);
+
+function envFlagEnabled(name) {
+  const raw = process.env[name];
+  return typeof raw === 'string' && raw !== '' && raw !== '0' && raw.toLowerCase() !== 'false';
+}
+
+// `FREEDOM_LIVE_E2E_DISABLE_DEFAULT_NODES=1` (set by `npm run test:e2e:tor`)
+// seeds settings that keep Ant / IPFS / Radicle / Tor from autostarting: a
+// spec exercising one live subsystem shouldn't pay the boot cost — or inherit
+// the flakiness — of the others. A spec's own `seedSettings` still wins.
+const DEFAULT_NODES_OFF_SETTINGS = {
+  startAntAtLaunch: false,
+  startIpfsAtLaunch: false,
+  startRadicleAtLaunch: false,
+  startTorAtLaunch: false,
+};
+
 const test = base.extend({
-  // Playwright derives fixture dependencies from the first parameter's
-  // destructure; this fixture has none, but the empty `{}` is required
-  // so Playwright recognises it as a fixture function rather than a
-  // plain factory.
-  // eslint-disable-next-line no-empty-pattern
-  electronApp: async ({}, use) => {
+  // Seed settings.json before launch (same semantics as fixtures.js) —
+  // e.g. disable node autostart for specs that don't need Ant/IPFS.
+  seedSettings: [null, { option: true }],
+
+  // Extra environment variables for the app process (e.g.
+  // FREEDOM_ADBLOCK_DIR). The suite-critical vars below always win.
+  launchEnv: [null, { option: true }],
+
+  electronApp: async ({ seedSettings: settingsOverride, launchEnv }, use) => {
     // One temp root per run, with four subdirs:
     //   - userData/     → settings, bookmarks, history (FREEDOM_TEST_USER_DATA)
     //   - ant-data/     → Ant's identity, swarm key, peerstore (FREEDOM_ANT_DATA)
@@ -72,12 +115,24 @@ const test = base.extend({
     for (const dir of [userDataDir, beeDataDir, ipfsDataDir, identityDataDir]) {
       fs.mkdirSync(dir, { recursive: true });
     }
+    const seededSettings = envFlagEnabled('FREEDOM_LIVE_E2E_DISABLE_DEFAULT_NODES')
+      ? { ...DEFAULT_NODES_OFF_SETTINGS, ...(settingsOverride || {}) }
+      : settingsOverride;
+    if (seededSettings) {
+      fs.writeFileSync(
+        path.join(userDataDir, 'settings.json'),
+        JSON.stringify(seededSettings, null, 2),
+        'utf-8'
+      );
+    }
 
     const app = await electron.launch({
-      args: ['.'],
+      // Source tree or FREEDOM_E2E_EXECUTABLE — see packaged-launch.js.
+      ...packagedLaunchTarget(),
       cwd: repoRoot,
       env: {
         ...process.env,
+        ...(launchEnv || {}),
         // Deliberately NOT setting FREEDOM_TEST_MODE — this suite needs
         // the production code paths (actual Bee spawn, live ENS, real
         // protocol handlers).
@@ -88,7 +143,10 @@ const test = base.extend({
         ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
         LANG: 'en_US.UTF-8',
       },
-      timeout: 60_000,
+      // Same reason fixtures.js gives a packaged launch more room than a
+      // source one: a just-installed package starts from a cold asar and cold
+      // shared libraries.
+      timeout: isPackagedRun() ? 90_000 : 60_000,
     });
 
     await use(app);
@@ -120,4 +178,6 @@ module.exports = {
   ANT_BINARY_PATH,
   HAS_IPFS_NATIVE_ADDON,
   IPFS_NATIVE_ADDON_PATH,
+  HAS_ARTI_BINARY,
+  ARTI_BINARY_PATH,
 };

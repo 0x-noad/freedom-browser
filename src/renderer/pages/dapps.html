@@ -18,9 +18,10 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none';"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none';"
     />
     <title>Your dApps</title>
+    <link rel="stylesheet" href="styles/theme.css" />
     <style>
       html,
       body {
@@ -29,8 +30,8 @@
       }
       body {
         font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%);
-        color: #c9d1d9;
+        background: var(--page-gradient);
+        color: var(--text);
         padding: 48px;
         box-sizing: border-box;
         min-height: 100vh;
@@ -46,7 +47,7 @@
       .subtitle {
         margin: 0 0 32px;
         font-size: 13px;
-        color: #8b949e;
+        color: var(--text-muted);
         min-height: 18px;
       }
       .hidden {
@@ -60,9 +61,9 @@
         align-items: center;
         gap: 14px;
         padding: 72px 24px;
-        border: 1px solid #30363d;
+        border: 1px solid var(--border);
         border-radius: 14px;
-        background: rgba(22, 27, 34, 0.6);
+        background: var(--surface-translucent);
       }
       .locked-icon {
         font-size: 30px;
@@ -71,15 +72,15 @@
       .locked-text {
         margin: 0;
         font-size: 14px;
-        color: #8b949e;
+        color: var(--text-muted);
       }
       .unlock-btn {
         padding: 9px 22px;
         font: inherit;
         font-size: 13px;
         font-weight: 500;
-        color: #0d1117;
-        background: #58a6ff;
+        color: var(--bg);
+        background: var(--accent);
         border: none;
         border-radius: 8px;
         cursor: pointer;
@@ -116,8 +117,8 @@
       }
       .tile:hover,
       .tile:focus-visible {
-        background: rgba(48, 54, 61, 0.5);
-        border-color: #30363d;
+        background: var(--bg-card-hover);
+        border-color: var(--border);
         outline: none;
       }
       .tile:disabled {
@@ -129,8 +130,8 @@
         height: 56px;
         border-radius: 14px;
         object-fit: cover;
-        background: #161b22;
-        border: 1px solid #30363d;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
         box-sizing: border-box;
       }
       .tile-monogram {
@@ -139,9 +140,8 @@
         justify-content: center;
         font-size: 24px;
         font-weight: 600;
-        color: hsl(var(--hue, 0) 70% 88%);
-        background: hsl(var(--hue, 0) 42% 32%);
-        border-color: hsl(var(--hue, 0) 42% 42%);
+        /* colour, background and border-color are set per tile by monogramEl():
+           the hue is derived from the site's namespace, so it is data, not theme */
       }
       .tile-name {
         max-width: 100%;
@@ -158,7 +158,7 @@
       .empty {
         padding: 64px 24px;
         text-align: center;
-        color: #8b949e;
+        color: var(--text-muted);
         font-size: 14px;
       }
       .empty-hint {
@@ -182,7 +182,7 @@
       <section class="grid hidden" id="grid" aria-label="Sites with data in your vault"></section>
 
       <section class="empty hidden" id="empty">
-        <p>No sites have saved data to your vault yet.</p>
+        <p>No sites have saved data to your vault yet</p>
         <p class="empty-hint">When a site asks for a data vault and you approve, it appears here.</p>
       </section>
     </div>
@@ -207,7 +207,11 @@
         const mono = document.createElement('div');
         mono.className = 'tile-icon tile-monogram';
         const { letter = '?', hue = 0 } = tile.monogram || {};
-        mono.style.setProperty('--hue', String(hue));
+        // Deterministic per namespace, so the same site paints the same on every
+        // device; light enough text on a mid-saturation fill to read on either theme.
+        mono.style.color = `hsl(${hue} 70% 88%)`;
+        mono.style.background = `hsl(${hue} 42% 32%)`;
+        mono.style.borderColor = `hsl(${hue} 42% 42%)`;
         mono.textContent = letter;
         mono.setAttribute('aria-hidden', 'true');
         return mono;
