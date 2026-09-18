@@ -195,6 +195,43 @@ function buildAppMenuSubmenu(updateMenuItems) {
   ];
 }
 
+// Close Window is spelled out instead of `{ role: 'close' }`, and carries no
+// accelerator at all. Every Electron menu role has an implicit default
+// accelerator and `close`'s is CommandOrControl+W — the chord Close Tab above
+// already owns. Windows and Linux resolve that collision in the role's favour,
+// so Ctrl+W closed the whole window instead of the active tab (#97); macOS's
+// NSMenu picks the first matching row (Close Tab) and hid the bug.
+//
+// Probed against the Electron the repo shipped at the time (44.3.0, Linux,
+// 2026-09-16; 44.4.1 since #346) with
+// a real Ctrl+W keypress, because neither alternative holds up:
+//   { role: 'close' }                            → window closes (the bug)
+//   { role: 'close', accelerator: null }         → window closes; a null
+//                                                  accelerator falls back to
+//                                                  the role's own default
+//   { role: 'close', registerAccelerator: false} → Close Tab fires, but the
+//                                                  row still prints "Ctrl+W",
+//                                                  advertising a chord it no
+//                                                  longer answers
+// A plain item with no role and no accelerator is the only shape that leaves
+// Cmd/Ctrl+W solely owned by Close Tab on every platform. Chrome's own Close
+// Window chord (Ctrl+Shift+W) is not free here — view.toggleSidebar owns it —
+// so this row stays accelerator-less rather than taking a chord off another
+// shortcut. Closing the last tab still closes the window (tabs.js closeTab).
+function buildCloseWindowMenuItem() {
+  return {
+    id: 'close-window',
+    label: 'Close Window',
+    click: () => {
+      // Same target the `close` role used: whichever window has focus.
+      const win = BrowserWindow.getFocusedWindow();
+      if (win) {
+        win.close();
+      }
+    },
+  };
+}
+
 function buildFileSubmenu(isMac) {
   const submenu = [
     {
@@ -253,20 +290,6 @@ function buildFileSubmenu(isMac) {
     },
     { type: 'separator' },
     {
-      id: 'downloads',
-      label: 'Downloads',
-      accelerator: acc('downloads.show'),
-      click: () => {
-        const win = getTargetWindow();
-        if (win) {
-          // Singleton internal page: the renderer focuses an existing
-          // freedom://downloads tab instead of opening a duplicate.
-          win.webContents.send('tab:new-with-url', 'freedom://downloads');
-        }
-      },
-    },
-    { type: 'separator' },
-    {
       label: 'New Window',
       accelerator: acc('window.new'),
       click: () => {
@@ -284,7 +307,7 @@ function buildFileSubmenu(isMac) {
       },
     },
     { type: 'separator' },
-    { role: 'close' }
+    buildCloseWindowMenuItem()
   );
 
   if (!isMac) {
@@ -476,8 +499,27 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
   return submenu;
 }
 
-function buildHistorySubmenu() {
-  return [
+// Downloads lives where Chrome puts it: the Window menu on macOS, next to
+// History on Linux/Windows (#326). One builder so the two placements can never
+// drift in label, accelerator or behaviour.
+function buildDownloadsMenuItem() {
+  return {
+    id: 'downloads',
+    label: 'Downloads',
+    accelerator: acc('downloads.show'),
+    click: () => {
+      const win = getTargetWindow();
+      if (win) {
+        // Singleton internal page: the renderer focuses an existing
+        // freedom://downloads tab instead of opening a duplicate.
+        win.webContents.send('tab:new-with-url', 'freedom://downloads');
+      }
+    },
+  };
+}
+
+function buildHistorySubmenu(isMac) {
+  const submenu = [
     {
       label: 'Show All History',
       accelerator: acc('history.showAll'),
@@ -489,6 +531,32 @@ function buildHistorySubmenu() {
       },
     },
   ];
+
+  // On macOS the item belongs to the Window menu instead (Chrome:
+  // Window > Downloads ⇧⌘J), so it is not repeated here.
+  if (!isMac) {
+    submenu.push({ type: 'separator' }, buildDownloadsMenuItem());
+  }
+
+  return submenu;
+}
+
+// Keep the `windowMenu` role (native label + macOS window-list semantics) but
+// spell out its submenu so Downloads can be appended — the same shape the
+// `editMenu` role uses for Find in Page. The listed roles mirror the role's
+// default macOS submenu.
+function buildWindowMenuEntry() {
+  return {
+    role: 'windowMenu',
+    submenu: [
+      { role: 'minimize' },
+      { role: 'zoom' },
+      { type: 'separator' },
+      buildDownloadsMenuItem(),
+      { type: 'separator' },
+      { role: 'front' },
+    ],
+  };
 }
 
 // Find in Page needs a custom click handler (main → renderer IPC), so it
@@ -568,7 +636,7 @@ function buildSharedMenuEntries(ctx) {
         showAppDevtools: !isPackaged,
       }),
     },
-    { label: 'History', submenu: buildHistorySubmenu() },
+    { label: 'History', submenu: buildHistorySubmenu(isMac) },
     { label: 'Profiles', submenu: buildProfilesSubmenu() },
   ];
 }
@@ -577,7 +645,7 @@ function buildDarwinMenuTemplate(ctx) {
   return [
     { role: 'appMenu', submenu: buildAppMenuSubmenu(ctx.updateMenuItems) },
     ...buildSharedMenuEntries(ctx),
-    { role: 'windowMenu' },
+    buildWindowMenuEntry(),
   ];
 }
 

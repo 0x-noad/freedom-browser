@@ -41,17 +41,9 @@ const DEFAULT_NON_MYOTIS_READ_ORDER = ['colibri', 'quorum', 'direct'];
 const DEFAULT_BROADCAST_ORDER = ['myotis', 'direct'];
 const INTERACTIVE_SOURCE_DEADLINE_MS = 2000;
 const SOURCE_TIMEOUT_COOLDOWNS_MS = [15_000, 30_000, 60_000];
-// Myotis' blocking N-API reads use libuv's shared worker pool and cannot be
-// cancelled after an interactive deadline. Keep only one outstanding read so
-// a stalled execution peer cannot occupy every worker and starve the DNS/file
-// work needed by Colibri and RPC fallbacks.
-//
-// Contended readers *queue* for that slot inside their own source deadline
-// rather than failing fast. Failing fast would make the second of any two
-// concurrent reads skip Myotis deterministically — silently downgrading a
-// verified wallet read (getTokenBalance issues balanceOf + decimals in a
-// Promise.all) and failing a Myotis-terminal readOrder outright — even
-// against a perfectly healthy peer.
+// Route admission is per chain; native admission belongs to each supervised
+// Myotis child. The router retains its slot until the manager request settles.
+// A deadline stops that generation; it never frees native child capacity.
 const MAX_MYOTIS_IN_FLIGHT = 1;
 // The queue is still bounded: past this depth the slot is demonstrably not
 // turning over inside anyone's deadline, so refuse rather than park unbounded
@@ -65,8 +57,7 @@ const MAX_ADAPTIVE_SOURCE_ROUTES = 1024;
 // app's call shape should not reorder the user's chain policy, affect another
 // app, or stay demoted after Freedom restarts.
 const adaptiveSourceState = new Map();
-let myotisInFlight = 0;
-const myotisSlotWaiters = [];
+const myotisSlots = new Map();
 const colibriInFlight = new Set();
 const colibriInFlightByRoute = new Map();
 
@@ -232,8 +223,7 @@ function withSourceDeadline(promise, source, timeoutMs = INTERACTIVE_SOURCE_DEAD
 
 function clearAdaptiveRoutingForTest() {
   adaptiveSourceState.clear();
-  myotisInFlight = 0;
-  myotisSlotWaiters.length = 0;
+  myotisSlots.clear();
   colibriInFlight.clear();
   colibriInFlightByRoute.clear();
 }
@@ -317,8 +307,14 @@ function normalizeParams(method, params) {
 }
 
 function nativeResult(payload, ...keys) {
-  if (!payload || payload.error || payload.status === 'error') {
-    throw new Error(payload?.error || payload?.message || 'Myotis request failed');
+  if (payload?.status === 'revert') {
+    const error = new Error('execution reverted');
+    error.code = 3;
+    error.data = typeof payload.dataHex === 'string' ? payload.dataHex : '0x';
+    throw error;
+  }
+  if (!payload || payload.error || ['error', 'unavailable'].includes(payload.status)) {
+    throw new SourceUnavailableError('Myotis native read unavailable');
   }
   for (const key of keys) {
     if (payload[key] != null) return payload[key];
@@ -467,7 +463,9 @@ async function requestMyotis(chainId, method, params) {
       data: call.data || '0x',
       value: decimal(call.value),
     });
-    return quantity(nativeResult(result, 'gasLimit', 'result'));
+    const gas = nativeResult(result, 'gas');
+    if (!Number.isSafeInteger(gas) || gas < 0) throw new SourceUnavailableError('Myotis returned invalid gas');
+    return quantity(gas);
   }
 
   if (method === 'eth_gasPrice' || method === 'eth_maxPriorityFeePerGas') {
@@ -482,34 +480,41 @@ async function requestMyotis(chainId, method, params) {
   throw new SourceUnavailableError(`Myotis does not support ${method}`);
 }
 
-function releaseMyotisSlot() {
-  const next = myotisSlotWaiters.shift();
+function myotisSlotsFor(chainId) {
+  if (!myotisSlots.has(chainId)) myotisSlots.set(chainId, { inFlight: 0, waiters: [] });
+  return myotisSlots.get(chainId);
+}
+
+function releaseMyotisSlot(chainId) {
+  const slots = myotisSlotsFor(chainId);
+  const next = slots.waiters.shift();
   // Hand the slot straight over rather than counting it down and back up.
   if (next) next();
-  else myotisInFlight = Math.max(0, myotisInFlight - 1);
+  else slots.inFlight = Math.max(0, slots.inFlight - 1);
 }
 
 // Returns null when the queue is full. `granted` is null when the slot was
 // free, so an uncontended read never pays for a timer it cannot need.
-function acquireMyotisSlot() {
-  if (myotisInFlight < MAX_MYOTIS_IN_FLIGHT) {
-    myotisInFlight += 1;
+function acquireMyotisSlot(chainId) {
+  const slots = myotisSlotsFor(chainId);
+  if (slots.inFlight < MAX_MYOTIS_IN_FLIGHT) {
+    slots.inFlight += 1;
     return { granted: null, abandon: () => {} };
   }
-  if (myotisSlotWaiters.length >= MAX_MYOTIS_QUEUED) return null;
+  if (slots.waiters.length >= MAX_MYOTIS_QUEUED) return null;
   let grant;
   const granted = new Promise((resolve) => {
     grant = resolve;
   });
-  myotisSlotWaiters.push(grant);
+  slots.waiters.push(grant);
   return {
     granted,
     abandon: () => {
-      const index = myotisSlotWaiters.indexOf(grant);
-      if (index >= 0) myotisSlotWaiters.splice(index, 1);
+      const index = slots.waiters.indexOf(grant);
+      if (index >= 0) slots.waiters.splice(index, 1);
       // The slot was handed over as the deadline fired: pass it along rather
       // than leaking it to a caller that has already fallen through.
-      else granted.then(releaseMyotisSlot);
+      else granted.then(() => releaseMyotisSlot(chainId));
     },
   };
 }
@@ -521,7 +526,7 @@ async function requestViaMyotis(
   { includeTrust = false, deadlineMs = null } = {}
 ) {
   const budgetMs = deadlineMs || configuredSourceTimeoutMs(chainId);
-  const slot = acquireMyotisSlot();
+  const slot = acquireMyotisSlot(chainId);
   if (!slot) {
     throw new SourceUnavailableError('Myotis has too many reads queued for this workload');
   }
@@ -547,10 +552,10 @@ async function requestViaMyotis(
     const afterStatus = myotis.getStatus?.(chainId) || {};
     return { result, trust: myotisTrust(beforeStatus, afterStatus) };
   });
-  // Native reads run on libuv workers and cannot currently be cancelled.
-  // Keep timed-out work accounted for until it really settles so a busy page
-  // cannot exhaust the worker pool while later sources answer its requests.
-  requestPromise.then(releaseMyotisSlot, releaseMyotisSlot);
+  // A routing deadline limits caller patience, not native health. Keep this
+  // slot until the manager settles; its own deadline retains native admission
+  // until completion or verified child exit. Fallback can answer meanwhile.
+  requestPromise.then(() => releaseMyotisSlot(chainId), () => releaseMyotisSlot(chainId));
   return withSourceDeadline(
     requestPromise,
     'Myotis',
@@ -1001,6 +1006,7 @@ async function request(
         ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
       };
     } catch (err) {
+      if (source === 'myotis' && err.code === 3) throw err;
       if (source === 'quorum') {
         if (err.directFallback) directFallback = err.directFallback;
         if (Array.isArray(err.directAttemptedUrls)) {
@@ -1079,7 +1085,12 @@ async function broadcastRawTransaction(chainId, rawTransaction) {
       if (source === 'myotis') {
         if (!myotis.isReady(chainId)) throw new SourceUnavailableError('Myotis is not ready');
         const payload = await myotis.sendRawTransaction(rawTransaction, chainId);
-        result = nativeResult(payload, 'txHash', 'result');
+        try { result = nativeResult(payload, 'txHash', 'result'); }
+        catch {
+          const error = new Error('Myotis broadcast outcome uncertain; reconcile the original signed transaction');
+          error.code = 'MYOTIS_BROADCAST_UNCERTAIN';
+          throw error;
+        }
       } else if (source === 'direct') {
         result = await requestDirect(chainId, 'eth_sendRawTransaction', [rawTransaction]);
       } else {
@@ -1087,6 +1098,7 @@ async function broadcastRawTransaction(chainId, rawTransaction) {
       }
       return { result, source };
     } catch (err) {
+      if (err.code === 'MYOTIS_BROADCAST_UNCERTAIN') throw err;
       failures.push(`${source}: ${err.message}`);
       // A node rejection (`nonce too low`, `already known`, …) carries a
       // JSON-RPC code/data the wallet needs — surface the real error rather

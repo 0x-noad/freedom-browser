@@ -1213,6 +1213,78 @@ describe('ipc-handlers', () => {
     );
   });
 
+  test('updates IPFS profile node config through external gateway validation', async () => {
+    const activeProfile = {
+      id: 'work',
+      displayName: 'Work',
+      source: 'catalog',
+      isDev: false,
+      metadata: {
+        slot: 1,
+        nodes: {
+          ipfs: { mode: 'managed', externalGateway: null },
+        },
+      },
+    };
+    const ctx = loadIpcHandlersModule({ activeProfile });
+
+    ctx.mod.registerBaseIpcHandlers();
+
+    await expect(
+      ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+        protocol: 'ipfs',
+        config: {
+          mode: 'external',
+          externalGateway: 'http://127.0.0.1:8080/',
+        },
+      })
+    ).resolves.toEqual(
+      success({
+        profile: expect.objectContaining({
+          nodes: expect.objectContaining({
+            ipfs: expect.objectContaining({
+              mode: 'external',
+              externalGateway: 'http://127.0.0.1:8080',
+            }),
+          }),
+        }),
+      })
+    );
+
+    expect(ctx.updateActiveProfileNodeConfig).toHaveBeenCalledWith('ipfs', {
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
+    });
+
+    // External mode with no gateway is rejected before any write.
+    await expect(
+      ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+        protocol: 'ipfs',
+        config: { mode: 'external' },
+      })
+    ).resolves.toEqual(
+      failure('MISSING_PROFILE_NODE_ENDPOINT', 'External node mode requires endpoints', {
+        fields: ['externalGateway'],
+      })
+    );
+
+    // A credentialed URL is rejected at the boundary rather than stored: the
+    // fetch stack that dials it refuses to build a Request from one, so
+    // accepting it would fail every later request as "unreachable" instead.
+    // Same normalizer as the node managers use (src/shared/http-endpoint.js).
+    for (const protocol of ['ipfs', 'bee']) {
+      const field = protocol === 'ipfs' ? 'externalGateway' : 'externalApi';
+      await expect(
+        ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+          protocol,
+          config: { mode: 'external', [field]: 'http://user:pass@127.0.0.1:8080' },
+        })
+      ).resolves.toEqual(
+        failure('INVALID_PROFILE_NODE_ENDPOINT', 'Invalid profile node endpoint', { field })
+      );
+    }
+  });
+
   test('rejects invalid active profile node updates', async () => {
     const ctx = loadIpcHandlersModule({
       activeProfile: {
@@ -1236,14 +1308,16 @@ describe('ipc-handlers', () => {
       })
     );
 
+    // IPFS supports external mode, but it requires the gateway endpoint — passing
+    // an unrelated field (externalApi) leaves externalGateway missing.
     await expect(
       ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
         protocol: 'ipfs',
         config: { mode: 'external', externalApi: '127.0.0.1:5001' },
       })
     ).resolves.toEqual(
-      failure('INVALID_PROFILE_NODE_MODE', 'Unsupported profile node mode', {
-        mode: 'external',
+      failure('MISSING_PROFILE_NODE_ENDPOINT', 'External node mode requires endpoints', {
+        fields: ['externalGateway'],
       })
     );
 
@@ -1405,9 +1479,12 @@ describe('ipc-handlers', () => {
 
   // Regression coverage for the three clipboard breakages that
   // docs/audits/electron-44-compatibility-2026-09.md (B2) found on Electron
-  // 44.2.0. They are exercised against a mock of 44's clipboard surface so
-  // they fail here, on the Electron 43 we ship today, rather than only in the
-  // one e2e job that a `npm ci` failure was hiding.
+  // 44.2.0. They landed before the Electron 44 bump, against a mock of 44's
+  // clipboard surface, so that they failed on the Electron 43 shipping at the
+  // time rather than only in the one e2e job a `npm ci` failure was hiding.
+  // The app now ships Electron 44, so this mock matches the real surface; the
+  // `writeImage` assertion in the block above is what still pins the legacy
+  // Electron <= 43 branch of `writeImageToClipboard`.
   describe('clipboard handlers on the Electron 44 clipboard surface', () => {
     test('clipboard:read-text resolves a structured-cloneable string, never a promise', async () => {
       const ctx = loadElectron44ClipboardModule({

@@ -7,6 +7,7 @@ const mockRegistry = {
 const mockMyotis = {
   NETWORKS: new Map([[1, {}], [100, {}]]),
   isReady: jest.fn(),
+  markUnhealthy: jest.fn(),
   getStatus: jest.fn(),
   getAccount: jest.fn(),
   ethCall: jest.fn(),
@@ -81,6 +82,28 @@ describe('chain-data-router', () => {
     expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
+  test.each(['eth_call', 'eth_estimateGas'])('preserves verified %s revert data without another source', async (method) => {
+    const native = method === 'eth_call' ? mockMyotis.ethCall : mockMyotis.estimateGas;
+    native.mockResolvedValue({ status: 'revert', dataHex: '0x08c379a0abcd' });
+    global.fetch = jest.fn();
+    await expect(request(1, method, [{ to: '0xabc' }])).rejects.toMatchObject({ code: 3, data: '0x08c379a0abcd' });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test.each([{ status: 'unavailable', reason: 'cancelled' }, { error: 'deadline exceeded' }])('falls through unavailable read shapes: %s', async (payload) => {
+    mockMyotis.ethCall.mockResolvedValue(payload);
+    mockRequestViaColibri.mockResolvedValue('0xfallback');
+    await expect(request(1, 'eth_call', [{ to: '0xabc' }])).resolves.toMatchObject({ source: 'colibri', result: '0xfallback' });
+  });
+
+  test('does not retry an in-band failed broadcast at another broadcaster', async () => {
+    mockMyotis.sendRawTransaction.mockResolvedValue({ error: 'connection lost' });
+    global.fetch = jest.fn();
+    await expect(broadcastRawTransaction(1, '0xsigned')).rejects.toMatchObject({ code: 'MYOTIS_BROADCAST_UNCERTAIN' });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   test('sends pending nonce reads to a source that honours the block tag', async () => {
     mockMyotis.getAccount.mockResolvedValue({ status: 'ok', nonce: 3 });
     mockRequestViaColibri.mockResolvedValue('0x5');
@@ -111,7 +134,7 @@ describe('chain-data-router', () => {
   });
 
   test('sends non-latest gas estimates to a source that honours the block tag', async () => {
-    mockMyotis.estimateGas.mockResolvedValue({ gasLimit: '21000' });
+    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 21000 });
     mockRequestViaColibri.mockResolvedValue('0x5208');
 
     await expect(
@@ -146,7 +169,7 @@ describe('chain-data-router', () => {
 
   test('sends calls carrying gas/fee/nonce fields to a source that honours them', async () => {
     mockMyotis.ethCall.mockResolvedValue({ resultHex: '0xhead' });
-    mockMyotis.estimateGas.mockResolvedValue({ gasLimit: '21000' });
+    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 21000 });
     mockRequestViaColibri.mockResolvedValue('0xcapped');
 
     await expect(
@@ -227,6 +250,15 @@ describe('chain-data-router', () => {
       '0xabc',
       'latest',
     ]);
+  });
+
+  test('does not fall through to another broadcaster after an uncertain Myotis outcome', async () => {
+    global.fetch = jest.fn();
+    mockMyotis.isReady.mockReturnValue(true);
+    const error = Object.assign(new Error('broadcast outcome uncertain'), { code: 'MYOTIS_BROADCAST_UNCERTAIN' });
+    mockMyotis.sendRawTransaction.mockRejectedValueOnce(error);
+    await expect(broadcastRawTransaction(100, '0xsigned')).rejects.toBe(error);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   test('uses Myotis P2P transaction broadcast before RPC', async () => {
@@ -373,7 +405,7 @@ describe('chain-data-router', () => {
   });
 
   test('keeps normalized call quantities usable by the Myotis estimator', async () => {
-    mockMyotis.estimateGas.mockResolvedValue({ gasLimit: '21000' });
+    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 21000 });
 
     await expect(
       request(100, 'eth_estimateGas', [{ to: '0xabc', value: '1000000000000000000' }])
@@ -381,6 +413,22 @@ describe('chain-data-router', () => {
     expect(mockMyotis.estimateGas).toHaveBeenCalledWith(
       expect.objectContaining({ value: '1000000000000000000' })
     );
+  });
+
+  test.each([
+    ['a decimal string', '21000'],
+    ['a hex string', '0x5208'],
+    ['a fractional number', 21000.5],
+    ['a number beyond the safe range', 2 ** 53],
+    ['a negative number', -1],
+  ])('refuses %s gas estimate from Myotis and uses another source', async (_label, gas) => {
+    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas });
+    mockRequestViaColibri.mockResolvedValue('0x5208');
+
+    await expect(request(1, 'eth_estimateGas', [{ to: '0xabc' }])).resolves.toMatchObject({
+      result: '0x5208',
+      source: 'colibri',
+    });
   });
 
   test('executes the standardized "input" calldata alias on the Myotis path', async () => {
@@ -395,7 +443,7 @@ describe('chain-data-router', () => {
   });
 
   test('estimates gas against the "input" calldata alias rather than an empty call', async () => {
-    mockMyotis.estimateGas.mockResolvedValue({ gasLimit: '54000' });
+    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 54000 });
 
     await expect(
       request(1, 'eth_estimateGas', [{ to: '0xabc', input: '0xa9059cbb' }])
@@ -580,7 +628,40 @@ describe('chain-data-router', () => {
     // still pass.
     const settled = await Promise.all(requests);
     expect(settled.map((entry) => entry.source)).toEqual(Array(6).fill('direct'));
+    expect(mockMyotis.markUnhealthy).not.toHaveBeenCalled();
     expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+  });
+
+  test('falls back at the caller deadline while a healthy Myotis read completes late', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    const slowRead = deferred();
+    mockMyotis.ethCall.mockReturnValueOnce(slowRead.promise)
+      .mockResolvedValue({ resultHex: '0xverified' });
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true, json: async () => ({ result: '0xrpc' }),
+    });
+    const options = { routingContext: { origin: 'https://swap.example' } };
+    const read = (to) => request(1, 'eth_call', [{ to, data: '0x1234' }, 'latest'], options);
+    const first = read('0x1111111111111111111111111111111111111111');
+    await jest.advanceTimersByTimeAsync(2000);
+    await expect(first).resolves.toMatchObject({ source: 'direct', result: '0xrpc' });
+    expect(mockMyotis.markUnhealthy).not.toHaveBeenCalled();
+
+    // Different route, same chain: native admission stays occupied until the
+    // first request actually settles, although its caller already has an answer.
+    const second = read('0x2222222222222222222222222222222222222222');
+    await jest.advanceTimersByTimeAsync(100);
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+    slowRead.resolve({ resultHex: '0xlate' });
+    await jest.advanceTimersByTimeAsync(0);
+    await expect(second).resolves.toMatchObject({ source: 'myotis', result: '0xverified' });
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(2);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(mockMyotis.markUnhealthy).not.toHaveBeenCalled();
   });
 
   test('serializes concurrent Myotis reads instead of downgrading the second one', async () => {

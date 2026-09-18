@@ -179,6 +179,22 @@ describe('site-permissions-ui prompt tab-scoping', () => {
     expect(els['permission-prompt-origin'].textContent).toBe('https://a.example');
   });
 
+  // #328: the prompt was the one address-bar popover outside the shared bound.
+  // With the chrome document pinned (`html, body { overflow: hidden }`) an
+  // unbounded prompt is clipped rather than scrollable: in a 220 px-tall window
+  // its bottom landed at 235 and the last rows — the Allow button among them —
+  // could not be reached at all.
+  test('is bounded to the window when it is shown, like its sibling popover', () => {
+    global.window.innerHeight = 220;
+    els['permission-prompt'].setRect({ top: 88, bottom: 235, height: 147 });
+
+    sendRequest({ id: 12, origin: 'https://a.example', keys: ['notifications'], guestId: 1 });
+
+    expect(promptVisible()).toBe(true);
+    // The room actually under it, measured from where it really is.
+    expect(els['permission-prompt'].style.maxHeight).toBe(`${220 - 88 - 8}px`);
+  });
+
   test("a background tab's request is held, not shown under the active tab", () => {
     sendRequest({ id: 11, origin: 'https://bg.example', keys: ['camera'], guestId: 2 });
 
@@ -255,6 +271,94 @@ describe('site-permissions-ui prompt tab-scoping', () => {
     switchTab(2);
     expect(promptVisible()).toBe(false);
     expect(api.respondToPrompt).not.toHaveBeenCalled();
+  });
+
+  // #306: Escape closes only the innermost open surface, as in Chrome, and
+  // consumes the press while doing it — navigation.js's window-level Escape
+  // (stop loading + restore the address bar) stands down on `defaultPrevented`,
+  // so dismissing a prompt over a still-loading page can't cancel that load.
+  test('Escape consumes the press only when it actually dismisses the prompt', () => {
+    const idle = { key: 'Escape', preventDefault: jest.fn() };
+    doc.handlers.keydown(idle);
+    expect(idle.preventDefault).not.toHaveBeenCalled();
+
+    sendRequest({ id: 16, origin: 'https://a.example', keys: ['camera'], guestId: 1 });
+    expect(promptVisible()).toBe(true);
+
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    doc.handlers.keydown(escape);
+    expect(promptVisible()).toBe(false);
+    expect(api.respondToPrompt).toHaveBeenCalledWith({
+      id: 16,
+      decision: 'dismiss',
+      remember: false,
+    });
+    expect(escape.preventDefault).toHaveBeenCalled();
+  });
+
+  // #306, dialog sibling: a page can request a permission at any moment,
+  // including while a modal <dialog> (the bookmark editor, the profile-create
+  // or external-node prompt, onboarding) is up. The prompt then sits behind
+  // the dialog's top layer, inert and un-answerable, and every gesture in that
+  // state belongs to the dialog. Answering the prompt from one of them denies
+  // the page's request behind the user's back — and the Escape's
+  // `preventDefault()` additionally cancels the dialog's own close request, so
+  // the dialog stays open too.
+  const openModalDialog = () => {
+    const dialog = createElement('dialog');
+    dialog.setAttribute('open', '');
+    doc.body.appendChild(dialog);
+    return dialog;
+  };
+
+  test('a modal dialog owns the Escape: the prompt behind it is neither dismissed nor consumed', () => {
+    sendRequest({ id: 17, origin: 'https://a.example', keys: ['notifications'], guestId: 1 });
+    expect(promptVisible()).toBe(true);
+
+    const dialog = openModalDialog();
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    doc.handlers.keydown(escape);
+
+    expect(promptVisible()).toBe(true);
+    expect(api.respondToPrompt).not.toHaveBeenCalled();
+    // Cancelling the press here would suppress the dialog's built-in cancel.
+    expect(escape.preventDefault).not.toHaveBeenCalled();
+
+    // Once the dialog is gone the prompt is the innermost surface again, and
+    // the next press dismisses it as a deny-once.
+    dialog.remove();
+    const next = { key: 'Escape', preventDefault: jest.fn() };
+    doc.handlers.keydown(next);
+    expect(promptVisible()).toBe(false);
+    expect(api.respondToPrompt).toHaveBeenCalledWith({
+      id: 17,
+      decision: 'dismiss',
+      remember: false,
+    });
+    expect(next.preventDefault).toHaveBeenCalled();
+  });
+
+  test('a click inside a modal dialog is not a click-away from the prompt behind it', () => {
+    sendRequest({ id: 18, origin: 'https://a.example', keys: ['camera'], guestId: 1 });
+    expect(promptVisible()).toBe(true);
+
+    const dialog = openModalDialog();
+    const field = createElement('input');
+    dialog.appendChild(field);
+    doc.handlers.click({ target: field });
+
+    expect(promptVisible()).toBe(true);
+    expect(api.respondToPrompt).not.toHaveBeenCalled();
+
+    // With the dialog closed, an ordinary click-away still dismisses.
+    dialog.remove();
+    doc.handlers.click({ target: doc.body });
+    expect(promptVisible()).toBe(false);
+    expect(api.respondToPrompt).toHaveBeenCalledWith({
+      id: 18,
+      decision: 'dismiss',
+      remember: false,
+    });
   });
 });
 
@@ -333,5 +437,100 @@ describe('site-permissions-ui popover revoke label', () => {
 
     buttons[0].dispatch('click');
     expect(api.revoke).toHaveBeenCalledWith('https://a.example', 'camera');
+  });
+});
+
+// #364: an embargoed permission is the one block the user never chose —
+// the site simply stopped asking after three dismissals. So it has to
+// reach the address-bar indicator (the popover is where it is explained
+// and lifted), and the row has to say why, or "Blocked (this session)"
+// reads as a decision the user made.
+describe('site-permissions-ui dismissal embargo', () => {
+  const originalDocument = global.document;
+  const originalWindow = global.window;
+
+  let els;
+  let api;
+
+  const mount = async (decisions) => {
+    _resetForTests();
+    els = {
+      'permission-prompt': createElement('div'),
+      'permission-prompt-origin': createElement('span'),
+      'permission-prompt-action': createElement('span'),
+      'permission-prompt-note': createElement('div'),
+      'permission-prompt-remember-label': createElement('label'),
+      'permission-prompt-remember': createElement('input'),
+      'permission-prompt-allow': createElement('button'),
+      'permission-prompt-block': createElement('button'),
+      'permission-indicator': createElement('button'),
+      'permission-popover': createElement('div'),
+      'permission-popover-title': createElement('div'),
+      'permission-popover-list': createElement('div'),
+    };
+    els['permission-prompt'].hidden = true;
+    els['permission-popover'].hidden = true;
+    global.document = createDocument({ elementsById: els });
+
+    api = {
+      onPromptRequest: jest.fn(),
+      onPromptCancel: jest.fn(),
+      onOsDenied: jest.fn(),
+      onChanged: jest.fn(),
+      respondToPrompt: jest.fn(() => Promise.resolve(true)),
+      getForOrigin: jest.fn(() => Promise.resolve(decisions)),
+      revoke: jest.fn(() => Promise.resolve(true)),
+    };
+    global.window = { sitePermissions: api, addEventListener: jest.fn() };
+    mockActiveWebview = { getWebContentsId: () => 1 };
+    getDisplayUrlForWebview.mockReturnValue('https://a.example/page');
+    initSitePermissionsUi();
+    // Let the indicator refresh kicked off by init resolve.
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  const indicatorHidden = () => els['permission-indicator'].classList.contains('hidden');
+  const rowStatuses = () =>
+    els['permission-popover-list']
+      .querySelectorAll('.permission-popover-row-status')
+      .map((el) => el.textContent);
+
+  afterEach(() => {
+    global.document = originalDocument;
+    global.window = originalWindow;
+    mockActiveWebview = null;
+    getDisplayUrlForWebview.mockReturnValue('');
+  });
+
+  test('an embargo shows the indicator and says it came from dismissals', async () => {
+    await mount({
+      notifications: { decision: 'deny', remembered: false, embargoed: true },
+    });
+
+    expect(indicatorHidden()).toBe(false);
+    els['permission-indicator'].dispatch('click');
+    expect(rowStatuses()).toEqual(['Blocked after repeated dismissals (this session)']);
+
+    // And the row's Remove is the reset: it revokes the embargoed key.
+    const buttons = els['permission-popover-list'].querySelectorAll('.permission-popover-revoke');
+    buttons[0].dispatch('click');
+    expect(api.revoke).toHaveBeenCalledWith('https://a.example', 'notifications');
+  });
+
+  test("a block the user chose keeps the status quo: no indicator, plain 'Blocked'", async () => {
+    await mount({
+      notifications: { decision: 'deny', remembered: false },
+      geolocation: { decision: 'deny', remembered: true },
+    });
+
+    expect(indicatorHidden()).toBe(true);
+    els['permission-indicator'].dispatch('click');
+    expect(rowStatuses()).toEqual(['Blocked (this session)', 'Blocked']);
+  });
+
+  test('a grant still shows the indicator', async () => {
+    await mount({ camera: { decision: 'allow', remembered: true } });
+    expect(indicatorHidden()).toBe(false);
   });
 });
