@@ -1310,4 +1310,167 @@ test.describe('Search settings (#281)', () => {
       await page.evaluate(() => document.querySelectorAll('.settings-search-hit').length)
     ).toBe(0);
   });
+
+  // Three things the index reads the page wrongly about, all in the live DOM
+  // because all three are rendered from IPC state or from a controller's
+  // transient view state:
+  //
+  //  - a chain is named only in the Chains master list, whose rows are
+  //    `.net-row` buttons rather than any of the shapes above — so a chain
+  //    the user added themselves was findable nowhere on this page;
+  //  - Site Permissions' empty state is a status message written as a row,
+  //    which the index offered as a setting to jump to and accent-mark;
+  //  - the add-a-chain flow renders into the Chains section without a hash of
+  //    its own, so while it is open its `<h2>` was that section's heading.
+  test('a chain is findable by name, and a status message or an open form is not', async ({
+    window,
+    electronApp,
+  }) => {
+    await openSettings(window, expect);
+    let page;
+    await expect
+      .poll(() => {
+        page = electronApp
+          .windows()
+          .find((candidate) => candidate.url().includes('/pages/settings.html'));
+        return Boolean(page);
+      })
+      .toBe(true);
+
+    const search = (query) =>
+      page.evaluate((q) => {
+        const field = document.getElementById('settings-search');
+        field.value = q;
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        return Array.from(
+          document.querySelectorAll('#settings-search-list .settings-search-result'),
+          (row) => [
+            row.querySelector('.row-label').textContent,
+            row.querySelector('.settings-search-section').textContent,
+          ]
+        );
+      }, query);
+    const clear = () =>
+      page.evaluate(() => {
+        const field = document.getElementById('settings-search');
+        field.value = '';
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+
+    // 1. A custom chain, added the way the Chains page adds one. It exists in
+    // no other section's markup, so the master list is the only thing that
+    // can answer for it.
+    await page.evaluate(() =>
+      window.freedomAPI.addChain(
+        {
+          chainId: 424243,
+          name: 'Searchnet',
+          nativeCurrency: { name: 'Search', symbol: 'SRCH', decimals: 18 },
+        },
+        ['https://rpc.searchnet.example']
+      )
+    );
+    // Added from the Chains page, the way a user adds one, then left behind:
+    // the index reads each section's live markup, so this is also the search
+    // asking a section the user is not on.
+    await page.evaluate(() => {
+      location.hash = 'chains';
+    });
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          Array.from(document.querySelectorAll('#chains-view .net-row-name'), (el) =>
+            el.textContent.trim()
+          )
+        )
+      )
+      .toContain('Searchnet');
+    await page.evaluate(() => {
+      location.hash = 'appearance';
+    });
+    await expect(page.locator('#appearance')).toBeVisible();
+
+    expect(await search('searchnet')).toEqual([['Searchnet', 'Chains']]);
+    // …and by its chain id, which is the sub-line under the name.
+    expect(await search('chain 424243')).toEqual([['Searchnet', 'Chains']]);
+    // A built-in chain answers the same way — this is the list, not the one
+    // chain that happens to be custom.
+    expect(await search('gnosis')).toContainEqual(['Gnosis Chain', 'Chains']);
+
+    // Clicking it opens Chains and marks that chain's own row, with the wash
+    // as well as the edge (a `.net-row` declares its own background).
+    expect(await search('searchnet')).toEqual([['Searchnet', 'Chains']]);
+    await page.locator('#settings-search-list .settings-search-result').first().click();
+    await expect(page.locator('#chains')).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const hit = document.querySelector('.settings-search-hit');
+          return hit ? [hit.querySelector('.net-row-name')?.textContent, hit.dataset.chain] : null;
+        })
+      )
+      .toEqual(['Searchnet', '424243']);
+    expect(
+      await page.evaluate(() => {
+        const hit = document.querySelector('.settings-search-hit');
+        const wash = document.createElement('div');
+        wash.style.background = 'var(--accent-muted)';
+        hit.appendChild(wash);
+        const [style, expected] = [getComputedStyle(hit), getComputedStyle(wash).backgroundColor];
+        wash.remove();
+        // Not `transparent`: `.net-row`'s own `background` declaration is
+        // further down the sheet with the same specificity, so without
+        // `.net-row.settings-search-hit` the jump lands with the edge alone.
+        return [style.boxShadow.includes('inset'), style.backgroundColor === expected];
+      })
+    ).toEqual([true, true]);
+    await clear();
+
+    // 2. Site Permissions with nothing saved renders "No saved permissions"
+    // as a row. It is a sentence, not a control: offered as a result it jumps
+    // to and accent-marks a status message.
+    await page.evaluate(() => {
+      location.hash = 'permissions';
+    });
+    await expect.poll(() => page.locator('#permissions-view .row').count()).toBe(1);
+    await expect(page.locator('#permissions-view .row-label')).toHaveText('No saved permissions');
+    expect(await search('saved permissions')).toEqual([]);
+    expect(await search('no saved')).toEqual([]);
+    // The section itself is still findable — only the message is not.
+    expect(await search('site permissions')).toContainEqual([
+      'Site Permissions',
+      'Site Permissions',
+    ]);
+    await clear();
+
+    // 3. The add-a-chain flow, opened in place on #chains — no hash change,
+    // so nothing else on the page knows it is up.
+    await page.evaluate(() => {
+      location.hash = 'chains';
+    });
+    await expect.poll(() => page.locator('#chains-view .net-row').count()).toBeGreaterThan(0);
+    await page.locator('#chains-view button[data-action="add-chain"]').click();
+    await expect(page.locator('#chains-view .section-title')).toHaveText('Add a chain');
+    expect(await page.evaluate(() => location.hash)).toBe('#chains');
+
+    // The Chains section still answers to its own name, from the nav label
+    // the builder falls back to…
+    expect(await search('chains')).toContainEqual(['Chains', 'Chains']);
+    // …and the form is not offered as somewhere to go.
+    expect(await search('add a chain')).toEqual([]);
+    expect(await search('public chain catalogue')).toEqual([]);
+    await clear();
+
+    // Clearing the field hands the form back intact — the skip marker takes
+    // it out of the index, not out of the page — and leaving still clears it.
+    await expect(page.locator('#chain-search-input')).toBeVisible();
+    await page.evaluate(() => {
+      location.hash = 'appearance';
+    });
+    await expect(page.locator('#appearance')).toBeVisible();
+    await expect(page.locator('#chains-view .section-title')).toHaveText('Chains');
+
+    // Leave the shared fixture as it was found.
+    await page.evaluate(() => window.freedomAPI.removeChain('424243'));
+  });
 });

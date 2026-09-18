@@ -422,6 +422,83 @@ describe('buildSettingsSearchIndex', () => {
       'Labelled',
     ]);
   });
+
+  test('indexes the chain master list, where a chain is the only thing named', () => {
+    // Chains renders its list as `.net-row` buttons carrying `.net-row-name`
+    // / `.net-row-sub` instead of the `.row-label` / `.row-help` pair the
+    // rest of the page uses. A custom chain the user added exists nowhere
+    // else in this page's markup, so an index blind to these rows answers
+    // "base" with "No settings match".
+    expect(SOURCE).toContain('<span class="net-row-name">');
+    expect(SOURCE).toContain('<span class="net-row-sub">');
+    const netRow = (name, sub) =>
+      `<button type="button" class="net-row" data-action="open-chain"><span class="net-row-text">` +
+      `<span class="net-row-name">${name}</span><span class="net-row-sub">${sub}</span></span>` +
+      '<span class="net-chevron">›</span></button>';
+    const fragment = parseFragment(
+      '<section class="section" id="chains"><div id="chains-view">' +
+        '<h2 class="section-title">Chains</h2>' +
+        `<div class="card">${netRow('Gnosis', 'chain 100')}${netRow('Base', 'chain 8453')}</div>` +
+        '</div></section>'
+    );
+    const entries = buildSettingsSearchIndex(fragment);
+    expect(entries.map((entry) => entry.label)).toEqual(['Chains', 'Gnosis', 'Base']);
+    expect(matchSettingsSearch(entries, 'base')[0]).toMatchObject({
+      label: 'Base',
+      section: 'Chains',
+      rank: 0,
+    });
+    // The sub-line describes the row, the way a `.row-help` does — so a
+    // chain is findable by its id as well as by its name.
+    expect(entries.find((entry) => entry.label === 'Gnosis').help).toBe('chain 100');
+    expect(matchSettingsSearch(entries, 'chain 8453')[0]).toMatchObject({
+      label: 'Base',
+      rank: 2,
+    });
+  });
+
+  test('leaves out markup marked as not a setting, and everything under it', () => {
+    // `settings-search-skip`: Site Permissions' empty and error states are
+    // status messages written as rows ("No saved permissions"), and offering
+    // one as a result jumps to and accent-marks a sentence.
+    expect(SOURCE).toContain('<div class="row settings-search-skip">');
+    const fragment = parseFragment(
+      '<section class="section" id="permissions"><h2 class="section-title">Site Permissions</h2>' +
+        '<div class="card"><div class="row settings-search-skip"><div class="row-body">' +
+        '<p class="row-label">No saved permissions</p>' +
+        '<p class="row-help">Sites you allow or block appear here.</p>' +
+        '</div></div></div></section>'
+    );
+    expect(buildSettingsSearchIndex(fragment).map((entry) => entry.label)).toEqual([
+      'Site Permissions',
+    ]);
+    expect(matchSettingsSearch(buildSettingsSearchIndex(fragment), 'saved permissions')).toEqual(
+      []
+    );
+  });
+
+  test('a marked wrapper hides a whole transient view, heading included', () => {
+    // The in-place add-a-chain flow renders into the Chains section without a
+    // hash of its own, so while it is open its `<h2>` is the only
+    // `.section-title` that section has: unmarked, "chains" stops finding
+    // Chains and "add a chain" offers a form as a section to open.
+    expect(SOURCE).toContain('<div class="settings-search-skip">');
+    expect(SOURCE).toContain('<h2 class="section-title">Add a chain</h2>');
+    const fragment = parseFragment(
+      '<section class="section" id="chains"><div id="chains-view">' +
+        '<div class="settings-search-skip">' +
+        '<h2 class="section-title">Add a chain</h2>' +
+        '<p class="row-help">Search the public chain catalogue.</p>' +
+        '<div class="card"><div class="row"><div class="row-body">' +
+        '<p class="row-label">Chain ID</p></div></div></div>' +
+        '</div></div></section>'
+    );
+    const entries = buildSettingsSearchIndex(fragment, { sectionLabels: { chains: 'Chains' } });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ sectionId: 'chains', label: 'Chains', help: '' });
+    expect(matchSettingsSearch(entries, 'chains')[0].label).toBe('Chains');
+    expect(matchSettingsSearch(entries, 'add a chain')).toEqual([]);
+  });
 });
 
 describe('matchSettingsSearch', () => {

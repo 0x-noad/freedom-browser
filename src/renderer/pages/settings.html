@@ -269,9 +269,13 @@
          the control rather than on the section it is somewhere inside. The
          accent wash alone is 12% alpha and disappears under `.row.sub`'s own
          fill, hence the accent edge; the selector carries `.row` so it wins
-         against `.row.sub`, declared just above. */
+         against `.row.sub`, declared just above, and `.net-row` for the same
+         reason — a chain master-list row declares its own `background` far
+         below this rule, and one class each would leave the jumped-to chain
+         with the edge and no wash. */
       .settings-search-hit,
-      .row.settings-search-hit {
+      .row.settings-search-hit,
+      .net-row.settings-search-hit {
         background: var(--accent-muted);
         box-shadow: inset 3px 0 0 var(--accent);
       }
@@ -2104,12 +2108,21 @@
       /* settings-search helpers: start */
       const settingsSearchText = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
 
+      // Markup that wears a setting's clothes without being one, marked by
+      // whoever renders it: a status message written as a row ("No saved
+      // permissions"), and the transient add-a-chain flow, whose own `<h2>`
+      // would otherwise answer for the Chains section it renders inside. The
+      // marker covers the whole subtree under it, so one on a wrapper takes
+      // a view out of the index entirely.
+      const SETTINGS_SEARCH_SKIP = 'settings-search-skip';
+
       // Every element under `el` carrying one of `names` (a class, or a list
       // of them), not descending into a match: rows never nest, and a
       // `.row-help` belongs to the row it is under.
       const settingsSearchCollect = (el, names, out = []) => {
         const wanted = Array.isArray(names) ? names : [names];
         for (const child of Array.from(el?.children || [])) {
+          if (child.classList?.contains(SETTINGS_SEARCH_SKIP)) continue;
           if (wanted.some((name) => child.classList?.contains(name))) out.push(child);
           else settingsSearchCollect(child, names, out);
         }
@@ -2126,7 +2139,18 @@
       // Those are where "Colibri", "RPC quorum", "Myotis" and the two
       // resolver settings are named, so leaving them out would make the whole
       // resolution policy unsearchable.
-      const SETTINGS_SEARCH_ROWS = ['row', 'resolver-method', 'resolver-config'];
+      // The chain master list is the fourth: its `.net-row` buttons are the
+      // only place a chain — a custom one above all, which exists nowhere
+      // else on the page — is named, so leaving them out makes a chain
+      // unfindable by the name the user gave it.
+      const SETTINGS_SEARCH_ROWS = ['row', 'resolver-method', 'resolver-config', 'net-row'];
+
+      // What names a row, and what describes it under that name. A `.net-row`
+      // carries the same pair under its own class names (`Gnosis` / `chain
+      // 100`) rather than the `.row-label` / `.row-help` every other row on
+      // the page uses.
+      const SETTINGS_SEARCH_LABELS = ['row-label', 'net-row-name'];
+      const SETTINGS_SEARCH_HELP = ['row-help', 'net-row-sub'];
 
       // A row this build has switched off is not a setting the user has, and
       // offering it would jump to nothing: the `[data-tor]` rows on a build
@@ -2145,7 +2169,10 @@
       const settingsSearchRows = (section) =>
         settingsSearchCollect(section, SETTINGS_SEARCH_ROWS)
           .filter((row) => !settingsSearchHidden(row))
-          .map((row) => ({ row, label: settingsSearchText(settingsSearchFirst(row, 'row-label')) }))
+          .map((row) => ({
+            row,
+            label: settingsSearchText(settingsSearchFirst(row, SETTINGS_SEARCH_LABELS)),
+          }))
           .filter((entry) => entry.label);
 
       // One entry per section plus one per labelled row, in document order.
@@ -2190,7 +2217,9 @@
               section: sectionLabel,
               label,
               labelIndex,
-              help: settingsSearchCollect(row, 'row-help').map(settingsSearchText).join(' '),
+              help: settingsSearchCollect(row, SETTINGS_SEARCH_HELP)
+                .map(settingsSearchText)
+                .join(' '),
               element: row,
             });
           }
@@ -3685,26 +3714,38 @@
             )
             .join('');
           view.innerHTML = `
-            <button type="button" class="back-link" data-action="add-back">‹ Search</button>
-            <h2 class="section-title">${esc(c.name)}</h2>
-            <p class="row-help" style="margin-bottom: 16px">Review and confirm.</p>
-            <div class="card">${rowsHtml}</div>
-            ${addState.error ? `<p class="rpc-status error" style="margin: 8px 0 0">${esc(addState.error)}</p>` : ''}
-            ${cardButton('Add chain', 'confirm-add')}`;
+            <div class="settings-search-skip">
+              <button type="button" class="back-link" data-action="add-back">‹ Search</button>
+              <h2 class="section-title">${esc(c.name)}</h2>
+              <p class="row-help" style="margin-bottom: 16px">Review and confirm.</p>
+              <div class="card">${rowsHtml}</div>
+              ${addState.error ? `<p class="rpc-status error" style="margin: 8px 0 0">${esc(addState.error)}</p>` : ''}
+              ${cardButton('Add chain', 'confirm-add')}
+            </div>`;
         };
 
+        // The flow is a form the user opened, not settings this page has, and
+        // it is rendered *into* the Chains section without a hash of its own:
+        // its `<h2>` would become that section's index label (so "chains"
+        // stops finding Chains and "add a chain" offers the form as a
+        // section) and its confirmation rows would be offered as settings.
+        // Hence the skip marker on the wrapper — a plain block box, so the
+        // view lays out as it did — rather than on each piece, which the next
+        // line added to either render would silently miss.
         const renderAdd = () => {
           if (addState.picked) {
             renderAddConfirm();
             return;
           }
           view.innerHTML = `
-            <button type="button" class="back-link" data-action="cancel-add">‹ Chains</button>
-            <h2 class="section-title">Add a chain</h2>
-            <p class="row-help" style="margin-bottom: 16px">
-              Search the public chain catalogue, or enter a chain manually.
-            </p>
-            ${addState.mode === 'manual' ? manualHtml() : searchHtml()}`;
+            <div class="settings-search-skip">
+              <button type="button" class="back-link" data-action="cancel-add">‹ Chains</button>
+              <h2 class="section-title">Add a chain</h2>
+              <p class="row-help" style="margin-bottom: 16px">
+                Search the public chain catalogue, or enter a chain manually.
+              </p>
+              ${addState.mode === 'manual' ? manualHtml() : searchHtml()}
+            </div>`;
           $(addState.mode === 'manual' ? 'man-chainid' : 'chain-search-input')?.focus();
         };
 
@@ -5141,8 +5182,13 @@
 
           if (revokeAll) revokeAll.disabled = origins.length === 0;
 
+          // The empty state and the error state below are status messages in
+          // a row's clothing, so both carry the page-wide search's skip
+          // marker: indexed, "No saved permissions" is offered as a setting
+          // to jump to and marked with the accent edge that means "here is
+          // your control" (#281).
           if (origins.length === 0) {
-            view.innerHTML = `<div class="card"><div class="row"><div class="row-body">
+            view.innerHTML = `<div class="card"><div class="row settings-search-skip"><div class="row-body">
                  <p class="row-label">No saved permissions</p>
                  <p class="row-help">Sites you allow or block with
                  “Remember for this site” appear here.</p>
@@ -5198,7 +5244,7 @@
             // this replaces, so the error render has to disable it itself —
             // offering to wipe state the page just said it cannot read.
             if (revokeAll) revokeAll.disabled = true;
-            view.innerHTML = `<div class="card"><div class="row"><div class="row-body">
+            view.innerHTML = `<div class="card"><div class="row settings-search-skip"><div class="row-body">
               <p class="row-label">Could not load site permissions</p>
               <p class="row-help">${esc(err?.message || String(err))}</p>
             </div></div></div>`;
