@@ -647,11 +647,23 @@ function renderSuccess() {
     <p class="create-wallet-message">${escapeHtml(capitalize(summaryLine()))}.</p>
     ${executed?.explorerUrl ? `
       <a href="${escapeHtml(executed.explorerUrl)}" target="_blank" rel="noreferrer"
-         class="recent-payments-link">View on explorer →</a>
+         class="recent-payments-link" id="safe-signing-explorer-link">View on explorer →</a>
     ` : ''}
     <button type="button" class="create-wallet-done-btn" id="safe-signing-done">Done</button>
   `;
   document.getElementById('safe-signing-done')?.addEventListener('click', closeSafeSigning);
+  // Open in a tab, like the Send screen's explorer link: the chrome window
+  // denies every popup of its own (docs/security-audit-electron.md, E-2), so
+  // a bare target="_blank" here would do nothing.
+  const explorerLink = document.getElementById('safe-signing-explorer-link');
+  explorerLink?.addEventListener('click', (event) => {
+    event.preventDefault();
+    // Loaded on click: a static import would pull the whole tab strip into
+    // this module (and its tests) for one link.
+    if (executed?.explorerUrl) {
+      import('../tabs.js').then(({ createTab }) => createTab(executed.explorerUrl));
+    }
+  });
 }
 
 function renderSuperseded() {
