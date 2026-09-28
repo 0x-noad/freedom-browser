@@ -269,6 +269,34 @@ describe('webview tiers mirror webview-preload.js', () => {
     );
   });
 
+  // CALL only recognises a single-quoted literal channel, so any other shape
+  // (double quotes, a template literal, a constant, a computed name) would be
+  // invisible to the tier comparison above — CI green, while the runtime
+  // policy refuses the unlisted channel and the feature is dead in the app.
+  // Every main-bound call must therefore name its channel as a plain
+  // single-quoted literal. (sendToHost goes to the embedder, not ipcMain.)
+  test('every main-bound preload call names its channel as a single-quoted literal', () => {
+    // Dot or bracket access; only the plain `ipcRenderer.<method>('…'` form
+    // is the one CALL reads, so anything else is an offender.
+    const anyCall = /ipcRenderer\s*(\.\s*|\[)\s*['"`]?(invoke|send|sendSync|postMessage)\b/g;
+    const literal = /^\(\s*'[^'\\$`]+'\s*[,)]/;
+    const offenders = [];
+    let total = 0;
+    for (const match of source.matchAll(anyCall)) {
+      total += 1;
+      const rest = source.slice(match.index + match[0].length, match.index + match[0].length + 200);
+      if (match[1] !== '.' || match[2] === 'postMessage' || !literal.test(rest)) {
+        const line = source.slice(0, match.index).split('\n').length;
+        offenders.push(`webview-preload.js:${line}: ${source.slice(match.index, match.index + 80).split('\n')[0]}`);
+      }
+    }
+    expect(total).toBeGreaterThan(50);
+    expect(offenders).toEqual([]);
+    // Nor may ipcRenderer escape under another name the scan can't see.
+    expect(source).not.toMatch(/=\s*ipcRenderer\s*[;,\n]/);
+    expect(source).not.toMatch(/\{[^}]*\b(invoke|send|sendSync)\b[^}]*\}\s*=\s*ipcRenderer/);
+  });
+
   test('get-theme is only read inside installInternalPageTheme', () => {
     const fn = source.indexOf('function installInternalPageTheme');
     const call = source.indexOf("sendSync('internal:get-theme')");

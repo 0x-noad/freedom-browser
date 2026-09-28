@@ -27,6 +27,7 @@ import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-st
 import { escapeHtml, truncateAddress, formatRawTokenBalance, walletRecord, timeAgo } from './wallet-utils.js';
 import { refreshBalances } from './balance-display.js';
 import { showVaultUnlock } from './vault-unlock.js';
+import { bindExplorerLink } from './explorer-link.js';
 
 // DOM references
 let screen;
@@ -654,16 +655,15 @@ function renderSuccess() {
   document.getElementById('safe-signing-done')?.addEventListener('click', closeSafeSigning);
   // Open in a tab, like the Send screen's explorer link: the chrome window
   // denies every popup of its own (docs/security-audit-electron.md, E-2), so
-  // a bare target="_blank" here would do nothing.
-  const explorerLink = document.getElementById('safe-signing-explorer-link');
-  explorerLink?.addEventListener('click', (event) => {
-    event.preventDefault();
-    // Loaded on click: a static import would pull the whole tab strip into
+  // a bare target="_blank" here would do nothing — for a click or a
+  // middle-click alike (see explorer-link.js).
+  bindExplorerLink(
+    document.getElementById('safe-signing-explorer-link'),
+    () => executed?.explorerUrl,
+    // Loaded on use: a static import would pull the whole tab strip into
     // this module (and its tests) for one link.
-    if (executed?.explorerUrl) {
-      import('../tabs.js').then(({ createTab }) => createTab(executed.explorerUrl));
-    }
-  });
+    (url, options) => import('../tabs.js').then(({ createTab }) => createTab(url, options))
+  );
 }
 
 function renderSuperseded() {
