@@ -375,4 +375,45 @@ describe('preload', () => {
     expect(callback).not.toHaveBeenCalled();
     cleanup();
   });
+
+  describe('E2E harness bridge (freedomTest)', () => {
+    const originalTestMode = process.env.FREEDOM_TEST_MODE;
+    afterEach(() => {
+      if (originalTestMode === undefined) delete process.env.FREEDOM_TEST_MODE;
+      else process.env.FREEDOM_TEST_MODE = originalTestMode;
+    });
+
+    test('is absent outside FREEDOM_TEST_MODE', () => {
+      for (const value of [undefined, '', '0', 'true']) {
+        if (value === undefined) delete process.env.FREEDOM_TEST_MODE;
+        else process.env.FREEDOM_TEST_MODE = value;
+        const { exposures } = loadPreloadModule();
+        expect(exposures).not.toHaveProperty('freedomTest');
+      }
+    });
+
+    test('in test mode, forwards only its named operations to test:* channels', async () => {
+      process.env.FREEDOM_TEST_MODE = '1';
+      const { exposures, ipcRenderer } = loadPreloadModule({
+        invokeResponses: { 'test:app-facts': { packaged: true } },
+      });
+      expect(Object.keys(exposures.freedomTest)).toEqual(['invoke']);
+
+      await expect(exposures.freedomTest.invoke('app-facts')).resolves.toEqual({ packaged: true });
+      expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('test:app-facts', undefined);
+
+      const fixture = { url: 'bzz://x/', body: '<p>' };
+      await exposures.freedomTest.invoke('set-content-fixture', fixture);
+      expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('test:set-content-fixture', fixture);
+
+      // Not a generic channel: anything else is refused before it reaches IPC,
+      // including real test:* handlers the bridge does not list and non-test
+      // channels spelled to look like one.
+      ipcRenderer.invoke.mockClear();
+      for (const op of ['reset-fixtures', 'set-ens-fixture', '../wallet:send-transaction', '']) {
+        await expect(exposures.freedomTest.invoke(op)).rejects.toThrow(/Unknown test harness/);
+      }
+      expect(ipcRenderer.invoke).not.toHaveBeenCalled();
+    });
+  });
 });

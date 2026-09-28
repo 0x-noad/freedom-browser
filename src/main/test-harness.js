@@ -473,6 +473,32 @@ function registerTestOps() {
     ens: [...ensFixtures.keys()],
     probes: [...probeFixtures.keys()],
   }));
+
+  replaceHandler('test:app-facts', () => appFacts(require('electron')));
+}
+
+// Fixed, read-only facts about the running build that the packaged smoke tests
+// assert on. Those tests reach the app over CDP (test-e2e/packaged-launch.js),
+// because the EnableNodeCliInspectArguments fuse is off in packaged builds and
+// Playwright's `electronApp.evaluate()` needs the Node inspector. This op is
+// deliberately a fixed answer rather than an evaluate-anything hook: a generic
+// "run this in main" channel would give back, to anyone who can set
+// FREEDOM_TEST_MODE, the Node-in-main access the fuse takes away.
+function appFacts({ app, BrowserWindow }) {
+  return {
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+    packaged: app.isPackaged,
+    execPath: process.execPath,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    version: app.getVersion(),
+    name: app.getName(),
+    windows: BrowserWindow.getAllWindows().map((win) => ({
+      title: win.getTitle(),
+      destroyed: win.isDestroyed(),
+    })),
+  };
 }
 
 // Neutralize profile "open"/switch in test mode: opening a profile normally
@@ -595,4 +621,5 @@ module.exports = {
   // that's needed. No-op guard lives in the caller (only invoked when
   // isTestMode()).
   registerStubProtocols,
+  appFacts,
 };

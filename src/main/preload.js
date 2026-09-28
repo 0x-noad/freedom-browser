@@ -780,3 +780,19 @@ contextBridge.exposeInMainWorld('swarmFeedStore', {
     ipcRenderer.invoke('swarm:set-feed-identity', origin, identityMode),
   revokeFeedAccess: (origin) => ipcRenderer.invoke('swarm:revoke-feed-access', origin),
 });
+
+// E2E harness bridge, present only when FREEDOM_TEST_MODE=1 (the main-process
+// `test:*` handlers in test-harness.js exist only then too). The packaged smoke
+// tests drive the app over CDP, since the EnableNodeCliInspectArguments fuse
+// takes Playwright's main-process evaluate away (test-e2e/packaged-launch.js),
+// and reach the harness through this. A fixed list of named operations, never
+// a generic channel: see appFacts() in test-harness.js for why.
+const TEST_HARNESS_OPS = new Set(['app-facts', 'set-content-fixture']);
+if (process.env.FREEDOM_TEST_MODE === '1') {
+  contextBridge.exposeInMainWorld('freedomTest', {
+    invoke: (op, payload) =>
+      TEST_HARNESS_OPS.has(op)
+        ? ipcRenderer.invoke(`test:${op}`, payload)
+        : Promise.reject(new Error(`Unknown test harness operation: ${op}`)),
+  });
+}

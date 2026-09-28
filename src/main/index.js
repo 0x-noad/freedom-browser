@@ -8,6 +8,13 @@ const { app, dialog, ipcMain } = require('electron');
 require('./ipc-sender-policy').installIpcSenderPolicy(ipcMain, {
   logger: { warn: (...args) => require('./logger').warn(...args) },
 });
+
+// Packaged builds drop --remote-debugging-port/-pipe unless the launch was
+// pointed at a scratch E2E profile (docs/security-audit-electron.md, O-4).
+// Must run before Chromium starts its DevTools handler; logged further down,
+// once the logger may initialise.
+const removedDebugSwitches = require('./remote-debugging-gate').applyRemoteDebuggingGate({ app });
+
 const appName = app.isPackaged
   ? process.platform === 'linux'
     ? 'freedom'
@@ -127,6 +134,13 @@ app.setAboutPanelOptions({
 });
 
 const log = require('./logger');
+
+if (removedDebugSwitches.length) {
+  log.warn(
+    `[security] Ignored ${removedDebugSwitches.map((name) => `--${name}`).join(', ')}: ` +
+      'remote debugging is only available to E2E runs on a scratch profile'
+  );
+}
 
 // Global error handlers - must be set up early
 process.on('uncaughtException', (error) => {
