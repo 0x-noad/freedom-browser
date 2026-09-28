@@ -1102,6 +1102,14 @@ describe('webview-preload', () => {
       }),
       parentElement: global.document.body,
     });
+    // Trusted input events as the window capture listener sees them.
+    const press = (type, overrides = {}) => ({
+      type,
+      pointerType: 'mouse',
+      isTrusted: true,
+      ...overrides,
+    });
+    const key = (k, overrides = {}) => ({ type: 'keydown', key: k, isTrusted: true, ...overrides });
     const syntheticClick = (anchor, overrides = {}) => ({
       target: anchor,
       button: 0,
@@ -1169,7 +1177,7 @@ describe('webview-preload', () => {
     test('one gesture opens one tab: a second scripted click in it opens nothing', () => {
       const { documentCaptureHandlers, windowCaptureHandlers, ipcRenderer } =
         loadWebviewPreloadModule({ userActivation: { isActive: true, hasBeenActive: true } });
-      windowCaptureHandlers.pointerdown({ isTrusted: true });
+      windowCaptureHandlers.pointerdown(press('pointerdown'));
 
       documentCaptureHandlers.click(syntheticClick(blankAnchor()));
       const second = syntheticClick(blankAnchor());
@@ -1183,15 +1191,15 @@ describe('webview-preload', () => {
       expect(third.preventDefault).toHaveBeenCalled();
 
       // A page dispatching its own "activation" events earns nothing.
-      windowCaptureHandlers.pointerdown({ isTrusted: false });
-      windowCaptureHandlers.keydown({ isTrusted: false });
+      windowCaptureHandlers.pointerdown(press('pointerdown', { isTrusted: false }));
+      windowCaptureHandlers.keydown(key('a', { isTrusted: false }));
       documentCaptureHandlers.click(syntheticClick(blankAnchor()));
       expect(
         ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate')
       ).toHaveLength(1);
 
       // The next real gesture buys exactly one more.
-      windowCaptureHandlers.keydown({ isTrusted: true });
+      windowCaptureHandlers.keydown(key('a'));
       documentCaptureHandlers.click(syntheticClick(blankAnchor()));
       documentCaptureHandlers.click(syntheticClick(blankAnchor()));
       expect(
@@ -1199,32 +1207,79 @@ describe('webview-preload', () => {
       ).toHaveLength(2);
     });
 
-    // One physical press fires pointerdown, mousedown, pointerup, mouseup
-    // (touch: pointerdown, pointerup, touchend), all trusted. Only the first
-    // opens an epoch, or a page with a handler on each could open one tab per
-    // event of a single click.
+    // One physical press fires several activation-triggering events, all
+    // trusted. Only the one Chromium grants activation on opens an epoch, or a
+    // page with a handler on each could open one tab per event of a single
+    // click. Mouse and pen activate at pointerdown, touch at pointerup.
     test.each([
-      ['mouse', ['pointerdown', 'mousedown', 'pointerup', 'mouseup']],
-      ['touch', ['pointerdown', 'touchstart', 'pointerup', 'touchend', 'mousedown']],
-    ])('one %s press is one gesture however many of its events a page handles', (_l, seq) => {
+      ['mouse', 'mouse', ['pointerdown', 'mousedown', 'pointerup', 'mouseup']],
+      ['pen', 'pen', ['pointerdown', 'mousedown', 'pointerup', 'mouseup']],
+      ['touch', 'touch', ['pointerdown', 'touchstart', 'pointerup', 'touchend', 'mousedown']],
+    ])('one %s press is one gesture however many of its events a page handles', (_l, pt, seq) => {
       const { documentCaptureHandlers, windowCaptureHandlers, ipcRenderer } =
         loadWebviewPreloadModule({ userActivation: { isActive: true, hasBeenActive: true } });
+      // Spend the page's initial epoch first, so only epochs the press itself
+      // opens are counted (touch's pointerdown comes before its epoch).
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { ctrlKey: true }));
       for (const type of seq) {
-        windowCaptureHandlers[type]?.({ isTrusted: true });
+        windowCaptureHandlers[type]?.(press(type, { pointerType: pt }));
         documentCaptureHandlers.click(syntheticClick(blankAnchor(), { ctrlKey: true }));
       }
       expect(
         ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate')
-      ).toHaveLength(1);
-      for (const type of ['mousedown', 'pointerup', 'touchend']) {
+      ).toHaveLength(2);
+      for (const type of ['mousedown', 'touchend', 'touchstart']) {
         expect(windowCaptureHandlers[type]).toBeUndefined();
       }
+    });
+
+    // R3-M1: the transient activation of an earlier real click is never
+    // consumed (the preload cancels the click, so Chromium's popup blocker
+    // never spends it), so an event that is *not* an activation in Chromium
+    // must not open an epoch either, or it buys one more scripted tab while
+    // isActive is still true. Probed in real Electron: Escape and modifier
+    // keydowns don't activate; a touch that becomes a scroll fires
+    // pointerdown + pointercancel and never activates.
+    test.each([
+      ['Escape', [['keydown', key('Escape')]]],
+      ['a lone Shift', [['keydown', key('Shift')]]],
+      ['a lone Control', [['keydown', key('Control')]]],
+      ['a lone Meta', [['keydown', key('Meta')]]],
+      [
+        'a touch scroll',
+        [
+          ['pointerdown', press('pointerdown', { pointerType: 'touch' })],
+          ['pointercancel', press('pointercancel', { pointerType: 'touch' })],
+        ],
+      ],
+      ['a mouse button release', [['pointerup', press('pointerup')]]],
+    ])('%s after a spent gesture buys no extra tab', (_l, events) => {
+      const { documentCaptureHandlers, windowCaptureHandlers, ipcRenderer } =
+        loadWebviewPreloadModule({ userActivation: { isActive: true, hasBeenActive: true } });
+      const opens = () =>
+        ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate').length;
+      windowCaptureHandlers.pointerdown(press('pointerdown'));
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { ctrlKey: true }));
+      expect(opens()).toBe(1);
+
+      for (const [type, event] of events) windowCaptureHandlers[type]?.(event);
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { ctrlKey: true }));
+      expect(opens()).toBe(1);
+
+      // Control: an activating key or a completed tap is a gesture of its own.
+      windowCaptureHandlers.keydown(key('Enter'));
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { ctrlKey: true }));
+      expect(opens()).toBe(2);
+      windowCaptureHandlers.pointerdown(press('pointerdown', { pointerType: 'touch' }));
+      windowCaptureHandlers.pointerup(press('pointerup', { pointerType: 'touch' }));
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { ctrlKey: true }));
+      expect(opens()).toBe(3);
     });
 
     test('a real click spends the gesture, so a scripted click riding on it opens nothing', () => {
       const { documentCaptureHandlers, windowCaptureHandlers, ipcRenderer } =
         loadWebviewPreloadModule({ userActivation: { isActive: true, hasBeenActive: true } });
-      windowCaptureHandlers.pointerdown({ isTrusted: true });
+      windowCaptureHandlers.pointerdown(press('pointerdown'));
       documentCaptureHandlers.click(syntheticClick(blankAnchor(), { isTrusted: true }));
       documentCaptureHandlers.click(syntheticClick(blankAnchor()));
       expect(

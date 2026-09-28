@@ -49,6 +49,11 @@ const FIXTURE_BODY = [
       )
       .join(' ') +
     '>phases</button>',
+  // Every keydown dispatches one more scripted Ctrl+click (R3-M1). Only a
+  // key Chromium counts as an activation may buy a tab with it.
+  '<script>let keyOpens = 0; window.addEventListener("keydown", () => ' +
+    'document.getElementById(`blank${keyOpens++ % 3}`).dispatchEvent(new MouseEvent(`click`, ' +
+    '{ bubbles: true, cancelable: true, ctrlKey: true, button: 0 })));</script>',
   '<div id="out">ready</div>',
 ].join('\n');
 
@@ -145,6 +150,48 @@ test('one real click is one gesture across its pointerdown, mousedown and pointe
   await window.waitForTimeout(1_000);
   expect(await tabCount(window)).toBe(2);
   await window.screenshot({ path: `${process.env.TMPDIR || '/tmp'}/dweb-gesture-phases.png` });
+});
+
+// R3-M1: the preload cancels the click, so Chromium's popup blocker never
+// consumes the real click's transient activation and isActive stays true for
+// seconds. A key press that is not an activation in Chromium (Escape, a lone
+// modifier) must therefore not buy another tab with it.
+test('a non-activating key press after a real click buys no extra dweb tab', async ({
+  window,
+  electronApp,
+}) => {
+  await gotoFixture(window, electronApp);
+  await realClick(window, electronApp, 'burst');
+  await expect.poll(() => tabCount(window), { timeout: 5_000 }).toBe(2);
+
+  const pressKey = (keyCode) =>
+    electronApp.evaluate(
+      ({ webContents }, { keyCode, prefix }) => {
+        const guest = webContents
+          .getAllWebContents()
+          .find((wc) => wc.getType() === 'webview' && wc.getURL().startsWith(prefix));
+        guest.sendInputEvent({ type: 'keyDown', keyCode });
+        guest.sendInputEvent({ type: 'keyUp', keyCode });
+      },
+      { keyCode, prefix: FIXTURE_URL }
+    );
+  const keyOpens = () => evalInWebview(window, 'keyOpens');
+
+  for (const keyCode of ['Escape', 'Shift']) {
+    await pressKey(keyCode);
+  }
+  // The handler did run (and so did try to open) for both presses.
+  await expect.poll(keyOpens, { timeout: 5_000 }).toBe(2);
+  await window.waitForTimeout(1_000);
+  expect(await tabCount(window)).toBe(2);
+
+  // Control: an activating key is a gesture of its own and buys exactly one.
+  await pressKey('a');
+  await expect.poll(keyOpens, { timeout: 5_000 }).toBe(3);
+  await expect.poll(() => tabCount(window), { timeout: 5_000 }).toBe(3);
+  await window.waitForTimeout(1_000);
+  expect(await tabCount(window)).toBe(3);
+  await window.screenshot({ path: `${process.env.TMPDIR || '/tmp'}/dweb-gesture-keys.png` });
 });
 
 test('a gesture-less named-target link navigates the existing named tab but never opens one', async ({

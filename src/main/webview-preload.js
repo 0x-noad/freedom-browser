@@ -468,20 +468,62 @@ const hasUserActivation = (event) => {
 // always passes, but spends the epoch too, so a script can't piggyback a
 // second tab on it.
 //
-// An epoch is opened by the *first* event of a gesture only: `pointerdown`
-// (mouse, pen and touch all fire it, and it precedes the compatibility
-// `mousedown` and the `pointerup`/`touchend` of the same press) and `keydown`.
-// Counting every activation-triggering event instead (mousedown, pointerup,
-// touchend too) would give one click three epochs, and a page with
-// onpointerdown/onmousedown/onpointerup handlers could open three tabs on it.
-// Registered on window in the capture phase so no page listener can hide the
-// event from it (the preload runs before any page script).
+// An epoch is opened only by an event Chromium itself counts as user
+// activation, and only by the one that grants it for a given press. Probed in
+// the real Electron build (2026-09-28, CDP-driven input on a fresh page,
+// `navigator.userActivation.isActive` read in a capture listener):
+//
+//   keydown, printable/Enter          → activates
+//   keydown, Escape or a modifier     → does not (Shift/Control/Alt/Meta…)
+//   mouse or pen press                → activates at pointerdown
+//   touch tap                         → activates at pointerup, not pointerdown
+//   touch that becomes a scroll       → never (pointercancel, no pointerup)
+//
+// Opening an epoch on a non-activating event would be a leak: the transient
+// activation of an earlier real click is never consumed (the preload calls
+// preventDefault, so Chromium's popup blocker never sees the open), so a page
+// could turn every Escape press or scroll into one more scripted tab. And one
+// press fires several activation-triggering events (pointerdown, mousedown,
+// pointerup, touchend); counting each would give one click several epochs, so
+// the compatibility events (mousedown, touchend, the mouse/pen pointerup) are
+// not listened to at all. Registered on window in the capture phase so no page
+// listener can hide the event from it (the preload runs before any page script).
+const NON_ACTIVATING_KEYS = new Set([
+  'Escape',
+  'Alt',
+  'AltGraph',
+  'CapsLock',
+  'Control',
+  'Fn',
+  'FnLock',
+  'Hyper',
+  'Meta',
+  'NumLock',
+  'OS',
+  'ScrollLock',
+  'Shift',
+  'Super',
+  'Symbol',
+  'SymbolLock',
+]);
+const opensActivationEpoch = (event) => {
+  switch (event?.type) {
+    case 'keydown':
+      return !NON_ACTIVATING_KEYS.has(event.key);
+    case 'pointerdown':
+      return event.pointerType !== 'touch';
+    case 'pointerup':
+      return event.pointerType === 'touch';
+    default:
+      return false;
+  }
+};
 let activationEpoch = 0;
 let spentActivationEpoch = -1;
 const noteActivation = (event) => {
-  if (event?.isTrusted === true) activationEpoch += 1;
+  if (event?.isTrusted === true && opensActivationEpoch(event)) activationEpoch += 1;
 };
-for (const type of ['keydown', 'pointerdown']) {
+for (const type of ['keydown', 'pointerdown', 'pointerup']) {
   window.addEventListener(type, noteActivation, true);
 }
 const claimNewTabActivation = (event) => {
