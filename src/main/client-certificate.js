@@ -24,10 +24,20 @@ const { isPrivateWebContents } = require('./private/private-windows');
 
 const DONT_SEND_LABEL = "Don't send a certificate";
 
-// Fail closed: a check that throws (a webContents torn down mid-request) is
-// treated as private, the same way webcontents-setup.js's isPrivateSender does.
+// Fail closed: if privacy cannot be determined, treat the request as private.
+// isPrivateWebContents() does NOT give that guarantee on its own: it swallows
+// its own errors and answers `false` ("not private") when the webContents was
+// torn down mid-check, since its session and window can no longer be read.
+// So a missing or destroyed webContents is refused here explicitly, before
+// the lookup, rather than relying on ownerWindowOf() happening to find no
+// window later on. The try/catch covers a throw the lookup doesn't catch,
+// the same way webcontents-setup.js's isPrivateSender does.
 function isPrivate(webContents) {
   try {
+    if (!webContents) return true;
+    if (typeof webContents.isDestroyed === 'function' && webContents.isDestroyed()) return true;
+    const host = webContents.hostWebContents;
+    if (host && typeof host.isDestroyed === 'function' && host.isDestroyed()) return true;
     return isPrivateWebContents(webContents);
   } catch {
     return true;
@@ -92,6 +102,7 @@ function handleSelectClientCertificate(event, webContents, url, list, callback) 
   // PRIVATE MODE GUARD (client certificates): a certificate identifies the
   // user; a private window must never send one, and must not even offer to
   // (one careless click would tie the private session to the identity).
+  // Unknown privacy (a torn-down webContents) counts as private; see isPrivate.
   if (isPrivate(webContents)) {
     log.info('[client-cert] private window: no client certificate sent');
     answer();

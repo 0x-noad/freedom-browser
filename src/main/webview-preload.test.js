@@ -1117,7 +1117,7 @@ describe('webview-preload', () => {
 
     test.each([
       ['target=_blank', '_blank', {}],
-      ['a named target', 'docs', {}],
+      ['a ctrl-click on a named target', 'docs', { ctrlKey: true }],
       ['a synthetic ctrl-click', '', { ctrlKey: true }],
       ['a synthetic shift-click (new window)', '', { shiftKey: true }],
     ])('a synthetic click on %s without activation opens nothing', (_label, target, extra) => {
@@ -1160,6 +1160,86 @@ describe('webview-preload', () => {
         url: 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
         disposition: 'newTab',
         target: '_blank',
+      });
+    });
+
+    // Chromium's popup blocker consumes the activation it lets a popup
+    // through on; the preload's own budget must do the same, or one real
+    // click would let a script open any number of tabs.
+    test('one gesture opens one tab: a second scripted click in it opens nothing', () => {
+      const { documentCaptureHandlers, windowCaptureHandlers, ipcRenderer } =
+        loadWebviewPreloadModule({ userActivation: { isActive: true, hasBeenActive: true } });
+      windowCaptureHandlers.mousedown({ isTrusted: true });
+
+      documentCaptureHandlers.click(syntheticClick(blankAnchor()));
+      const second = syntheticClick(blankAnchor());
+      documentCaptureHandlers.click(second);
+      const third = syntheticClick(blankAnchor(), { ctrlKey: true });
+      documentCaptureHandlers.click(third);
+
+      const opens = ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate');
+      expect(opens).toHaveLength(1);
+      expect(second.preventDefault).toHaveBeenCalled();
+      expect(third.preventDefault).toHaveBeenCalled();
+
+      // A page dispatching its own "activation" events earns nothing.
+      windowCaptureHandlers.mousedown({ isTrusted: false });
+      windowCaptureHandlers.keydown({ isTrusted: false });
+      documentCaptureHandlers.click(syntheticClick(blankAnchor()));
+      expect(
+        ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate')
+      ).toHaveLength(1);
+
+      // The next real gesture buys exactly one more.
+      windowCaptureHandlers.keydown({ isTrusted: true });
+      documentCaptureHandlers.click(syntheticClick(blankAnchor()));
+      documentCaptureHandlers.click(syntheticClick(blankAnchor()));
+      expect(
+        ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate')
+      ).toHaveLength(2);
+    });
+
+    test('a real click spends the gesture, so a scripted click riding on it opens nothing', () => {
+      const { documentCaptureHandlers, windowCaptureHandlers, ipcRenderer } =
+        loadWebviewPreloadModule({ userActivation: { isActive: true, hasBeenActive: true } });
+      windowCaptureHandlers.mousedown({ isTrusted: true });
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { isTrusted: true }));
+      documentCaptureHandlers.click(syntheticClick(blankAnchor()));
+      expect(
+        ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate')
+      ).toHaveLength(1);
+      // A further real click is its own gesture and still works.
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { isTrusted: true }));
+      expect(
+        ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate')
+      ).toHaveLength(2);
+    });
+
+    // Navigating an existing named browsing context needs no gesture in
+    // Chromium; creating one does. The preload can't see the tab strip, so it
+    // forwards the link as reuse-only and the host opens nothing new.
+    test('a gesture-less named-target click is forwarded as reuse-only', () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        userActivation: { isActive: false, hasBeenActive: true },
+      });
+      const event = syntheticClick(blankAnchor('viewer'));
+      documentCaptureHandlers.click(event);
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(ipcRenderer.sendToHost).toHaveBeenCalledWith('link:navigate', {
+        url: 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
+        disposition: 'newTab',
+        target: 'viewer',
+        reuseOnly: true,
+      });
+    });
+
+    test('a named-target click with a gesture is not reuse-only', () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule();
+      documentCaptureHandlers.click(syntheticClick(blankAnchor('viewer'), { isTrusted: true }));
+      expect(ipcRenderer.sendToHost).toHaveBeenCalledWith('link:navigate', {
+        url: 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
+        disposition: 'newTab',
+        target: 'viewer',
       });
     });
 

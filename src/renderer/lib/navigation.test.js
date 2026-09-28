@@ -3264,6 +3264,23 @@ describe('navigation', () => {
       });
     });
 
+    test('ipc-message link:navigate forwards reuseOnly for a gesture-less named target', async () => {
+      const ctx = await setupEnsDispatch();
+      const rawHref = 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'link:navigate',
+        args: [{ url: rawHref, disposition: 'newTab', target: 'viewer', reuseOnly: true }],
+      });
+      await flushMicrotasks();
+
+      expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, 'viewer', {
+        background: false,
+        reuseOnly: true,
+      });
+    });
+
     test('ipc-message link:navigate with target=_blank does not register as a named tab', async () => {
       // `_blank`/`_self`/`_parent`/`_top` are special — they mean
       // "default new-tab disposition", not "reuse a named tab". The

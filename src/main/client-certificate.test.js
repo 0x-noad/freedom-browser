@@ -50,10 +50,16 @@ function load({ isPrivate = false, privateThrows = false, window = {}, dialogRes
   return { ...ctx, dialog, BrowserWindow, win };
 }
 
-function select(mod, { list = CERTS, url = 'https://mtls.example:8443/' } = {}) {
+function select(
+  mod,
+  {
+    list = CERTS,
+    url = 'https://mtls.example:8443/',
+    guest = { id: 7, hostWebContents: { id: 1 } },
+  } = {}
+) {
   const event = { preventDefault: jest.fn() };
   const callback = jest.fn();
-  const guest = { id: 7, hostWebContents: { id: 1 } };
   mod.handleSelectClientCertificate(event, guest, url, list, callback);
   return { event, callback };
 }
@@ -94,6 +100,24 @@ describe('client-certificate selection', () => {
   test('privacy that cannot be determined is treated as private', async () => {
     const { mod, dialog } = load({ privateThrows: true, dialogResponse: 0 });
     const { callback } = select(mod);
+    await flush();
+    expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    expect(callback.mock.calls).toEqual([[]]);
+  });
+
+  // isPrivateWebContents() answers `false` (not private) for a torn-down
+  // webContents instead of throwing, so the refusal must not depend on the
+  // window lookup happening to fail too: here it still finds a window.
+  test.each([
+    ['a destroyed guest', { id: 7, isDestroyed: () => true, hostWebContents: { id: 1 } }],
+    [
+      'a guest whose host was destroyed',
+      { id: 7, isDestroyed: () => false, hostWebContents: { id: 1, isDestroyed: () => true } },
+    ],
+    ['no webContents at all', null],
+  ])('%s gets no certificate and no prompt', async (_label, guest) => {
+    const { mod, dialog } = load({ isPrivate: false, dialogResponse: 0 });
+    const { callback } = select(mod, { guest });
     await flush();
     expect(dialog.showMessageBox).not.toHaveBeenCalled();
     expect(callback.mock.calls).toEqual([[]]);

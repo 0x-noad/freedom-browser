@@ -1939,7 +1939,13 @@ export const switchTab = (tabId, options = {}) => {
  *
  * @param {string} url - target URL
  * @param {string|null} targetName - HTML `target` attribute, if any
- * @param {{ background?: boolean }} [options] - opening disposition
+ * `options.reuseOnly` (a named-target dweb link the page activated without a
+ * user gesture, see webview-preload.js) only re-navigates the tab already
+ * carrying `targetName`, in place and without switching to it: no gesture is
+ * needed to navigate an existing named browsing context, but one is needed to
+ * create a tab or to take focus. With no such tab, nothing opens.
+ *
+ * @param {{ background?: boolean, reuseOnly?: boolean }} [options] - opening disposition
  * @returns {object|null} the (possibly new) tab, or null on noop
  */
 // Parse a `freedom://<page>[/<sub-path>]` URL into `{ pageName, subPath }` when
@@ -1966,6 +1972,20 @@ const freedomInternalPageTarget = (url) => {
 export const openInNewTabWithTarget = (url, targetName, options = {}) => {
   if (!url) return null;
   const background = !!options.background;
+
+  if (options.reuseOnly) {
+    const existingTabId = targetName ? namedTargets.get(targetName) : undefined;
+    const existingTab =
+      existingTabId === undefined ? null : tabState.tabs.find((t) => t.id === existingTabId);
+    if (!existingTab) {
+      pushDebug(`Blocked gesture-less open of target "${targetName}": ${url}`);
+      return null;
+    }
+    pushDebug(`Re-navigating tab ${existingTabId} for target "${targetName}": ${url}`);
+    // Page-driven: it must not discard an address-bar edit in that tab (#305).
+    if (onLoadTarget) onLoadTarget(url, null, existingTab.webview, { pageInitiated: true });
+    return existingTab;
+  }
 
   // EVERY freedom:// internal page (profiles, history, settings, …) is treated
   // as a singleton: an untargeted open focuses the existing tab instead of
@@ -2142,7 +2162,13 @@ export const routeInternalPageNavigation = (pageName, subPath = null, currentWeb
  *
  * @param {string} pageName - internal page name, e.g. 'profiles'
  * @param {string|null} [subPath] - optional section within the page
- * @param {{ background?: boolean }} [options] - opening disposition
+ * `options.reuseOnly` (a named-target dweb link the page activated without a
+ * user gesture, see webview-preload.js) only re-navigates the tab already
+ * carrying `targetName`, in place and without switching to it: no gesture is
+ * needed to navigate an existing named browsing context, but one is needed to
+ * create a tab or to take focus. With no such tab, nothing opens.
+ *
+ * @param {{ background?: boolean, reuseOnly?: boolean }} [options] - opening disposition
  * @returns {object|null} the focused or newly created tab, or null on noop
  */
 export const openOrFocusInternalPage = (pageName, subPath = null, options = {}) => {

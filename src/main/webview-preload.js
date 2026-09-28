@@ -459,6 +459,36 @@ const hasUserActivation = (event) => {
   }
 };
 
+// One new dweb tab per user gesture. Chromium's popup blocker *consumes* the
+// transient activation when it lets a popup through, so a second scripted
+// open inside the same gesture is blocked. The web platform has no API to
+// consume activation without a side effect, so the preload keeps its own
+// budget: every trusted activation-triggering event (the set Chromium's
+// HTML-spec activation uses: keydown, mousedown, pointerdown, pointerup,
+// touchend) opens a new epoch, and a synthetic click may spend the current
+// epoch once. A real click is a gesture of its own and always passes, but
+// spends the epoch too, so a script can't piggyback a second tab on it.
+// Registered on window in the capture phase so no page listener can hide the
+// event from it (the preload runs before any page script).
+let activationEpoch = 0;
+let spentActivationEpoch = -1;
+const noteActivation = (event) => {
+  if (event?.isTrusted === true) activationEpoch += 1;
+};
+for (const type of ['keydown', 'mousedown', 'pointerdown', 'pointerup', 'touchend']) {
+  window.addEventListener(type, noteActivation, true);
+}
+const claimNewTabActivation = (event) => {
+  if (event.isTrusted === true) {
+    spentActivationEpoch = activationEpoch;
+    return true;
+  }
+  if (!hasUserActivation(event)) return false;
+  if (spentActivationEpoch === activationEpoch) return false;
+  spentActivationEpoch = activationEpoch;
+  return true;
+};
+
 const handleDwebLinkActivation = (event) => {
   if (event.defaultPrevented) return;
   // Primary (0, click) or middle (1, auxclick) — that's the only
@@ -515,15 +545,26 @@ const handleDwebLinkActivation = (event) => {
 
   // A new tab or window needs a user gesture, the same rule Chromium's popup
   // blocker applies to `target="_blank"` (docs/security-audit-electron.md,
-  // O-12). Without it a page could open any number of dweb tabs with a
-  // scripted `anchor.click()`. A real click is trusted; a script's `.click()`
-  // inside a real click handler still carries the transient activation. The
+  // O-12), and each gesture opens at most one (see claimNewTabActivation).
+  // Without it a page could open any number of dweb tabs with a scripted
+  // `anchor.click()`. A real click is trusted; a script's `.click()` inside a
+  // real click handler still carries the transient activation, once. The
   // event is still cancelled, or Chromium would open the tab itself through
   // setWindowOpenHandler. A same-tab link needs no gesture: it is no more
   // than the page setting `location`.
-  if (disposition !== 'currentTab' && !hasUserActivation(event)) {
-    event.preventDefault();
-    return;
+  //
+  // A plain named-target link without a gesture is forwarded as `reuseOnly`:
+  // like Chromium, it may navigate a tab that already carries that name (no
+  // gesture is needed to navigate an existing browsing context), but it may
+  // not create one, and the host does not switch to it.
+  let reuseOnly = false;
+  if (disposition !== 'currentTab' && !claimNewTabActivation(event)) {
+    if (disposition === 'newTab' && isNamedTarget && !wantsNewTab && !event.shiftKey) {
+      reuseOnly = true;
+    } else {
+      event.preventDefault();
+      return;
+    }
   }
 
   event.preventDefault();
@@ -531,6 +572,7 @@ const handleDwebLinkActivation = (event) => {
     url: href,
     disposition,
     target: target || null,
+    ...(reuseOnly ? { reuseOnly: true } : {}),
   });
 };
 

@@ -1681,6 +1681,44 @@ describe('tabs ui behavior', () => {
     expect(mod.getTabs()).toHaveLength(3);
   });
 
+  // O-12: a named-target dweb link the page activated without a gesture may
+  // re-navigate the tab that already carries the name — in place, without
+  // switching to it — but may never open one.
+  test('a reuseOnly open navigates an existing named tab in place and never creates one', async () => {
+    jest.useFakeTimers();
+    const { mod } = await loadTabsModule();
+    const onLoadTarget = jest.fn();
+    mod.setLoadTargetHandler(onLoadTarget);
+    await mod.initTabs();
+    const home = mod.getActiveTab();
+
+    // No tab named "viewer" yet: nothing opens, nothing loads.
+    expect(mod.openInNewTabWithTarget('ipfs://one', 'viewer', { reuseOnly: true })).toBeNull();
+    jest.runOnlyPendingTimers();
+    expect(mod.getTabs()).toHaveLength(1);
+    expect(onLoadTarget).not.toHaveBeenCalled();
+
+    // A gesture opened the named tab; the user went back to the first tab.
+    const viewer = mod.openInNewTabWithTarget('ipfs://one', 'viewer');
+    jest.runOnlyPendingTimers();
+    mod.switchTab(home.id);
+    onLoadTarget.mockClear();
+
+    const reused = mod.openInNewTabWithTarget('ipfs://two', 'viewer', { reuseOnly: true });
+    jest.runOnlyPendingTimers();
+    expect(reused.id).toBe(viewer.id);
+    expect(mod.getTabs()).toHaveLength(2);
+    expect(mod.getActiveTab().id).toBe(home.id);
+    expect(onLoadTarget).toHaveBeenCalledWith('ipfs://two', null, viewer.webview, {
+      pageInitiated: true,
+    });
+
+    // Once that tab is closed the name is gone, and the open is refused again.
+    mod.closeTab(viewer.id);
+    expect(mod.openInNewTabWithTarget('ipfs://three', 'viewer', { reuseOnly: true })).toBeNull();
+    expect(mod.getTabs()).toHaveLength(1);
+  });
+
   // #303: the main process forwards the disposition Chromium derived from the
   // click's modifiers over `tab:new-with-url`.
   test('tab:new-with-url honours the background and new-window dispositions', async () => {
