@@ -14,6 +14,7 @@ import { showDappConnect, getSelectedChainId, setSelectedChainId, updateConnecti
 import { buildDappTxContext, extractSelector } from './wallet/dapp-tx.js';
 import { isSafeAccount, GNOSIS_CHAIN_ID } from './wallet/wallet-utils.js';
 import { openSafeMessageBoard, abandonSafeMessageBoard } from './wallet/safe-signing.js';
+import { confirmSigning } from './wallet/signing-confirmation.js';
 import { getPermissionKey } from './origin-utils.js';
 import { parseOnchainAppUrl } from './url-utils.js';
 
@@ -357,10 +358,13 @@ async function autoApproveTx(permission, txParams, chainId, permissionKey) {
     tx.gasPrice = gasPrices.gasPrice;
   }
 
+  // No confirmation token: main signs only if its own reading of this
+  // site's auto-approve rules covers this exact transaction.
   const result = await window.wallet.dappSendTransaction(
     tx,
     walletIndex,
-    buildDappTxContext(permissionKey, txParams)
+    buildDappTxContext(permissionKey, txParams),
+    { autoApprove: permissionKey }
   );
   if (!result.success) throw new Error(result.error || 'Transaction failed');
   if (result.recorded === false) {
@@ -376,7 +380,9 @@ async function autoApproveTx(permission, txParams, chainId, permissionKey) {
  * Accepts the already-fetched permission object to avoid redundant IPC.
  */
 async function autoApproveSign(permission, method, params, permissionKey, webview) {
-  const signature = await executeSign(method, params, permission.walletIndex, permissionKey, webview);
+  const signature = await executeSign(method, params, permission.walletIndex, permissionKey, webview, {
+    autoApproved: true,
+  });
   window.dappPermissions.updateLastUsed(permissionKey);
   return signature;
 }
@@ -385,16 +391,26 @@ async function autoApproveSign(permission, method, params, permissionKey, webvie
  * Execute a signing operation via the wallet IPC bridge.
  * Shared by both auto-approve and manual approval paths. `webview` is
  * the requesting page's webview — Safe message sessions are bound to it.
+ *
+ * Manual approval (the default) is called the moment the user presses
+ * Sign: it asks main for a confirmation token bound to exactly this
+ * message. `{ autoApproved: true }` sends none — main then checks the
+ * site's signing auto-approve itself (security audit O-7).
  */
-async function executeSign(method, params, walletIndex, site, webview) {
+async function executeSign(method, params, walletIndex, site, webview, { autoApproved = false } = {}) {
+  const authorize = (kind, payload) =>
+    autoApproved ? { autoApprove: site } : confirmSigning(kind, walletIndex, payload);
   if (isSafeAccount(walletIndex)) {
-    return signViaSafeAccount(method, params, walletIndex, site, webview);
+    return signViaSafeAccount(method, params, walletIndex, site, webview,
+      await authorize('safe-message', { method, params }));
   }
   let result;
   if (method === 'personal_sign') {
-    result = await window.wallet.signMessage(params[0], walletIndex);
+    result = await window.wallet.signMessage(params[0], walletIndex,
+      await authorize('sign-message', params[0]));
   } else if (method === 'eth_signTypedData_v4') {
-    result = await window.wallet.signTypedData(params[1], walletIndex);
+    result = await window.wallet.signTypedData(params[1], walletIndex,
+      await authorize('sign-typed-data', params[1]));
   } else {
     throw new Error(`Unsupported signing method: ${method}`);
   }
@@ -414,14 +430,15 @@ async function executeSign(method, params, walletIndex, site, webview) {
  * webContents) and guarded by the returned state.token — another tab
  * can neither resume nor replace it, and it dies with the page.
  */
-async function signViaSafeAccount(method, params, walletIndex, site, webview) {
+async function signViaSafeAccount(method, params, walletIndex, site, webview, authorization) {
   const display = { kind: 'message', site, method };
   const requester = { origin: site || null, webContentsId: webviewContentsId(webview) };
   const started = await window.wallet.safeMessageStart(
     walletIndex,
     { method, params },
     display,
-    requester
+    requester,
+    authorization
   );
   if (!started.success) throw new Error(started.error || 'Signing failed');
 

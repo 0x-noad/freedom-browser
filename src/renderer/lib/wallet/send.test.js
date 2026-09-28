@@ -193,6 +193,7 @@ async function loadSendScreen({ chains = [{ chainId: 100, name: 'Gnosis' }], rev
     electronAPI: reverseLookup ? { resolveEnsReverse: reverseLookup } : {},
     wallet: {
       parseAmount: jest.fn().mockResolvedValue({ success: true, value: '1000' }),
+      confirmSigning: jest.fn().mockResolvedValue({ success: true, token: 'confirm-token' }),
       sendTransaction: jest.fn(() => send.promise),
       estimateGas: jest.fn().mockResolvedValue({ success: true, gasLimit: '21000' }),
       getGasPrice: jest.fn().mockResolvedValue({ success: true, type: 'legacy', gasPrice: '1' }),
@@ -251,6 +252,11 @@ describe('send screen sidebar ownership', () => {
     await flush();
     expect(window.wallet.sendTransaction).toHaveBeenCalled();
     expect(flight.isSignatureInFlight()).toBe(true);
+    // Main signs only against a confirmation minted for exactly these
+    // fields (security audit O-7).
+    const [txParams, , authorization] = window.wallet.sendTransaction.mock.calls[0];
+    expect(window.wallet.confirmSigning).toHaveBeenCalledWith('wallet-send', null, txParams);
+    expect(authorization).toEqual({ confirmation: 'confirm-token' });
 
     send.resolve({ success: true, hash: '0xfeedface', explorerUrl: 'https://ex/0xfeedface' });
     await flush();
