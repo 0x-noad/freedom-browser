@@ -8,6 +8,13 @@ const { app, dialog, ipcMain } = require('electron');
 require('./ipc-sender-policy').installIpcSenderPolicy(ipcMain, {
   logger: { warn: (...args) => require('./logger').warn(...args) },
 });
+
+// Packaged builds drop --remote-debugging-port/-pipe unless the launch was
+// pointed at a scratch E2E profile (docs/security-audit-electron.md, O-4).
+// Must run before Chromium starts its DevTools handler; logged further down,
+// once the logger may initialise.
+const removedDebugSwitches = require('./remote-debugging-gate').applyRemoteDebuggingGate({ app });
+
 const appName = app.isPackaged
   ? process.platform === 'linux'
     ? 'freedom'
@@ -39,8 +46,9 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
     require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads')
   );
 }
-// Honoured in a packaged build only when a Node inspector is attached, i.e.
-// a Playwright launch (docs/security-audit-electron.md, O-12); see test-mode.js.
+// Honoured in a packaged build only when the launch also kept a CDP debug port
+// on a scratch profile, i.e. the packaged E2E launcher
+// (docs/security-audit-electron.md, O-4/O-12); see test-mode.js.
 const TEST_MODE = require('./test-mode').isTestModeRequested();
 const { migrateBeeDataToAntData, migrateUserData } = require('./migrate-user-data');
 if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
@@ -127,6 +135,13 @@ app.setAboutPanelOptions({
 });
 
 const log = require('./logger');
+
+if (removedDebugSwitches.length) {
+  log.warn(
+    `[security] Ignored ${removedDebugSwitches.map((name) => `--${name}`).join(', ')}: ` +
+      'remote debugging is only available to E2E runs on a scratch profile'
+  );
+}
 
 // Global error handlers - must be set up early
 process.on('uncaughtException', (error) => {

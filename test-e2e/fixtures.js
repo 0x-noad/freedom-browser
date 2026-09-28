@@ -12,12 +12,16 @@
 // `packaged` project (`npm run test:e2e:packaged`) smoke-tests a release
 // artifact. Unset, everything below behaves exactly as it did before.
 
-const { test: base, expect, _electron: electron } = require('@playwright/test');
+const { test: base, expect } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const { isPackagedRun, packagedLaunchTarget } = require('./packaged-launch');
+const {
+  isPackagedRun,
+  packagedLaunchTarget,
+  launchApp: launchTarget,
+} = require('./packaged-launch');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -45,9 +49,10 @@ function launchOptions(userDataDir) {
 
 // Launch one Freedom instance against `userDataDir`. Exported through the
 // `relaunchApp` fixture rather than directly so every app a spec opens is
-// closed at teardown.
+// closed at teardown. A packaged run is driven over CDP rather than through
+// Playwright's Electron launcher; see packaged-launch.js.
 function launchApp(userDataDir) {
-  return electron.launch(launchOptions(userDataDir));
+  return launchTarget(launchOptions(userDataDir));
 }
 
 // First BrowserWindow, waited until the browser chrome has mounted. The

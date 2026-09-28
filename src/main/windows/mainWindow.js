@@ -3,6 +3,7 @@ const { app, BrowserWindow } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { loadSettings } = require('../settings-store');
+const { TEST_HARNESS_RENDERER_ARG } = require('../test-mode');
 
 let currentWindowTitle = 'Freedom';
 
@@ -78,6 +79,14 @@ function createMainWindow(initialUrl = null, options = {}) {
       allowRunningInsecureContent: false,
       experimentalFeatures: false,
       webviewTag: true,
+      // Tells preload.js to expose the E2E harness bridge. Decided here, from
+      // test-mode.js's verdict, rather than by the preload reading
+      // FREEDOM_TEST_MODE itself: a packaged build honours that variable only
+      // under an honoured CDP debug port (docs/security-audit-electron.md,
+      // O-4/O-12), which the renderer cannot see.
+      ...(require('../test-harness').isTestMode() && {
+        additionalArguments: [TEST_HARNESS_RENDERER_ARG],
+      }),
     },
   });
 
