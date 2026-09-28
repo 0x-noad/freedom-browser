@@ -28,7 +28,11 @@
  *    only right after the user interacted with the page (see
  *    `consumeUserGesture`): a page cannot pop a prompt — or, once allowed,
  *    launch an app — on load, and an embedded third-party frame (an ad)
- *    cannot ask in the top site's name.
+ *    cannot ask in the top site's name. "On load" includes a page reached
+ *    by a same-tab link click: the new document starts with no gesture
+ *    (see `trackUserGestures`), so an "open in app" landing page that sets
+ *    `location = 'zoommtg:…'` on load is refused with no prompt and the user
+ *    clicks on that page instead. Chrome prompts in that case; we don't.
  * 3. The existing per-site prompt, keyed by origin + scheme
  *    (`external:<scheme>`), so allowing `magnet:` for a site never allows
  *    `ms-settings:` for it too. Remembered decisions, the dismissal embargo
