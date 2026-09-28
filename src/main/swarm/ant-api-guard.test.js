@@ -287,6 +287,41 @@ describe('isAntApiRequestUrl', () => {
     expect(isAntApiRequestUrl('https://my-node.lan/stamps')).toBe(true);
     expect(isAntApiRequestUrl('https://my-node.lan:443/stamps')).toBe(true);
   });
+
+  // R4-M2: the configured spelling of a remote node was the only one guarded.
+  test('guards a remote node on a non-shared port by address and by port', () => {
+    noteAntApiUrl('http://192.168.1.10:1733');
+    mockGetAntApiUrl.mockReturnValue(null);
+    const attack = (host) =>
+      guardAntApiRequest(
+        req({ url: `http://${host}:1733/stamps/1/17`, frame: topFrame('https://evil.test/') })
+      );
+    expect(attack('192.168.1.10')).toEqual({ cancel: true });
+    // The IPv4-mapped IPv6 literal of the same address (no DNS involved).
+    expect(attack('[::ffff:c0a8:10a]')).toEqual({ cancel: true });
+    // A DNS alias of the same machine: all-hosts on the node's port.
+    expect(attack('nas.lan')).toEqual({ cancel: true });
+    // Other ports on that machine are not the node.
+    expect(isAntApiRequestUrl('http://192.168.1.10:1734/stamps')).toBe(false);
+  });
+
+  test('the live registry URL of a remote node guards its port the same way', () => {
+    mockGetAntApiUrl.mockReturnValue('http://192.168.1.10:1733');
+    expect(isAntApiRequestUrl('http://[::ffff:c0a8:10a]:1733/stamps')).toBe(true);
+    expect(isAntApiRequestUrl('http://nas.lan:1733/stamps')).toBe(true);
+  });
+
+  test('a remote node on a shared web port guards its exact origin and mapped spelling only', () => {
+    noteAntApiUrl('http://192.168.1.10:8080');
+    mockGetAntApiUrl.mockReturnValue('http://192.168.1.10:8080');
+    expect(isAntApiRequestUrl('http://192.168.1.10:8080/stamps')).toBe(true);
+    expect(isAntApiRequestUrl('http://[::ffff:c0a8:10a]:8080/stamps')).toBe(true);
+    // Other sites on 8080 keep working.
+    expect(isAntApiRequestUrl('http://intranet.example:8080/app.js')).toBe(false);
+    expect(isAntApiRequestUrl('http://192.168.1.11:8080/app.js')).toBe(false);
+    // A mapped spelling of a *different* address is not the node.
+    expect(isAntApiRequestUrl('http://[::ffff:c0a8:10b]:8080/stamps')).toBe(false);
+  });
 });
 
 describe('a loopback node on a scheme-default port (#445 R2-F1)', () => {
@@ -312,9 +347,7 @@ describe('a loopback node on a scheme-default port (#445 R2-F1)', () => {
       'wss://chat.example/socket',
     ]) {
       expect(isAntApiRequestUrl(url)).toBe(false);
-      expect(
-        guardAntApiRequest(req({ url, method: 'GET', resourceType: 'script' }))
-      ).toBeNull();
+      expect(guardAntApiRequest(req({ url, method: 'GET', resourceType: 'script' }))).toBeNull();
     }
     // Still true once the node has stopped (the port stays sticky).
     mockGetAntApiUrl.mockReturnValue(null);
@@ -336,9 +369,7 @@ describe('a loopback node on a scheme-default port (#445 R2-F1)', () => {
       });
       for (const url of [at('intranet.example', '/app.js'), at('192.168.1.1', '/ui.css')]) {
         expect(isAntApiRequestUrl(url)).toBe(false);
-        expect(
-          guardAntApiRequest(req({ url, method: 'GET', resourceType: 'script' }))
-        ).toBeNull();
+        expect(guardAntApiRequest(req({ url, method: 'GET', resourceType: 'script' }))).toBeNull();
       }
       // Sticky after the node stops, same as 80/443.
       mockGetAntApiUrl.mockReturnValue(null);

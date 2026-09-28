@@ -53,7 +53,15 @@
  *     (Kubo's gateway is :8080), so there only the loopback spellings are
  *     guarded, and a rebinding name or another address of this machine on
  *     that port is not. Any other port fails closed to "every host";
- *   - the exact origin of a configured external Ant API.
+ *   - the exact origin of a configured external Ant API, its host compared
+ *     after folding an IPv4-mapped IPv6 literal (`[::ffff:c0a8:10a]`) to the
+ *     dotted IPv4 Chromium connects to (`192.168.1.10`); and, when that node
+ *     is on a port outside the shared web ports, every host on that port —
+ *     the same all-hosts rule as a local node's port, because before DNS a
+ *     DNS alias or rebinding name for the remote machine (`nas.lan`) is
+ *     indistinguishable from a different site (#445 R4-M2). On a shared web
+ *     port (a remote node at `https://my-node.lan`) only that exact origin
+ *     (and its mapped-IPv6 spelling) is guarded; an alias of it is not.
  * The Ant API ports are the default (1633), the port the node was configured
  * or started on, and every port the node has used this session (a restart
  * onto a fallback port must not reopen the previous one while an older
@@ -64,10 +72,7 @@ const log = require('../logger');
 const { DEFAULTS, getAntApiUrl } = require('../service-registry');
 const { registerWebRequestHandler } = require('../webrequest-dispatcher');
 const { internalPageFileForUrl, isChromeIndexUrl } = require('../ipc-sender-policy');
-const {
-  isMainProcessAntDial,
-  _resetMainProcessAntDialsForTests,
-} = require('./ant-api-main-dials');
+const { isMainProcessAntDial, _resetMainProcessAntDialsForTests } = require('./ant-api-main-dials');
 
 const GUARDED_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
 const DEFAULT_PORTS = { 'http:': '80', 'ws:': '80', 'https:': '443', 'wss:': '443' };
@@ -133,10 +138,29 @@ function isLoopbackHostname(rawHostname) {
   return false;
 }
 
+/**
+ * The host key an origin comparison uses: lower-case, no trailing dot, and an
+ * IPv4-mapped IPv6 literal (`[::ffff:c0a8:10a]`, which Chromium dials as
+ * `192.168.1.10`) folded to its dotted IPv4, so the two spellings of one
+ * address compare equal (#445 R4-M2).
+ */
+function hostKey(rawHostname) {
+  const hostname = String(rawHostname || '')
+    .replace(/\.$/, '')
+    .toLowerCase();
+  const mapped = stripBrackets(hostname).match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (!mapped || stripBrackets(hostname) === hostname) return hostname;
+  const high = parseInt(mapped[1], 16);
+  const low = parseInt(mapped[2], 16);
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+}
+
 function isAntApiPort(port) {
   if (knownPorts.has(port)) return true;
   const live = currentApiUrl();
-  return Boolean(live && live.port === port && isLoopbackHostname(live.hostname));
+  if (!live || live.port !== port) return false;
+  // A remote node's port is all-hosts too unless it is a shared web port.
+  return isLoopbackHostname(live.hostname) || !SHARED_WEB_PORTS.has(port);
 }
 
 function currentApiUrl() {
@@ -165,10 +189,14 @@ function noteAntApiUrl(rawUrl) {
     return;
   }
   if (!GUARDED_PROTOCOLS.has(parsed.protocol)) return;
+  const port = effectivePort(parsed);
   if (isLoopbackHostname(parsed.hostname)) {
-    knownPorts.add(effectivePort(parsed));
+    knownPorts.add(port);
   } else {
-    knownRemoteOrigins.add(`${parsed.hostname}:${effectivePort(parsed)}`);
+    knownRemoteOrigins.add(`${hostKey(parsed.hostname)}:${port}`);
+    // Off the shared web ports, a remote node's port is all-hosts like a
+    // local one: its aliases can't be told apart before DNS (#445 R4-M2).
+    if (!SHARED_WEB_PORTS.has(port)) knownPorts.add(port);
   }
 }
 
@@ -184,9 +212,9 @@ function isAntApiRequestUrl(rawUrl) {
   const hostname = parsed.hostname.toLowerCase();
   const port = effectivePort(parsed);
 
-  if (knownRemoteOrigins.has(`${hostname}:${port}`)) return true;
+  if (knownRemoteOrigins.has(`${hostKey(hostname)}:${port}`)) return true;
   const live = currentApiUrl();
-  if (live && live.hostname === hostname && live.port === port) return true;
+  if (live && hostKey(live.hostname) === hostKey(hostname) && live.port === port) return true;
 
   if (!isAntApiPort(port)) return false;
   // 80/443 and the common HTTP-alternate ports are other sites' ports too. A
