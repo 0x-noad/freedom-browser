@@ -39,7 +39,9 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
     require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads')
   );
 }
-const TEST_MODE = process.env.FREEDOM_TEST_MODE === '1';
+// Honoured in a packaged build only when a Node inspector is attached, i.e.
+// a Playwright launch (docs/security-audit-electron.md, O-12); see test-mode.js.
+const TEST_MODE = require('./test-mode').isTestModeRequested();
 const { migrateBeeDataToAntData, migrateUserData } = require('./migrate-user-data');
 if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
   migrateUserData({ logger: console });
