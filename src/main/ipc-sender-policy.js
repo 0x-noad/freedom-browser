@@ -192,12 +192,36 @@ function isChromeSender(event) {
   return senderType(event) === 'window' && topFrameFilePath(event) === CHROME_INDEX;
 }
 
-function internalPageFileOf(event) {
-  if (senderType(event) !== 'webview') return null;
-  const filePath = topFrameFilePath(event);
+// The internal page file (`settings.html`, …) a resolved file path names, or
+// null. Exact directory comparison — see the file header.
+function internalPageFileForPath(filePath) {
   if (!filePath || path.dirname(filePath) !== PAGES_DIR) return null;
   const file = path.basename(filePath);
   return INTERNAL_PAGE_FILES.has(file) ? file : null;
+}
+
+// Same check for a frame URL, for callers that only have the URL (the
+// webRequest guards in the network layer have a frame, not an IPC event).
+function filePathOfUrl(url) {
+  try {
+    if (typeof url !== 'string' || !url.startsWith('file:')) return null;
+    return path.resolve(fileURLToPath(url));
+  } catch {
+    return null;
+  }
+}
+
+function internalPageFileForUrl(url) {
+  return internalPageFileForPath(filePathOfUrl(url));
+}
+
+function isChromeIndexUrl(url) {
+  return filePathOfUrl(url) === CHROME_INDEX;
+}
+
+function internalPageFileOf(event) {
+  if (senderType(event) !== 'webview') return null;
+  return internalPageFileForPath(topFrameFilePath(event));
 }
 
 /**
@@ -314,6 +338,8 @@ module.exports = {
   installIpcSenderPolicy,
   isSenderAllowed,
   isChromeSender,
+  internalPageFileForUrl,
+  isChromeIndexUrl,
   TIER,
   WEBVIEW_CHANNEL_TIERS,
   PUBLIC_CHANNELS,
