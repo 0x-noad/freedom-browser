@@ -6,7 +6,8 @@
 //   - a new tab needs a user gesture, and one gesture opens one tab (Chromium
 //     consumes the activation when it lets a popup through);
 //   - a named target that already names a tab may be navigated without a
-//     gesture (no popup is created), in place and without taking focus.
+//     gesture (no popup is created), in place and without taking focus — but
+//     only from the tab that opened it, never from an unrelated tab.
 //
 // The unit suite models `isTrusted`/`navigator.userActivation`; this spec
 // proves the real events carry them: a trusted pointerdown reaches the
@@ -30,6 +31,7 @@ const FIXTURE_BODY = [
   ...CIDS.map((url, i) => `<a id="blank${i}" target="_blank" href="${url}">blank ${i}</a>`),
   `<a id="named" target="viewer" href="${CIDS[0]}">viewer: first</a>`,
   `<a id="named2" target="viewer" href="${CIDS[1]}">viewer: second</a>`,
+  `<a id="named3" target="viewer" href="${CIDS[2]}">viewer: third</a>`,
   // One real click, three scripted Ctrl+clicks riding on it. Background tabs
   // on purpose: the host only acts on link messages from the *active* tab
   // (tabs.js), so a foreground `_blank` burst stops itself after the first
@@ -226,4 +228,21 @@ test('a gesture-less named-target link navigates the existing named tab but neve
   await expect(opener).toHaveClass(/(^|\s)active(\s|$)/);
   expect(await evalInWebview(window, "document.getElementById('out').textContent")).toBe('ready');
   await window.screenshot({ path: `${process.env.TMPDIR || '/tmp'}/dweb-gesture-named.png` });
+
+  // An unrelated tab (not the viewer's opener) can't reach the name without a
+  // gesture: its scripted click must not re-navigate the viewer tab in the
+  // background (R4-F1), and must not open a tab either.
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect.poll(() => tabCount(window), { timeout: 5_000 }).toBe(3);
+  await gotoFixture(window, electronApp);
+  await evalInWebview(window, "document.getElementById('named3').click(); 'ok'");
+  await window.waitForTimeout(1_500);
+  expect(await tabCount(window)).toBe(3);
+  const urls = await guestUrls(electronApp);
+  expect(urls).not.toContainEqual(expect.stringContaining(CIDS[2].replace(/\/$/, '')));
+  expect(urls).toContainEqual(expect.stringContaining(CIDS[1].replace(/\/$/, '')));
+  await expect(window.locator('[data-test="tab"]').nth(2)).toHaveClass(/(^|\s)active(\s|$)/);
+  await window.screenshot({
+    path: `${process.env.TMPDIR || '/tmp'}/dweb-gesture-unrelated.png`,
+  });
 });

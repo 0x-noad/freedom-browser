@@ -604,7 +604,9 @@ const handleDwebLinkActivation = (event) => {
   // A plain named-target link without a gesture is forwarded as `reuseOnly`:
   // like Chromium, it may navigate a tab that already carries that name (no
   // gesture is needed to navigate an existing browsing context), but it may
-  // not create one, and the host does not switch to it.
+  // not create one, and the host does not switch to it. The host also scopes
+  // it to the tab that opened the named tab (tabs.js `namedTargetOpeners`), so
+  // an unrelated site in another tab can't re-navigate it by name.
   let reuseOnly = false;
   if (disposition !== 'currentTab' && !claimNewTabActivation(event)) {
     if (disposition === 'newTab' && isNamedTarget && !wantsNewTab && !event.shiftKey) {
