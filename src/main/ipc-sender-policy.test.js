@@ -311,6 +311,38 @@ describe('webview tiers mirror webview-preload.js', () => {
     expect(source).not.toMatch(/\{[^}]*\b(invoke|send|sendSync)\b[^}]*\}\s*=\s*ipcRenderer/);
   });
 
+  // The two tests above enumerate *bad* call shapes, which can never be
+  // complete: `(ipcRenderer).invoke('x')`, `ipcRenderer.invoke.call(…)` or
+  // `fn(ipcRenderer)` hand the object to an invoke the scans don't read. Close
+  // the class instead by allow-listing every `ipcRenderer` token in the file:
+  // each must be the one import, a comment line, a main-bound call in exactly
+  // the form CALL reads, or a host/listener call that never reaches ipcMain.
+  test('every ipcRenderer occurrence in the preload is an allow-listed form', () => {
+    const allowed = [
+      /^ipcRenderer\.(?:invoke|send|sendSync)\(\s*'[^'\\$`]+'\s*[,)]/,
+      /^ipcRenderer\.(?:on|removeListener|sendToHost)\(/,
+    ];
+    const IMPORT = "const { contextBridge, ipcRenderer } = require('electron');";
+    const offenders = [];
+    let imports = 0;
+    for (const match of source.matchAll(/\bipcRenderer\b/g)) {
+      const lineStart = source.lastIndexOf('\n', match.index) + 1;
+      const lineEnd = source.indexOf('\n', match.index);
+      const line = source.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
+      if (line === IMPORT) {
+        imports += 1;
+        continue;
+      }
+      if (/^\s*\/\//.test(line)) continue;
+      const rest = source.slice(match.index, match.index + 200);
+      if (allowed.some((re) => re.test(rest))) continue;
+      const lineNo = source.slice(0, match.index).split('\n').length;
+      offenders.push(`webview-preload.js:${lineNo}: ${line.trim()}`);
+    }
+    expect(imports).toBe(1);
+    expect(offenders).toEqual([]);
+  });
+
   test('get-theme is only read inside installInternalPageTheme', () => {
     const fn = source.indexOf('function installInternalPageTheme');
     const call = source.indexOf("sendSync('internal:get-theme')");
