@@ -65,10 +65,19 @@ function createMainWindow(initialUrl = null, options = {}) {
     ...(linuxFrameless && { frame: false }),
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload.js'),
+      // Pinned explicitly rather than left to Electron's defaults, so a
+      // future default change or a stray option can't silently weaken the
+      // renderer that holds the privileged preload API
+      // (docs/security-audit-electron.md, E-4).
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      nodeIntegrationInSubFrames: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      experimentalFeatures: false,
       webviewTag: true,
-      enableRemoteModule: false,
     },
   });
 

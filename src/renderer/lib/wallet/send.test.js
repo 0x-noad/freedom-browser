@@ -453,4 +453,30 @@ describe('send screen sidebar ownership', () => {
     expect(elements['sidebar-send'].classList.contains('hidden')).toBe(false);
     expect(elements['send-input-view'].classList.contains('hidden')).toBe(false);
   });
+
+  test('the explorer link opens a tab on click and on middle-click, never a popup', async () => {
+    const { mod, elements, send } = await loadSendScreen();
+    const { createTab } = await import('../tabs.js');
+
+    mod.openSend();
+    elements['send-confirm-btn'].dispatch('click');
+    await flush();
+    send.resolve({ success: true, hash: '0xfeedface', explorerUrl: 'https://ex/0xfeedface' });
+    await flush();
+    const link = elements['send-explorer-link'];
+    expect(link.href).toBe('https://ex/0xfeedface');
+
+    const click = { button: 0, preventDefault: jest.fn() };
+    link.dispatch('click', click);
+    expect(click.preventDefault).toHaveBeenCalled();
+    expect(createTab).toHaveBeenLastCalledWith('https://ex/0xfeedface', { background: false });
+
+    // Middle-click arrives as auxclick; the chrome window denies the popup
+    // target="_blank" would ask for, so without this it did nothing.
+    const middle = { button: 1, preventDefault: jest.fn() };
+    link.dispatch('auxclick', middle);
+    expect(middle.preventDefault).toHaveBeenCalled();
+    expect(createTab).toHaveBeenLastCalledWith('https://ex/0xfeedface', { background: true });
+    expect(createTab).toHaveBeenCalledTimes(2);
+  });
 });

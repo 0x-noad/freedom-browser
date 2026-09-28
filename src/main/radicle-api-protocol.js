@@ -369,7 +369,9 @@ function registerRadicleApiProtocol(targetSession, { privatePartition = null } =
     return;
   }
   if (!guardRegistered) {
-    registerWebRequestHandler('onBeforeRequest', 'radapi-guard', guardRadicleApiRequest);
+    registerWebRequestHandler('onBeforeRequest', 'radapi-guard', guardRadicleApiRequest, {
+      failClosed: true,
+    });
     guardRegistered = true;
   }
   // PRIVATE MODE GUARD (request logging): same contract as registerRadProtocol

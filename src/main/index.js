@@ -1,5 +1,13 @@
 // Set app name early, before electron-log initializes (it uses app name for log path)
-const { app, dialog } = require('electron');
+const { app, dialog, ipcMain } = require('electron');
+
+// Sender checks for every IPC handler (docs/security-audit-electron.md, E-1).
+// Installed before anything below can register a handler, so none escapes it.
+// The logger is resolved lazily: electron-log must not initialise before the
+// app name is set just below.
+require('./ipc-sender-policy').installIpcSenderPolicy(ipcMain, {
+  logger: { warn: (...args) => require('./logger').warn(...args) },
+});
 const appName = app.isPackaged
   ? process.platform === 'linux'
     ? 'freedom'

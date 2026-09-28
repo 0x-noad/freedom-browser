@@ -391,7 +391,9 @@ describe('radapi protocol', () => {
       expect(dispatcher.registerWebRequestHandler).toHaveBeenCalledWith(
         'onBeforeRequest',
         'radapi-guard',
-        fresh.guardRadicleApiRequest
+        fresh.guardRadicleApiRequest,
+        // A throwing guard must cancel, not wave the request through.
+        { failClosed: true }
       );
     });
   });

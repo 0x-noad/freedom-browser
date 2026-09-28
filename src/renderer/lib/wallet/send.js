@@ -20,6 +20,7 @@ import {
 } from '../navigation-utils.js';
 import { isPotentialEnsName } from '../origin-utils.js';
 import { createTab } from '../tabs.js';
+import { bindExplorerLink } from './explorer-link.js';
 
 // DOM references
 let sendScreen;
@@ -238,15 +239,7 @@ function setupSendScreen() {
     sendDoneBtn.addEventListener('click', closeSend);
   }
 
-  if (sendExplorerLink) {
-    sendExplorerLink.addEventListener('click', (e) => {
-      e.preventDefault();
-      const url = sendExplorerLink.href;
-      if (url && url !== '#') {
-        createTab(url);
-      }
-    });
-  }
+  bindExplorerLink(sendExplorerLink, () => sendExplorerLink.href, createTab);
 
   if (sendRetryBtn) {
     sendRetryBtn.addEventListener('click', showSendInputView);
