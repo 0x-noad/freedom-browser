@@ -1480,6 +1480,64 @@ describe('webview-preload private windows', () => {
   });
 });
 
+// #432: internal pages run `script-src 'self'`, so an inline <script> shim
+// injected into them is refused by their CSP and only logs a violation. They
+// reach main through freedomAPI and have no use for window.swarm /
+// window.radicle, so those two DOM-injected shims are skipped there — and
+// still injected into every web page.
+describe('webview-preload page-world shims on internal pages', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.navigator = originalNavigator;
+    global.location = originalLocation;
+    global.MutationObserver = originalMutationObserver;
+    jest.restoreAllMocks();
+  });
+
+  // Source of every <script> actually inserted into the page.
+  const injectedScripts = (location) => {
+    const head = { firstChild: null, insertBefore: jest.fn() };
+    loadWebviewPreloadModule({
+      location,
+      documentOverrides: {
+        createElement: jest.fn(() => ({ remove: jest.fn(), textContent: '' })),
+        head,
+        readyState: 'complete',
+      },
+    });
+    return head.insertBefore.mock.calls.map(([script]) => script.textContent);
+  };
+
+  test('a web page gets the window.swarm and window.radicle shims', () => {
+    const sources = injectedScripts({
+      href: 'https://dapp.example/',
+      protocol: 'https:',
+      pathname: '/',
+    });
+    expect(sources.some((source) => source.includes('FREEDOM_SWARM_REQUEST'))).toBe(true);
+    expect(sources.some((source) => source.includes('FREEDOM_RADICLE_REQUEST'))).toBe(true);
+  });
+
+  test.each(['history.html', 'settings.html', 'error.html'])(
+    'internal page %s gets no inline shim at all',
+    (file) => {
+      const sources = injectedScripts({
+        href: `file:///app/pages/${file}`,
+        protocol: 'file:',
+        pathname: `/app/pages/${file}`,
+      });
+      expect(sources).toEqual([]);
+    }
+  );
+});
+
 // #233: internal pages used to follow the OS colour scheme only, so a dark app
 // on a light desktop rendered a dark toolbar over white pages. The preload now
 // resolves Settings > Appearance at document-start and stamps the answer on

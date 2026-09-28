@@ -1291,7 +1291,10 @@ try {
 
   // PRIVATE MODE GUARD (providers): window.swarm is not injected in
   // private windows — same policy as window.ethereum above.
-  if (!IS_PRIVATE_WINDOW) {
+  // Internal pages don't get it either: they talk to main through freedomAPI,
+  // and their CSP (`script-src 'self'`, #432) refuses this inline <script>, so
+  // injecting it there would only log a violation.
+  if (!IS_PRIVATE_WINDOW && !isInternalPage()) {
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', injectSwarm, { once: true });
     } else {
@@ -1455,7 +1458,8 @@ try {
 
   // PRIVATE MODE GUARD (providers): window.radicle is not injected in
   // private windows — same policy as window.ethereum / window.swarm above.
-  if (!IS_PRIVATE_WINDOW) {
+  // Skipped on internal pages for the same reason as window.swarm (#432).
+  if (!IS_PRIVATE_WINDOW && !isInternalPage()) {
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', injectRadicle, { once: true });
     } else {
