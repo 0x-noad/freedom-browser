@@ -277,11 +277,16 @@ describe('webview tiers mirror webview-preload.js', () => {
   // single-quoted literal. (sendToHost goes to the embedder, not ipcMain.)
   test('every main-bound preload call names its channel as a single-quoted literal', () => {
     // Dot, bracket, or optional-chaining (`?.`, `?.[`) access, with any
-    // whitespace/newlines around the accessor; only the exact
-    // `ipcRenderer.<method>('…'` text is the form CALL reads, so anything
-    // else — including `ipcRenderer\n  .invoke(` — is an offender.
-    const anyCall =
-      /ipcRenderer\s*(\?\.\s*\[|\?\.\s*|\.\s*|\[)\s*['"`]?(invoke|send|sendSync|postMessage)\b/g;
+    // whitespace, newlines or comments (`/*…*/`, `//…`) around the accessor;
+    // only the exact `ipcRenderer.<method>('…'` text is the form CALL reads,
+    // so anything else — `ipcRenderer\n  .invoke(`, `ipcRenderer./*c*/invoke(`
+    // — is an offender. (A comment after the method name is caught by the
+    // `literal` check on what follows it.)
+    const gap = String.raw`(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*`;
+    const anyCall = new RegExp(
+      String.raw`ipcRenderer${gap}(\?\.${gap}\[|\?\.|\.|\[)${gap}['"\`]?(invoke|send|sendSync|postMessage)\b`,
+      'g'
+    );
     const literal = /^\(\s*'[^'\\$`]+'\s*[,)]/;
     const offenders = [];
     let total = 0;
