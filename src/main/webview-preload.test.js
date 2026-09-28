@@ -141,6 +141,9 @@ function loadWebviewPreloadModule(options = {}) {
   global.location = location;
   global.navigator = {
     clipboard,
+    // `navigator.userActivation`, when a spec models one (the dweb-link
+    // new-tab gate reads `isActive`).
+    ...(options.userActivation ? { userActivation: options.userActivation } : {}),
   };
   // The theme bootstrap falls back to observing `document` when <html> does
   // not exist yet at document-start.
@@ -949,6 +952,7 @@ describe('webview-preload', () => {
       shiftKey: false,
       altKey: false,
       defaultPrevented: false,
+      isTrusted: true,
       preventDefault: jest.fn(),
     };
 
@@ -1067,6 +1071,8 @@ describe('webview-preload', () => {
         shiftKey: false,
         altKey: false,
         defaultPrevented: false,
+        // A real click or middle-click: new-tab dispositions need a gesture.
+        isTrusted: true,
         preventDefault: jest.fn(),
         ...overrides,
       };
@@ -1081,6 +1087,93 @@ describe('webview-preload', () => {
       });
       expect(ipcRenderer.sendToHost.mock.calls[0][0]).toBe('link:navigate');
     }
+  });
+
+  // docs/security-audit-electron.md, O-12: a page must not be able to open
+  // dweb tabs with a scripted `anchor.click()` — the popup-blocker rule
+  // Chromium applies to `target="_blank"`.
+  describe('new-tab dispositions need a user gesture', () => {
+    const blankAnchor = (target = '_blank') => ({
+      tagName: 'A',
+      getAttribute: jest.fn((name) => {
+        if (name === 'href') return 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+        if (name === 'target') return target;
+        return null;
+      }),
+      parentElement: global.document.body,
+    });
+    const syntheticClick = (anchor, overrides = {}) => ({
+      target: anchor,
+      button: 0,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      defaultPrevented: false,
+      isTrusted: false,
+      preventDefault: jest.fn(),
+      ...overrides,
+    });
+
+    test.each([
+      ['target=_blank', '_blank', {}],
+      ['a named target', 'docs', {}],
+      ['a synthetic ctrl-click', '', { ctrlKey: true }],
+      ['a synthetic shift-click (new window)', '', { shiftKey: true }],
+    ])('a synthetic click on %s without activation opens nothing', (_label, target, extra) => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        userActivation: { isActive: false, hasBeenActive: true },
+      });
+      const event = syntheticClick(blankAnchor(target), extra);
+      documentCaptureHandlers.click(event);
+      expect(ipcRenderer.sendToHost).not.toHaveBeenCalledWith('link:navigate', expect.anything());
+      // Cancelled all the same, so Chromium does not open it through
+      // setWindowOpenHandler instead.
+      expect(event.preventDefault).toHaveBeenCalled();
+    });
+
+    test('no userActivation API at all counts as no activation', () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule();
+      const event = syntheticClick(blankAnchor());
+      documentCaptureHandlers.click(event);
+      expect(ipcRenderer.sendToHost).not.toHaveBeenCalledWith('link:navigate', expect.anything());
+    });
+
+    test('a scripted click inside a real gesture still opens the tab', () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        userActivation: { isActive: true, hasBeenActive: true },
+      });
+      documentCaptureHandlers.click(syntheticClick(blankAnchor()));
+      expect(ipcRenderer.sendToHost).toHaveBeenCalledWith('link:navigate', {
+        url: 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
+        disposition: 'newTab',
+        target: '_blank',
+      });
+    });
+
+    test('a real click opens the tab', () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        userActivation: { isActive: false, hasBeenActive: false },
+      });
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { isTrusted: true }));
+      expect(ipcRenderer.sendToHost).toHaveBeenCalledWith('link:navigate', {
+        url: 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
+        disposition: 'newTab',
+        target: '_blank',
+      });
+    });
+
+    test('a synthetic same-tab click still navigates (no more than setting location)', () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        userActivation: { isActive: false, hasBeenActive: false },
+      });
+      documentCaptureHandlers.click(syntheticClick(blankAnchor('')));
+      expect(ipcRenderer.sendToHost).toHaveBeenCalledWith('link:navigate', {
+        url: 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
+        disposition: 'currentTab',
+        target: null,
+      });
+    });
   });
 
   test('ignores non-dweb anchor clicks', () => {

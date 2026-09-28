@@ -450,6 +450,15 @@ const getHostRoutedHref = (anchor) => {
 // only listened to `click` and relied on `event.button === 1` inside that
 // handler, which never fired for real middle-clicks (it only matched
 // dispatched-from-script synthetic events used by the unit tests).
+const hasUserActivation = (event) => {
+  if (event.isTrusted === true) return true;
+  try {
+    return globalThis.navigator?.userActivation?.isActive === true;
+  } catch {
+    return false;
+  }
+};
+
 const handleDwebLinkActivation = (event) => {
   if (event.defaultPrevented) return;
   // Primary (0, click) or middle (1, auxclick) — that's the only
@@ -502,6 +511,19 @@ const handleDwebLinkActivation = (event) => {
     disposition = 'newTab';
   } else {
     disposition = 'currentTab';
+  }
+
+  // A new tab or window needs a user gesture, the same rule Chromium's popup
+  // blocker applies to `target="_blank"` (docs/security-audit-electron.md,
+  // O-12). Without it a page could open any number of dweb tabs with a
+  // scripted `anchor.click()`. A real click is trusted; a script's `.click()`
+  // inside a real click handler still carries the transient activation. The
+  // event is still cancelled, or Chromium would open the tab itself through
+  // setWindowOpenHandler. A same-tab link needs no gesture: it is no more
+  // than the page setting `location`.
+  if (disposition !== 'currentTab' && !hasUserActivation(event)) {
+    event.preventDefault();
+    return;
   }
 
   event.preventDefault();
