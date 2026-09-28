@@ -18,6 +18,8 @@ const SITE = `bzz://${SAMPLE_BZZ_HASH}`;
 const PAGE_URL = `${SITE}/`;
 const POPUP_A = `${SITE}/popup-a.html`;
 const POPUP_B = `${SITE}/popup-b.html`;
+// A page that calls window.open while it loads, with no input of its own.
+const OPENS_ON_LOAD = `${SITE}/opens-on-load.html`;
 const SHOT_DIR = process.env.TMPDIR || '/tmp';
 
 const PAGE_BODY = [
@@ -26,7 +28,11 @@ const PAGE_BODY = [
   `<a id="blank" target="_blank" href="${POPUP_A}">open A in a new tab</a>`,
   // One real click, two window.open calls: one gesture buys one popup.
   `<button id="two" onclick="window.open('${POPUP_A}'); window.open('${POPUP_B}')">two</button>`,
+  // A plain same-tab link to a page that opens a popup on load.
+  `<a id="next" href="${OPENS_ON_LOAD}">next page</a>`,
   '<div id="out">ready</div>',
+  // Room to scroll, for the touch-scroll case.
+  '<div style="height:4000px"></div>',
 ].join('\n');
 
 const tabs = (window) => window.locator('[data-test="tab"]');
@@ -53,6 +59,11 @@ async function seedFixtures(electronApp) {
         [PAGE_URL, PAGE_BODY],
         [POPUP_A, '<!doctype html><title>popup A</title><p id="who">popup A'],
         [POPUP_B, '<!doctype html><title>popup B</title><p id="who">popup B'],
+        [
+          OPENS_ON_LOAD,
+          '<!doctype html><title>opens on load</title><p id="who">next</p>' +
+            `<script>window.open(${JSON.stringify(POPUP_A)});</script>`,
+        ],
       ],
     }
   );
@@ -90,6 +101,31 @@ async function realClick(window, electronApp, id) {
       guest.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
     },
     { ...box, url: PAGE_URL }
+  );
+}
+
+// A touch on the fixture guest through CDP's Input.dispatchTouchEvent, which
+// runs Chromium's real gesture detector: no moves is a tap; a long drag turns
+// into a scroll (gestureScrollBegin before the touchEnd).
+async function realTouch(electronApp, moves) {
+  await electronApp.evaluate(
+    async ({ webContents }, { url, moves }) => {
+      const guest = webContents
+        .getAllWebContents()
+        .find((wc) => wc.getType() === 'webview' && wc.getURL() === url);
+      if (!guest) throw new Error('fixture guest not found');
+      guest.debugger.attach('1.3');
+      try {
+        const touch = (type, touchPoints) =>
+          guest.debugger.sendCommand('Input.dispatchTouchEvent', { type, touchPoints });
+        await touch('touchStart', [{ x: 200, y: 300 }]);
+        for (const [x, y] of moves) await touch('touchMove', [{ x, y }]);
+        await touch('touchEnd', []);
+      } finally {
+        guest.debugger.detach();
+      }
+    },
+    { url: PAGE_URL, moves }
   );
 }
 
@@ -311,4 +347,46 @@ test('a private window allows pop-ups for its own session only', async ({
   await expect(tabs(priv2)).toHaveCount(1);
   await expect(icon(priv2)).toBeVisible();
   await closePrivateWindows(electronApp);
+});
+
+// Chromium's activation does not survive a cross-document navigation: the
+// click that followed a same-tab link must not pay for a popup the next page
+// opens on load.
+test('a click that navigated the tab does not pay for a popup the next page opens', async ({
+  window,
+  electronApp,
+}) => {
+  await gotoFixture(window, electronApp);
+  await realClick(window, electronApp, 'next');
+  await expect
+    .poll(() => evalInWebview(window, "document.getElementById('who')?.textContent || null"), {
+      timeout: 10_000,
+    })
+    .toBe('next');
+  await expect(icon(window)).toBeVisible();
+  await expect(tabs(window)).toHaveCount(1);
+  expect(await guestUrls(electronApp)).not.toContain(POPUP_A);
+  await window.screenshot({ path: `${SHOT_DIR}/popup-blocked-after-navigation.png` });
+});
+
+// A touch that becomes a scroll ends in pointercancel in Chromium and grants
+// no activation, though the browser still sees a touchEnd; a tap does.
+test('a touch scroll does not arm a popup; a touch tap does', async ({ window, electronApp }) => {
+  await gotoFixture(window, electronApp);
+
+  await realTouch(electronApp, [
+    [200, 280],
+    [200, 240],
+    [200, 180],
+    [200, 120],
+  ]);
+  await expect.poll(() => evalInWebview(window, 'scrollY'), { timeout: 5_000 }).toBeGreaterThan(0);
+  await scriptOpen(window, POPUP_A);
+  await expect(icon(window)).toBeVisible();
+  await expect(tabs(window)).toHaveCount(1);
+
+  await realTouch(electronApp, []);
+  await scriptOpen(window, POPUP_B);
+  await expect(tabs(window)).toHaveCount(2);
+  await expect.poll(() => guestUrls(electronApp), { timeout: 10_000 }).toContain(POPUP_B);
 });

@@ -21,6 +21,21 @@
  * Chromium's user-activation bit to the window-open handler, so trusted
  * input on the guest stands in for it. It is one budget shared with
  * external-protocol launches, as Chromium's single transient activation is.
+ * It is cleared when a new document commits in the tab's top frame, as
+ * Chromium's activation does not survive a cross-document navigation.
+ *
+ * Known gap — the budget is per tab, not per frame. Chromium's activation
+ * is per frame: a click on the host page activates the host (and its
+ * ancestors), not an embedded cross-origin iframe, so Chrome blocks an ad
+ * iframe's `window.open` the user never clicked in. Here any frame of the
+ * tab may spend the tab's gesture, so for 5 s after input anywhere on the
+ * page an unclicked iframe can open one popup (still only one: it consumes
+ * the gesture). Closing it needs the frame of both the input and the open,
+ * and Electron 44 reports neither: `input-event` carries no frame, and the
+ * window-open handler's details are url/frameName/features/disposition/
+ * referrer/postBody only — the referrer can't stand in, since a frame can
+ * suppress it (`referrerpolicy="no-referrer"`) exactly like a legitimate
+ * `rel=noreferrer` link on the top page.
  *
  * Two callers ask:
  *

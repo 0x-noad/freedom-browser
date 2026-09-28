@@ -170,7 +170,11 @@ const USER_GESTURE_WINDOW_MS = 5000;
 //   mouse/pen press → mouseDown only (Chromium activates at pointerdown)
 //   key press       → the keyDown, unless the key is Escape or a lone
 //                     modifier (Chromium grants nothing for those)
-//   touch tap       → touchEnd (Chromium activates at pointerup for touch)
+//   touch tap       → touchEnd (Chromium activates at pointerup for touch),
+//                     unless the touch became a scroll or pinch first: then
+//                     Chromium sends pointercancel and grants nothing, but
+//                     the browser still forwards the raw touchEnd. The
+//                     tracker watches for that (see TOUCH_TURNED_GESTURE).
 //
 // Mouse moves, wheel, focus changes, keyUp and char never count. The same
 // rule webview-preload.js used for its dweb-link budget (#443), which now
@@ -195,6 +199,23 @@ const NON_ACTIVATING_KEYS = new Set([
   'Super',
   'Symbol',
   'SymbolLock',
+]);
+
+// Events that, between a touchStart and its touchEnd, mean the touch became
+// a scroll/pinch (or was cancelled) rather than a tap. Probed on Electron 44
+// with CDP `Input.dispatchTouchEvent`, which runs Chromium's real gesture
+// detector (2026-09-28): a drag's input-event stream is
+//   touchStart, gestureTapDown, touchMove…, gestureTapCancel,
+//   gestureScrollBegin, touchScrollStarted, …, touchEnd
+// while a tap — including one with a few px of finger jitter, whose
+// touchMoves are forwarded too — is
+//   touchStart, gestureTapDown, [touchMove…], touchEnd, gestureTap
+// so the touchMoves alone can't tell them apart; the gesture events can.
+const TOUCH_TURNED_GESTURE = new Set([
+  'gestureScrollBegin',
+  'touchScrollStarted',
+  'gesturePinchBegin',
+  'touchCancel',
 ]);
 
 function isActivatingInput(input) {
@@ -286,10 +307,33 @@ function escapeExternalHandlerValue(url) {
  */
 function trackUserGestures(contents) {
   if (!contents || typeof contents.on !== 'function') return;
+  // Whether the current touch turned into a scroll/pinch (see
+  // TOUCH_TURNED_GESTURE); its touchEnd then grants nothing.
+  let touchTurnedGesture = false;
   contents.on('input-event', (_event, input) => {
+    const type = input?.type;
+    if (type === 'touchStart') {
+      touchTurnedGesture = false;
+      return;
+    }
+    if (TOUCH_TURNED_GESTURE.has(type)) {
+      touchTurnedGesture = true;
+      return;
+    }
+    if (type === 'touchEnd' && touchTurnedGesture) return;
     if (isActivatingInput(input)) {
       lastUserGesture.set(contents, Date.now());
     }
+  });
+  // Transient activation belongs to a document: Chromium does not carry it
+  // across a cross-document navigation. So when a new document commits in
+  // the tab's top frame, input on the previous page no longer counts —
+  // otherwise a click on a plain same-tab link would pay for a popup the
+  // destination opens on load. Same-document navigations (pushState,
+  // #fragment) keep it, as in Chromium; `did-navigate` fires only for
+  // cross-document main-frame commits.
+  contents.on('did-navigate', () => {
+    lastUserGesture.delete(contents);
   });
 }
 
