@@ -523,11 +523,53 @@ they are signed with the team ID, and drop
 
 ## Verification
 
-- `npm test`: 260 suites green, including the new `ipc-sender-policy.test.js`
-  and the new `webcontents-setup` and `webrequest-dispatcher` cases.
-- Harness e2e suite (`npx playwright test --project=harness`) under Xvfb
-  against the fixed tree.
-- A packaged Linux build (`electron-builder --linux dir`): fuses read back,
-  plus the `packaged` Playwright project at 10/10.
-- A manual run under Xvfb covering browsing, a `bzz://` page and the wallet
-  UI, with no `ipc-sender-policy` refusals in the main log for any of them.
+Run on 2026-09-28 against this PR's tree, headless under Xvfb.
+
+**Unit tests.** `npm test`: all suites green. That includes the new
+`ipc-sender-policy.test.js` and the new `webcontents-setup`,
+`webrequest-dispatcher`, `radicle-api-protocol` and `onchain-app-protocol`
+cases. Each new guard was mutation-checked:
+
+- disabling the chrome-window lock, the preference forcing or `failClosed`
+  fails the suite;
+- so does dropping or re-tiering an IPC channel.
+
+**Harness e2e** (`npx playwright test --project=harness`): 248 passed, 2
+failed, 19 skipped. Both failures pass on a rerun in isolation:
+
+- `settings-adblock.spec.js:58` failed only because the fresh checkout had no
+  `assets/adblock` lists. It passes after `npm run adblock:download`.
+- `downloads.spec.js:153` is a renderer-only timing assertion, run while
+  other app instances were launched alongside it.
+
+The address-bar, tabs, Ledger send, Safe send, permissions,
+internal-page-theme, onchain-apps, private-windows, profiles and settings
+specs were then rerun on the final commit: 103/103 passed.
+
+**Packaged build** (`electron-builder --linux dir`, local):
+
+- `@electron/fuses read` confirms NodeOptions is off and RunAsNode /
+  NodeCliInspect are on.
+- The `packaged` project passes 10/10, and `packaged-live/browsing.spec.js`
+  passes 2/2: a local http page and `https://example.com`.
+- `nodes.spec.js` fails, as expected: the local build has no bundled node
+  binaries.
+
+**App under Xvfb** (harness, plus the packaged build for real https):
+
+- Browsing `https://example.com` works.
+- A `bzz://` page renders.
+- `freedom://settings` still reads settings through `freedomAPI`.
+- A real vault can be created, and the wallet sidebar shows its address.
+
+There are no `ipc-sender-policy` refusals in the main log for any of these.
+
+**Acceptance evidence, in the same runs:**
+
+- A tab webview on a `bzz:` page calling the real registered
+  `identity:export-mnemonic` handler with its own sender and frame is refused.
+- A scripted chrome-window navigation and a `window.open` from the chrome are
+  blocked, and the window stays on `index.html` with its API.
+- A `<webview nodeintegration webpreferences="contextIsolation=no,sandbox=no,…">`
+  created by the chrome attaches with Node off, isolation on and sandbox on:
+  `typeof require` is `undefined` in the guest.
