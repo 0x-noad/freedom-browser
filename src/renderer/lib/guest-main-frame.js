@@ -25,6 +25,19 @@
  * re-reported on each; a sub-frame's pair (same- or cross-process) never
  * equals the main frame's. Before the first main-frame commit nothing is
  * accepted (fail closed).
+ *
+ * What this does not do: tell two documents of the main frame apart. The
+ * pair names a frame, not a document, and Chromium may keep the same
+ * RenderFrame (hence the same pair) across a same-process navigation, e.g.
+ * a same-site one. A message the outgoing document sent that only reaches
+ * the embedder after the new document's `did-frame-navigate` would then
+ * still pass. That is no wider than before this guard (every message was
+ * accepted then), and the sender is the tab's own previous top-level page
+ * rather than an embedded frame. The providers' per-webview navigation
+ * generation only covers the neighbouring case (a request that arrived
+ * before the commit gets no answer after it); a late arrival is handled
+ * under the new document. This guard exists to keep sub-frames out; it is
+ * not a per-document identity.
  */
 
 const mainFrames = new WeakMap();
