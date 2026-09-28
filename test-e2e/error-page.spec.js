@@ -217,4 +217,28 @@ test.describe('the error page reads node state from the registry', () => {
     expect(await descriptionFor(window, 'swarm')).toMatch(/The Swarm node is not running/);
     expect(await descriptionFor(window, 'ipfs')).toMatch(/The IPFS node is not running/);
   });
+  // #445 R2-M2: the health check's soft-ERROR keeps `api`/`gateway` published
+  // (so it can recover in place) and only raises the error overlay. A node in
+  // that state is not serving, so the page must say so, and go back to the
+  // generic copy once the node recovers.
+  test('a published node that stopped answering says so, until it recovers', async ({
+    electronApp,
+    window,
+  }) => {
+    await electronApp.evaluate(() => {
+      const registry = process.mainModule.require('./src/main/service-registry');
+      registry.setErrorState('ant', 'Node unreachable. Retrying…');
+      registry.setErrorState('ipfs', 'External node unreachable. Retrying…');
+    });
+    expect(await descriptionFor(window, 'swarm')).toMatch(/The Swarm node is not running/);
+    expect(await descriptionFor(window, 'ipfs')).toMatch(/The IPFS node is not running/);
+
+    await electronApp.evaluate(() => {
+      const registry = process.mainModule.require('./src/main/service-registry');
+      registry.clearErrorState('ant');
+      registry.clearErrorState('ipfs');
+    });
+    expect(await descriptionFor(window, 'swarm')).not.toMatch(/node is not running/);
+    expect(await descriptionFor(window, 'ipfs')).not.toMatch(/node is not running/);
+  });
 });

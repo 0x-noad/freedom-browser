@@ -45,7 +45,11 @@
  *     (`172.17.0.1`), the LAN IP, a public IP. The guard cannot enumerate
  *     those (NAT, port forwards, interfaces coming and going), so it does not
  *     try: on the node's port, every host is the node. A top-level GET
- *     navigation to such a URL is still allowed (see below);
+ *     navigation to such a URL is still allowed (see below). The one
+ *     exception is a node on a scheme-default port (80/443 — an external
+ *     `https://localhost` behind a reverse proxy): that port is every
+ *     website's too, so there only the loopback spellings are guarded, and a
+ *     rebinding name or another address of this machine on 80/443 is not;
  *   - the exact origin of a configured external Ant API.
  * The Ant API ports are the default (1633), the port the node was configured
  * or started on, and every port the node has used this session (a restart
@@ -64,6 +68,8 @@ const {
 
 const GUARDED_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
 const DEFAULT_PORTS = { 'http:': '80', 'ws:': '80', 'https:': '443', 'wss:': '443' };
+// The scheme-default ports: shared with every website, so never "all hosts".
+const SHARED_WEB_PORTS = new Set(Object.values(DEFAULT_PORTS));
 
 // Ports the node has listened on (sticky for the session) and non-loopback
 // API origins it has been configured with.
@@ -162,10 +168,16 @@ function isAntApiRequestUrl(rawUrl) {
   const live = currentApiUrl();
   if (live && live.hostname === hostname && live.port === port) return true;
 
+  if (!isAntApiPort(port)) return false;
+  // 80/443 are every website's port. A node served on one of them (an
+  // external `https://localhost` behind a reverse proxy) is guarded on its
+  // loopback spellings only; "every host is the node" there would cancel
+  // every page's subresources for the rest of the session (#445 R2-F1).
+  if (SHARED_WEB_PORTS.has(port)) return isLoopbackHostname(hostname);
   // On the node's port every host is the node: a DNS name may resolve to
   // loopback (this runs before DNS), and a node bound to 0.0.0.0 answers on
   // every other address of this machine too (see the file header).
-  return isAntApiPort(port);
+  return true;
 }
 
 function frameUrlOf(details) {

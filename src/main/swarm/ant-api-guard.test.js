@@ -162,6 +162,38 @@ describe('an announced main-process dial', () => {
     expect(guardAntApiRequest(mainDial())).toEqual({ cancel: true });
   });
 
+  // #445 R2-M1: the caller announces the raw string it built; webRequest
+  // reports Chromium's canonical URL (the shapes below are the ones a real
+  // Electron `net.request` produced; see ant-api-main-dials.js).
+  test.each([
+    ['a space in the path', `${URL_}/some page.html`, `${URL_}/some%20page.html`],
+    ['a fragment', `${URL_}/#section`, `${URL_}/`],
+    ['a kept fragment', `${URL_}/#section`, `${URL_}/#section`],
+    [
+      'characters only Chromium escapes',
+      `${URL_}/some page {x}|^\`.html?q=a b`,
+      `${URL_}/some%20page%20%7Bx%7D%7C%5E%60.html?q=a%20b`,
+    ],
+    ['an upper-case host', `http://ANT.example.test:1633/bzz/${'a'.repeat(64)}`, URL_],
+  ])('matches the canonical form Chromium reports (%s)', (_label, announced, reported) => {
+    const release = announceMainProcessAntDial(announced);
+    try {
+      expect(guardAntApiRequest(mainDial({ url: reported }))).toBeNull();
+    } finally {
+      release();
+    }
+    expect(guardAntApiRequest(mainDial({ url: reported }))).toEqual({ cancel: true });
+  });
+
+  test('an escaped slash still names a different path', () => {
+    const release = announceMainProcessAntDial(`${URL_}/a/b`);
+    try {
+      expect(guardAntApiRequest(mainDial({ url: `${URL_}/a%2Fb` }))).toEqual({ cancel: true });
+    } finally {
+      release();
+    }
+  });
+
   test.each([
     ['a POST of the same URL', mainDial({ method: 'POST' })],
     ['a different path on the node', mainDial({ url: `${REMOTE}/stamps/1/17` })],
@@ -254,6 +286,46 @@ describe('isAntApiRequestUrl', () => {
     noteAntApiUrl('https://my-node.lan');
     expect(isAntApiRequestUrl('https://my-node.lan/stamps')).toBe(true);
     expect(isAntApiRequestUrl('https://my-node.lan:443/stamps')).toBe(true);
+  });
+});
+
+describe('a loopback node on a scheme-default port (#445 R2-F1)', () => {
+  test.each([
+    ['https://localhost', 'https:', '443'],
+    ['http://127.0.0.1', 'http:', '80'],
+    ['http://bee.localhost/', 'http:', '80'],
+  ])('%s guards loopback on its port, not every website', (apiUrl, scheme) => {
+    noteAntApiUrl(apiUrl);
+    mockGetAntApiUrl.mockReturnValue(apiUrl);
+    const other = scheme === 'https:' ? 'https' : 'http';
+    // The node itself, on any loopback spelling, stays guarded.
+    expect(isAntApiRequestUrl(`${other}://127.0.0.1/stamps/1/17`)).toBe(true);
+    expect(isAntApiRequestUrl(`${other}://localhost/wallet`)).toBe(true);
+    expect(guardAntApiRequest(req({ url: `${other}://localhost/stamps/1/17` }))).toEqual({
+      cancel: true,
+    });
+    // Every other site on 80/443 keeps its subresources.
+    for (const url of [
+      'https://cdn.example.com/app.js',
+      'https://news.example/x.css',
+      'http://example.org/img.png',
+      'wss://chat.example/socket',
+    ]) {
+      expect(isAntApiRequestUrl(url)).toBe(false);
+      expect(
+        guardAntApiRequest(req({ url, method: 'GET', resourceType: 'script' }))
+      ).toBeNull();
+    }
+    // Still true once the node has stopped (the port stays sticky).
+    mockGetAntApiUrl.mockReturnValue(null);
+    expect(isAntApiRequestUrl('https://cdn.example.com/app.js')).toBe(false);
+    expect(isAntApiRequestUrl(`${other}://127.0.0.1/stamps`)).toBe(true);
+  });
+
+  test('a non-default node port still means every host', () => {
+    noteAntApiUrl('http://127.0.0.1:11633');
+    expect(isAntApiRequestUrl('http://172.17.0.1:11633/stamps')).toBe(true);
+    expect(isAntApiRequestUrl('http://127.0.0.1.nip.io:11633/stamps')).toBe(true);
   });
 });
 

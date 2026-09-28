@@ -152,6 +152,44 @@ test.describe('Ant API guard (O-1)', () => {
     expect(shown).toBe(url);
   });
 
+  // #445 R2-F1: an external node on a scheme-default port (`https://localhost`
+  // behind a reverse proxy) used to make every host on 443 "the node", so
+  // every site lost its subresources for the rest of the session.
+  test('a node on https://localhost guards loopback only, not every site', async ({
+    electronApp,
+    window,
+  }) => {
+    await electronApp.evaluate(() => {
+      process.mainModule.require('./src/main/swarm/ant-api-guard').noteAntApiUrl(
+        'https://localhost'
+      );
+    });
+    await navigateTo(window, 'http://news.test/');
+    const result = await evalInGuest(
+      window,
+      '!!document.querySelector(\'[data-test="harness-http-stub-url"]\')',
+      `(async () => {
+        const run = async (url, init) => {
+          try { await fetch(url, init); return 'reached'; } catch { return 'blocked'; }
+        };
+        return {
+          cdnScript: await run('https://cdn.example.com/app.js', { mode: 'no-cors' }),
+          pageCss: await run('https://news.test/x.css', { mode: 'no-cors' }),
+          plainHttp: await run('http://example.org/img.png', { mode: 'no-cors' }),
+          node: await run('https://localhost/stamps/1/17', { method: 'POST', mode: 'no-cors' }),
+          nodeByIp: await run('https://127.0.0.1/stamps/1/17', { method: 'POST', mode: 'no-cors' }),
+        };
+      })()`
+    );
+    expect(result).toEqual({
+      cdnScript: 'reached',
+      pageCss: 'reached',
+      plainHttp: 'reached',
+      node: 'blocked',
+      nodeByIp: 'blocked',
+    });
+  });
+
   test('the chrome node menu reads the node through the main process', async ({ window }) => {
     await window.click('#bee-menu-button');
     await expect(window.locator('#bee-peers-count')).toHaveText('3');
