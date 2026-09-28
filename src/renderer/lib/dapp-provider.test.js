@@ -31,6 +31,10 @@ const deferred = () => {
 
 const SAFE_WALLET_INDEX = 1000;
 
+// [processId, routingId] of the guest's main frame and of a sub-frame.
+const MAIN_FRAME = [7, 4];
+const SUB_FRAME = [8, 5];
+
 const loadProvider = async (options = {}) => {
   jest.resetModules();
 
@@ -113,10 +117,17 @@ const loadProvider = async (options = {}) => {
   webview.send = jest.fn();
   webview.getURL = jest.fn(() => options.webviewUrl || 'https://app.example');
   mod.setupWebviewProvider(webview);
+  // The guest's main frame commits, as Electron reports it before any
+  // message from the new document (see guest-main-frame.js).
+  const commitMainFrame = ([frameProcessId, frameRoutingId], isMainFrame = true) => {
+    webview.dispatch('did-frame-navigate', { isMainFrame, frameProcessId, frameRoutingId });
+  };
+  if (options.mainFrameCommitted !== false) commitMainFrame(MAIN_FRAME);
 
-  const sendRequest = (request) => {
+  const sendRequest = (request, frameId = MAIN_FRAME) => {
     webview.dispatch('ipc-message', {
       channel: 'dapp:provider-request',
+      frameId,
       args: [request],
     });
   };
@@ -125,6 +136,7 @@ const loadProvider = async (options = {}) => {
     mod,
     webview,
     sendRequest,
+    commitMainFrame,
     state,
     walletMocks,
     dappPermissions,
@@ -365,5 +377,107 @@ describe('dapp-provider onchain application binding', () => {
       event: 'chainChanged',
       data: '0x64',
     });
+  });
+});
+
+// Audit O-6 (#433): with nodeIntegrationInSubFrames a compromised iframe
+// renderer still has ipcRenderer.sendToHost. Its provider requests must not
+// be handled under the top page's permission key and wallet grants.
+describe('dapp-provider only serves the guest main frame', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  test('a signing request from a sub-frame is dropped before any grant is read', async () => {
+    const { webview, sendRequest, walletMocks, dappPermissions } = await loadProvider({
+      permission: safePermission(),
+    });
+
+    sendRequest({ id: 1, method: 'personal_sign', params: ['0xdead', '0xsafe'] }, SUB_FRAME);
+    await flushMicrotasks();
+
+    expect(dappPermissions.getPermission).not.toHaveBeenCalled();
+    expect(walletMocks.safeMessageStart).not.toHaveBeenCalled();
+    expect(responsesSentTo(webview)).toHaveLength(0);
+  });
+
+  test('a connect request from a sub-frame never opens the connect prompt', async () => {
+    const { webview, sendRequest, walletUi } = await loadProvider();
+
+    sendRequest({ id: 2, method: 'eth_requestAccounts', params: [] }, SUB_FRAME);
+    await flushMicrotasks();
+
+    expect(walletUi.showDappConnect).not.toHaveBeenCalled();
+    expect(responsesSentTo(webview)).toHaveLength(0);
+  });
+
+  test('a message without a frameId is dropped', async () => {
+    const { webview, walletMocks } = await loadProvider({
+      permission: safePermission(),
+    });
+
+    webview.dispatch('ipc-message', {
+      channel: 'dapp:provider-request',
+      args: [{ id: 3, method: 'personal_sign', params: ['0xdead', '0xsafe'] }],
+    });
+    await flushMicrotasks();
+
+    expect(walletMocks.safeMessageStart).not.toHaveBeenCalled();
+    expect(responsesSentTo(webview)).toHaveLength(0);
+  });
+
+  test('nothing is served before the main frame has committed', async () => {
+    const { webview, sendRequest, walletMocks } = await loadProvider({
+      permission: safePermission(),
+      mainFrameCommitted: false,
+    });
+
+    sendRequest({ id: 4, method: 'personal_sign', params: ['0xdead', '0xsafe'] });
+    await flushMicrotasks();
+
+    expect(walletMocks.safeMessageStart).not.toHaveBeenCalled();
+    expect(responsesSentTo(webview)).toHaveLength(0);
+  });
+
+  test('a sub-frame commit does not re-point the main frame', async () => {
+    const { webview, sendRequest, commitMainFrame, walletMocks } = await loadProvider({
+      permission: safePermission(),
+    });
+
+    commitMainFrame(SUB_FRAME, false);
+    sendRequest({ id: 5, method: 'personal_sign', params: ['0xdead', '0xsafe'] }, SUB_FRAME);
+    await flushMicrotasks();
+    expect(walletMocks.safeMessageStart).not.toHaveBeenCalled();
+
+    sendRequest({ id: 6, method: 'personal_sign', params: ['0xdead', '0xsafe'] });
+    await flushMicrotasks();
+    expect(responsesSentTo(webview)).toEqual([
+      ['dapp:provider-response', { id: 6, result: '0xsig', error: null }],
+    ]);
+  });
+
+  test('follows the main frame across a cross-process commit', async () => {
+    const { webview, sendRequest, commitMainFrame, walletMocks } = await loadProvider({
+      permission: safePermission(),
+    });
+    const NEXT_MAIN_FRAME = [9, 4];
+
+    commitMainFrame(NEXT_MAIN_FRAME);
+    // The previous main frame's [processId, routingId] no longer counts.
+    sendRequest({ id: 7, method: 'personal_sign', params: ['0xdead', '0xsafe'] }, MAIN_FRAME);
+    await flushMicrotasks();
+    expect(walletMocks.safeMessageStart).not.toHaveBeenCalled();
+
+    sendRequest({ id: 8, method: 'personal_sign', params: ['0xdead', '0xsafe'] }, NEXT_MAIN_FRAME);
+    await flushMicrotasks();
+    expect(responsesSentTo(webview)).toEqual([
+      ['dapp:provider-response', { id: 8, result: '0xsig', error: null }],
+    ]);
   });
 });
