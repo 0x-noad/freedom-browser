@@ -65,6 +65,10 @@ const PROBES = `(async () => {
     localhost: await run('http://localhost:${ANT_PORT}/stamps/1/17', { method: 'POST', mode: 'no-cors' }),
     ipv6: await run('http://[::1]:${ANT_PORT}/stamps/1/17', { method: 'POST', mode: 'no-cors' }),
     defaultPort: await run('http://127.0.0.1:1633/stamps/1/17', { method: 'POST', mode: 'no-cors' }),
+    // A node bound to 0.0.0.0 (a reused / Docker Bee) answers on every
+    // address of the machine: the docker bridge, the LAN IP (#445 R1-F1).
+    dockerBridge: await run('http://172.17.0.1:${ANT_PORT}/stamps/1/17', { method: 'POST', mode: 'no-cors' }),
+    lanIp: await run('http://192.168.1.20:1633/stamps/1/17', { method: 'POST', mode: 'no-cors' }),
     sandboxedFrame: await new Promise((resolve) => {
       const frame = document.createElement('iframe');
       frame.sandbox = 'allow-scripts';
@@ -83,6 +87,8 @@ const ALL_BLOCKED = {
   localhost: 'blocked',
   ipv6: 'blocked',
   defaultPort: 'blocked',
+  dockerBridge: 'blocked',
+  lanIp: 'blocked',
   sandboxedFrame: 'blocked',
 };
 

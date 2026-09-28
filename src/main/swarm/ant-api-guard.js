@@ -27,15 +27,25 @@
  *
  * The main process's own node traffic (bzz: handler, publishing, probes) goes
  * over Node's fetch and never reaches `session.webRequest`, so it is not
- * affected.
+ * affected. The one exception is the ENS prefetch of a *remote* external
+ * node, which dials through Electron's `net.request` (for the session's proxy
+ * policy) — and `net.request` does pass through `session.webRequest`, with no
+ * frame and no webContents, exactly like a worker's request. That dial
+ * announces its exact URL in `ant-api-main-dials.js` for its lifetime, and
+ * only a frameless GET/HEAD of that exact URL is let through.
  *
  * Which requests count as "to the Ant API":
  *   - any loopback host — `localhost`, `*.localhost`, `127.0.0.0/8`,
  *     `0.0.0.0`, `[::1]`, `[::]`, IPv4-mapped loopback — on an Ant API port;
- *   - any DNS name (not an IP literal) on an Ant API port. The guard runs
- *     before DNS, so without this `http://127.0.0.1.nip.io:1633/` (or a
- *     rebinding domain) would reach the node through a name that only
- *     resolves to loopback. A public IP literal on that port is let through;
+ *   - any other host at all — DNS name *or* IP literal — on an Ant API
+ *     port. The guard runs before DNS, so a name (`127.0.0.1.nip.io`, a
+ *     rebinding domain) may resolve to loopback; and a node bound to
+ *     `0.0.0.0` (a reused/Docker Bee with `-p 1633:1633`) also answers on
+ *     every other address of this machine — the docker bridge
+ *     (`172.17.0.1`), the LAN IP, a public IP. The guard cannot enumerate
+ *     those (NAT, port forwards, interfaces coming and going), so it does not
+ *     try: on the node's port, every host is the node. A top-level GET
+ *     navigation to such a URL is still allowed (see below);
  *   - the exact origin of a configured external Ant API.
  * The Ant API ports are the default (1633), the port the node was configured
  * or started on, and every port the node has used this session (a restart
@@ -47,6 +57,10 @@ const log = require('../logger');
 const { DEFAULTS, getAntApiUrl } = require('../service-registry');
 const { registerWebRequestHandler } = require('../webrequest-dispatcher');
 const { internalPageFileForUrl, isChromeIndexUrl } = require('../ipc-sender-policy');
+const {
+  isMainProcessAntDial,
+  _resetMainProcessAntDialsForTests,
+} = require('./ant-api-main-dials');
 
 const GUARDED_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
 const DEFAULT_PORTS = { 'http:': '80', 'ws:': '80', 'https:': '443', 'wss:': '443' };
@@ -66,10 +80,6 @@ function stripBrackets(hostname) {
 
 function isIpv4Literal(hostname) {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname);
-}
-
-function isIpLiteral(hostname) {
-  return isIpv4Literal(hostname) || hostname.startsWith('[');
 }
 
 /**
@@ -152,11 +162,10 @@ function isAntApiRequestUrl(rawUrl) {
   const live = currentApiUrl();
   if (live && live.hostname === hostname && live.port === port) return true;
 
-  if (!isAntApiPort(port)) return false;
-  if (isLoopbackHostname(hostname)) return true;
-  // A DNS name on the node's port: it may resolve to loopback, and this guard
-  // runs before DNS.
-  return !isIpLiteral(hostname);
+  // On the node's port every host is the node: a DNS name may resolve to
+  // loopback (this runs before DNS), and a node bound to 0.0.0.0 answers on
+  // every other address of this machine too (see the file header).
+  return isAntApiPort(port);
 }
 
 function frameUrlOf(details) {
@@ -184,9 +193,19 @@ function webContentsType(details) {
   }
 }
 
+function isAnnouncedMainProcessDial(details, method) {
+  if (method !== 'GET' && method !== 'HEAD') return false;
+  // A request from a page, a frame or a worker's webContents is never the
+  // main process's own dial.
+  if (details?.webContentsId !== undefined && details?.webContentsId !== null) return false;
+  if (details?.webContents || details?.frame) return false;
+  return isMainProcessAntDial(details.url);
+}
+
 function isAllowedInitiator(details) {
   const method = String(details?.method || 'GET').toUpperCase();
   if (details?.resourceType === 'mainFrame' && method === 'GET') return true;
+  if (isAnnouncedMainProcessDial(details, method)) return true;
   if (!isTopFrame(details)) return false;
   const frameUrl = frameUrlOf(details);
   const type = webContentsType(details);
@@ -228,6 +247,7 @@ function _resetAntApiGuardForTests() {
   knownPorts.clear();
   knownPorts.add(String(DEFAULTS.ant.apiPort));
   knownRemoteOrigins.clear();
+  _resetMainProcessAntDialsForTests();
 }
 
 module.exports = {

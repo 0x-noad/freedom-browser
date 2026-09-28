@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src http://127.0.0.1:*;"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
     />
     <!-- The error page must own its title. Without one, Chromium never fires
          `page-title-updated`, so the tab (and the window title) keep showing
@@ -168,30 +168,37 @@
         document.title = text;
       }
 
+      // This page runs in a tab <webview>, so the chrome's
+      // `window.serviceRegistry` is not here; internal pages get the same
+      // read-only snapshot through `freedomAPI.getServiceRegistry`. `null`
+      // means "unknown" — the caller then keeps the generic copy rather than
+      // claiming a node is down.
       async function getRegistry() {
         try {
-          return await window.serviceRegistry?.getRegistry?.();
+          return (await window.freedomAPI?.getServiceRegistry?.()) || null;
         } catch (e) {
           return null;
         }
       }
 
+      // The registry is the source of truth: ant-manager publishes `ant.api`
+      // only once the node is healthy (bundled), adopted (reused) or
+      // connected (external), and clears it when the node stops. The page
+      // no longer fetches the node's /health itself — web content (this page
+      // included, since the node config dropped its CORS origins) cannot
+      // read the Ant API (#428).
       async function checkSwarmStatus() {
         const registry = await getRegistry();
-        const beeApi = registry?.bee?.api || window.nodeConfig?.beeApi || null;
-        if (!beeApi) return { running: false };
-
-        try {
-          const res = await fetch(`${beeApi}/health`, { timeout: 2000 });
-          return { running: res.ok };
-        } catch (e) {
-          return { running: false };
-        }
+        if (!registry) return { running: true };
+        return { running: Boolean(registry.ant?.api) };
       }
 
       async function checkIpfsStatus() {
         const registry = await getRegistry();
-        return { running: registry?.ipfs?.mode === 'bundled' };
+        if (!registry) return { running: true };
+        const ipfs = registry.ipfs || {};
+        // External mode publishes `gateway` only while the gateway serves.
+        return { running: ipfs.mode === 'bundled' || Boolean(ipfs.gateway) };
       }
 
       // Format a host for display in the generic title (truncate very long

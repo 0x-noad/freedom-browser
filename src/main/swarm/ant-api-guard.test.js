@@ -23,6 +23,7 @@ const {
   _resetWebRequestHandlers,
 } = require('../webrequest-dispatcher');
 const { PAGES_DIR, CHROME_INDEX } = require('../ipc-sender-policy');
+const { announceMainProcessAntDial } = require('./ant-api-main-dials');
 
 const settingsUrl = pathToFileURL(path.join(PAGES_DIR, 'settings.html')).href;
 const publishUrl = pathToFileURL(path.join(PAGES_DIR, 'publish.html')).href;
@@ -119,8 +120,61 @@ describe('what stays allowed', () => {
   test('requests that are not to the node pass untouched', () => {
     expect(guardAntApiRequest(req({ url: 'https://example.com/stamps' }))).toBeNull();
     expect(guardAntApiRequest(req({ url: 'http://127.0.0.1:8080/x' }))).toBeNull();
-    expect(guardAntApiRequest(req({ url: 'http://93.184.216.34:1633/x' }))).toBeNull();
+    expect(guardAntApiRequest(req({ url: 'http://93.184.216.34:8080/x' }))).toBeNull();
     expect(guardAntApiRequest(req({ url: `bzz://${'a'.repeat(64)}/x` }))).toBeNull();
+  });
+});
+
+// R1-M1: the ENS prefetch of a remote external node dials through
+// `net.request`, which passes session.webRequest with no frame and no
+// webContents (probed in real Electron: `{resourceType: 'other'}`, no
+// `webContentsId`, no `frame`) — the same shape as a worker's request.
+describe('an announced main-process dial', () => {
+  const REMOTE = 'http://ant.example.test:1633';
+  const URL_ = `${REMOTE}/bzz/${'a'.repeat(64)}`;
+  const mainDial = (over = {}) => ({
+    url: URL_,
+    method: 'GET',
+    resourceType: 'other',
+    ...over,
+  });
+
+  beforeEach(() => {
+    mockGetAntApiUrl.mockReturnValue(REMOTE);
+  });
+
+  test('is cancelled until announced, allowed while announced, cancelled after release', () => {
+    expect(guardAntApiRequest(mainDial())).toEqual({ cancel: true });
+    const release = announceMainProcessAntDial(URL_);
+    expect(guardAntApiRequest(mainDial())).toBeNull();
+    expect(guardAntApiRequest(mainDial({ method: 'HEAD' }))).toBeNull();
+    release();
+    release(); // idempotent
+    expect(guardAntApiRequest(mainDial())).toEqual({ cancel: true });
+  });
+
+  test('two overlapping dials of one URL each hold it open', () => {
+    const a = announceMainProcessAntDial(URL_);
+    const b = announceMainProcessAntDial(URL_);
+    a();
+    expect(guardAntApiRequest(mainDial())).toBeNull();
+    b();
+    expect(guardAntApiRequest(mainDial())).toEqual({ cancel: true });
+  });
+
+  test.each([
+    ['a POST of the same URL', mainDial({ method: 'POST' })],
+    ['a different path on the node', mainDial({ url: `${REMOTE}/stamps/1/17` })],
+    ['the same URL from a page frame', mainDial({ frame: topFrame('https://evil.example/') })],
+    ['the same URL from a webContents', mainDial({ webContents: webview })],
+    ['the same URL with a webContentsId', mainDial({ webContentsId: 7 })],
+  ])('%s is still cancelled while the dial is announced', (_label, details) => {
+    const release = announceMainProcessAntDial(URL_);
+    try {
+      expect(guardAntApiRequest(details)).toEqual({ cancel: true });
+    } finally {
+      release();
+    }
   });
 });
 
@@ -147,6 +201,17 @@ describe('isAntApiRequestUrl', () => {
     // before DNS.
     'http://127.0.0.1.nip.io:1633/stamps',
     'http://rebind.example:1633/stamps',
+    // R1-F1: a node bound to 0.0.0.0 (a reused / Docker Bee with
+    // `-p 1633:1633`) answers on every address of this machine — the docker
+    // bridge, link-local, the LAN IP, a public IP — so on the node's port
+    // every IP literal is the node too.
+    'http://172.17.0.1:1633/stamps/1/17',
+    'http://10.0.0.5:1633/',
+    'http://192.168.1.20:1633/stamps',
+    'http://169.254.1.1:1633/stamps',
+    'http://93.184.216.34:1633/stamps',
+    'http://[fe80::1]:1633/stamps',
+    'http://[2001:db8::1]:1633/stamps',
   ])('%s is the Ant API', (url) => {
     expect(isAntApiRequestUrl(url)).toBe(true);
   });
@@ -155,7 +220,8 @@ describe('isAntApiRequestUrl', () => {
     'http://127.0.0.1:1634/',
     'http://localhost:8080/',
     'http://example.com/',
-    'http://10.0.0.5:1633/',
+    'http://10.0.0.5:8080/',
+    'http://172.17.0.1:1634/',
     'ftp://127.0.0.1:1633/',
     'not a url',
   ])('%s is not', (url) => {
