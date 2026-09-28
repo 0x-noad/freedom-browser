@@ -299,7 +299,6 @@ const { registerWebContentsHandlers } = require('./webcontents-setup');
 const { registerClientCertificateHandler } = require('./client-certificate');
 const { installTestHarness, registerStubProtocols } = require('./test-harness');
 
-app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
 log.info('[profile] Active profile:', {
   id: activeProfile.id,
   source: activeProfile.source,
