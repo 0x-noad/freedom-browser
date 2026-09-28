@@ -11,6 +11,14 @@
 // gateway call (`requestImpl`) for an in-memory file map. Everything between
 // the page and that map — Chromium's frame loading, redirect following,
 // origin assignment, storage partitioning — is the real thing.
+//
+// Deliberately NOT a `.spec.js`: CI runs a curated spec list per job, and a
+// new spec file only runs once someone adds it to `.github/workflows/ci.yml`
+// (the #319 lesson). These tests are declared by `address-bar.spec.js`, which
+// the `e2e-address-bar-ens` job already runs, so they run wherever that spec
+// does — `ipfs-gateway-form-wiring.test.js` pins that chain. They sit in
+// their own `test.describe` so the `test.use`/`beforeEach` below stay scoped
+// to them and never touch the address-bar tests.
 
 const { test, expect } = require('./fixtures');
 
@@ -116,105 +124,109 @@ const navigateTo = async (window, value) => {
   await input.press('Enter');
 };
 
-// Bookmarks bar visible on every page, so an old bookmark can be clicked.
-test.use({ seedSettings: { showBookmarkBar: true } });
+test.describe('gateway-form ipfs: URLs (O-3)', () => {
+  // Bookmarks bar visible on every page, so an old bookmark can be clicked.
+  test.use({ seedSettings: { showBookmarkBar: true } });
 
-test.beforeEach(async ({ electronApp, window }) => {
-  // `window` first: the harness registers its stub schemes during app
-  // startup, and they have to exist before they can be swapped out.
-  await window.waitForSelector('[data-test="address-input"]');
-  await installRealIpfsHandler(electronApp);
-});
+  test.beforeEach(async ({ electronApp, window }) => {
+    // `window` first: the harness registers its stub schemes during app
+    // startup, and they have to exist before they can be swapped out.
+    await window.waitForSelector('[data-test="address-input"]');
+    await installRealIpfsHandler(electronApp);
+  });
 
-test('gateway-form iframes land on their own canonical origins and do not share storage', async ({
-  window,
-}, testInfo) => {
-  await navigateTo(window, `ipfs://${PARENT}/`);
-  await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toBe(`ipfs://${PARENT}/`);
+  test('gateway-form iframes land on their own canonical origins and do not share storage', async ({
+    window,
+  }, testInfo) => {
+    await navigateTo(window, `ipfs://${PARENT}/`);
+    await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toBe(`ipfs://${PARENT}/`);
 
-  const askFrames =
-    `(() => { for (const f of document.querySelectorAll('iframe'))` +
-    ` f.contentWindow.postMessage('report', '*'); return true; })()`;
-  await expect
-    .poll(
-      async () => {
-        await inGuest(window, 'window.__reports.length = 0');
-        await inGuest(window, askFrames);
-        await new Promise((r) => setTimeout(r, 200));
-        return (await inGuest(window, 'window.__reports.length')) || 0;
-      },
-      { timeout: 15_000 }
-    )
-    .toBe(3);
+    const askFrames =
+      `(() => { for (const f of document.querySelectorAll('iframe'))` +
+      ` f.contentWindow.postMessage('report', '*'); return true; })()`;
+    await expect
+      .poll(
+        async () => {
+          await inGuest(window, 'window.__reports.length = 0');
+          await inGuest(window, askFrames);
+          await new Promise((r) => setTimeout(r, 200));
+          return (await inGuest(window, 'window.__reports.length')) || 0;
+        },
+        { timeout: 15_000 }
+      )
+      .toBe(3);
 
-  const reports = await inGuest(window, 'window.__reports');
-  const byRef = Object.fromEntries(reports.map((r) => [r.ref, r]));
-  // A and B sit behind the same gateway host. Without the fix both commit
-  // on `ipfs://localhost` and whichever wrote last owns the other's storage.
-  // Checked first, so a regression reports the storage leak itself.
-  expect(byRef[CID_A].owner).toBe(CID_A);
-  expect(byRef[CID_B].owner).toBe(CID_B);
-  expect(byRef[CID_C].owner).toBe(CID_C);
-  // Each frame committed on its canonical per-CID origin, not the gateway's.
-  expect(byRef[CID_A].origin).toBe(`ipfs://${CID_A}`);
-  expect(byRef[CID_B].origin).toBe(`ipfs://${CID_B}`);
-  expect(byRef[CID_C].origin).toBe(`ipfs://${CID_C}`);
+    const reports = await inGuest(window, 'window.__reports');
+    const byRef = Object.fromEntries(reports.map((r) => [r.ref, r]));
+    // A and B sit behind the same gateway host. Without the fix both commit
+    // on `ipfs://localhost` and whichever wrote last owns the other's storage.
+    // Checked first, so a regression reports the storage leak itself.
+    expect(byRef[CID_A].owner).toBe(CID_A);
+    expect(byRef[CID_B].owner).toBe(CID_B);
+    expect(byRef[CID_C].owner).toBe(CID_C);
+    // Each frame committed on its canonical per-CID origin, not the gateway's.
+    expect(byRef[CID_A].origin).toBe(`ipfs://${CID_A}`);
+    expect(byRef[CID_B].origin).toBe(`ipfs://${CID_B}`);
+    expect(byRef[CID_C].origin).toBe(`ipfs://${CID_C}`);
 
-  // Sub-resources on a gateway-form URL still load (through the redirect).
-  await expect
-    .poll(() => inGuest(window, "document.getElementById('img').naturalWidth"), {
-      timeout: 10_000,
-    })
-    .toBe(1);
-  await expect
-    .poll(() => inGuest(window, 'window.__fetched'), { timeout: 10_000 })
-    .toBe('{"ok":true}');
+    // Sub-resources on a gateway-form URL still load (through the redirect).
+    await expect
+      .poll(() => inGuest(window, "document.getElementById('img').naturalWidth"), {
+        timeout: 10_000,
+      })
+      .toBe(1);
+    await expect
+      .poll(() => inGuest(window, 'window.__fetched'), { timeout: 10_000 })
+      .toBe('{"ok":true}');
 
-  await window.screenshot({ path: testInfo.outputPath('gateway-form-iframes.png') });
-});
+    await window.screenshot({ path: testInfo.outputPath('gateway-form-iframes.png') });
+  });
 
-test('a gateway-form link clicked inside a page commits on the canonical origin', async ({
-  window,
-}) => {
-  await navigateTo(window, `ipfs://${PARENT}/`);
-  await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toBe(`ipfs://${PARENT}/`);
-  await expect
-    .poll(() => inGuest(window, "!!document.getElementById('gw-link')"), { timeout: 10_000 })
-    .toBe(true);
-  await inGuest(window, "document.getElementById('gw-link').click()");
-  await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toBe(`ipfs://${CID_A}/`);
-  await expect
-    .poll(() => inGuest(window, 'location.origin'), { timeout: 10_000 })
-    .toBe(`ipfs://${CID_A}`);
-});
+  test('a gateway-form link clicked inside a page commits on the canonical origin', async ({
+    window,
+  }) => {
+    await navigateTo(window, `ipfs://${PARENT}/`);
+    await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toBe(`ipfs://${PARENT}/`);
+    await expect
+      .poll(() => inGuest(window, "!!document.getElementById('gw-link')"), { timeout: 10_000 })
+      .toBe(true);
+    await inGuest(window, "document.getElementById('gw-link').click()");
+    await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toBe(`ipfs://${CID_A}/`);
+    await expect
+      .poll(() => inGuest(window, 'location.origin'), { timeout: 10_000 })
+      .toBe(`ipfs://${CID_A}`);
+  });
 
-test('canonical ipfs:// and ipns:// URLs and old gateway-form bookmarks still load', async ({
-  window,
-}, testInfo) => {
-  const address = window.locator('[data-test="address-input"]');
+  test('canonical ipfs:// and ipns:// URLs and old gateway-form bookmarks still load', async ({
+    window,
+  }, testInfo) => {
+    const address = window.locator('[data-test="address-input"]');
 
-  await navigateTo(window, `ipns://${IPNS_KEY}/`);
-  await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toBe(`ipns://${IPNS_KEY}/`);
-  await expect.poll(() => inGuest(window, 'document.title'), { timeout: 10_000 }).toBe('ipns page');
+    await navigateTo(window, `ipns://${IPNS_KEY}/`);
+    await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toBe(`ipns://${IPNS_KEY}/`);
+    await expect
+      .poll(() => inGuest(window, 'document.title'), { timeout: 10_000 })
+      .toBe('ipns page');
 
-  // An old bookmark saved in gateway form (Kubo dir-listing link shape).
-  const gatewayBookmark = `ipfs://localhost:8080/ipfs/${CID_A}/`;
-  await window.evaluate(
-    (target) => window.electronAPI.addBookmark({ label: 'Old gateway bookmark', target }),
-    gatewayBookmark
-  );
-  // The bar reads bookmarks at init; there is no change broadcast.
-  await window.reload();
-  await window.waitForSelector('[data-test="address-input"]');
-  const item = window.locator(
-    `[data-test="bookmarks-bar"] [data-test="bookmark-item"][data-hash="${gatewayBookmark}"]`
-  );
-  await expect(item).toBeVisible();
-  await item.click();
-  await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toBe(`ipfs://${CID_A}/`);
-  await expect(address).toHaveValue(`ipfs://${CID_A}/`);
-  await expect
-    .poll(() => inGuest(window, 'location.origin'), { timeout: 10_000 })
-    .toBe(`ipfs://${CID_A}`);
-  await window.screenshot({ path: testInfo.outputPath('gateway-form-bookmark.png') });
+    // An old bookmark saved in gateway form (Kubo dir-listing link shape).
+    const gatewayBookmark = `ipfs://localhost:8080/ipfs/${CID_A}/`;
+    await window.evaluate(
+      (target) => window.electronAPI.addBookmark({ label: 'Old gateway bookmark', target }),
+      gatewayBookmark
+    );
+    // The bar reads bookmarks at init; there is no change broadcast.
+    await window.reload();
+    await window.waitForSelector('[data-test="address-input"]');
+    const item = window.locator(
+      `[data-test="bookmarks-bar"] [data-test="bookmark-item"][data-hash="${gatewayBookmark}"]`
+    );
+    await expect(item).toBeVisible();
+    await item.click();
+    await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toBe(`ipfs://${CID_A}/`);
+    await expect(address).toHaveValue(`ipfs://${CID_A}/`);
+    await expect
+      .poll(() => inGuest(window, 'location.origin'), { timeout: 10_000 })
+      .toBe(`ipfs://${CID_A}`);
+    await window.screenshot({ path: testInfo.outputPath('gateway-form-bookmark.png') });
+  });
 });
