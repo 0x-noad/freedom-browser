@@ -46,10 +46,13 @@
  *     those (NAT, port forwards, interfaces coming and going), so it does not
  *     try: on the node's port, every host is the node. A top-level GET
  *     navigation to such a URL is still allowed (see below). The one
- *     exception is a node on a scheme-default port (80/443 — an external
- *     `https://localhost` behind a reverse proxy): that port is every
- *     website's too, so there only the loopback spellings are guarded, and a
- *     rebinding name or another address of this machine on 80/443 is not;
+ *     exception is a node on a shared web port — the scheme defaults 80/443
+ *     or a common HTTP-alternate port such as 8080 (an external
+ *     `https://localhost` or `http://localhost:8080` behind a reverse proxy):
+ *     that port is other websites', dev servers' and local gateways' too
+ *     (Kubo's gateway is :8080), so there only the loopback spellings are
+ *     guarded, and a rebinding name or another address of this machine on
+ *     that port is not. Any other port fails closed to "every host";
  *   - the exact origin of a configured external Ant API.
  * The Ant API ports are the default (1633), the port the node was configured
  * or started on, and every port the node has used this session (a restart
@@ -68,8 +71,25 @@ const {
 
 const GUARDED_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
 const DEFAULT_PORTS = { 'http:': '80', 'ws:': '80', 'https:': '443', 'wss:': '443' };
-// The scheme-default ports: shared with every website, so never "all hosts".
-const SHARED_WEB_PORTS = new Set(Object.values(DEFAULT_PORTS));
+// Ports shared with other websites and local web services, so never "all
+// hosts" even when the node is served on one: the scheme defaults, plus the
+// common HTTP-alternate ports a reverse proxy, dev server or local gateway
+// (Kubo: 8080) listens on (#445 R2-F1, R3-M1). Deliberately a short list —
+// a port missing from it only over-blocks (fails closed), it never opens a
+// hole; the node's own ports (1633 and its fallback range) are never here.
+const SHARED_WEB_PORTS = new Set([
+  ...Object.values(DEFAULT_PORTS),
+  '591',
+  '3000',
+  '4000',
+  '5000',
+  '8000',
+  '8008',
+  '8080',
+  '8081',
+  '8443',
+  '8888',
+]);
 
 // Ports the node has listened on (sticky for the session) and non-loopback
 // API origins it has been configured with.
@@ -169,10 +189,12 @@ function isAntApiRequestUrl(rawUrl) {
   if (live && live.hostname === hostname && live.port === port) return true;
 
   if (!isAntApiPort(port)) return false;
-  // 80/443 are every website's port. A node served on one of them (an
-  // external `https://localhost` behind a reverse proxy) is guarded on its
+  // 80/443 and the common HTTP-alternate ports are other sites' ports too. A
+  // node served on one of them (an external `https://localhost` or
+  // `http://localhost:8080` behind a reverse proxy) is guarded on its
   // loopback spellings only; "every host is the node" there would cancel
-  // every page's subresources for the rest of the session (#445 R2-F1).
+  // every such site's subresources for the rest of the session
+  // (#445 R2-F1, R3-M1).
   if (SHARED_WEB_PORTS.has(port)) return isLoopbackHostname(hostname);
   // On the node's port every host is the node: a DNS name may resolve to
   // loopback (this runs before DNS), and a node bound to 0.0.0.0 answers on

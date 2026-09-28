@@ -322,10 +322,39 @@ describe('a loopback node on a scheme-default port (#445 R2-F1)', () => {
     expect(isAntApiRequestUrl(`${other}://127.0.0.1/stamps`)).toBe(true);
   });
 
+  test.each(['http://localhost:8080', 'http://127.0.0.1:8000', 'https://localhost:8443'])(
+    'a loopback node on a shared HTTP-alternate port (%s) guards loopback only (#445 R3-M1)',
+    (apiUrl) => {
+      noteAntApiUrl(apiUrl);
+      mockGetAntApiUrl.mockReturnValue(apiUrl);
+      const { protocol, port } = new URL(apiUrl);
+      const at = (host, path) => `${protocol}//${host}:${port}${path}`;
+      expect(isAntApiRequestUrl(at('127.0.0.1', '/stamps/1/17'))).toBe(true);
+      expect(isAntApiRequestUrl(at('localhost', '/wallet'))).toBe(true);
+      expect(guardAntApiRequest(req({ url: at('localhost', '/stamps/1/17') }))).toEqual({
+        cancel: true,
+      });
+      for (const url of [at('intranet.example', '/app.js'), at('192.168.1.1', '/ui.css')]) {
+        expect(isAntApiRequestUrl(url)).toBe(false);
+        expect(
+          guardAntApiRequest(req({ url, method: 'GET', resourceType: 'script' }))
+        ).toBeNull();
+      }
+      // Sticky after the node stops, same as 80/443.
+      mockGetAntApiUrl.mockReturnValue(null);
+      expect(isAntApiRequestUrl(at('intranet.example', '/app.js'))).toBe(false);
+      expect(isAntApiRequestUrl(at('127.0.0.1', '/stamps'))).toBe(true);
+    }
+  );
+
   test('a non-default node port still means every host', () => {
     noteAntApiUrl('http://127.0.0.1:11633');
     expect(isAntApiRequestUrl('http://172.17.0.1:11633/stamps')).toBe(true);
     expect(isAntApiRequestUrl('http://127.0.0.1.nip.io:11633/stamps')).toBe(true);
+    // The default port and the bundled node's fallback range stay all-hosts.
+    expect(isAntApiRequestUrl('http://172.17.0.1:1633/stamps')).toBe(true);
+    noteAntApiUrl('http://127.0.0.1:1643');
+    expect(isAntApiRequestUrl('http://192.168.1.5:1643/stamps')).toBe(true);
   });
 });
 
