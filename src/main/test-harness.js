@@ -1,7 +1,9 @@
 /**
  * Renderer E2E test harness (Playwright integration)
  *
- * Activated only when `process.env.FREEDOM_TEST_MODE === '1'`. The harness
+ * Activated only when `process.env.FREEDOM_TEST_MODE === '1'` — and, in a
+ * packaged build, only when a Node inspector is attached as well, which is
+ * how Playwright launches the app (see test-mode.js). The harness
  * is fully inert otherwise — `installTestHarness` is a no-op when test
  * mode is off, and nothing in this file runs at require time.
  *
@@ -41,7 +43,9 @@ const IPC = require('../shared/ipc-channels');
 const { success, failure } = require('./ipc-contract');
 const { updateService, MODE, setStatusMessage } = require('./service-registry');
 
-const TEST_MODE_ENABLED = process.env.FREEDOM_TEST_MODE === '1';
+// Same rule as index.js's TEST_MODE: the env var, and in a packaged build an
+// attached inspector as well (docs/security-audit-electron.md, O-12).
+const TEST_MODE_ENABLED = require('./test-mode').isTestModeRequested();
 
 function isTestMode() {
   return TEST_MODE_ENABLED;

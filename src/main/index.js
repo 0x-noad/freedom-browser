@@ -39,7 +39,9 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
     require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads')
   );
 }
-const TEST_MODE = process.env.FREEDOM_TEST_MODE === '1';
+// Honoured in a packaged build only when a Node inspector is attached, i.e.
+// a Playwright launch (docs/security-audit-electron.md, O-12); see test-mode.js.
+const TEST_MODE = require('./test-mode').isTestModeRequested();
 const { migrateBeeDataToAntData, migrateUserData } = require('./migrate-user-data');
 if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
   migrateUserData({ logger: console });
@@ -295,9 +297,9 @@ const {
 const { initUpdater } = require('./updater');
 const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
+const { registerClientCertificateHandler } = require('./client-certificate');
 const { installTestHarness, registerStubProtocols } = require('./test-harness');
 
-app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
 log.info('[profile] Active profile:', {
   id: activeProfile.id,
   source: activeProfile.source,
@@ -468,6 +470,7 @@ async function bootstrap() {
   registerPrivateCleanup((partition) => unregisterOnionRoutingSession(partition));
 
   registerWebContentsHandlers();
+  registerClientCertificateHandler();
   setupApplicationMenu();
 
   // Profiles are shared across processes (one process per profile). When any
