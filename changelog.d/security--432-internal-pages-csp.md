@@ -1,1 +1,2 @@
-- Internal pages run no inline script, and a site-supplied title, filename or payment detail can't break out of the History, Downloads or Payments page markup ([#432](https://github.com/solardev-xyz/freedom-browser/issues/432))
+- Site-supplied titles, filenames and payment details show only as text on the History, Downloads and Payments pages ([#432](https://github.com/solardev-xyz/freedom-browser/issues/432))
+  - A site you paid through x402 could put markup in its payment receipt that ran as script on the Payments page
