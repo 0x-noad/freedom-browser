@@ -160,18 +160,50 @@ const BLOCKED_SCHEMES = new Set([
 // user's doing.
 const USER_GESTURE_WINDOW_MS = 5000;
 
-// Input events that count as user activation. Mouse moves, wheel and focus
-// changes don't (the same split Chromium's user activation uses).
-const GESTURE_INPUT_TYPES = new Set([
-  'mouseDown',
-  'mouseUp',
-  'keyDown',
-  'rawKeyDown',
-  'char',
-  'touchStart',
-  'touchEnd',
-  'gestureTap',
+// Input events that count as user activation: the ones Chromium grants
+// transient activation on (HTML's "activation triggering input events").
+// One physical press must stamp the gesture once, not once per phase — the
+// gesture is *consumed* by a popup or an external launch, and a second
+// stamp from the same press (the mouseUp after a mouseDown, the char after a
+// keyDown) would re-arm it and let one click buy two. So:
+//
+//   mouse/pen press → mouseDown only (Chromium activates at pointerdown)
+//   key press       → the keyDown, unless the key is Escape or a lone
+//                     modifier (Chromium grants nothing for those)
+//   touch tap       → touchEnd (Chromium activates at pointerup for touch)
+//
+// Mouse moves, wheel, focus changes, keyUp and char never count. The same
+// rule webview-preload.js used for its dweb-link budget (#443), which now
+// asks this tracker instead (see popup-blocker.js).
+const GESTURE_INPUT_TYPES = new Set(['mouseDown', 'keyDown', 'rawKeyDown', 'touchEnd']);
+
+// Keys whose keydown is not a user activation in Chromium.
+const NON_ACTIVATING_KEYS = new Set([
+  'Escape',
+  'Alt',
+  'AltGraph',
+  'CapsLock',
+  'Control',
+  'Fn',
+  'FnLock',
+  'Hyper',
+  'Meta',
+  'NumLock',
+  'OS',
+  'ScrollLock',
+  'Shift',
+  'Super',
+  'Symbol',
+  'SymbolLock',
 ]);
+
+function isActivatingInput(input) {
+  if (!GESTURE_INPUT_TYPES.has(input?.type)) return false;
+  if (input.type === 'keyDown' || input.type === 'rawKeyDown') {
+    return !NON_ACTIVATING_KEYS.has(input.key);
+  }
+  return true;
+}
 
 // Last user input per webview guest, in ms since epoch.
 const lastUserGesture = new WeakMap();
@@ -255,7 +287,7 @@ function escapeExternalHandlerValue(url) {
 function trackUserGestures(contents) {
   if (!contents || typeof contents.on !== 'function') return;
   contents.on('input-event', (_event, input) => {
-    if (GESTURE_INPUT_TYPES.has(input?.type)) {
+    if (isActivatingInput(input)) {
       lastUserGesture.set(contents, Date.now());
     }
   });
@@ -265,7 +297,9 @@ function trackUserGestures(contents) {
  * True, once, when the guest had user input within the activation window.
  * Consumed like Chromium consumes activation for a popup: one interaction
  * buys one launch (or one prompt), so a page cannot turn a single click
- * into a burst of app launches.
+ * into a burst of app launches. The popup blocker (popup-blocker.js) spends
+ * the same budget, as Chromium's single transient activation is spent by
+ * whichever of the two asks first.
  */
 function consumeUserGesture(contents, now = Date.now()) {
   if (!contents) return false;
@@ -359,6 +393,7 @@ module.exports = {
   permissionKeyForExternalUrl,
   externalUrlForLog,
   escapeExternalHandlerValue,
+  isActivatingInput,
   trackUserGestures,
   consumeUserGesture,
   handlerNameForScheme,

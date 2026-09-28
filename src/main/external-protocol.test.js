@@ -161,6 +161,38 @@ describe('external-protocol', () => {
     );
   });
 
+  // #442: one press stamps the gesture once, on the event Chromium grants
+  // activation on; the popup blocker spends the same gesture.
+  test('only activating input counts, and one press does not re-arm a spent gesture', () => {
+    const { mod } = load();
+    expect(mod.isActivatingInput({ type: 'mouseDown' })).toBe(true);
+    expect(mod.isActivatingInput({ type: 'rawKeyDown', key: 'a' })).toBe(true);
+    expect(mod.isActivatingInput({ type: 'keyDown', key: 'Enter' })).toBe(true);
+    expect(mod.isActivatingInput({ type: 'touchEnd' })).toBe(true);
+    for (const input of [
+      { type: 'mouseUp' },
+      { type: 'mouseMove' },
+      { type: 'mouseWheel' },
+      { type: 'char', key: 'a' },
+      { type: 'keyUp', key: 'a' },
+      { type: 'rawKeyDown', key: 'Escape' },
+      { type: 'rawKeyDown', key: 'Shift' },
+      { type: 'keyDown', key: 'Meta' },
+      { type: 'touchStart' },
+      { type: 'gestureTap' },
+      null,
+    ]) {
+      expect(mod.isActivatingInput(input)).toBe(false);
+    }
+
+    const contents = new EventEmitter();
+    mod.trackUserGestures(contents);
+    contents.emit('input-event', {}, { type: 'mouseDown' });
+    expect(mod.consumeUserGesture(contents)).toBe(true);
+    contents.emit('input-event', {}, { type: 'mouseUp' });
+    expect(mod.consumeUserGesture(contents)).toBe(false);
+  });
+
   test('launchExternal hands the escaped URL to shell.openExternal', async () => {
     const { mod, shell } = load();
     await expect(mod.launchExternal('magnet:?dn=a b')).resolves.toBe(true);
