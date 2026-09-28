@@ -12,6 +12,7 @@ import {
 } from './signature-flight.js';
 import { escapeHtml, accountType, walletRecord, bypassUnlockGateForDevice, renderSafeFeePayer, isSafeDeployed, GNOSIS_CHAIN_ID } from './wallet-utils.js';
 import { openSafeSigningBoard } from './safe-signing.js';
+import { confirmSigning } from './signing-confirmation.js';
 import { refreshBalances, getTokensWithBalance, getChainsWithBalance, sortTokens } from './balance-display.js';
 import {
   getTrustStatusSentence,
@@ -1281,11 +1282,6 @@ async function handleSendTouchIdUnlock() {
       throw new Error(result.error || 'Touch ID cancelled');
     }
 
-    const unlockResult = await window.identity.unlock(result.password);
-    if (!unlockResult.success) {
-      throw new Error(unlockResult.error || 'Failed to unlock vault');
-    }
-
     sendUnlockSection?.classList.add('hidden');
     if (sendConfirmBtn) sendConfirmBtn.disabled = false;
   } catch (err) {
@@ -1383,9 +1379,10 @@ async function handleSendConfirm() {
       // Safe path: create the SafeTx (main silently adds the free vault
       // signatures) and hand over to the signing board — collecting the
       // remaining signatures is the user's task, at their pace.
+      const safeTx = { to: txParams.to, value: txParams.value, data: txParams.data };
       const created = await window.wallet.safeSend(
         safe.index,
-        { to: txParams.to, value: txParams.value, data: txParams.data },
+        safeTx,
         {
           ...display,
           recipientName: sendTxState.recipientResolution?.name || null,
@@ -1395,7 +1392,8 @@ async function handleSendConfirm() {
         },
         // The chain the user actually composed on — main refuses anything
         // the Safe does not live on rather than rebasing the calldata.
-        sendTxState.chainId
+        sendTxState.chainId,
+        await confirmSigning('safe-send', safe.index, { tx: safeTx, chainId: sendTxState.chainId })
       );
       if (!created.success) {
         throw new Error(created.error || 'Failed to create the transaction');
@@ -1405,7 +1403,12 @@ async function handleSendConfirm() {
       return;
     }
 
-    const result = await window.wallet.sendTransaction(txParams, display);
+    // The user pressed Confirm on the review of exactly these fields.
+    const result = await window.wallet.sendTransaction(
+      txParams,
+      display,
+      await confirmSigning('wallet-send', null, txParams)
+    );
 
     if (!result.success) {
       throw new Error(result.error || 'Transaction failed');
