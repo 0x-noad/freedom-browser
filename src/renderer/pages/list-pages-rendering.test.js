@@ -12,7 +12,7 @@
  *   - the row still works (open, delete/remove, filter) off that value.
  */
 
-const { runPageScript, flush } = require('./page-script-harness');
+const { runPageScript, flush } = require('../../../test/helpers/page-script-harness');
 
 // A value that is dangerous in both text and attribute context.
 const HOSTILE = `"><img src=x onerror=alert(1) data-xss="1">'<b>&amp;`;

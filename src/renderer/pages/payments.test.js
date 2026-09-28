@@ -1,4 +1,7 @@
-const { runPageScript, flush: flushPromises } = require('./page-script-harness');
+const {
+  runPageScript,
+  flush: flushPromises,
+} = require('../../../test/helpers/page-script-harness');
 
 function createPayment(overrides = {}) {
   return {

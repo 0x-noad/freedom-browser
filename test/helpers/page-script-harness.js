@@ -1,7 +1,8 @@
 /**
  * Test-only harness: run an internal page's classic script
  * (`src/renderer/pages/scripts/<page>.js`) in a `vm` context against a small
- * fake DOM. Not loaded by any page.
+ * fake DOM. Not loaded by any page, and kept under `test/helpers/` (outside
+ * `src/**`) so electron-builder never packages it.
  *
  * The fake DOM is deliberately *not* an HTML parser. `innerHTML` assignments
  * are recorded in `document.htmlWrites` and turned into an opaque text blob,
@@ -15,7 +16,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const SCRIPTS_DIR = path.join(__dirname, 'scripts');
+const SCRIPTS_DIR = path.join(__dirname, '..', '..', 'src', 'renderer', 'pages', 'scripts');
 
 class FakeText {
   constructor(text) {
