@@ -30,21 +30,21 @@ for the unchanged files.
 | [E-2](#e-2-the-chrome-window-can-be-navigated-away-from-indexhtml) | High | Navigation / window-open | **Fixed** |
 | [E-3](#e-3-will-attach-webview-enforces-nothing) | Medium | `will-attach-webview` | **Fixed** |
 | [E-4](#e-4-chrome-window-webpreferences-rely-on-defaults) | Low | `webPreferences` | **Fixed** |
-| [E-5](#e-5-electron-fuses-left-at-defaults) | Medium | Fuses | **Partly fixed** (NodeOptions); rest in O-4 |
+| [E-5](#e-5-electron-fuses-left-at-defaults) | Medium | Fuses | **Fixed** (NodeOptions); rest in O-4 |
 | [E-6](#e-6-security-webrequest-guards-fail-open) | Low | Protocol guards | **Fixed** |
 | [E-7](#e-7-rad-browserhtml-has-no-csp) | Medium | CSP | **Fixed** |
-| [O-1](#o-1-web-pages-can-drive-the-local-ant-api-verified) | High | Loopback node API | Open (verified) |
-| [O-2](#o-2-bzz-forwards-any-method-and-most-headers-to-the-node) | Medium | `bzz:` handler | Open |
-| [O-3](#o-3-gateway-form-ipfs-urls-share-one-origin) | Medium | `ipfs:` origin confusion | Open |
-| [O-4](#o-4-remaining-fuses) | Medium | Fuses | Open |
-| [O-5](#o-5-script-src-unsafe-inline-on-internal-pages) | Medium | CSP | Open |
-| [O-6](#o-6-sub-frame-provider-requests-are-attributed-to-the-top-page) | Medium | Provider bridges | Open |
-| [O-7](#o-7-wallet-signing-has-no-main-side-confirmation) | Medium | Wallet | Open (product) |
-| [O-8](#o-8-quick-unlock-returns-the-vault-password-to-the-renderer) | Medium | Wallet key storage | Open (product) |
-| [O-9](#o-9-external-protocol-denylist-misses-network-share-schemes) | Low | `shell.openExternal` | Open (product) |
-| [O-10](#o-10-no-select-client-certificate-handler) | Low | TLS client certs | Open (product) |
-| [O-11](#o-11-macos-hardened-runtime-entitlements) | Low | macOS signing | Open |
-| [O-12](#o-12-smaller-items) | Low / Info | Various | Open |
+| [O-1](#o-1-web-pages-can-drive-the-local-ant-api-verified) | High | Loopback node API | **Fixed** in [#445](https://github.com/solardev-xyz/freedom-browser/pull/445) (hard block) |
+| [O-2](#o-2-bzz-forwards-any-method-and-most-headers-to-the-node) | Medium | `bzz:` handler | **Fixed** in [#445](https://github.com/solardev-xyz/freedom-browser/pull/445) |
+| [O-3](#o-3-gateway-form-ipfs-urls-share-one-origin) | Medium | `ipfs:` origin confusion | **Fixed** in [#441](https://github.com/solardev-xyz/freedom-browser/pull/441) |
+| [O-4](#o-4-remaining-fuses) | Medium | Fuses | **Partly fixed** in [#447](https://github.com/solardev-xyz/freedom-browser/pull/447): NodeCliInspect off, asar integrity + OnlyLoadAppFromAsar on. Still open ([#431](https://github.com/solardev-xyz/freedom-browser/issues/431)): RunAsNode (needs a Myotis supervision redesign), cookie encryption, file-protocol privileges |
+| [O-5](#o-5-script-src-unsafe-inline-on-internal-pages) | Medium | CSP | **Fixed** in [#444](https://github.com/solardev-xyz/freedom-browser/pull/444) |
+| [O-6](#o-6-sub-frame-provider-requests-are-attributed-to-the-top-page) | Medium | Provider bridges | **Fixed** in [#440](https://github.com/solardev-xyz/freedom-browser/pull/440) |
+| [O-7](#o-7-wallet-signing-has-no-main-side-confirmation) | Medium | Wallet | **Fixed** in [#446](https://github.com/solardev-xyz/freedom-browser/pull/446) |
+| [O-8](#o-8-quick-unlock-returns-the-vault-password-to-the-renderer) | Medium | Wallet key storage | **Fixed** in [#446](https://github.com/solardev-xyz/freedom-browser/pull/446) |
+| [O-9](#o-9-external-protocol-denylist-misses-network-share-schemes) | Low | `shell.openExternal` | **Fixed** in [#443](https://github.com/solardev-xyz/freedom-browser/pull/443) |
+| [O-10](#o-10-no-select-client-certificate-handler) | Low | TLS client certs | **Fixed** in [#443](https://github.com/solardev-xyz/freedom-browser/pull/443) |
+| [O-11](#o-11-macos-hardened-runtime-entitlements) | Low | macOS signing | **Fixed** in [#443](https://github.com/solardev-xyz/freedom-browser/pull/443), pending a signed macOS release run |
+| [O-12](#o-12-smaller-items) | Low / Info | Various | **Fixed** in [#441](https://github.com/solardev-xyz/freedom-browser/pull/441), [#443](https://github.com/solardev-xyz/freedom-browser/pull/443), [#445](https://github.com/solardev-xyz/freedom-browser/pull/445) (fingerprinting Info item kept by decision) |
 
 \* Critical if a tab renderer is compromised. Without a renderer exploit, the
 preload guards already kept web pages away from these channels.
@@ -295,6 +295,9 @@ execution on an internal page.
 has no inline scripts, no inline handlers and no `eval`.
 
 ## Open items
+
+> **Status update:** every open item below has since been addressed in a follow-up PR (see the Summary table). The sections are kept as the original findings; only the parts of O-4 listed in the table remain open, tracked in [#431](https://github.com/solardev-xyz/freedom-browser/issues/431).
+
 
 These need a product decision, a larger change, or they touch areas this PR
 must not change.
