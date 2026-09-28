@@ -276,9 +276,11 @@ describe('webview tiers mirror webview-preload.js', () => {
   // Every main-bound call must therefore name its channel as a plain
   // single-quoted literal. (sendToHost goes to the embedder, not ipcMain.)
   test('every main-bound preload call names its channel as a single-quoted literal', () => {
-    // Dot or bracket access; only the plain `ipcRenderer.<method>('…'` form
-    // is the one CALL reads, so anything else is an offender.
-    const anyCall = /ipcRenderer\s*(\.\s*|\[)\s*['"`]?(invoke|send|sendSync|postMessage)\b/g;
+    // Dot, bracket, or optional-chaining (`?.`, `?.[`) access; only the
+    // plain `ipcRenderer.<method>('…'` form is the one CALL reads, so
+    // anything else is an offender.
+    const anyCall =
+      /ipcRenderer\s*(\?\.\s*\[|\?\.\s*|\.\s*|\[)\s*['"`]?(invoke|send|sendSync|postMessage)\b/g;
     const literal = /^\(\s*'[^'\\$`]+'\s*[,)]/;
     const offenders = [];
     let total = 0;
@@ -287,7 +289,9 @@ describe('webview tiers mirror webview-preload.js', () => {
       const rest = source.slice(match.index + match[0].length, match.index + match[0].length + 200);
       if (match[1] !== '.' || match[2] === 'postMessage' || !literal.test(rest)) {
         const line = source.slice(0, match.index).split('\n').length;
-        offenders.push(`webview-preload.js:${line}: ${source.slice(match.index, match.index + 80).split('\n')[0]}`);
+        offenders.push(
+          `webview-preload.js:${line}: ${source.slice(match.index, match.index + 80).split('\n')[0]}`
+        );
       }
     }
     expect(total).toBeGreaterThan(50);
