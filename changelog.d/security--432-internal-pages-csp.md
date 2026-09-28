@@ -1,0 +1,1 @@
+- Internal pages run no inline script, and a site-supplied title, filename or payment detail can't break out of the History, Downloads or Payments page markup ([#432](https://github.com/solardev-xyz/freedom-browser/issues/432))
