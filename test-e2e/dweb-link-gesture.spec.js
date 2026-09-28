@@ -9,7 +9,7 @@
 //     gesture (no popup is created), in place and without taking focus.
 //
 // The unit suite models `isTrusted`/`navigator.userActivation`; this spec
-// proves the real events carry them: a trusted mousedown reaches the
+// proves the real events carry them: a trusted pointerdown reaches the
 // preload's window-capture listener, and a script's `.click()` inside a real
 // click handler is untrusted but activated.
 
@@ -38,6 +38,17 @@ const FIXTURE_BODY = [
   '<button id="burst" onclick="for (let i = 0; i < 3; i++) ' +
     'document.getElementById(`blank${i}`).dispatchEvent(new MouseEvent(`click`, ' +
     '{ bubbles: true, cancelable: true, ctrlKey: true, button: 0 }))">burst</button>',
+  // One real click, one scripted Ctrl+click from each of three handlers that
+  // fire for that single press. Still one gesture, so still one tab.
+  '<button id="phases" ' +
+    ['pointerdown', 'mousedown', 'pointerup']
+      .map(
+        (type, i) =>
+          `on${type}="document.getElementById('blank${i}').dispatchEvent(new MouseEvent('click', ` +
+          `{ bubbles: true, cancelable: true, ctrlKey: true, button: 0 }))"`
+      )
+      .join(' ') +
+    '>phases</button>',
   '<div id="out">ready</div>',
 ].join('\n');
 
@@ -120,6 +131,20 @@ test('one real click opens one dweb tab, however many links the page clicks in i
   await expect.poll(() => tabCount(window), { timeout: 5_000 }).toBe(3);
   await window.waitForTimeout(1_000);
   expect(await tabCount(window)).toBe(3);
+});
+
+test('one real click is one gesture across its pointerdown, mousedown and pointerup', async ({
+  window,
+  electronApp,
+}) => {
+  await gotoFixture(window, electronApp);
+  expect(await tabCount(window)).toBe(1);
+
+  await realClick(window, electronApp, 'phases');
+  await expect.poll(() => tabCount(window), { timeout: 5_000 }).toBe(2);
+  await window.waitForTimeout(1_000);
+  expect(await tabCount(window)).toBe(2);
+  await window.screenshot({ path: `${process.env.TMPDIR || '/tmp'}/dweb-gesture-phases.png` });
 });
 
 test('a gesture-less named-target link navigates the existing named tab but never opens one', async ({

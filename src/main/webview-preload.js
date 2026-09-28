@@ -463,11 +463,17 @@ const hasUserActivation = (event) => {
 // transient activation when it lets a popup through, so a second scripted
 // open inside the same gesture is blocked. The web platform has no API to
 // consume activation without a side effect, so the preload keeps its own
-// budget: every trusted activation-triggering event (the set Chromium's
-// HTML-spec activation uses: keydown, mousedown, pointerdown, pointerup,
-// touchend) opens a new epoch, and a synthetic click may spend the current
-// epoch once. A real click is a gesture of its own and always passes, but
-// spends the epoch too, so a script can't piggyback a second tab on it.
+// budget: every physical gesture opens a new epoch, and a synthetic click may
+// spend the current epoch once. A real click is a gesture of its own and
+// always passes, but spends the epoch too, so a script can't piggyback a
+// second tab on it.
+//
+// An epoch is opened by the *first* event of a gesture only: `pointerdown`
+// (mouse, pen and touch all fire it, and it precedes the compatibility
+// `mousedown` and the `pointerup`/`touchend` of the same press) and `keydown`.
+// Counting every activation-triggering event instead (mousedown, pointerup,
+// touchend too) would give one click three epochs, and a page with
+// onpointerdown/onmousedown/onpointerup handlers could open three tabs on it.
 // Registered on window in the capture phase so no page listener can hide the
 // event from it (the preload runs before any page script).
 let activationEpoch = 0;
@@ -475,7 +481,7 @@ let spentActivationEpoch = -1;
 const noteActivation = (event) => {
   if (event?.isTrusted === true) activationEpoch += 1;
 };
-for (const type of ['keydown', 'mousedown', 'pointerdown', 'pointerup', 'touchend']) {
+for (const type of ['keydown', 'pointerdown']) {
   window.addEventListener(type, noteActivation, true);
 }
 const claimNewTabActivation = (event) => {

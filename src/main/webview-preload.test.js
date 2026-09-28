@@ -1169,7 +1169,7 @@ describe('webview-preload', () => {
     test('one gesture opens one tab: a second scripted click in it opens nothing', () => {
       const { documentCaptureHandlers, windowCaptureHandlers, ipcRenderer } =
         loadWebviewPreloadModule({ userActivation: { isActive: true, hasBeenActive: true } });
-      windowCaptureHandlers.mousedown({ isTrusted: true });
+      windowCaptureHandlers.pointerdown({ isTrusted: true });
 
       documentCaptureHandlers.click(syntheticClick(blankAnchor()));
       const second = syntheticClick(blankAnchor());
@@ -1183,7 +1183,7 @@ describe('webview-preload', () => {
       expect(third.preventDefault).toHaveBeenCalled();
 
       // A page dispatching its own "activation" events earns nothing.
-      windowCaptureHandlers.mousedown({ isTrusted: false });
+      windowCaptureHandlers.pointerdown({ isTrusted: false });
       windowCaptureHandlers.keydown({ isTrusted: false });
       documentCaptureHandlers.click(syntheticClick(blankAnchor()));
       expect(
@@ -1199,10 +1199,32 @@ describe('webview-preload', () => {
       ).toHaveLength(2);
     });
 
+    // One physical press fires pointerdown, mousedown, pointerup, mouseup
+    // (touch: pointerdown, pointerup, touchend), all trusted. Only the first
+    // opens an epoch, or a page with a handler on each could open one tab per
+    // event of a single click.
+    test.each([
+      ['mouse', ['pointerdown', 'mousedown', 'pointerup', 'mouseup']],
+      ['touch', ['pointerdown', 'touchstart', 'pointerup', 'touchend', 'mousedown']],
+    ])('one %s press is one gesture however many of its events a page handles', (_l, seq) => {
+      const { documentCaptureHandlers, windowCaptureHandlers, ipcRenderer } =
+        loadWebviewPreloadModule({ userActivation: { isActive: true, hasBeenActive: true } });
+      for (const type of seq) {
+        windowCaptureHandlers[type]?.({ isTrusted: true });
+        documentCaptureHandlers.click(syntheticClick(blankAnchor(), { ctrlKey: true }));
+      }
+      expect(
+        ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate')
+      ).toHaveLength(1);
+      for (const type of ['mousedown', 'pointerup', 'touchend']) {
+        expect(windowCaptureHandlers[type]).toBeUndefined();
+      }
+    });
+
     test('a real click spends the gesture, so a scripted click riding on it opens nothing', () => {
       const { documentCaptureHandlers, windowCaptureHandlers, ipcRenderer } =
         loadWebviewPreloadModule({ userActivation: { isActive: true, hasBeenActive: true } });
-      windowCaptureHandlers.mousedown({ isTrusted: true });
+      windowCaptureHandlers.pointerdown({ isTrusted: true });
       documentCaptureHandlers.click(syntheticClick(blankAnchor(), { isTrusted: true }));
       documentCaptureHandlers.click(syntheticClick(blankAnchor()));
       expect(
