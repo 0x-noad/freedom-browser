@@ -17,6 +17,7 @@ import { openSafeMessageBoard, abandonSafeMessageBoard } from './wallet/safe-sig
 import { confirmSigning } from './wallet/signing-confirmation.js';
 import { getPermissionKey } from './origin-utils.js';
 import { parseOnchainAppUrl } from './url-utils.js';
+import { trackGuestMainFrame, isFromGuestMainFrame } from './guest-main-frame.js';
 
 // Feature flag state
 let identityWalletEnabled = false;
@@ -572,8 +573,12 @@ function sendProviderEvent(webview, event, data) {
 export function setupWebviewProvider(webview) {
   if (!webview) return;
 
+  trackGuestMainFrame(webview);
   webview.addEventListener('ipc-message', (event) => {
     if (event.channel === 'dapp:provider-request') {
+      // Only the top frame gets window.ethereum; a request from any other
+      // frame would be handled under the top page's grants (audit O-6).
+      if (!isFromGuestMainFrame(webview, event)) return;
       const request = event.args[0];
       handleProviderRequest(webview, request);
     }
