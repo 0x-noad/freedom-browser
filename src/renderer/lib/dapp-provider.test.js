@@ -48,11 +48,16 @@ const loadProvider = async (options = {}) => {
     signMessage: jest.fn(async () => ({ success: true, signature: '0xeoa' })),
     signTypedData: jest.fn(async () => ({ success: true, signature: '0xeoa' })),
     requestChain: jest.fn(async () => ({ success: true, result: '0xfeed' })),
+    confirmSigning: jest.fn(async () => ({ success: true, token: 'confirm-token' })),
+    getGasPrice: jest.fn(async () => ({ success: true, type: 'legacy', gasPrice: '7' })),
+    estimateGas: jest.fn(async () => ({ success: true, gasLimit: '50000' })),
+    dappSendTransaction: jest.fn(async () => ({ success: true, hash: '0xtx' })),
   };
 
   const dappPermissions = {
     getPermission: jest.fn(async () => state.permission),
     updateLastUsed: jest.fn(async () => {}),
+    isTransactionAutoApproved: jest.fn(async () => options.txAutoApproved ?? false),
   };
 
   global.window = {
@@ -90,7 +95,7 @@ const loadProvider = async (options = {}) => {
   jest.doMock('./wallet-ui.js', () => walletUi);
   jest.doMock('./wallet/dapp-tx.js', () => ({
     buildDappTxContext: jest.fn(),
-    extractSelector: jest.fn(() => null),
+    extractSelector: jest.fn((data) => (data && data.length >= 10 ? data.slice(0, 10) : null)),
   }));
   jest.doMock('./wallet/wallet-utils.js', () => ({
     isSafeAccount: jest.fn((index) => index >= SAFE_WALLET_INDEX),
@@ -365,5 +370,105 @@ describe('dapp-provider onchain application binding', () => {
       event: 'chainChanged',
       data: '0x64',
     });
+  });
+});
+
+// Security audit O-7: main signs only against a confirmation token or its
+// own reading of the site's auto-approve policy. The renderer's side of
+// that contract: auto-approved requests say so (and carry no token), and a
+// user approval mints a token bound to exactly what is signed.
+describe('dapp-provider signing authorization', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  const eoaPermission = (autoApprove = {}) => ({ walletIndex: 0, chainId: 100, autoApprove });
+
+  test('an auto-approved personal_sign asks main to check the site policy, with no token', async () => {
+    const { sendRequest, walletMocks, walletUi } = await loadProvider({
+      permission: eoaPermission({ signing: true }),
+    });
+
+    sendRequest({ id: 1, method: 'personal_sign', params: ['0xdead', '0xeoa'] });
+    await flushMicrotasks();
+
+    expect(walletUi.showDappSignApproval).not.toHaveBeenCalled();
+    expect(walletMocks.confirmSigning).not.toHaveBeenCalled();
+    expect(walletMocks.signMessage).toHaveBeenCalledWith('0xdead', 0, {
+      autoApprove: 'https://app.example',
+    });
+  });
+
+  test('an auto-approved Safe signature asks main to check the site policy', async () => {
+    const { sendRequest, walletMocks } = await loadProvider({ permission: safePermission() });
+
+    sendRequest({ id: 1, method: 'personal_sign', params: ['0xdead', '0xsafe'] });
+    await flushMicrotasks();
+
+    expect(walletMocks.confirmSigning).not.toHaveBeenCalled();
+    expect(walletMocks.safeMessageStart.mock.calls[0][4]).toEqual({
+      autoApprove: 'https://app.example',
+    });
+  });
+
+  test('an auto-approved transaction asks main to check the site rules, with no token', async () => {
+    const { sendRequest, walletMocks, walletUi } = await loadProvider({
+      permission: eoaPermission(),
+      txAutoApproved: true,
+    });
+    const data = '0x095ea7b3' + '00'.repeat(64);
+
+    sendRequest({ id: 1, method: 'eth_sendTransaction', params: [{ to: '0xc0ffee', data }] });
+    await flushMicrotasks();
+
+    expect(walletUi.showDappTxApproval).not.toHaveBeenCalled();
+    expect(walletMocks.confirmSigning).not.toHaveBeenCalled();
+    expect(walletMocks.dappSendTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ to: '0xc0ffee', data, chainId: 100 }),
+      0,
+      undefined,
+      { autoApprove: 'https://app.example' }
+    );
+  });
+
+  test('a user-approved signature mints a token for exactly that payload', async () => {
+    const { mod, walletMocks } = await loadProvider();
+    const typedData = { domain: { chainId: 100 }, message: { a: 1 } };
+
+    await mod.executeSign('eth_signTypedData_v4', ['0xeoa', typedData], 0, 'https://app.example', null);
+
+    expect(walletMocks.confirmSigning).toHaveBeenCalledWith('sign-typed-data', 0, typedData);
+    expect(walletMocks.signTypedData).toHaveBeenCalledWith(typedData, 0, {
+      confirmation: 'confirm-token',
+    });
+  });
+
+  test('a user-approved Safe signature mints a safe-message token', async () => {
+    const { mod, walletMocks } = await loadProvider();
+    const params = ['0xdead', '0xsafe'];
+
+    await mod.executeSign('personal_sign', params, SAFE_WALLET_INDEX, 'https://app.example', null);
+
+    expect(walletMocks.confirmSigning).toHaveBeenCalledWith('safe-message', SAFE_WALLET_INDEX, {
+      method: 'personal_sign',
+      params,
+    });
+    expect(walletMocks.safeMessageStart.mock.calls[0][4]).toEqual({ confirmation: 'confirm-token' });
+  });
+
+  test('a refused confirmation signs nothing', async () => {
+    const { mod, walletMocks } = await loadProvider();
+    walletMocks.confirmSigning.mockResolvedValueOnce({ success: false, error: 'Message is required' });
+
+    await expect(
+      mod.executeSign('personal_sign', ['0xdead'], 0, 'https://app.example', null)
+    ).rejects.toThrow('Message is required');
+    expect(walletMocks.signMessage).not.toHaveBeenCalled();
   });
 });

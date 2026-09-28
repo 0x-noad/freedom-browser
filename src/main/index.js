@@ -39,7 +39,9 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
     require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads')
   );
 }
-const TEST_MODE = process.env.FREEDOM_TEST_MODE === '1';
+// Honoured in a packaged build only when a Node inspector is attached, i.e.
+// a Playwright launch (docs/security-audit-electron.md, O-12); see test-mode.js.
+const TEST_MODE = require('./test-mode').isTestModeRequested();
 const { migrateBeeDataToAntData, migrateUserData } = require('./migrate-user-data');
 if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
   migrateUserData({ logger: console });
@@ -144,6 +146,7 @@ const { installRequestRewriter } = require('./request-rewriter');
 const { installAdblockInterception, registerAdblockIpc } = require('./adblock/service');
 const { installAdblockUpdater } = require('./adblock/update-scheduler');
 const { attachWebRequestDispatcher } = require('./webrequest-dispatcher');
+const { installAntApiGuard } = require('./swarm/ant-api-guard');
 const { installX402Interception } = require('./x402/intercept');
 const { registerX402Ipc } = require('./x402/ipc');
 const { registerBzzProtocol } = require('./swarm/bzz-protocol');
@@ -294,9 +297,9 @@ const {
 const { initUpdater } = require('./updater');
 const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
+const { registerClientCertificateHandler } = require('./client-certificate');
 const { installTestHarness, registerStubProtocols } = require('./test-harness');
 
-app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
 log.info('[profile] Active profile:', {
   id: activeProfile.id,
   source: activeProfile.source,
@@ -395,6 +398,10 @@ async function bootstrap() {
   }
   // All consumers register their handlers first, then the dispatcher
   // attaches exactly one Electron listener per event to the session.
+  // First in the chain, so no rewrite or later handler can wave a request
+  // to the local Ant API past it (docs/security-audit-electron.md, O-1).
+  // Runs in test mode too — it is browser policy, like onchain-app-guard.
+  installAntApiGuard();
   installRequestRewriter();
   // After the rewriter (which owns scheme/gateway rewriting) and before
   // x402, so blocked requests never reach the payment flow.
@@ -463,6 +470,7 @@ async function bootstrap() {
   registerPrivateCleanup((partition) => unregisterOnionRoutingSession(partition));
 
   registerWebContentsHandlers();
+  registerClientCertificateHandler();
   setupApplicationMenu();
 
   // Profiles are shared across processes (one process per profile). When any

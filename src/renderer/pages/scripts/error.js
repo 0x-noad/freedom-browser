@@ -79,30 +79,44 @@ function setErrorTitle(text) {
   document.title = text;
 }
 
+// This page runs in a tab <webview>, so the chrome's
+// `window.serviceRegistry` is not here; internal pages get the same
+// read-only snapshot through `freedomAPI.getServiceRegistry`. `null`
+// means "unknown" — the caller then keeps the generic copy rather than
+// claiming a node is down.
 async function getRegistry() {
   try {
-    return await window.serviceRegistry?.getRegistry?.();
+    return (await window.freedomAPI?.getServiceRegistry?.()) || null;
   } catch {
     return null;
   }
 }
 
+// The registry is the source of truth: ant-manager publishes `ant.api`
+// only once the node is healthy (bundled), adopted (reused) or
+// connected (external), and clears it when the node stops. A node that
+// stops answering afterwards keeps `api` published (the health check
+// recovers in place) but raises `errorState`, so that counts as not
+// running too. The page
+// no longer fetches the node's /health itself — web content (this page
+// included, since the node config dropped its CORS origins) cannot
+// read the Ant API (#428).
 async function checkSwarmStatus() {
   const registry = await getRegistry();
-  const beeApi = registry?.bee?.api || window.nodeConfig?.beeApi || null;
-  if (!beeApi) return { running: false };
-
-  try {
-    const res = await fetch(`${beeApi}/health`, { timeout: 2000 });
-    return { running: res.ok };
-  } catch {
-    return { running: false };
-  }
+  if (!registry) return { running: true };
+  const ant = registry.ant || {};
+  return { running: Boolean(ant.api) && !ant.errorState };
 }
 
 async function checkIpfsStatus() {
   const registry = await getRegistry();
-  return { running: registry?.ipfs?.mode === 'bundled' };
+  if (!registry) return { running: true };
+  const ipfs = registry.ipfs || {};
+  // External mode publishes `gateway` only once the gateway serves; a
+  // gateway (or bundled node) that stops answering raises `errorState`.
+  return {
+    running: (ipfs.mode === 'bundled' || Boolean(ipfs.gateway)) && !ipfs.errorState,
+  };
 }
 
 // Format a host for display in the generic title (truncate very long
