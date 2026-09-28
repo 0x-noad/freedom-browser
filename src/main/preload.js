@@ -332,6 +332,9 @@ contextBridge.exposeInMainWorld('ant', {
   stop: () => ipcRenderer.invoke('ant:stop'),
   getStatus: () => ipcRenderer.invoke('ant:getStatus'),
   checkBinary: () => ipcRenderer.invoke('ant:checkBinary'),
+  // Read-only node API (GET, allowlisted endpoints) — the node no longer
+  // accepts the chrome's `file:` origin over CORS.
+  apiGet: (endpoint) => ipcRenderer.invoke('ant:api-get', endpoint),
   onStatusUpdate: (callback) => {
     const handler = (_event, value) => callback(value);
     ipcRenderer.on('ant:statusUpdate', handler);

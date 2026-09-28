@@ -1,0 +1,243 @@
+const path = require('path');
+const { pathToFileURL } = require('url');
+
+jest.mock('../logger', () => ({ warn: jest.fn(), info: jest.fn(), error: jest.fn() }));
+
+const mockGetAntApiUrl = jest.fn(() => null);
+jest.mock('../service-registry', () => ({
+  DEFAULTS: { ant: { apiPort: 1633 } },
+  getAntApiUrl: () => mockGetAntApiUrl(),
+}));
+
+const {
+  guardAntApiRequest,
+  installAntApiGuard,
+  isAntApiRequestUrl,
+  isLoopbackHostname,
+  noteAntApiUrl,
+  _resetAntApiGuardForTests,
+} = require('./ant-api-guard');
+const {
+  registerWebRequestHandler,
+  attachWebRequestDispatcher,
+  _resetWebRequestHandlers,
+} = require('../webrequest-dispatcher');
+const { PAGES_DIR, CHROME_INDEX } = require('../ipc-sender-policy');
+
+const settingsUrl = pathToFileURL(path.join(PAGES_DIR, 'settings.html')).href;
+const publishUrl = pathToFileURL(path.join(PAGES_DIR, 'publish.html')).href;
+const chromeUrl = pathToFileURL(CHROME_INDEX).href;
+
+const topFrame = (url) => ({ url, parent: null });
+const subFrame = (url) => ({ url, parent: topFrame('https://top.example/') });
+const webview = { getType: () => 'webview' };
+const browserWindow = { getType: () => 'window' };
+
+// One request as Electron's onBeforeRequest reports it.
+const req = ({
+  url = 'http://127.0.0.1:1633/stamps/1/17',
+  method = 'POST',
+  resourceType = 'xhr',
+  frame = topFrame('https://evil.example/'),
+  webContents = webview,
+} = {}) => ({ url, method, resourceType, frame, webContents });
+
+beforeEach(() => {
+  _resetAntApiGuardForTests();
+  mockGetAntApiUrl.mockReset().mockReturnValue('http://127.0.0.1:1633');
+});
+
+describe('which web content the guard stops', () => {
+  // The audit's reproduction: a POST /stamps from an https: and a bzz: page.
+  test.each([
+    ['https page fetch POST', req()],
+    ['https page GET via fetch', req({ method: 'GET', resourceType: 'xhr' })],
+    ['bzz page fetch POST', req({ frame: topFrame(`bzz://${'a'.repeat(64)}/`) })],
+    [
+      'ipfs page img',
+      req({ method: 'GET', resourceType: 'image', frame: topFrame('ipfs://bafy/') }),
+    ],
+    ['data: frame', req({ frame: topFrame('data:text/html,<script>fetch()</script>') })],
+    ['opaque/sandboxed frame', req({ frame: subFrame('about:srcdoc') })],
+    ['cross-site top-level form POST', req({ resourceType: 'mainFrame' })],
+    [
+      'iframe navigation GET',
+      req({ method: 'GET', resourceType: 'subFrame', frame: subFrame('https://evil.example/') }),
+    ],
+    [
+      'websocket',
+      req({ url: 'ws://127.0.0.1:1633/pss/subscribe/x', method: 'GET', resourceType: 'webSocket' }),
+    ],
+    ['service worker (no frame, no webContents)', req({ frame: null, webContents: undefined })],
+    [
+      'internal page URL in a sub-frame',
+      req({ frame: { url: settingsUrl, parent: topFrame('https://evil.example/') } }),
+    ],
+    [
+      'internal-page-looking path outside the app',
+      req({ frame: topFrame('file:///home/me/Downloads/pages/settings.html') }),
+    ],
+    ['chrome URL loaded inside a tab', req({ frame: topFrame(chromeUrl), webContents: webview })],
+  ])('%s is cancelled', (_label, details) => {
+    expect(guardAntApiRequest(details)).toEqual({ cancel: true });
+  });
+
+  test('a frame that throws on access (already gone) fails closed', () => {
+    const frame = {
+      get url() {
+        throw new Error('Render frame was disposed');
+      },
+      get parent() {
+        throw new Error('Render frame was disposed');
+      },
+    };
+    expect(guardAntApiRequest(req({ frame }))).toEqual({ cancel: true });
+  });
+});
+
+describe('what stays allowed', () => {
+  test('a top-level GET navigation typed or clicked by the user', () => {
+    expect(
+      guardAntApiRequest(
+        req({ url: 'http://127.0.0.1:1633/bzz/abc/', method: 'GET', resourceType: 'mainFrame' })
+      )
+    ).toBeNull();
+  });
+
+  test.each([settingsUrl, publishUrl])('Freedom internal page %s', (url) => {
+    expect(guardAntApiRequest(req({ method: 'GET', frame: topFrame(url) }))).toBeNull();
+  });
+
+  test('the chrome renderer', () => {
+    expect(
+      guardAntApiRequest(
+        req({ method: 'GET', frame: topFrame(chromeUrl), webContents: browserWindow })
+      )
+    ).toBeNull();
+  });
+
+  test('requests that are not to the node pass untouched', () => {
+    expect(guardAntApiRequest(req({ url: 'https://example.com/stamps' }))).toBeNull();
+    expect(guardAntApiRequest(req({ url: 'http://127.0.0.1:8080/x' }))).toBeNull();
+    expect(guardAntApiRequest(req({ url: 'http://93.184.216.34:1633/x' }))).toBeNull();
+    expect(guardAntApiRequest(req({ url: `bzz://${'a'.repeat(64)}/x` }))).toBeNull();
+  });
+});
+
+describe('isAntApiRequestUrl', () => {
+  test.each([
+    'http://127.0.0.1:1633/stamps',
+    'http://localhost:1633/stamps',
+    'http://LOCALHOST:1633/stamps',
+    'http://localhost.:1633/stamps',
+    'http://foo.localhost:1633/stamps',
+    'http://[::1]:1633/stamps',
+    'http://[0:0:0:0:0:0:0:1]:1633/stamps',
+    'http://[::ffff:127.0.0.1]:1633/stamps',
+    'http://127.1:1633/stamps',
+    'http://2130706433:1633/stamps',
+    'http://0x7f000001:1633/stamps',
+    'http://127.8.9.10:1633/stamps',
+    'http://0.0.0.0:1633/stamps',
+    'http://[::]:1633/stamps',
+    'https://127.0.0.1:1633/stamps',
+    'ws://localhost:1633/pss/subscribe/x',
+    'wss://localhost:1633/gsoc/subscribe/x',
+    // A DNS name on the node's port may resolve to loopback; this runs
+    // before DNS.
+    'http://127.0.0.1.nip.io:1633/stamps',
+    'http://rebind.example:1633/stamps',
+  ])('%s is the Ant API', (url) => {
+    expect(isAntApiRequestUrl(url)).toBe(true);
+  });
+
+  test.each([
+    'http://127.0.0.1:1634/',
+    'http://localhost:8080/',
+    'http://example.com/',
+    'http://10.0.0.5:1633/',
+    'ftp://127.0.0.1:1633/',
+    'not a url',
+  ])('%s is not', (url) => {
+    expect(isAntApiRequestUrl(url)).toBe(false);
+  });
+
+  test('follows the port the node actually runs on (profile / fallback port)', () => {
+    mockGetAntApiUrl.mockReturnValue('http://127.0.0.1:11633');
+    expect(isAntApiRequestUrl('http://localhost:11633/wallet')).toBe(true);
+  });
+
+  test('keeps every port the node used this session, and the default', () => {
+    noteAntApiUrl('http://127.0.0.1:11634');
+    mockGetAntApiUrl.mockReturnValue(null); // node stopped
+    expect(isAntApiRequestUrl('http://127.0.0.1:11634/wallet')).toBe(true);
+    expect(isAntApiRequestUrl('http://127.0.0.1:1633/wallet')).toBe(true);
+  });
+
+  test('guards the port before the registry learns it', () => {
+    mockGetAntApiUrl.mockReturnValue(null);
+    expect(isAntApiRequestUrl('http://127.0.0.1:11700/stamps')).toBe(false);
+    noteAntApiUrl('http://127.0.0.1:11700');
+    expect(isAntApiRequestUrl('http://127.0.0.1:11700/stamps')).toBe(true);
+  });
+
+  test('guards an external node by its exact origin', () => {
+    mockGetAntApiUrl.mockReturnValue('http://192.168.1.20:8633');
+    expect(isAntApiRequestUrl('http://192.168.1.20:8633/stamps')).toBe(true);
+    expect(isAntApiRequestUrl('http://192.168.1.20:8634/stamps')).toBe(false);
+    noteAntApiUrl('https://my-node.lan');
+    expect(isAntApiRequestUrl('https://my-node.lan/stamps')).toBe(true);
+    expect(isAntApiRequestUrl('https://my-node.lan:443/stamps')).toBe(true);
+  });
+});
+
+test('isLoopbackHostname', () => {
+  expect(isLoopbackHostname('127.0.0.1')).toBe(true);
+  expect(isLoopbackHostname('[::ffff:7f00:1]')).toBe(true);
+  expect(isLoopbackHostname('[::ffff:0:0]')).toBe(true);
+  expect(isLoopbackHostname('[::ffff:a00:1]')).toBe(false);
+  expect(isLoopbackHostname('128.0.0.1')).toBe(false);
+  expect(isLoopbackHostname('localhost.example')).toBe(false);
+  expect(isLoopbackHostname('')).toBe(false);
+});
+
+describe('dispatcher wiring', () => {
+  afterEach(() => _resetWebRequestHandlers());
+
+  const attach = () => {
+    let listener;
+    attachWebRequestDispatcher({
+      webRequest: { onBeforeRequest: (fn) => (listener = fn) },
+    });
+    return (details) => new Promise((resolve) => listener(details, resolve));
+  };
+
+  test('cancels through the dispatcher, ahead of later handlers', async () => {
+    installAntApiGuard();
+    const later = jest.fn(() => ({ redirectURL: 'http://127.0.0.1:1633/elsewhere' }));
+    registerWebRequestHandler('onBeforeRequest', 'later', later);
+    const dispatch = attach();
+    await expect(dispatch(req())).resolves.toEqual({ cancel: true });
+    expect(later).not.toHaveBeenCalled();
+  });
+
+  test('is registered fail-closed: a throw cancels', async () => {
+    installAntApiGuard();
+    mockGetAntApiUrl.mockImplementation(() => {
+      throw new Error('registry exploded');
+    });
+    const dispatch = attach();
+    await expect(dispatch(req({ url: 'http://127.0.0.1:9/x' }))).resolves.toEqual({
+      cancel: true,
+    });
+  });
+});
+
+test('index.js installs the guard first, before any session attaches the dispatcher', () => {
+  const src = require('fs').readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+  const guard = src.indexOf('installAntApiGuard();');
+  expect(guard).toBeGreaterThan(-1);
+  expect(guard).toBeLessThan(src.indexOf('installRequestRewriter();'));
+  expect(guard).toBeLessThan(src.indexOf('attachWebRequestDispatcher(defaultSession)'));
+  expect(guard).toBeLessThan(src.indexOf('attachWebRequestDispatcher(privateSession'));
+});

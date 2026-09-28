@@ -15,6 +15,7 @@ module.exports = {
   ANT_GET_STATUS: 'ant:getStatus',
   ANT_STATUS_UPDATE: 'ant:statusUpdate',
   ANT_CHECK_BINARY: 'ant:checkBinary',
+  ANT_API_GET: 'ant:api-get',
 
   // IPFS node management
   IPFS_START: 'ipfs:start',

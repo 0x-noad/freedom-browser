@@ -144,6 +144,7 @@ const { installRequestRewriter } = require('./request-rewriter');
 const { installAdblockInterception, registerAdblockIpc } = require('./adblock/service');
 const { installAdblockUpdater } = require('./adblock/update-scheduler');
 const { attachWebRequestDispatcher } = require('./webrequest-dispatcher');
+const { installAntApiGuard } = require('./swarm/ant-api-guard');
 const { installX402Interception } = require('./x402/intercept');
 const { registerX402Ipc } = require('./x402/ipc');
 const { registerBzzProtocol } = require('./swarm/bzz-protocol');
@@ -395,6 +396,10 @@ async function bootstrap() {
   }
   // All consumers register their handlers first, then the dispatcher
   // attaches exactly one Electron listener per event to the session.
+  // First in the chain, so no rewrite or later handler can wave a request
+  // to the local Ant API past it (docs/security-audit-electron.md, O-1).
+  // Runs in test mode too — it is browser policy, like onchain-app-guard.
+  installAntApiGuard();
   installRequestRewriter();
   // After the rewriter (which owns scheme/gateway rewriting) and before
   // x402, so blocked requests never reach the payment flow.
