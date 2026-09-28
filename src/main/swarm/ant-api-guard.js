@@ -62,6 +62,9 @@
  *     indistinguishable from a different site (#445 R4-M2). On a shared web
  *     port (a remote node at `https://my-node.lan`) only that exact origin
  *     (and its mapped-IPv6 spelling) is guarded; an alias of it is not.
+ *     Unlike a local node's ports, a remote node's port is all-hosts only
+ *     while it is the configured node; after a switch away its exact origin
+ *     stays guarded for the session, its port no longer is (#445 R5-M1).
  * The Ant API ports are the default (1633), the port the node was configured
  * or started on, and every port the node has used this session (a restart
  * onto a fallback port must not reopen the previous one while an older
@@ -100,6 +103,12 @@ const SHARED_WEB_PORTS = new Set([
 // API origins it has been configured with.
 const knownPorts = new Set([String(DEFAULTS.ant.apiPort)]);
 const knownRemoteOrigins = new Set();
+// The non-shared port of the remote node most recently noted, all-hosts only
+// while that node is the configured one. Not sticky like `knownPorts`: a
+// remote node's port is no daemon on this machine, so once the user switches
+// away (back to bundled, or to another external node) only its exact origin
+// stays guarded, and every other site on that port works again (#445 R5-M1).
+let noteRemoteAllHostsPort = null;
 
 function effectivePort(parsed) {
   return parsed.port || DEFAULT_PORTS[parsed.protocol] || '';
@@ -157,6 +166,7 @@ function hostKey(rawHostname) {
 
 function isAntApiPort(port) {
   if (knownPorts.has(port)) return true;
+  if (noteRemoteAllHostsPort === port) return true;
   const live = currentApiUrl();
   if (!live || live.port !== port) return false;
   // A remote node's port is all-hosts too unless it is a shared web port.
@@ -192,11 +202,13 @@ function noteAntApiUrl(rawUrl) {
   const port = effectivePort(parsed);
   if (isLoopbackHostname(parsed.hostname)) {
     knownPorts.add(port);
+    noteRemoteAllHostsPort = null;
   } else {
     knownRemoteOrigins.add(`${hostKey(parsed.hostname)}:${port}`);
     // Off the shared web ports, a remote node's port is all-hosts like a
-    // local one: its aliases can't be told apart before DNS (#445 R4-M2).
-    if (!SHARED_WEB_PORTS.has(port)) knownPorts.add(port);
+    // local one — its aliases can't be told apart before DNS (#445 R4-M2) —
+    // but only while it is the configured node (#445 R5-M1).
+    noteRemoteAllHostsPort = SHARED_WEB_PORTS.has(port) ? null : port;
   }
 }
 
@@ -309,6 +321,7 @@ function _resetAntApiGuardForTests() {
   knownPorts.clear();
   knownPorts.add(String(DEFAULTS.ant.apiPort));
   knownRemoteOrigins.clear();
+  noteRemoteAllHostsPort = null;
   _resetMainProcessAntDialsForTests();
 }
 

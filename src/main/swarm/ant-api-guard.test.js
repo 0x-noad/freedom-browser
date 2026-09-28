@@ -305,6 +305,32 @@ describe('isAntApiRequestUrl', () => {
     expect(isAntApiRequestUrl('http://192.168.1.10:1734/stamps')).toBe(false);
   });
 
+  // R5-M1: the remote node's port used to join the session-sticky set.
+  test("a remote node's port stops being all-hosts once the user switches away", () => {
+    noteAntApiUrl('http://nas.lan:9000');
+    mockGetAntApiUrl.mockReturnValue('http://nas.lan:9000');
+    expect(isAntApiRequestUrl('http://other.example:9000/app.js')).toBe(true);
+    // Back to the bundled node.
+    noteAntApiUrl('http://127.0.0.1:1633');
+    mockGetAntApiUrl.mockReturnValue('http://127.0.0.1:1633');
+    expect(isAntApiRequestUrl('http://other.example:9000/app.js')).toBe(false);
+    expect(
+      guardAntApiRequest(
+        req({ url: 'http://other.example:9000/app.js', method: 'GET', resourceType: 'script' })
+      )
+    ).toBeNull();
+    // The old node's exact origin stays guarded for the session.
+    expect(isAntApiRequestUrl('http://nas.lan:9000/stamps')).toBe(true);
+    // Switching to a different remote node moves the all-hosts port with it.
+    noteAntApiUrl('http://nas.lan:9000');
+    noteAntApiUrl('http://192.168.1.10:1733');
+    mockGetAntApiUrl.mockReturnValue(null);
+    expect(isAntApiRequestUrl('http://other.example:9000/app.js')).toBe(false);
+    expect(isAntApiRequestUrl('http://other.example:1733/stamps')).toBe(true);
+    // Local ports stay sticky regardless.
+    expect(isAntApiRequestUrl('http://172.17.0.1:1633/stamps')).toBe(true);
+  });
+
   test('the live registry URL of a remote node guards its port the same way', () => {
     mockGetAntApiUrl.mockReturnValue('http://192.168.1.10:1733');
     expect(isAntApiRequestUrl('http://[::ffff:c0a8:10a]:1733/stamps')).toBe(true);
