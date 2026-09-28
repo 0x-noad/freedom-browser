@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const IPC = require('../shared/ipc-channels');
 const {
   createContextBridgeMock,
@@ -377,14 +379,29 @@ describe('preload', () => {
   });
 
   describe('E2E harness bridge (freedomTest)', () => {
+    const { TEST_HARNESS_RENDERER_ARG } = require('./test-mode');
+    const originalArgv = process.argv;
     const originalTestMode = process.env.FREEDOM_TEST_MODE;
+    const withArg = () => {
+      process.argv = [...originalArgv, TEST_HARNESS_RENDERER_ARG];
+    };
     afterEach(() => {
+      process.argv = originalArgv;
       if (originalTestMode === undefined) delete process.env.FREEDOM_TEST_MODE;
       else process.env.FREEDOM_TEST_MODE = originalTestMode;
     });
 
-    test('is absent outside FREEDOM_TEST_MODE', () => {
-      for (const value of [undefined, '', '0', 'true']) {
+    test('keys on the same renderer argument test-mode.js hands the chrome window', () => {
+      // preload.js cannot require test-mode.js (sandboxed), so it spells the
+      // argument out; this pins the two copies together.
+      const source = fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8');
+      expect(source).toContain(`process.argv.includes('${TEST_HARNESS_RENDERER_ARG}')`);
+    });
+
+    test('is absent without the renderer argument, whatever FREEDOM_TEST_MODE says', () => {
+      // The env var is the main process's input, not the renderer's: a packaged
+      // build ignores it on its own (test-mode.js), so the bridge must too.
+      for (const value of [undefined, '', '0', 'true', '1']) {
         if (value === undefined) delete process.env.FREEDOM_TEST_MODE;
         else process.env.FREEDOM_TEST_MODE = value;
         const { exposures } = loadPreloadModule();
@@ -393,7 +410,7 @@ describe('preload', () => {
     });
 
     test('in test mode, forwards only its named operations to test:* channels', async () => {
-      process.env.FREEDOM_TEST_MODE = '1';
+      withArg();
       const { exposures, ipcRenderer } = loadPreloadModule({
         invokeResponses: { 'test:app-facts': { packaged: true } },
       });

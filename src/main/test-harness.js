@@ -2,8 +2,9 @@
  * Renderer E2E test harness (Playwright integration)
  *
  * Activated only when `process.env.FREEDOM_TEST_MODE === '1'` — and, in a
- * packaged build, only when a Node inspector is attached as well, which is
- * how Playwright launches the app (see test-mode.js). The harness
+ * packaged build, only when the launch also kept a `--remote-debugging-port`
+ * on a scratch profile, which is how the packaged E2E launcher starts the app
+ * (see test-mode.js and test-e2e/packaged-launch.js). The harness
  * is fully inert otherwise — `installTestHarness` is a no-op when test
  * mode is off, and nothing in this file runs at require time.
  *
@@ -44,7 +45,7 @@ const { success, failure } = require('./ipc-contract');
 const { updateService, MODE, setStatusMessage } = require('./service-registry');
 
 // Same rule as index.js's TEST_MODE: the env var, and in a packaged build an
-// attached inspector as well (docs/security-audit-electron.md, O-12).
+// honoured CDP debug port as well (docs/security-audit-electron.md, O-4/O-12).
 const TEST_MODE_ENABLED = require('./test-mode').isTestModeRequested();
 
 function isTestMode() {
@@ -482,8 +483,10 @@ function registerTestOps() {
 // because the EnableNodeCliInspectArguments fuse is off in packaged builds and
 // Playwright's `electronApp.evaluate()` needs the Node inspector. This op is
 // deliberately a fixed answer rather than an evaluate-anything hook: a generic
-// "run this in main" channel would give back, to anyone who can set
-// FREEDOM_TEST_MODE, the Node-in-main access the fuse takes away.
+// "run this in main" channel would give back, to anyone who can launch with
+// FREEDOM_TEST_MODE and a debug port, the Node-in-main access the fuse takes
+// away — and test-mode.js's argument that the harness adds nothing beyond the
+// debug port rests on there being no such channel.
 function appFacts({ app, BrowserWindow }) {
   return {
     electron: process.versions.electron,

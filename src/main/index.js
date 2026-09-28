@@ -46,8 +46,9 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
     require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads')
   );
 }
-// Honoured in a packaged build only when a Node inspector is attached, i.e.
-// a Playwright launch (docs/security-audit-electron.md, O-12); see test-mode.js.
+// Honoured in a packaged build only when the launch also kept a CDP debug port
+// on a scratch profile, i.e. the packaged E2E launcher
+// (docs/security-audit-electron.md, O-4/O-12); see test-mode.js.
 const TEST_MODE = require('./test-mode').isTestModeRequested();
 const { migrateBeeDataToAntData, migrateUserData } = require('./migrate-user-data');
 if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
