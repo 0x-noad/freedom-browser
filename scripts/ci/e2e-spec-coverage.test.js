@@ -239,6 +239,9 @@ const workflowEvents = (text) => {
   const events = [];
   let indent;
   for (const line of lines.slice(at + 1)) {
+    // A comment (at any column, column 0 included) or a blank line does not
+    // end the block in YAML; only the next top-level key does.
+    if (/^\s*(?:#|$)/.test(line)) continue;
     if (/^\S/.test(line)) break; // next top-level key
     const m = line.match(/^( +)(['"]?)([A-Za-z_]+)\2:/);
     // Only keys at the block's first indentation level are events.
@@ -513,6 +516,13 @@ describe('the guard parsers', () => {
     expect(workflowEvents(pr('on:\n  pull_request:\n    branches: [main]'))).toEqual([
       'pull_request',
     ]);
+    // Comments (column 0 or indented) and blank lines inside the block don't end it.
+    expect(
+      workflowEvents(pr('on:\n# note\n  push:\n\n    # indented\n#\n  pull_request:'))
+    ).toEqual(['push', 'pull_request']);
+    const commented = ci().replace(/^on:\n/m, 'on:\n# note\n');
+    expect(commented).toContain('on:\n# note\n');
+    expect(gatesPullRequests(commented)).toBe(true);
     const refs = referencedSpecs(
       [
         ['release.yml', release],
