@@ -7,7 +7,7 @@
 // app.getPath('downloads') into the per-run temp userData dir, so nothing
 // is written to the real ~/Downloads.
 
-const { test, expect } = require('./fixtures');
+const { test, expect, clickOverGuest } = require('./fixtures');
 
 // "freedom-downloads-e2e" as base64 (application/octet-stream forces the
 // download code path rather than rendering).
@@ -183,17 +183,14 @@ test('a card dismissed mid-download stays dismissed', async ({ window }) => {
   await expect(cards).toHaveCount(1);
   await expect(cards.locator('[data-test="download-cancel"]')).toBeVisible();
 
-  // Re-clicked only while the card is still up: on a loaded runner the window
-  // focus churn of a fresh app instance can swallow a click outright (no
-  // pointer event reaches the page, and the × removes the card synchronously
-  // when one does). Safe to retry *here*, unlike the checks below: a
-  // progressing card has no auto-dismiss timer to go green on.
-  await expect(async () => {
-    if ((await cardCount()) > 0) {
-      await cards.locator('[data-test="download-close"]').click({ timeout: 1000 });
-    }
-    expect(await cardCount()).toBe(0);
-  }).toPass({ timeout: 10_000 });
+  // The card has just appeared over the tab's `<webview>` (`clickOverGuest`).
+  // Re-clicking while it is still up is safe *here*, unlike the checks below:
+  // a progressing card has no auto-dismiss timer to go green on.
+  await clickOverGuest(
+    window,
+    () => cards.locator('[data-test="download-close"]').click({ timeout: 1000 }),
+    async () => (await cardCount()) === 0
+  );
 
   // The next progress ticks are ignored — this is the quarter-second the card
   // used to come back in.
@@ -245,15 +242,17 @@ test("the shelf's Full Download History action opens, then focuses, the download
   await expect(historyRow).toBeVisible({ timeout: 10_000 });
   await expect(historyRow).toHaveText('Full Download History');
 
-  await historyRow.click();
-
   const activeUrl = () =>
     window.evaluate(() => {
       const wv = document.querySelector('webview.active, webview:not(.hidden)');
       return wv?.getURL?.() || wv?.getAttribute?.('src') || '';
     });
+  // The row has just appeared over the tab's `<webview>` (`clickOverGuest`). A
+  // re-click after one that did land only focuses the tab it opened, and the
+  // tab count below still catches a duplicate.
+  const onDownloadsPage = async () => /pages\/downloads\.html/.test(await activeUrl());
 
-  await expect.poll(activeUrl, { timeout: 10_000 }).toMatch(/pages\/downloads\.html/);
+  await clickOverGuest(window, () => historyRow.click({ timeout: 1000 }), onDownloadsPage);
   await expect(tabs).toHaveCount(initialTabs + 1);
 
   // The card auto-dismisses a few seconds after completion, so re-arm the
@@ -268,7 +267,6 @@ test("the shelf's Full Download History action opens, then focuses, the download
   await window.locator(`[data-test="tab"]`).first().click();
   await expect.poll(activeUrl, { timeout: 10_000 }).not.toMatch(/pages\/downloads\.html/);
 
-  await historyRow.click();
-  await expect.poll(activeUrl, { timeout: 10_000 }).toMatch(/pages\/downloads\.html/);
+  await clickOverGuest(window, () => historyRow.click({ timeout: 1000 }), onDownloadsPage);
   await expect(tabs).toHaveCount(initialTabs + 1);
 });

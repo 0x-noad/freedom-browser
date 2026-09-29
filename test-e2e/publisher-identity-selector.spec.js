@@ -7,7 +7,7 @@
 // and publisher identity management, so asserting it here covers all
 // three call sites at once.
 
-const { test, expect } = require('./fixtures');
+const { test, expect, clickOverGuest } = require('./fixtures');
 
 const STATE = {
   origin: 'myapp.eth',
@@ -87,18 +87,13 @@ test('an unavailable publisher identity renders inert and cannot be selected', a
   // Wait for the close to settle before toggling — under load a reopen click
   // that lands mid-close races the toggle and leaves the list hidden.
   const list = window.locator('#e2e-identity-selector .wallet-selector-list');
-  // The reopen click is retried while the list is still hidden: on a loaded
-  // runner a fresh app instance's window focus churn can swallow it
-  // outright, and a toggle must not be clicked twice.
+  // The selector was parked over the tab's `<webview>` (`clickOverGuest`).
   await expect(list).toBeHidden();
-  await expect(async () => {
-    if (!(await list.isVisible())) {
-      await window.click('#e2e-identity-selector .publisher-identity-selector-btn', {
-        timeout: 1000,
-      });
-    }
-    await expect(list).toBeVisible({ timeout: 1000 });
-  }).toPass({ timeout: 10_000 });
+  await clickOverGuest(
+    window,
+    () => window.click('#e2e-identity-selector .publisher-identity-selector-btn', { timeout: 1000 }),
+    () => list.isVisible()
+  );
   const box = await window.locator('#e2e-identity-selector').boundingBox();
   await window.screenshot({
     path: '/tmp/publisher-identity-unavailable.png',
