@@ -9,11 +9,15 @@
  *
  * So a spec has to be in one of two places:
  *
- * - referenced by a workflow: `test-e2e/<path>.spec.js` outside a comment
- *   (whole-line or trailing ` # ...`, including a `#` line inside a folded
- *   `run: >-` block, which the shell sees mid-line) in any
- *   `.github/workflows/*.yml`, or inside a `package.json` script a
- *   workflow runs with `npm run <script>` (e.g. `test:e2e:screenshots`);
+ * - run by a workflow: `test-e2e/<path>.spec.js` as an argument of a
+ *   Playwright command — `[npx] playwright test …`, or `npm run <script> …`
+ *   where the package.json script is a `playwright test` run (a spec baked
+ *   into the script counts too, e.g. `test:e2e:screenshots`) — in a `run:`
+ *   step of any `.github/workflows/*.yml`, outside a comment (whole-line or
+ *   trailing ` # ...`, including a `#` line inside a folded `run: >-` block,
+ *   which the shell sees mid-line). The same path in a step name, an
+ *   `env:`/`with:` value, a `paths:` filter, a gate's `grep -E` pattern or an
+ *   `echo` runs nothing and does not count;
  * - on the not-in-CI list: a `# e2e-not-in-ci: <name>.spec.js — <reason>`
  *   comment line in `ci.yml`, next to the jobs, where a reader of the
  *   workflow sees the gap.
@@ -31,8 +35,6 @@ const workflowDir = path.join(repoRoot, '.github', 'workflows');
 const ciPath = path.join(workflowDir, 'ci.yml');
 const e2eDir = path.join(repoRoot, 'test-e2e');
 
-// `<path>` is relative to test-e2e/ and may name subdirectories.
-const SPEC_REF = /test-e2e\/((?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.spec\.js)/g;
 const SKIP_LINE = /^\s*#\s*e2e-not-in-ci:\s*(\S+)\s*(?:—|--?)\s*(.*)$/;
 
 // Mirrors the harness project's testMatch in playwright.config.js: any
@@ -95,17 +97,23 @@ const fold = (lines) => {
   return out;
 };
 
-/** Workflow text as the shell sees it: comments gone, folded blocks folded. */
-const stripComments = (text) => {
+/**
+ * The shell scripts of every `run:` step in a workflow, as the shell sees
+ * them: comments gone, folded blocks folded. Nothing else in the file is
+ * shell — a `name:`, an `env:`/`with:` value or a `paths:` filter can spell a
+ * spec path without anything ever running it — so only `run:` values come
+ * back, one string per step.
+ */
+const runScripts = (text) => {
   const lines = text.split('\n');
-  const out = [];
+  const scripts = [];
   for (let i = 0; i < lines.length; i++) {
     const header = lines[i].match(BLOCK_SCALAR);
     if (!header) {
-      out.push(stripLineComment(lines[i]));
+      const inline = lines[i].match(/^\s*(?:-\s+)?run:\s*(.*)$/);
+      if (inline) scripts.push(stripLineComment(inline[1]));
       continue;
     }
-    out.push(stripLineComment(lines[i]));
     // Content is every following line indented past the key (or empty).
     const keyColumn = lines[i].indexOf(header[2]);
     const body = [];
@@ -114,34 +122,113 @@ const stripComments = (text) => {
       (lines[i + 1].trim() === '' || lines[i + 1].search(/\S/) > keyColumn)
     )
       body.push(lines[++i]);
+    if (header[2] !== 'run') continue;
     while (body.length && body[body.length - 1].trim() === '') body.pop();
     const nonEmpty = body.filter((l) => l.trim() !== '');
     const indent = nonEmpty.length ? Math.min(...nonEmpty.map((l) => l.search(/\S/))) : 0;
     const content = body.map((l) => (l.trim() === '' ? '' : l.slice(indent)));
     const shellLines = header[3] === '>' ? fold(content).split('\n') : content;
-    out.push(...shellLines.map(stripLineComment));
+    scripts.push(shellLines.map(stripLineComment).join('\n'));
   }
-  return out.join('\n');
+  return scripts;
 };
 
-// live/, packaged/ and packaged-live/ specs are referenced by other jobs; they
-// are not this guard's concern.
-const specRefsIn = (text) => [...text.matchAll(SPEC_REF)].map((m) => m[1]).filter(isHarnessPath);
+/**
+ * The simple commands in a shell script, each as a list of words. A line
+ * ending in a bare `\` continues onto the next (after a trailing comment has
+ * been cut, `\ ` is an escaped space, not a continuation — bash agrees), and
+ * `;`, `&`, `&&`, `|` and `||` end a command. Quotes are only peeled off
+ * whole words; a spec path inside a longer quoted word (a grep pattern's
+ * `a|test-e2e/x.spec.js`) never becomes a word of its own.
+ */
+const shellCommands = (script) =>
+  script
+    .replace(/\\\n/g, ' ')
+    .split(/\n|;|&&?|\|\|?/)
+    .map((cmd) =>
+      cmd
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((w) => w.replace(/^(['"])(.*)\1$/, '$2'))
+    )
+    .filter((words) => words.length);
 
-/** spec name → where it is referenced, across every workflow. */
+// `<path>` is relative to test-e2e/ and may name subdirectories.
+const SPEC_WORD = /^test-e2e\/((?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.spec\.js)$/;
+
+/**
+ * Specs a script hands to Playwright: words after `playwright test` (bare or
+ * under `npx`) or after `npm run <script>` where that package.json script is
+ * itself a Playwright run — plus any spec baked into that script. The command
+ * word has to be the runner, so an `echo`/`grep`/`test -f` naming a spec does
+ * not count; only env assignments, `xvfb-run` and its flags, and the shell's
+ * `then`/`else`/`do` may come before it. A run pinned to projects that do not
+ * include `harness` does not run a harness spec either. Anything this does not
+ * recognise counts as not run, so an unfamiliar spelling fails the guard
+ * rather than passing a spec no job runs.
+ */
+const leadingWords = (words) => {
+  let i = 0;
+  for (;;) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i] || '')) i++;
+    else if (['then', 'else', 'do'].includes(words[i])) i++;
+    else if (words[i] === 'xvfb-run') {
+      i++;
+      while (/^-/.test(words[i] || '')) i++;
+    } else return i;
+  }
+};
+
+/** The arguments a command hands to `playwright test`, or null if it is not a Playwright run. */
+const playwrightArgs = (words, npmScripts, depth = 0) => {
+  let i = leadingWords(words);
+  if (words[i] === 'npx') i++;
+  if (words[i] === 'playwright' && words[i + 1] === 'test') return words.slice(i + 2);
+  if (words[i] === 'npm' && words[i + 1] === 'run' && depth < 3) {
+    const body = npmScripts[words[i + 2]];
+    if (typeof body !== 'string') return null;
+    for (const inner of shellCommands(body)) {
+      const args = playwrightArgs(inner, npmScripts, depth + 1);
+      // `npm run x -- a b` appends a b to the script's own words.
+      if (args) return [...args, ...words.slice(i + 3)];
+    }
+  }
+  return null;
+};
+
+const runSpecsIn = (script, npmScripts = {}) => {
+  const specs = [];
+  for (const words of shellCommands(script)) {
+    const args = playwrightArgs(words, npmScripts);
+    if (!args) continue;
+    const projects = [];
+    args.forEach((w, k) => {
+      const m = w.match(/^--project(?:=(.*))?$/);
+      if (m) projects.push(m[1] ?? args[k + 1]);
+    });
+    if (projects.length && !projects.includes('harness')) continue;
+    for (const w of args) {
+      const m = w.match(SPEC_WORD);
+      if (m && isHarnessPath(m[1])) specs.push(m[1]);
+    }
+  }
+  return specs;
+};
+
+/** spec name → where it is run, across every workflow. */
 const referencedSpecs = () => {
-  const scripts = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).scripts;
+  const npmScripts = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')
+  ).scripts;
   const refs = new Map();
-  const add = (spec, where) => {
-    if (!refs.has(spec)) refs.set(spec, []);
-    refs.get(spec).push(where);
-  };
   for (const file of fs.readdirSync(workflowDir).filter((f) => /\.ya?ml$/.test(f))) {
-    const text = stripComments(fs.readFileSync(path.join(workflowDir, file), 'utf8'));
-    for (const spec of specRefsIn(text)) add(spec, file);
-    for (const [, script] of text.matchAll(/npm run ([A-Za-z0-9:_-]+)/g)) {
-      for (const spec of specRefsIn(scripts[script] || ''))
-        add(spec, `${file} → npm run ${script}`);
+    const text = fs.readFileSync(path.join(workflowDir, file), 'utf8');
+    for (const script of runScripts(text)) {
+      for (const spec of runSpecsIn(script, npmScripts)) {
+        if (!refs.has(spec)) refs.set(spec, []);
+        refs.get(spec).push(file);
+      }
     }
   }
   return refs;
@@ -196,55 +283,91 @@ describe('harness e2e specs in CI', () => {
 });
 
 describe('the guard parsers', () => {
+  // Specs a workflow text runs, the way referencedSpecs() reads a file.
+  const NPM = {
+    'test:e2e': 'playwright test --project=harness',
+    'test:e2e:live': 'playwright test --project=live',
+    'test:e2e:shots': 'FOO=1 playwright test --project=harness test-e2e/shots.spec.js',
+    lint: 'eslint test-e2e/lint.spec.js',
+  };
+  const runs = (text) => runScripts(text).flatMap((script) => runSpecsIn(script, NPM));
+
   it('drops whole-line and trailing comments, keeps real references', () => {
-    const refs = specRefsIn(
-      stripComments(
-        [
-          '# test-e2e/a.spec.js is prose',
-          'run: npx playwright test test-e2e/b.spec.js \\',
-          '  test-e2e/c.spec.js \\  # test-e2e/d.spec.js',
-          '  key: value # test-e2e/e.spec.js',
-          '  url: https://x.test/#test-e2e/f.spec.js',
-        ].join('\n')
-      )
+    const refs = runs(
+      [
+        '# run: npx playwright test test-e2e/a.spec.js is prose',
+        '        run: |',
+        '          npx playwright test test-e2e/b.spec.js \\',
+        '            test-e2e/c.spec.js \\',
+        '            test-e2e/g.spec.js # test-e2e/d.spec.js',
+        '          npx playwright test test-e2e/h.spec.js \\  # cut: \\ is now an escaped space',
+        '            test-e2e/i.spec.js',
+        '        with:',
+        '          key: value # test-e2e/e.spec.js',
+      ].join('\n')
     );
-    expect(refs).toEqual(['b.spec.js', 'c.spec.js', 'f.spec.js']);
+    expect(refs).toEqual(['b.spec.js', 'c.spec.js', 'g.spec.js', 'h.spec.js']);
+  });
+
+  it('counts only specs handed to a Playwright command in a `run:` step', () => {
+    const refs = runs(
+      [
+        '      - name: npx playwright test test-e2e/name.spec.js',
+        '        run: xvfb-run -a npm run test:e2e -- test-e2e/a.spec.js',
+        '        env:',
+        '          SPEC: test-e2e/env.spec.js',
+        '        with:',
+        '          path: test-e2e/with.spec.js',
+        '      - run: npm run test:e2e:shots',
+        '      - run: npm run lint -- test-e2e/lint2.spec.js',
+        '      - run: npm run test:e2e:live -- test-e2e/live-project.spec.js',
+        '      - run: npx playwright test --project harness test-e2e/b.spec.js',
+        '      - run: echo npx playwright test test-e2e/echo.spec.js',
+        '      - name: gate',
+        '        run: |',
+        '          changed="$(git diff --name-only)"',
+        '          if echo "$changed" | grep -E \'^(src/|test-e2e/grep.spec.js)\' >/dev/null; then',
+        '            echo "changed=true test-e2e/out.spec.js" >> "$GITHUB_OUTPUT"',
+        '          fi',
+        '          test -f test-e2e/testf.spec.js && npx playwright test test-e2e/c.spec.js',
+        '          if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a npm run test:e2e -- test-e2e/d.spec.js; fi',
+        '    paths:',
+        "      - 'test-e2e/paths.spec.js'",
+      ].join('\n')
+    );
+    expect(refs).toEqual(['a.spec.js', 'shots.spec.js', 'b.spec.js', 'c.spec.js', 'd.spec.js']);
   });
 
   it('folds a `>-` block before cutting comments: specs after a `#` line are not run', () => {
     // The shell sees `... settings.spec.js a.spec.js # note b.spec.js c.spec.js`.
-    const folded = specRefsIn(
-      stripComments(
-        [
-          '      - name: Run settings E2E',
-          '        run: >-',
-          '          xvfb-run -a npm run test:e2e --',
-          '          test-e2e/a.spec.js',
-          '          # b needs the synthetic checkpoint states',
-          '          test-e2e/b.spec.js',
-          '          test-e2e/c.spec.js',
-          '      - name: next',
-          '        run: npx playwright test test-e2e/d.spec.js',
-        ].join('\n')
-      )
+    const folded = runs(
+      [
+        '      - name: Run settings E2E',
+        '        run: >-',
+        '          xvfb-run -a npm run test:e2e --',
+        '          test-e2e/a.spec.js',
+        '          # b needs the synthetic checkpoint states',
+        '          test-e2e/b.spec.js',
+        '          test-e2e/c.spec.js',
+        '      - name: next',
+        '        run: npx playwright test test-e2e/d.spec.js',
+      ].join('\n')
     );
     expect(folded).toEqual(['a.spec.js', 'd.spec.js']);
 
     // In a literal `|` block the same `#` line is its own shell line and
     // leaves the next command alone.
-    const literal = specRefsIn(
-      stripComments(
-        [
-          '        run: |',
-          '          npx playwright test test-e2e/a.spec.js',
-          '          # b.spec.js runs in the next command',
-          '          npx playwright test test-e2e/b.spec.js # test-e2e/c.spec.js',
-          '        env:',
-          '          X: test-e2e/e.spec.js',
-        ].join('\n')
-      )
+    const literal = runs(
+      [
+        '        run: |',
+        '          npx playwright test test-e2e/a.spec.js',
+        '          # b.spec.js runs in the next command',
+        '          npx playwright test test-e2e/b.spec.js # test-e2e/c.spec.js',
+        '        env:',
+        '          X: test-e2e/e.spec.js',
+      ].join('\n')
     );
-    expect(literal).toEqual(['a.spec.js', 'b.spec.js', 'e.spec.js']);
+    expect(literal).toEqual(['a.spec.js', 'b.spec.js']);
   });
 
   it('folds the real e2e-settings job: a comment line there hides the specs after it', () => {
@@ -252,10 +375,29 @@ describe('the guard parsers', () => {
     const anchor = '          test-e2e/settings-adblock.spec.js\n';
     expect(ci).toContain(anchor);
     const mutated = ci.replace(anchor, `${anchor}          # myotis-recovery needs checkpoints\n`);
-    const refs = new Set(specRefsIn(stripComments(mutated)));
+    const refs = new Set(runs(mutated));
     expect(refs.has('settings-adblock.spec.js')).toBe(true);
     expect(refs.has('myotis-recovery.spec.js')).toBe(false);
-    expect(new Set(specRefsIn(stripComments(ci))).has('myotis-recovery.spec.js')).toBe(true);
+    expect(new Set(runs(ci)).has('myotis-recovery.spec.js')).toBe(true);
+  });
+
+  it('does not count a spec dropped from its job but named in the gate grep pattern', () => {
+    // R3-M1: the spec leaves e2e-chrome and survives only as text in the
+    // renderer-changed gate's `grep -E` path pattern — it runs nowhere.
+    const ci = fs.readFileSync(ciPath, 'utf8');
+    const job = '            test-e2e/private-tab-color.spec.js \\\n';
+    const gate = "grep -E '^(src/renderer/|";
+    expect(ci).toContain(job);
+    expect(ci).toContain(gate);
+    const mutated = ci
+      .replace(job, '')
+      .replace(
+        gate,
+        `${gate}test-e2e/private-tab-color\\.spec\\.js|test-e2e/private-tab-color.spec.js|`
+      );
+    expect(mutated).toContain('|test-e2e/private-tab-color.spec.js|');
+    expect(new Set(runs(ci)).has('private-tab-color.spec.js')).toBe(true);
+    expect(new Set(runs(mutated)).has('private-tab-color.spec.js')).toBe(false);
   });
 
   it('matches the harness project testMatch, subdirectories included', () => {
@@ -267,9 +409,9 @@ describe('the guard parsers', () => {
     expect(isHarnessPath('packaged-live/nodes.spec.js')).toBe(false);
     expect(isHarnessPath('wallet/live/x.spec.js')).toBe(false);
     expect(isHarnessPath('fixtures.js')).toBe(false);
-    expect(specRefsIn('test-e2e/wallet/new.spec.js test-e2e/live/adblock.spec.js')).toEqual([
-      'wallet/new.spec.js',
-    ]);
+    expect(
+      runSpecsIn('npx playwright test test-e2e/wallet/new.spec.js test-e2e/live/adblock.spec.js')
+    ).toEqual(['wallet/new.spec.js']);
   });
 
   it('walks subdirectories and skips the other projects', () => {
