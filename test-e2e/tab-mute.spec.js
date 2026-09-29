@@ -6,11 +6,27 @@ const { test, expect } = require('./fixtures');
 // Right-click a tab and click a context-menu action, then run `verify`.
 // Retried as a unit: a stray window blur (e.g. the previous Electron
 // instance releasing OS focus) can close the menu between the right-click
-// and the item click, turning the click into a no-op.
+// and the item click, turning the click into a no-op. The same focus churn
+// can also swallow the item click while the menu stays *open* (observed
+// under load: no pointer event reached the page at all), and then the open
+// menu's `#menu-backdrop` intercepts the next attempt's right-click for the
+// rest of the retry budget — so a retry first dismisses a menu left up, and
+// skips the (toggling) action if the previous attempt did land after all.
 async function clickTabContextAction(window, tabLocator, action, verify) {
+  const menu = window.locator('#tab-context-menu');
+  let attempt = 0;
   await expect(async () => {
+    attempt += 1;
+    if (attempt > 1) {
+      if (await menu.isVisible()) await window.keyboard.press('Escape');
+      await expect(menu).toBeHidden({ timeout: 1000 });
+      const landed = await verify().then(
+        () => true,
+        () => false
+      );
+      if (landed) return;
+    }
     await tabLocator.click({ button: 'right' });
-    const menu = window.locator('#tab-context-menu');
     await expect(menu).toBeVisible({ timeout: 1000 });
     await menu.locator(`[data-action="${action}"]`).click({ timeout: 1000 });
     await verify();

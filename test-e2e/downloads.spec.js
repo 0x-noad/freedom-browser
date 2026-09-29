@@ -183,8 +183,17 @@ test('a card dismissed mid-download stays dismissed', async ({ window }) => {
   await expect(cards).toHaveCount(1);
   await expect(cards.locator('[data-test="download-cancel"]')).toBeVisible();
 
-  await cards.locator('[data-test="download-close"]').click();
-  expect(await cardCount()).toBe(0);
+  // Re-clicked only while the card is still up: on a loaded runner the window
+  // focus churn of a fresh app instance can swallow a click outright (no
+  // pointer event reaches the page, and the × removes the card synchronously
+  // when one does). Safe to retry *here*, unlike the checks below: a
+  // progressing card has no auto-dismiss timer to go green on.
+  await expect(async () => {
+    if ((await cardCount()) > 0) {
+      await cards.locator('[data-test="download-close"]').click({ timeout: 1000 });
+    }
+    expect(await cardCount()).toBe(0);
+  }).toPass({ timeout: 10_000 });
 
   // The next progress ticks are ignored — this is the quarter-second the card
   // used to come back in.
