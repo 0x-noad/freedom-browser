@@ -613,12 +613,14 @@ jobs:
           # GitHub's API; the token avoids its anonymous rate limit.
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Run settings E2E
+      - name: Run settings + internal-page E2E
         run: >-
           xvfb-run -a npm run test:e2e --
           test-e2e/settings.spec.js
           test-e2e/settings-adblock.spec.js
           test-e2e/myotis-recovery.spec.js
+          test-e2e/internal-pages-csp.spec.js
+          test-e2e/error-page.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -793,7 +795,8 @@ jobs:
             test-e2e/permissions.spec.js \
             test-e2e/external-protocol.spec.js \
             test-e2e/dweb-link-gesture.spec.js \
-            test-e2e/popup-blocker.spec.js
+            test-e2e/popup-blocker.spec.js \
+            test-e2e/ant-api-guard.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
