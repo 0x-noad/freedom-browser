@@ -3319,8 +3319,16 @@ export const initNavigation = () => {
               // same way as a same-tab navigation, AND named targets
               // reuse their existing tab instead of always opening a
               // new one.
+              //
+              // The preload only sends a new-tab disposition after main's
+              // popup blocker let it through (popup-blocker.js, #442); a
+              // gesture-less named-target reuse arrives as
+              // `popups:blocked` instead (popup-blocker-ui.js).
+              // `openerTabId` records which tab opened the named tab, which
+              // is what scopes that gesture-less reuse.
               openInNewTabWithTarget(url, namedTarget, {
                 background: disposition === 'newBackgroundTab',
+                ...(typeof data.tabId === 'number' ? { openerTabId: data.tabId } : {}),
               });
             } else {
               // Same-tab link click: a page-driven commit, so it must not

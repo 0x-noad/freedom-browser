@@ -505,11 +505,46 @@ const handleDwebLinkActivation = (event) => {
   }
 
   event.preventDefault();
-  ipcRenderer.sendToHost('link:navigate', {
+  const payload = { url: href, disposition, target: target || null };
+  if (disposition === 'currentTab') {
+    // A same-tab link needs no gesture: it is no more than the page setting
+    // `location`.
+    ipcRenderer.sendToHost('link:navigate', payload);
+    return;
+  }
+
+  // A new tab or window is a popup, and goes through the same popup blocker
+  // Chromium's own window-open path does (src/main/popup-blocker.js, #442):
+  // it needs a user gesture on this tab within the last 5 s — consumed, so
+  // one gesture opens one tab — or the site's "Always allow pop-ups".
+  // The event is cancelled either way, or Chromium would open the tab itself
+  // through setWindowOpenHandler (lowercasing a CIDv0 host on the way).
+  //
+  // Main decides, not this preload: it tracks the guest's trusted input and
+  // spends one budget for every popup and external-app launch, so a click
+  // that opened a dweb tab cannot also pay for a `window.open` (or the other
+  // way round), and a scripted `anchor.click()` gets exactly what a scripted
+  // `window.open` would. A blocked popup is reported to the tab's window by
+  // main (the address-bar "Pop-up blocked" icon), so nothing is sent here.
+  //
+  // A plain named-target link (`target="viewer"`) is marked `reuseOnly`: if
+  // it is blocked, the host may still re-navigate the tab that already
+  // carries that name, in place and without switching to it — Chromium needs
+  // no gesture to navigate an existing named browsing context, only to
+  // create one. The host scopes that to the tab that opened the named tab
+  // (tabs.js `namedTargetOpeners`), so an unrelated site in another tab
+  // can't re-navigate it by name.
+  const reuseOnly = disposition === 'newTab' && isNamedTarget && !wantsNewTab && !event.shiftKey;
+  const claim = ipcRenderer.invoke('popups:claim', {
     url: href,
-    disposition,
-    target: target || null,
+    targetName: isNamedTarget ? target : null,
+    reuseOnly,
   });
+  Promise.resolve(claim)
+    .then((allowed) => {
+      if (allowed === true) ipcRenderer.sendToHost('link:navigate', payload);
+    })
+    .catch(() => {});
 };
 
 document.addEventListener('click', handleDwebLinkActivation, true);
@@ -1291,7 +1326,10 @@ try {
 
   // PRIVATE MODE GUARD (providers): window.swarm is not injected in
   // private windows — same policy as window.ethereum above.
-  if (!IS_PRIVATE_WINDOW) {
+  // Internal pages don't get it either: they talk to main through freedomAPI,
+  // and their CSP (`script-src 'self'`, #432) refuses this inline <script>, so
+  // injecting it there would only log a violation.
+  if (!IS_PRIVATE_WINDOW && !isInternalPage()) {
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', injectSwarm, { once: true });
     } else {
@@ -1455,7 +1493,8 @@ try {
 
   // PRIVATE MODE GUARD (providers): window.radicle is not injected in
   // private windows — same policy as window.ethereum / window.swarm above.
-  if (!IS_PRIVATE_WINDOW) {
+  // Skipped on internal pages for the same reason as window.swarm (#432).
+  if (!IS_PRIVATE_WINDOW && !isInternalPage()) {
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', injectRadicle, { once: true });
     } else {

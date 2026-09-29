@@ -73,6 +73,43 @@ describe('external-protocol', () => {
     }
   });
 
+  // docs/security-audit-electron.md, O-9: a link to a network share makes the
+  // OS connect to an attacker-chosen server (on Windows, with the user's NTLM
+  // hash); a settings/installer scheme opens a system pane. None may ever get
+  // a prompt, let alone a launch.
+  test('network-share, directory-service and OS-settings schemes are refused outright', async () => {
+    const { mod, shell } = load({ appName: 'Some Handler' });
+    const blocked = [
+      'smb://attacker.example/share',
+      'SMB://attacker.example/share',
+      'cifs://attacker.example/share',
+      'nfs://attacker.example/export',
+      'afp://attacker.example/vol',
+      'webdav://attacker.example/dav',
+      'webdavs://attacker.example/dav',
+      'dav://attacker.example/dav',
+      'davs://attacker.example/dav',
+      'ftp://attacker.example/pub',
+      'ftps://attacker.example/pub',
+      'sftp://attacker.example/home',
+      'ldap://attacker.example/dc=x',
+      'ldaps://attacker.example/dc=x',
+      'ms-settings:network-proxy',
+      'x-apple.systempreferences:com.apple.preference.security',
+      'itms-services://?action=download-manifest&url=https://attacker.example/m.plist',
+      'file://attacker.example/share/x',
+    ];
+    for (const url of blocked) {
+      expect([url, mod.permissionKeyForExternalUrl(url)]).toEqual([url, null]);
+      // Typed into the address bar, it is refused rather than launched too.
+      await expect(mod.openFromAddressBar(url)).resolves.toEqual({
+        opened: false,
+        reason: expect.stringMatching(/^(blocked|not-external)$/),
+      });
+    }
+    expect(shell.openExternal).not.toHaveBeenCalled();
+  });
+
   test('isExternalProtocolUrl counts dangerous OS schemes as external but not browser ones', () => {
     const { mod } = load();
     expect(mod.isExternalProtocolUrl('magnet:?xt=x')).toBe(true);
@@ -122,6 +159,100 @@ describe('external-protocol', () => {
     expect(mod.consumeUserGesture(contents, Date.now() + mod.USER_GESTURE_WINDOW_MS + 1)).toBe(
       false
     );
+  });
+
+  // #442: one press stamps the gesture once, on the event Chromium grants
+  // activation on; the popup blocker spends the same gesture.
+  test('only activating input counts, and one press does not re-arm a spent gesture', () => {
+    const { mod } = load();
+    expect(mod.isActivatingInput({ type: 'mouseDown' })).toBe(true);
+    expect(mod.isActivatingInput({ type: 'rawKeyDown', key: 'a' })).toBe(true);
+    expect(mod.isActivatingInput({ type: 'keyDown', key: 'Enter' })).toBe(true);
+    expect(mod.isActivatingInput({ type: 'touchEnd' })).toBe(true);
+    for (const input of [
+      { type: 'mouseUp' },
+      { type: 'mouseMove' },
+      { type: 'mouseWheel' },
+      { type: 'char', key: 'a' },
+      { type: 'keyUp', key: 'a' },
+      { type: 'rawKeyDown', key: 'Escape' },
+      { type: 'rawKeyDown', key: 'Shift' },
+      { type: 'keyDown', key: 'Meta' },
+      { type: 'touchStart' },
+      { type: 'gestureTap' },
+      null,
+    ]) {
+      expect(mod.isActivatingInput(input)).toBe(false);
+    }
+
+    const contents = new EventEmitter();
+    mod.trackUserGestures(contents);
+    contents.emit('input-event', {}, { type: 'mouseDown' });
+    expect(mod.consumeUserGesture(contents)).toBe(true);
+    contents.emit('input-event', {}, { type: 'mouseUp' });
+    expect(mod.consumeUserGesture(contents)).toBe(false);
+  });
+
+  // A touch that becomes a scroll/pinch ends in pointercancel in Chromium and
+  // grants nothing, though the raw touchEnd still arrives. Event sequences
+  // are the ones probed on Electron 44 (see TOUCH_TURNED_GESTURE).
+  test('a touch tap stamps the gesture; a touch that became a scroll does not', () => {
+    const { mod } = load();
+    const contents = new EventEmitter();
+    mod.trackUserGestures(contents);
+    const feed = (types) => types.forEach((type) => contents.emit('input-event', {}, { type }));
+
+    // A tap, with a few px of jitter.
+    feed(['touchStart', 'gestureTapDown', 'touchMove', 'touchMove', 'touchEnd', 'gestureTap']);
+    expect(mod.consumeUserGesture(contents)).toBe(true);
+
+    // A swipe that scrolled.
+    feed([
+      'touchStart',
+      'gestureTapDown',
+      'touchMove',
+      'gestureTapCancel',
+      'gestureScrollBegin',
+      'touchScrollStarted',
+      'gestureScrollUpdate',
+      'touchMove',
+      'touchEnd',
+      'gestureFlingStart',
+      'gestureScrollEnd',
+    ]);
+    expect(mod.consumeUserGesture(contents)).toBe(false);
+
+    // A pinch, and a cancelled touch.
+    feed(['touchStart', 'gesturePinchBegin', 'touchEnd']);
+    expect(mod.consumeUserGesture(contents)).toBe(false);
+    feed(['touchStart', 'touchCancel', 'touchEnd']);
+    expect(mod.consumeUserGesture(contents)).toBe(false);
+
+    // The next plain tap after a scroll counts again.
+    feed(['touchStart', 'touchEnd']);
+    expect(mod.consumeUserGesture(contents)).toBe(true);
+  });
+
+  // Chromium's transient activation does not survive a cross-document
+  // navigation: input on page A must not pay for a popup page B opens on load.
+  test('a main-frame document commit clears the gesture; a same-document one does not', () => {
+    const { mod } = load();
+    const contents = new EventEmitter();
+    mod.trackUserGestures(contents);
+
+    contents.emit('input-event', {}, { type: 'mouseDown' });
+    contents.emit('did-navigate', {}, 'https://b.example/');
+    expect(mod.consumeUserGesture(contents)).toBe(false);
+
+    contents.emit('input-event', {}, { type: 'mouseDown' });
+    contents.emit('did-navigate-in-page', {}, 'https://b.example/#x', true);
+    contents.emit('did-frame-navigate', {}, 'https://ad.example/', 200, 'OK', false);
+    expect(mod.consumeUserGesture(contents)).toBe(true);
+
+    // Input on the new document counts as usual.
+    contents.emit('did-navigate', {}, 'https://c.example/');
+    contents.emit('input-event', {}, { type: 'keyDown', key: 'Enter' });
+    expect(mod.consumeUserGesture(contents)).toBe(true);
   });
 
   test('launchExternal hands the escaped URL to shell.openExternal', async () => {
