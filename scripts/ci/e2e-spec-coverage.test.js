@@ -9,11 +9,15 @@
  *
  * So a spec has to be in one of two places:
  *
- * - run by a workflow: `test-e2e/<path>.spec.js` as an argument of a
- *   Playwright command — `[npx] playwright test …`, or `npm run <script> …`
- *   where the package.json script is a `playwright test` run (a spec baked
- *   into the script counts too, e.g. `test:e2e:screenshots`) — in a `run:`
- *   step of any `.github/workflows/*.yml`, outside a comment (whole-line or
+ * - run by a pull-request workflow: `test-e2e/<path>.spec.js` as an argument
+ *   of a Playwright command — `[npx] playwright test …`, or `npm run
+ *   <script> …` where the package.json script is a `playwright test` run (a
+ *   spec baked into the script counts too, e.g. `test:e2e:screenshots`) — in
+ *   a `run:` step of a `.github/workflows/*.yml` that triggers on
+ *   `pull_request`. A workflow that only runs on a tag push, a schedule or a
+ *   manual dispatch (`release.yml`'s nightly) never gates a merge, so a spec
+ *   that runs only there ships its regressions green exactly like an unrun
+ *   one. The reference has to sit outside a comment (whole-line or
  *   trailing ` # ...`, including a `#` line inside a folded `run: >-` block,
  *   which the shell sees mid-line). The same path in a step name, an
  *   `env:`/`with:` value, a `paths:` filter, a gate's `grep -E` pattern or an
@@ -216,14 +220,54 @@ const runSpecsIn = (script, npmScripts = {}) => {
   return specs;
 };
 
-/** spec name → where it is run, across every workflow. */
-const referencedSpecs = () => {
-  const npmScripts = JSON.parse(
-    fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')
-  ).scripts;
+/**
+ * The event names in a workflow's top-level `on:` — `on: pull_request`,
+ * `on: [push, pull_request]`, or a block of `event:` keys (the key may be
+ * quoted, since YAML 1.1 reads a bare `on` as a boolean).
+ */
+const workflowEvents = (text) => {
+  const lines = text.split('\n');
+  const at = lines.findIndex((l) => /^(?:on|'on'|"on"):/.test(l));
+  if (at === -1) return [];
+  const inline = stripLineComment(lines[at].replace(/^[^:]*:/, '')).trim();
+  if (inline)
+    return inline
+      .replace(/^\[|\]$/g, '')
+      .split(',')
+      .map((e) => e.trim().replace(/^(['"])(.*)\1$/, '$2'))
+      .filter(Boolean);
+  const events = [];
+  let indent;
+  for (const line of lines.slice(at + 1)) {
+    if (/^\S/.test(line)) break; // next top-level key
+    const m = line.match(/^( +)(['"]?)([A-Za-z_]+)\2:/);
+    // Only keys at the block's first indentation level are events.
+    if (m && (indent === undefined || m[1].length === indent)) {
+      indent = m[1].length;
+      events.push(m[3]);
+    }
+  }
+  return events;
+};
+
+/** Whether a workflow runs on pull requests, i.e. can hold a regression back from `main`. */
+const gatesPullRequests = (text) => workflowEvents(text).includes('pull_request');
+
+/** Every workflow file, as `[file, text]`. */
+const readWorkflows = () =>
+  fs
+    .readdirSync(workflowDir)
+    .filter((f) => /\.ya?ml$/.test(f))
+    .map((f) => [f, fs.readFileSync(path.join(workflowDir, f), 'utf8')]);
+
+/** spec name → where it is run, across every pull-request workflow. */
+const referencedSpecs = (
+  workflows = readWorkflows(),
+  npmScripts = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).scripts
+) => {
   const refs = new Map();
-  for (const file of fs.readdirSync(workflowDir).filter((f) => /\.ya?ml$/.test(f))) {
-    const text = fs.readFileSync(path.join(workflowDir, file), 'utf8');
+  for (const [file, text] of workflows) {
+    if (!gatesPullRequests(text)) continue;
     for (const script of runScripts(text)) {
       for (const spec of runSpecsIn(script, npmScripts)) {
         if (!refs.has(spec)) refs.set(spec, []);
@@ -370,34 +414,118 @@ describe('the guard parsers', () => {
     expect(literal).toEqual(['a.spec.js', 'b.spec.js']);
   });
 
-  it('folds the real e2e-settings job: a comment line there hides the specs after it', () => {
-    const ci = fs.readFileSync(ciPath, 'utf8');
-    const anchor = '          test-e2e/settings-adblock.spec.js\n';
-    expect(ci).toContain(anchor);
-    const mutated = ci.replace(anchor, `${anchor}          # myotis-recovery needs checkpoints\n`);
-    const refs = new Set(runs(mutated));
-    expect(refs.has('settings-adblock.spec.js')).toBe(true);
-    expect(refs.has('myotis-recovery.spec.js')).toBe(false);
-    expect(new Set(runs(ci)).has('myotis-recovery.spec.js')).toBe(true);
+  // The two tests below mutate the real ci.yml, but locate what they mutate
+  // from its structure rather than from literal lines, so moving a spec to
+  // another job or reordering a list does not break them.
+  const ci = () => fs.readFileSync(ciPath, 'utf8');
+  const ciLines = () => ci().split('\n');
+
+  it('folds the real folded e2e job lists: a comment line there hides the specs after it', () => {
+    // Every `run: >` block in ci.yml with at least two spec lines: a `#` line
+    // after its first spec must hide every spec listed after it.
+    const lines = ciLines();
+    const blocks = [];
+    lines.forEach((line, i) => {
+      const header = line.match(BLOCK_SCALAR);
+      if (!header || header[2] !== 'run' || header[3] !== '>') return;
+      const keyColumn = line.indexOf('run');
+      const specLines = [];
+      for (let j = i + 1; j < lines.length; j++) {
+        if (lines[j].trim() !== '' && lines[j].search(/\S/) <= keyColumn) break;
+        const m = lines[j].match(/^\s*test-e2e\/(\S+\.spec\.js)\s*$/);
+        if (m) specLines.push([j, m[1]]);
+      }
+      if (specLines.length >= 2) blocks.push(specLines);
+    });
+    for (const [[first, firstSpec], ...rest] of blocks) {
+      const indent = lines[first].match(/^\s*/)[0];
+      const mutated = [...lines];
+      mutated.splice(first + 1, 0, `${indent}# a note between the specs`);
+      const before = new Set(runs(lines.join('\n')));
+      const after = new Set(runs(mutated.join('\n')));
+      expect(after.has(firstSpec)).toBe(true);
+      for (const [, spec] of rest) {
+        expect(before.has(spec)).toBe(true);
+        // Unless another job also runs it, the spec is now run nowhere.
+        const elsewhere = lines.filter((l) => l.includes(`test-e2e/${spec}`)).length > 1;
+        if (!elsewhere) expect(after.has(spec)).toBe(false);
+      }
+    }
   });
 
   it('does not count a spec dropped from its job but named in the gate grep pattern', () => {
-    // R3-M1: the spec leaves e2e-chrome and survives only as text in the
-    // renderer-changed gate's `grep -E` path pattern — it runs nowhere.
-    const ci = fs.readFileSync(ciPath, 'utf8');
-    const job = '            test-e2e/private-tab-color.spec.js \\\n';
-    const gate = "grep -E '^(src/renderer/|";
-    expect(ci).toContain(job);
-    expect(ci).toContain(gate);
-    const mutated = ci
-      .replace(job, '')
-      .replace(
-        gate,
-        `${gate}test-e2e/private-tab-color\\.spec\\.js|test-e2e/private-tab-color.spec.js|`
-      );
-    expect(mutated).toContain('|test-e2e/private-tab-color.spec.js|');
-    expect(new Set(runs(ci)).has('private-tab-color.spec.js')).toBe(true);
-    expect(new Set(runs(mutated)).has('private-tab-color.spec.js')).toBe(false);
+    // R3-M1: the spec leaves its job and survives only as text in a gate's
+    // `grep -E` path pattern — it runs nowhere.
+    const lines = ciLines();
+    // Any spec run exactly once in ci.yml, from a list line of its own.
+    const runOnce = [...referencedSpecs([['ci.yml', ci()]])].filter(([, f]) => f.length === 1);
+    const pick = runOnce
+      .map(([spec]) => [
+        spec,
+        lines.findIndex((l) =>
+          new RegExp(`^\\s*test-e2e/${spec.replace(/\./g, '\\.')}\\s*(\\\\)?\\s*$`).test(l)
+        ),
+      ])
+      .find(([, at]) => at !== -1);
+    expect(pick).toBeDefined();
+    const [spec, at] = pick;
+    const mutated = [...lines];
+    // Dropping a list's last entry leaves the previous line's `\` dangling;
+    // move the continuation off it so the command still ends where it did.
+    if (!/\\\s*$/.test(mutated[at]) && /\\\s*$/.test(mutated[at - 1]))
+      mutated[at - 1] = mutated[at - 1].replace(/\s*\\\s*$/, '');
+    mutated.splice(at, 1);
+    // Name it in the gate's grep pattern, or in a stand-in gate step if
+    // ci.yml has none of that shape any more.
+    const gate = mutated.findIndex((l) => /grep -E '\^\(/.test(l));
+    const ref = `test-e2e/${spec}`;
+    if (gate !== -1) mutated[gate] = mutated[gate].replace("grep -E '^(", `grep -E '^(${ref}|`);
+    else mutated.push(`      - run: git diff --name-only | grep -E '^(${ref}|src/)'`);
+    const text = mutated.join('\n');
+    expect(text).toContain(ref);
+    expect(referencedSpecs([['ci.yml', ci()]]).has(spec)).toBe(true);
+    expect(referencedSpecs([['ci.yml', text]]).has(spec)).toBe(false);
+  });
+
+  it('counts only workflows that run on pull requests', () => {
+    // R4-M1: release.yml runs e2e only on a tag push or the nightly schedule;
+    // a spec that runs only there never gates a pull request.
+    const release = [
+      'on:',
+      '  push:',
+      "    tags: ['v*']",
+      '  schedule:',
+      "    - cron: '7 22 * * *'",
+      '  workflow_dispatch:',
+      '    inputs:',
+      '      pull_request:',
+      '        type: boolean',
+      'jobs:',
+      '  e2e-full:',
+      '    steps:',
+      '      - run: npm run test:e2e -- test-e2e/nightly.spec.js',
+    ].join('\n');
+    const pr = (on) =>
+      `${on}\njobs:\n  e2e:\n    steps:\n      - run: npx playwright test test-e2e/pr.spec.js\n`;
+    expect(workflowEvents(release)).toEqual(['push', 'schedule', 'workflow_dispatch']);
+    expect(workflowEvents(pr('on: pull_request'))).toEqual(['pull_request']);
+    expect(workflowEvents(pr("'on': [push, pull_request]"))).toEqual(['push', 'pull_request']);
+    expect(workflowEvents(pr('on:\n  pull_request:\n    branches: [main]'))).toEqual([
+      'pull_request',
+    ]);
+    const refs = referencedSpecs(
+      [
+        ['release.yml', release],
+        ['pr.yml', pr('on:\n  push:\n  pull_request:')],
+      ],
+      NPM
+    );
+    expect([...refs.keys()]).toEqual(['pr.spec.js']);
+    // The real ones: ci.yml gates pull requests, release.yml does not.
+    expect(gatesPullRequests(ci())).toBe(true);
+    const releaseYml = path.join(workflowDir, 'release.yml');
+    if (fs.existsSync(releaseYml))
+      expect(gatesPullRequests(fs.readFileSync(releaseYml, 'utf8'))).toBe(false);
   });
 
   it('matches the harness project testMatch, subdirectories included', () => {
