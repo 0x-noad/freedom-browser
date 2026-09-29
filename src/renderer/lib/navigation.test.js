@@ -3236,6 +3236,7 @@ describe('navigation', () => {
       await flushMicrotasks();
 
       expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, null, {
+        openerTabId: ctx.activeRef.tab.id,
         background: false,
       });
       expect(ctx.tabsMocks.createTab).not.toHaveBeenCalled();
@@ -3260,6 +3261,27 @@ describe('navigation', () => {
       await flushMicrotasks();
 
       expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, 'docs', {
+        openerTabId: ctx.activeRef.tab.id,
+        background: false,
+      });
+    });
+
+    test('ipc-message link:navigate never forwards a page-supplied reuseOnly', async () => {
+      // A gesture-less named-target reuse is decided by main's popup blocker
+      // and arrives as `popups:blocked` (#442); link:navigate is only sent
+      // for an open main allowed, so a reuseOnly flag on it is ignored.
+      const ctx = await setupEnsDispatch();
+      const rawHref = 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'link:navigate',
+        args: [{ url: rawHref, disposition: 'newTab', target: 'viewer', reuseOnly: true }],
+      });
+      await flushMicrotasks();
+
+      expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, 'viewer', {
+        openerTabId: ctx.activeRef.tab.id,
         background: false,
       });
     });
@@ -3280,6 +3302,7 @@ describe('navigation', () => {
       await flushMicrotasks();
 
       expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, null, {
+        openerTabId: ctx.activeRef.tab.id,
         background: false,
       });
     });
@@ -3299,6 +3322,7 @@ describe('navigation', () => {
       await flushMicrotasks();
 
       expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, null, {
+        openerTabId: ctx.activeRef.tab.id,
         background: true,
       });
       expect(ctx.electronAPI.openUrlInNewWindow).not.toHaveBeenCalled();

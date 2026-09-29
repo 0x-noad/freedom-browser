@@ -1,4 +1,5 @@
 const log = require('./logger');
+const path = require('path');
 const { BrowserWindow, app } = require('electron');
 const { activeBzzBases } = require('./state');
 const { cleanupWebContents: cleanupX402WebContents } = require('./x402/intercept');
@@ -6,6 +7,7 @@ const { cleanupAdblockWebContents } = require('./adblock/service');
 const { isPrivateWebContents, getPartitionForWebContents } = require('./private/private-windows');
 const { isExternalProtocolUrl, trackUserGestures } = require('./external-protocol');
 const { requestOpenExternal } = require('./permissions/permissions-manager');
+const { claimPopup, reportBlockedPopup } = require('./popup-blocker');
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -112,6 +114,61 @@ function ownerWindowOf(contents) {
   }
 }
 
+// The only preload a tab <webview> may run. tabs.js asks for it through
+// `internal:get-webview-preload-path`, which answers this same path.
+const WEBVIEW_PRELOAD_PATH = path.join(__dirname, 'webview-preload.js');
+
+// Guest preferences every tab <webview> gets regardless of what the embedder
+// asked for. tabs.js already requests these through the `webpreferences`
+// attribute, but that attribute is written by a renderer; the main process is
+// the only place a (compromised or buggy) chrome renderer cannot talk its way
+// past. Electron security checklist items 2-4, 6, 8, 9 and 12.
+const FORCED_WEBVIEW_PREFERENCES = Object.freeze({
+  nodeIntegration: false,
+  nodeIntegrationInWorker: false,
+  contextIsolation: true,
+  sandbox: true,
+  webSecurity: true,
+  allowRunningInsecureContent: false,
+  experimentalFeatures: false,
+  enableBlinkFeatures: undefined,
+});
+
+function hardenWebviewPreferences(webPreferences) {
+  for (const [key, value] of Object.entries(FORCED_WEBVIEW_PREFERENCES)) {
+    if (value === undefined) {
+      delete webPreferences[key];
+    } else {
+      webPreferences[key] = value;
+    }
+  }
+  // Pin the preload rather than trusting the path the renderer supplied: a
+  // guest that asked for a preload gets ours, never another file on disk.
+  if (webPreferences.preload || webPreferences.preloadURL) {
+    webPreferences.preload = WEBVIEW_PRELOAD_PATH;
+  }
+  delete webPreferences.preloadURL;
+}
+
+// The chrome renderer (index.html) holds the full privileged preload API, so
+// its top frame must never leave index.html: a link or HTML file dropped on
+// the window outside a <webview>, or any scripted navigation, would otherwise
+// load that content with `window.electronAPI` et al. attached. It never
+// navigates itself (tabs navigate inside their webviews) and never opens
+// windows of its own.
+function lockChromeWindow(contents, tag) {
+  const block = (event, url) => {
+    log.warn(`${tag} blocked chrome-window navigation: ${navUrlForLog(contents, url)}`);
+    event.preventDefault();
+  };
+  contents.on('will-navigate', block);
+  contents.on('will-redirect', block);
+  contents.setWindowOpenHandler?.(({ url }) => {
+    log.warn(`${tag} blocked chrome-window popup: ${navUrlForLog(contents, url)}`);
+    return { action: 'deny' };
+  });
+}
+
 function registerWebContentsHandlers() {
   app.on('web-contents-created', (_event, contents) => {
     contents.once('destroyed', () => {
@@ -139,8 +196,13 @@ function registerWebContentsHandlers() {
     // child frame's preload working IPC with it set; browsers and extensions
     // inject into every frame too (uBlock Origin's `all_frames`, Brave).
     contents.on('will-attach-webview', (_event, webPreferences) => {
+      hardenWebviewPreferences(webPreferences);
       webPreferences.nodeIntegrationInSubFrames = true;
     });
+
+    if (type === 'window') {
+      lockChromeWindow(contents, tag);
+    }
 
     // For webview contents, fix dark defaults and intercept navigation
     if (type === 'webview') {
@@ -196,12 +258,30 @@ function registerWebContentsHandlers() {
           });
           return { action: 'deny' };
         }
+        // Pass targetName for named link targets (e.g. target="mywindow")
+        // Skip special targets (_blank, _self, _parent, _top) - they should use default behavior
+        const isNamedTarget = !!frameName && !frameName.startsWith('_');
+        // Popup blocker (#442): a new tab needs a user gesture on this page
+        // (consumed, so one click opens one tab), or the site's "Always
+        // allow pop-ups"; Freedom's internal pages are exempt. A blocked one
+        // is reported to the tab's window for the address-bar icon. See
+        // popup-blocker.js.
+        const verdict = claimPopup(contents);
+        if (!verdict.allowed) {
+          log.info(`${tag} blocked popup without a user gesture: ${navUrlForLog(contents, url)}`);
+          reportBlockedPopup(contents, {
+            url,
+            targetName: isNamedTarget ? frameName : null,
+            // A plain named open (no modifier, not a sized popup) may still
+            // re-navigate a tab that already carries the name, as in Chrome.
+            reuseOnly: isNamedTarget && disposition === 'foreground-tab',
+            origin: verdict.origin,
+          });
+          return { action: 'deny' };
+        }
         // Send message to the owning BrowserWindow to open URL in new tab
         const parentWindow = ownerWindowOf(contents);
         if (parentWindow) {
-          // Pass targetName for named link targets (e.g. target="mywindow")
-          // Skip special targets (_blank, _self, _parent, _top) - they should use default behavior
-          const isNamedTarget = frameName && !frameName.startsWith('_');
           // Chromium already resolved the activation's modifiers into a
           // disposition: Ctrl/Cmd+click (and middle-click) give
           // `background-tab`, Shift+click and sized `window.open` popups give
@@ -214,6 +294,9 @@ function registerWebContentsHandlers() {
           parentWindow.webContents.send('tab:new-with-url', url, isNamedTarget ? frameName : null, {
             background: disposition === 'background-tab',
             newWindow: disposition === 'new-window',
+            // The opener, so the renderer can record which tab opened a named
+            // target (a later gesture-less reuse is scoped to it).
+            openerGuestId: contents.id,
           });
         }
         return { action: 'deny' };
@@ -283,4 +366,5 @@ function registerWebContentsHandlers() {
 
 module.exports = {
   registerWebContentsHandlers,
+  WEBVIEW_PRELOAD_PATH,
 };

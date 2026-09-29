@@ -141,6 +141,9 @@ function loadWebviewPreloadModule(options = {}) {
   global.location = location;
   global.navigator = {
     clipboard,
+    // `navigator.userActivation`, when a spec models one (the dweb-link
+    // new-tab gate reads `isActive`).
+    ...(options.userActivation ? { userActivation: options.userActivation } : {}),
   };
   // The theme bootstrap falls back to observing `document` when <html> does
   // not exist yet at document-start.
@@ -917,7 +920,7 @@ describe('webview-preload', () => {
     });
   });
 
-  test('forwards a named target so the renderer can reuse the named tab', () => {
+  test('forwards a named target so the renderer can reuse the named tab', async () => {
     // P3 from the round-4 review: without forwarding `target`, a
     // `<a target="docs" href="ipfs://...">` click hits the unconditional
     // newTab branch in the renderer and silently loses the named-tab
@@ -931,6 +934,8 @@ describe('webview-preload', () => {
         protocol: 'file:',
         pathname: '/app/pages/links.html',
       },
+      // Main's popup blocker lets it through (an internal page is exempt).
+      invokeResponses: { 'popups:claim': true },
     });
     const anchor = {
       tagName: 'A',
@@ -949,10 +954,12 @@ describe('webview-preload', () => {
       shiftKey: false,
       altKey: false,
       defaultPrevented: false,
+      isTrusted: true,
       preventDefault: jest.fn(),
     };
 
     documentCaptureHandlers.click(event);
+    await flushTimers();
 
     expect(event.preventDefault).toHaveBeenCalled();
     // Named target → newTab disposition (Chromium's window.open semantics
@@ -966,7 +973,7 @@ describe('webview-preload', () => {
     });
   });
 
-  test('resolves modifiers into Chrome dispositions (background tab, foreground tab, new window)', () => {
+  test('resolves modifiers into Chrome dispositions (background tab, foreground tab, new window)', async () => {
     const makeAnchor = (target = '') => ({
       tagName: 'A',
       getAttribute: jest.fn((name) => {
@@ -1058,7 +1065,10 @@ describe('webview-preload', () => {
     ];
 
     for (const { label, dispatchEvent, overrides, target = '', expected } of cases) {
-      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule();
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        // New-tab dispositions are popups: main's popup blocker allows this one.
+        invokeResponses: { 'popups:claim': true },
+      });
       const event = {
         target: makeAnchor(target),
         button: 0,
@@ -1067,10 +1077,13 @@ describe('webview-preload', () => {
         shiftKey: false,
         altKey: false,
         defaultPrevented: false,
+        // A real click or middle-click: new-tab dispositions need a gesture.
+        isTrusted: true,
         preventDefault: jest.fn(),
         ...overrides,
       };
       documentCaptureHandlers[dispatchEvent](event);
+      await flushTimers();
       expect(event.preventDefault).toHaveBeenCalled();
       // `label` names the failing case in the assertion message.
       expect({ label, ...ipcRenderer.sendToHost.mock.calls[0][1] }).toEqual({
@@ -1081,6 +1094,127 @@ describe('webview-preload', () => {
       });
       expect(ipcRenderer.sendToHost.mock.calls[0][0]).toBe('link:navigate');
     }
+  });
+
+  // docs/security-audit-electron.md, O-12: a page must not be able to open
+  // dweb tabs with a scripted `anchor.click()` — the popup-blocker rule
+  // Chromium applies to `target="_blank"`.
+  describe("new-tab dispositions go through main's popup blocker", () => {
+    const HREF = 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+    const blankAnchor = (target = '_blank') => ({
+      tagName: 'A',
+      getAttribute: jest.fn((name) => {
+        if (name === 'href') return HREF;
+        if (name === 'target') return target;
+        return null;
+      }),
+      parentElement: global.document.body,
+    });
+    const click = (anchor, overrides = {}) => ({
+      target: anchor,
+      button: 0,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      defaultPrevented: false,
+      isTrusted: false,
+      preventDefault: jest.fn(),
+      ...overrides,
+    });
+    const claims = (ipcRenderer) =>
+      ipcRenderer.invoke.mock.calls.filter(([ch]) => ch === 'popups:claim');
+    const opens = (ipcRenderer) =>
+      ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate');
+
+    test('opens the tab only once main allows it', async () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        invokeResponses: { 'popups:claim': true },
+      });
+      const event = click(blankAnchor());
+      documentCaptureHandlers.click(event);
+      // Cancelled synchronously, so Chromium never opens it itself.
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(opens(ipcRenderer)).toHaveLength(0);
+      expect(claims(ipcRenderer)).toEqual([
+        ['popups:claim', { url: HREF, targetName: null, reuseOnly: false }],
+      ]);
+      await flushTimers();
+      expect(opens(ipcRenderer)).toEqual([
+        ['link:navigate', { url: HREF, disposition: 'newTab', target: '_blank' }],
+      ]);
+    });
+
+    test.each([
+      ['refused', { 'popups:claim': false }],
+      ['unanswered', { 'popups:claim': undefined }],
+    ])('opens nothing when main has %s it (main reports the blocked popup)', async (_l, res) => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        invokeResponses: res,
+      });
+      for (const extra of [{}, { ctrlKey: true }, { shiftKey: true }, { button: 1 }]) {
+        const event = click(blankAnchor(), extra);
+        documentCaptureHandlers[extra.button === 1 ? 'auxclick' : 'click'](event);
+        expect(event.preventDefault).toHaveBeenCalled();
+      }
+      await flushTimers();
+      expect(claims(ipcRenderer)).toHaveLength(4);
+      expect(opens(ipcRenderer)).toHaveLength(0);
+    });
+
+    test('a failed claim opens nothing and does not throw', async () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        invokeResponses: { 'popups:claim': Promise.reject(new Error('gone')) },
+      });
+      documentCaptureHandlers.click(click(blankAnchor(), { isTrusted: true }));
+      await flushTimers();
+      expect(opens(ipcRenderer)).toHaveLength(0);
+    });
+
+    // One notion of a gesture (#442): the preload keeps no activation budget
+    // of its own — trusted or not, every new-tab activation is main's call,
+    // where the gesture is spent once for any popup or external-app launch.
+    test('asks main for every new-tab activation, trusted or scripted', async () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        invokeResponses: { 'popups:claim': true },
+        userActivation: { isActive: true, hasBeenActive: true },
+      });
+      documentCaptureHandlers.click(click(blankAnchor(), { isTrusted: true }));
+      documentCaptureHandlers.click(click(blankAnchor()));
+      documentCaptureHandlers.click(click(blankAnchor(), { ctrlKey: true }));
+      expect(claims(ipcRenderer)).toHaveLength(3);
+    });
+
+    test('marks only a plain named-target activation reuse-only', () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule();
+      documentCaptureHandlers.click(click(blankAnchor('viewer')));
+      documentCaptureHandlers.click(click(blankAnchor('viewer'), { ctrlKey: true }));
+      documentCaptureHandlers.click(
+        click(blankAnchor('viewer'), { ctrlKey: true, shiftKey: true })
+      );
+      documentCaptureHandlers.click(click(blankAnchor('viewer'), { shiftKey: true }));
+      documentCaptureHandlers.auxclick(click(blankAnchor('viewer'), { button: 1 }));
+      expect(claims(ipcRenderer).map(([, req]) => [req.targetName, req.reuseOnly])).toEqual([
+        ['viewer', true],
+        ['viewer', false],
+        ['viewer', false],
+        ['viewer', false],
+        ['viewer', false],
+      ]);
+    });
+
+    test('a same-tab click navigates without asking (no more than setting location)', () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        userActivation: { isActive: false, hasBeenActive: false },
+      });
+      documentCaptureHandlers.click(click(blankAnchor('')));
+      expect(claims(ipcRenderer)).toHaveLength(0);
+      expect(ipcRenderer.sendToHost).toHaveBeenCalledWith('link:navigate', {
+        url: HREF,
+        disposition: 'currentTab',
+        target: null,
+      });
+    });
   });
 
   test('ignores non-dweb anchor clicks', () => {
@@ -1478,6 +1612,64 @@ describe('webview-preload private windows', () => {
     expect(head.insertBefore).toHaveBeenNthCalledWith(1, scripts[0], null);
     expect(scripts[0].remove).toHaveBeenCalled();
   });
+});
+
+// #432: internal pages run `script-src 'self'`, so an inline <script> shim
+// injected into them is refused by their CSP and only logs a violation. They
+// reach main through freedomAPI and have no use for window.swarm /
+// window.radicle, so those two DOM-injected shims are skipped there — and
+// still injected into every web page.
+describe('webview-preload page-world shims on internal pages', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.navigator = originalNavigator;
+    global.location = originalLocation;
+    global.MutationObserver = originalMutationObserver;
+    jest.restoreAllMocks();
+  });
+
+  // Source of every <script> actually inserted into the page.
+  const injectedScripts = (location) => {
+    const head = { firstChild: null, insertBefore: jest.fn() };
+    loadWebviewPreloadModule({
+      location,
+      documentOverrides: {
+        createElement: jest.fn(() => ({ remove: jest.fn(), textContent: '' })),
+        head,
+        readyState: 'complete',
+      },
+    });
+    return head.insertBefore.mock.calls.map(([script]) => script.textContent);
+  };
+
+  test('a web page gets the window.swarm and window.radicle shims', () => {
+    const sources = injectedScripts({
+      href: 'https://dapp.example/',
+      protocol: 'https:',
+      pathname: '/',
+    });
+    expect(sources.some((source) => source.includes('FREEDOM_SWARM_REQUEST'))).toBe(true);
+    expect(sources.some((source) => source.includes('FREEDOM_RADICLE_REQUEST'))).toBe(true);
+  });
+
+  test.each(['history.html', 'settings.html', 'error.html'])(
+    'internal page %s gets no inline shim at all',
+    (file) => {
+      const sources = injectedScripts({
+        href: `file:///app/pages/${file}`,
+        protocol: 'file:',
+        pathname: `/app/pages/${file}`,
+      });
+      expect(sources).toEqual([]);
+    }
+  );
 });
 
 // #233: internal pages used to follow the OS colour scheme only, so a dark app

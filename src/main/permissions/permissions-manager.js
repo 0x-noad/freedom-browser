@@ -61,6 +61,7 @@
  * navigation never dismisses a background tab's pending request.
  */
 
+const crypto = require('crypto');
 const { ipcMain, systemPreferences } = require('electron');
 const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
@@ -136,7 +137,19 @@ const hostGuests = new Map();
 // Pending prompt entries by prompt id (for the renderer's response).
 const pendingById = new Map();
 
-let nextPromptId = 1;
+// Prompt ids are random, not sequential (docs/security-audit-electron.md,
+// O-12): an id is the capability to answer a prompt, so it must not be
+// guessable from any other one a renderer has seen. A number rather than a
+// string so the renderer's `typeof id === 'number'` contract is unchanged;
+// 48 random bits is the most crypto.randomInt yields, and the map is checked
+// so a (vanishingly unlikely) repeat of a live id can't alias two prompts.
+function newPromptId() {
+  let id;
+  do {
+    id = crypto.randomInt(1, 2 ** 48);
+  } while (pendingById.has(id));
+  return id;
+}
 
 /**
  * Map an Electron permission request to the storage keys it covers.
@@ -430,6 +443,49 @@ function getEffectiveDecision(origin, key, privatePartition = null) {
 }
 
 /**
+ * The site a guest's top-level document belongs to, as a permission-store
+ * origin, or null for a non-site surface (internal page, about:blank, data:).
+ * The popup blocker keys its per-site allow on this (#442): like Chrome's
+ * pop-up content setting, it follows the top-level site, not the frame that
+ * called window.open.
+ */
+function siteOriginForWebContents(webContents) {
+  return originForRequest(webContents, {});
+}
+
+/**
+ * Record an allow the user gave from chrome UI rather than from a prompt:
+ * the popup blocker's "Always allow pop-ups on this site" (#442). An
+ * explicit "always", so a normal window persists it (the remembered tier —
+ * Settings > Site Permissions lists it and removes it). A private window
+ * keeps it in its own partition tier only and drops it with the window,
+ * exactly like a remembered prompt answer given there.
+ *
+ * @param {string} origin
+ * @param {string} key - storage key (e.g. 'popups')
+ * @param {{ privatePartition?: string|null }} [options]
+ * @returns {boolean} true when recorded
+ */
+function allowSitePermission(origin, key, { privatePartition = null } = {}) {
+  if (typeof key !== 'string' || !key) return false;
+  const normalized = typeof origin === 'string' ? normalizeOrigin(origin) : null;
+  if (!normalized || !VALID_ORIGIN_KEY_SHAPE.test(normalized)) return false;
+  if (privatePartition) {
+    setPrivateDecision(privatePartition, normalized, key, 'allow');
+  } else {
+    store.setDecision(normalized, key, 'allow');
+    // A stale session answer must not shadow a later revoke.
+    clearSessionDecision(normalized, key);
+  }
+  broadcastChanged();
+  log.info(
+    `[permissions] allow ${key} for ${originForLog(normalized, privatePartition)}` +
+      (privatePartition ? ' (private window)' : ' (remembered)')
+  );
+  return true;
+}
+
+/**
  * PRIVATE MODE GUARD (permission logging): `log.info` is written to the
  * persistent <userData>/logs/main.log, which outlives the private window and
  * the app — so an origin a private tab prompted for must never appear there.
@@ -712,8 +768,10 @@ function enqueuePrompt({
   }
 
   const entry = {
-    id: nextPromptId++,
+    id: newPromptId(),
     guestId: state.guestId,
+    // The chrome window the prompt is shown in; only it may answer.
+    hostId: state.hostId,
     generation: state.generation,
     origin,
     permission,
@@ -739,9 +797,16 @@ function enqueuePrompt({
  *                                  same origin+key records a run-scoped
  *                                  deny (the embargo, #364)
  */
-function resolvePrompt({ id, decision, remember }) {
+function resolvePrompt({ id, decision, remember, senderId }) {
   const entry = pendingById.get(id);
   if (!entry) return false;
+  // Only the chrome window the prompt was sent to may answer it
+  // (docs/security-audit-electron.md, O-12). Any other window's answer is
+  // refused and leaves the prompt pending for its own window.
+  if (senderId !== entry.hostId) {
+    log.warn('[permissions] prompt answer from a window that does not own the prompt ignored');
+    return false;
+  }
   pendingById.delete(id);
 
   const state = guestQueues.get(entry.guestId);
@@ -1251,8 +1316,10 @@ function scopeFromSender(event, options) {
  * Register IPC handlers (prompt responses + settings/indicator queries).
  */
 function registerPermissionsIpc() {
-  ipcMain.handle(IPC.PERMISSIONS_PROMPT_RESPONSE, (_event, response) => {
+  ipcMain.handle(IPC.PERMISSIONS_PROMPT_RESPONSE, (event, response) => {
     if (!response || typeof response.id !== 'number') return false;
+    const senderId = event?.sender?.id;
+    if (typeof senderId !== 'number') return false;
     const decision = ['allow', 'deny', 'dismiss'].includes(response.decision)
       ? response.decision
       : 'dismiss';
@@ -1260,6 +1327,7 @@ function registerPermissionsIpc() {
       id: response.id,
       decision,
       remember: response.remember === true,
+      senderId,
     });
   });
 
@@ -1297,7 +1365,6 @@ function _resetState() {
   guestQueues.clear();
   hostGuests.clear();
   pendingById.clear();
-  nextPromptId = 1;
 }
 
 // Test-only: read the consecutive-dismissal count behind the embargo.
@@ -1314,6 +1381,9 @@ module.exports = {
   registerPermissionsIpc,
   permissionKeysForRequest,
   requestOpenExternal,
+  getEffectiveDecision,
+  siteOriginForWebContents,
+  allowSitePermission,
   getDecisionsForOrigin,
   clearPrivateDecisions,
   revokeDecision,
