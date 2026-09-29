@@ -10,7 +10,9 @@
  * So a spec has to be in one of two places:
  *
  * - referenced by a workflow: `test-e2e/<path>.spec.js` outside a comment
- *   (whole-line or trailing ` # ...`) in any `.github/workflows/*.yml`, or inside a `package.json` script a
+ *   (whole-line or trailing ` # ...`, including a `#` line inside a folded
+ *   `run: >-` block, which the shell sees mid-line) in any
+ *   `.github/workflows/*.yml`, or inside a `package.json` script a
  *   workflow runs with `npm run <script>` (e.g. `test:e2e:screenshots`);
  * - on the not-in-CI list: a `# e2e-not-in-ci: <name>.spec.js — <reason>`
  *   comment line in `ci.yml`, next to the jobs, where a reader of the
@@ -64,11 +66,63 @@ const harnessSpecs = (dir = e2eDir, prefix = '') =>
 // so a trailing `  # test-e2e/x.spec.js` after a `\` continuation is dropped
 // too. (A ` #` inside a quoted string is cut as well; that can only hide a
 // reference and fail this guard, never make an unrun spec pass.)
-const stripComments = (text) =>
-  text
-    .split('\n')
-    .map((line) => line.replace(/(^|\s)#.*$/, ''))
-    .join('\n');
+const stripLineComment = (line) => line.replace(/(^|\s)#.*$/, '');
+
+// A block scalar (`run: |`, `run: >-`) is not YAML any more: a `#` line inside
+// it is content handed to the shell, not a YAML comment. That is harmless in a
+// literal `|` block, where every line stays its own shell line — but a folded
+// `>` block joins its lines with spaces first, so one `# note` line in the
+// middle of a spec list becomes a shell comment that swallows every spec after
+// it, and bash exits 0 having run only the ones before. So a folded block is
+// folded the way YAML folds it before comments are cut, and a reference behind
+// such a `#` drops out and fails this guard instead of counting as run.
+const BLOCK_SCALAR = /^(\s*)(?:-\s+)?([A-Za-z0-9_.-]+):\s*([|>])[-+0-9]*\s*(?:#.*)?$/;
+
+/** YAML folding of a `>` block's lines (block indentation already removed). */
+const fold = (lines) => {
+  let out = '';
+  lines.forEach((line, i) => {
+    if (i === 0) {
+      out = line;
+      return;
+    }
+    const prev = lines[i - 1];
+    // Two adjacent plain (non-empty, not more-indented) lines fold into one;
+    // empty and more-indented lines keep their line break.
+    const joins = prev !== '' && line !== '' && !/^\s/.test(prev) && !/^\s/.test(line);
+    out += (joins ? ' ' : '\n') + line;
+  });
+  return out;
+};
+
+/** Workflow text as the shell sees it: comments gone, folded blocks folded. */
+const stripComments = (text) => {
+  const lines = text.split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const header = lines[i].match(BLOCK_SCALAR);
+    if (!header) {
+      out.push(stripLineComment(lines[i]));
+      continue;
+    }
+    out.push(stripLineComment(lines[i]));
+    // Content is every following line indented past the key (or empty).
+    const keyColumn = lines[i].indexOf(header[2]);
+    const body = [];
+    while (
+      i + 1 < lines.length &&
+      (lines[i + 1].trim() === '' || lines[i + 1].search(/\S/) > keyColumn)
+    )
+      body.push(lines[++i]);
+    while (body.length && body[body.length - 1].trim() === '') body.pop();
+    const nonEmpty = body.filter((l) => l.trim() !== '');
+    const indent = nonEmpty.length ? Math.min(...nonEmpty.map((l) => l.search(/\S/))) : 0;
+    const content = body.map((l) => (l.trim() === '' ? '' : l.slice(indent)));
+    const shellLines = header[3] === '>' ? fold(content).split('\n') : content;
+    out.push(...shellLines.map(stripLineComment));
+  }
+  return out.join('\n');
+};
 
 // live/, packaged/ and packaged-live/ specs are referenced by other jobs; they
 // are not this guard's concern.
@@ -155,6 +209,53 @@ describe('the guard parsers', () => {
       )
     );
     expect(refs).toEqual(['b.spec.js', 'c.spec.js', 'f.spec.js']);
+  });
+
+  it('folds a `>-` block before cutting comments: specs after a `#` line are not run', () => {
+    // The shell sees `... settings.spec.js a.spec.js # note b.spec.js c.spec.js`.
+    const folded = specRefsIn(
+      stripComments(
+        [
+          '      - name: Run settings E2E',
+          '        run: >-',
+          '          xvfb-run -a npm run test:e2e --',
+          '          test-e2e/a.spec.js',
+          '          # b needs the synthetic checkpoint states',
+          '          test-e2e/b.spec.js',
+          '          test-e2e/c.spec.js',
+          '      - name: next',
+          '        run: npx playwright test test-e2e/d.spec.js',
+        ].join('\n')
+      )
+    );
+    expect(folded).toEqual(['a.spec.js', 'd.spec.js']);
+
+    // In a literal `|` block the same `#` line is its own shell line and
+    // leaves the next command alone.
+    const literal = specRefsIn(
+      stripComments(
+        [
+          '        run: |',
+          '          npx playwright test test-e2e/a.spec.js',
+          '          # b.spec.js runs in the next command',
+          '          npx playwright test test-e2e/b.spec.js # test-e2e/c.spec.js',
+          '        env:',
+          '          X: test-e2e/e.spec.js',
+        ].join('\n')
+      )
+    );
+    expect(literal).toEqual(['a.spec.js', 'b.spec.js', 'e.spec.js']);
+  });
+
+  it('folds the real e2e-settings job: a comment line there hides the specs after it', () => {
+    const ci = fs.readFileSync(ciPath, 'utf8');
+    const anchor = '          test-e2e/settings-adblock.spec.js\n';
+    expect(ci).toContain(anchor);
+    const mutated = ci.replace(anchor, `${anchor}          # myotis-recovery needs checkpoints\n`);
+    const refs = new Set(specRefsIn(stripComments(mutated)));
+    expect(refs.has('settings-adblock.spec.js')).toBe(true);
+    expect(refs.has('myotis-recovery.spec.js')).toBe(false);
+    expect(new Set(specRefsIn(stripComments(ci))).has('myotis-recovery.spec.js')).toBe(true);
   });
 
   it('matches the harness project testMatch, subdirectories included', () => {
