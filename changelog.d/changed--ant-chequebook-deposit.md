@@ -1,1 +1,1 @@
-- The Swarm node keeps its chequebook deposit topped up itself, at 0.001 xBZZ, instead of Freedom moving 0.1 xBZZ into it after a stamp purchase ([freedom-hq/ant#99](https://github.com/freedom-hq/ant/pull/99))
+- The Swarm node keeps its chequebook deposit topped up itself, at 0.001 xBZZ, instead of Freedom moving 0.1 xBZZ into it after a stamp purchase ([#456](https://github.com/solardev-xyz/freedom-browser/pull/456))
