@@ -337,6 +337,13 @@ describe('a Colibri WASM trap fails one request instead of the process (#453)', 
         // A request still draining on the retired instance traps again; that
         // must not throw away the replacement a second time.
         try { first.executeRpcCtx(${BAD_CTX}); } catch { /* expected */ }
+        // Nothing keeps running on the trapped instance: a request that
+        // captured it before the trap gets a refusal, not a working call...
+        try { first.getMethodType(1n, 'eth_blockNumber', null, 0); out.retiredCall = 'ran'; }
+        catch (err) { out.retiredCall = err instanceof WebAssembly.RuntimeError ? 'trap' : 'refused'; }
+        // ...but its cleanup in upstream's \`finally\` must not replace that error.
+        try { out.retiredFree = first.freeRpcCtx(1) === undefined ? 'noop' : 'ran'; }
+        catch { out.retiredFree = 'threw'; }
         const second = await getRuntime();
         out.fresh = first !== second;
         out.kind = second.kind;
@@ -354,19 +361,37 @@ describe('a Colibri WASM trap fails one request instead of the process (#453)', 
         });
         await client.request({ method: 'eth_blockNumber', params: [] }).catch(() => {});
         out.storageReads = reads.includes('states_1');
+        // Retired instances must become unreachable. Node lists every module a
+        // file requires in its \`module.children\`, so a retired
+        // runtime_wasm.js left there pins its Emscripten instance (memory plus
+        // the c4w.wasm bytes, ~1.7 MB) for the life of the process.
+        for (let i = 0; i < 5; i += 1) {
+          const rt2 = await getRuntime();
+          try { rt2.executeRpcCtx(${BAD_CTX}); } catch { /* expected */ }
+        }
+        await getRuntime();
+        out.resetsAfterLoop = rt.runtimeResetCount();
+        out.retainedWasmRuntimes = require.cache[require.resolve(${RUNTIME})].children
+          .filter((child) => child.id.endsWith('runtime_wasm.js')).length;
       })()
         .catch((err) => { out.error = String(err && err.message || err); })
         .finally(() => { console.log(JSON.stringify(out)); process.exit(0); });
     `, { exe: exe || process.execPath, env });
     expect(result).toEqual({
       probe: true,
-      resets: ['RuntimeError'],
+      // One for the first trap (the draining second one changes nothing, see
+      // \`count\`), then one per loop iteration below.
+      resets: Array(6).fill('RuntimeError'),
       trap: 'RuntimeError',
       fresh: true,
       kind: 'wasm',
       works: 1,
       count: 1,
       storageReads: true,
+      retiredCall: 'refused',
+      retiredFree: 'noop',
+      resetsAfterLoop: 6,
+      retainedWasmRuntimes: 1,
     });
   }, 120_000);
 });

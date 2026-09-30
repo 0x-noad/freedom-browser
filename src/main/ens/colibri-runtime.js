@@ -81,7 +81,9 @@ const { Strategy, decode_proof } = require('@corpus-core/colibri-stateless');
 // uses; `setRuntimeProvider()` drops its cached runtime, so the next
 // `getRuntime()` builds a fresh one from the provider below. Requests already
 // running keep the runtime object they captured, so their context handles are
-// never replayed against the new instance — they fail, and fall through.
+// never replayed against the new instance. That retired object refuses every
+// further call (see `guardRuntime`), so those requests fail and fall through
+// rather than finishing verification on an instance known to have trapped.
 // `colibri-runtime.test.js` pins all of these internals against the installed
 // package, so a bump that moves them fails CI instead of losing recovery.
 const PACKAGE_CJS_DIR = path.dirname(require.resolve('@corpus-core/colibri-stateless'));
@@ -96,15 +98,28 @@ let registeredStorage = null;
 let currentRuntime = null;
 let runtimeResets = 0;
 let onRuntimeReset = null;
+// guarded runtime -> marks it retired. Weak, so a dropped instance is not kept.
+const retiredRuntimes = new WeakMap();
 
 function loadFreshWasmRuntime() {
   for (const file of FRESH_WASM_MODULES) delete require.cache[file];
+  // Dropping the cache entries is not enough to let a retired instance go:
+  // Node also appends every module this file requires to `module.children`,
+  // and that list is never pruned. Each retired `runtime_wasm.js` (and, via its
+  // own children, `wasm.js` with the Emscripten instance, its
+  // `WebAssembly.Memory` and the 1.3 MB `c4w.wasm` buffer) would stay reachable
+  // forever — ~1.7 MB per reset, and a page can trigger resets at will through
+  // read-only `eth_getTransactionReceipt` calls for unknown hashes. Only the
+  // copy about to be replaced is in the list at this point; the live runtime
+  // is held by `currentRuntime` and upstream's cache, not by this list.
+  module.children = module.children.filter((child) => !FRESH_WASM_MODULES.includes(child.id));
   return require(FRESH_WASM_MODULES[0]).getWasmRuntime();
 }
 
 function resetPoisonedRuntime(runtime, err) {
   // Only the first trap on the current instance swaps it; later traps from
   // requests still draining on an already-replaced instance change nothing.
+  retiredRuntimes.get(runtime)?.();
   if (runtime !== currentRuntime) return;
   currentRuntime = null;
   runtimeResets += 1;
@@ -117,15 +132,30 @@ function resetPoisonedRuntime(runtime, err) {
 }
 
 // Route every call into the WASM instance through one place so a trap from any
-// of them (execute, free, create, decode...) retires the instance.
+// of them (execute, free, create, decode...) retires the instance, and so a
+// retired instance can refuse work. A trap can leave the heap, the C stack
+// pointer and other contexts' state half-written, so nothing may keep running
+// on it — not even a request that captured it before the trap and would
+// otherwise carry on creating and executing contexts there. Its `free*` calls
+// become no-ops instead of errors: they run from upstream's `finally` blocks,
+// where throwing would replace the request's real error, and the whole
+// instance is about to be dropped anyway.
 function guardRuntime(runtime) {
   const guarded = {};
+  let retired = false;
+  retiredRuntimes.set(guarded, () => {
+    retired = true;
+  });
   for (const [name, value] of Object.entries(runtime)) {
     if (typeof value !== 'function') {
       guarded[name] = value;
       continue;
     }
     guarded[name] = (...args) => {
+      if (retired) {
+        if (name.startsWith('free')) return undefined;
+        throw new Error(`Colibri WASM runtime was retired after a trap; refusing ${name}()`);
+      }
       if (name === 'registerStorage') registeredStorage = args[0];
       try {
         return value.apply(runtime, args);
