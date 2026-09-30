@@ -150,6 +150,28 @@ const sameOriginFramesScript = `
   var fragment = document.createDocumentFragment();
   fragment.append(document.createElement('iframe'), document.createElement('x-frames-probe'));
   document.documentElement.appendChild(fragment);
+  // Form-associated reactions (#466 R3-M1): run in the same scope, when the
+  // fragment lands in a <form> / a disabled <fieldset>.
+  customElements.define('x-frames-form', class extends HTMLElement {
+    static formAssociated = true;
+    formAssociatedCallback(form) {
+      if (form) window.__page.framesFormAssociated = Object.keys(frames[frames.length - 1].JSON.parse(${PLAYER_JSON})).sort();
+    }
+    formDisabledCallback(disabled) {
+      if (disabled) window.__page.framesFormDisabled = Object.keys(frames[frames.length - 1].JSON.parse(${PLAYER_JSON})).sort();
+    }
+  });
+  var form = document.createElement('form');
+  document.documentElement.appendChild(form);
+  fragment = document.createDocumentFragment();
+  fragment.append(document.createElement('iframe'), document.createElement('x-frames-form'));
+  form.appendChild(fragment);
+  var fieldset = document.createElement('fieldset');
+  fieldset.disabled = true;
+  document.documentElement.appendChild(fieldset);
+  fragment = document.createDocumentFragment();
+  fragment.append(document.createElement('iframe'), document.createElement('x-frames-form'));
+  fieldset.appendChild(fragment);
   var blob = document.createElement('iframe');
   blob.src = URL.createObjectURL(new Blob([${JSON.stringify(blobHtml).replace(/</g, '\\u003c')}], { type: 'text/html' }));
   document.documentElement.appendChild(blob);
@@ -307,6 +329,8 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
       framesTable: PRUNED,
       framesSelect: PRUNED,
       framesCustomElement: PRUNED,
+      framesFormAssociated: PRUNED,
+      framesFormDisabled: PRUNED,
       framesParser: PRUNED,
     },
     embed: { initial: PRUNED, api: PRUNED, wallet: false },
@@ -339,6 +363,8 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
       framesTable: UNTOUCHED,
       framesSelect: UNTOUCHED,
       framesCustomElement: UNTOUCHED,
+      framesFormAssociated: UNTOUCHED,
+      framesFormDisabled: UNTOUCHED,
       framesParser: UNTOUCHED,
     },
     embed: { initial: UNTOUCHED, api: UNTOUCHED, wallet: false },
@@ -375,6 +401,8 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
       framesTable: UNTOUCHED,
       framesSelect: UNTOUCHED,
       framesCustomElement: UNTOUCHED,
+      framesFormAssociated: UNTOUCHED,
+      framesFormDisabled: UNTOUCHED,
       framesParser: UNTOUCHED,
     },
     embed: { initial: UNTOUCHED, api: UNTOUCHED, wallet: false },

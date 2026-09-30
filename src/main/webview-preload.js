@@ -132,6 +132,13 @@ function scriptletMatchUrl() {
 // — a same-origin child realm not adopted by this bundle (one inserted
 // through `select[i] =` before any sweep, see above) or one that ran its own
 // bundle (srcdoc/blob:/http(s) children keep a mask table of their own).
+// Nor, while customElements.define() runs, the lent lifecycle callbacks:
+// page code define() calls back into before it returns (an
+// observedAttributes / formAssociated / disabledFeatures getter, the
+// constructor of an element it upgrades) reads the prototype's callback as
+// a different, non-enumerable function (masked toString, same name and
+// `length`, but not === the page's); the prototype is put back once
+// define() returns or throws.
 //
 // Runs in the page's main world, stringified into the bundle: no closures
 // over this file. Everything it needs later is captured up front, since page
@@ -265,16 +272,23 @@ function inheritScriptletsIntoChildRealms(runIn) {
   // Custom-element reactions (connectedCallback & co.) run inside the
   // native insertion, at the end of its [CEReactions] scope — after the
   // frame is in the document but before our wrapper's own sweep. define()
-  // reads each callback off the prototype once, at define time, so the
-  // wrapper hands it a sweeping version for that one read and puts the
+  // reads each lifecycle callback off the prototype once, at define time, so
+  // the wrapper hands it a sweeping version for that one read and puts the
   // prototype back as it was: the class, its prototype and customElements.get
-  // are left untouched.
+  // are left untouched. The list is every lifecycle callback define() reads —
+  // the form-associated four included (read only for a `formAssociated`
+  // class): inserting into a <form> or a disabled <fieldset> enqueues
+  // formAssociatedCallback / formDisabledCallback in the same scope.
   const CE_CALLBACKS = [
     'connectedCallback',
     'disconnectedCallback',
     'adoptedCallback',
     'attributeChangedCallback',
     'connectedMoveCallback',
+    'formAssociatedCallback',
+    'formResetCallback',
+    'formDisabledCallback',
+    'formStateRestoreCallback',
   ];
   const { deleteProperty } = Reflect;
   const lend = (proto, name) => {

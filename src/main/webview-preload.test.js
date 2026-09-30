@@ -2242,12 +2242,16 @@ describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile pag
        CustomElementRegistry.prototype.define = function define(name, ctor, options) {
          var p = ctor.prototype;
          this.defs[name] = { ctor: ctor, connected: p.connectedCallback,
-           attributeChanged: p.attributeChangedCallback };
+           attributeChanged: p.attributeChangedCallback,
+           formAssociated: ctor.formAssociated ? p.formAssociatedCallback : undefined,
+           formDisabled: ctor.formAssociated ? p.formDisabledCallback : undefined };
        };
        var customElements = new CustomElementRegistry();
        Node.prototype.appendChild = function appendChild(node) {
          frameCount = 1;
          var def = node.__def && customElements.defs[node.__def];
+         if (def && def.formAssociated) def.formAssociated.call(node, this);
+         if (def && def.formDisabled) def.formDisabled.call(node, true);
          if (def && def.connected) def.connected.call(node);
          return node;
        };`,
@@ -2290,6 +2294,79 @@ describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile pag
     );
     expect(result).toEqual([1, true, true, undefined, true, 'connectedCallback', true, 3]);
     expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+  });
+
+  // R3-M1: inserting a form-associated element into a <form> / disabled
+  // <fieldset> runs formAssociatedCallback / formDisabledCallback in the
+  // same [CEReactions] scope as connectedCallback.
+  test('form-associated callbacks run by the insertion see an adopted frame', () => {
+    const src = bundleSource();
+    const { parent, child } = makeCustomElementRealms();
+    vm.runInContext(`(${src})()`, parent);
+    const result = vm.runInContext(
+      `seen = [];
+       function XF() {}
+       XF.formAssociated = true;
+       XF.prototype = Object.create(Node.prototype);
+       XF.prototype.formAssociatedCallback = function formAssociatedCallback(form) {
+         seen.push(['assoc', window[0].__freedomScriptletRan]);
+       };
+       XF.prototype.formDisabledCallback = function formDisabledCallback(disabled) {
+         seen.push(['disabled', window[0].__freedomScriptletRan]);
+       };
+       var ownAssoc = XF.prototype.formAssociatedCallback;
+       var ownDisabled = XF.prototype.formDisabledCallback;
+       customElements.define('x-f', XF);
+       var el = new XF(); el.__def = 'x-f';
+       new Node().appendChild(el);
+       [
+         seen,
+         XF.prototype.formAssociatedCallback === ownAssoc,
+         XF.prototype.formDisabledCallback === ownDisabled,
+         customElements.defs['x-f'].formAssociated.length,
+         customElements.defs['x-f'].formDisabled.name,
+       ]`,
+      parent
+    );
+    expect(result).toEqual([
+      [
+        ['assoc', 1],
+        ['disabled', 1],
+      ],
+      true,
+      true,
+      1,
+      'formDisabledCallback',
+    ]);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+  });
+
+  // R3-M2: the lent callback is only on the prototype for define()'s own
+  // duration — a getter define() consults sees it, code after doesn't.
+  test('lent callbacks are visible only while define() runs', () => {
+    const src = bundleSource();
+    const { parent } = makeCustomElementRealms();
+    vm.runInContext(
+      `var nativeDefine = CustomElementRegistry.prototype.define;
+       CustomElementRegistry.prototype.define = function define(name, ctor, options) {
+         duringDefine = ctor.observedAttributes;
+         return nativeDefine.call(this, name, ctor, options);
+       };`,
+      parent
+    );
+    vm.runInContext(`(${src})()`, parent);
+    const result = vm.runInContext(
+      `function XO() {}
+       XO.prototype.connectedCallback = function connectedCallback() {};
+       var orig = XO.prototype.connectedCallback;
+       Object.defineProperty(XO, 'observedAttributes', {
+         get: function () { return XO.prototype.connectedCallback === orig; },
+       });
+       customElements.define('x-o', XO);
+       [duringDefine, XO.prototype.connectedCallback === orig]`,
+      parent
+    );
+    expect(result).toEqual([false, true]);
   });
 
   test('define restores an own callback and still registers a frozen class', () => {
