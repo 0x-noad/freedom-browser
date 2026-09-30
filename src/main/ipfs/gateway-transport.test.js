@@ -10,6 +10,7 @@ const {
   isLoopbackGatewayUrl,
   isOnionHostname,
   isOnionGatewayUrl,
+  isGatewayTransportRequest,
 } = require('./gateway-transport');
 
 // What the Tor PAC resolves an onion URL to once Arti is up. Dials in these
@@ -579,5 +580,90 @@ describe('netGatewayFetch', () => {
   // back to a transport that ignores the session proxy.
   test('fails when Electron net is unavailable rather than dialling around it', async () => {
     await expect(netGatewayFetch(REMOTE)).rejects.toThrow('Electron net.request is unavailable');
+  });
+});
+
+// What a `session.webRequest` listener sees for a `net.request` dial: no
+// webContents. adblock and x402-detect skip exactly these (R1-M1/M2 on #462).
+const ownDial = (url) => ({ url, webContentsId: undefined, resourceType: 'other' });
+
+describe('isGatewayTransportRequest', () => {
+  const URL_A = 'https://ccip.example/0xabc/0x1234.json';
+
+  test('matches a dial only while it is in flight', async () => {
+    expect(isGatewayTransportRequest(ownDial(URL_A))).toBe(false);
+    const { promise, request } = startNetFetch(URL_A);
+    expect(isGatewayTransportRequest(ownDial(URL_A))).toBe(true);
+    // Chromium reports the canonical URL; WHATWG canonicalisation matches it.
+    expect(isGatewayTransportRequest(ownDial('HTTPS://CCIP.example:443/0xabc/0x1234.json'))).toBe(
+      true
+    );
+    const response = new FakeIncomingMessage({ statusCode: 200 });
+    request.emit('response', response);
+    const res = await promise;
+    // Headers are back but the body is still streaming: still ours.
+    expect(isGatewayTransportRequest(ownDial(URL_A))).toBe(true);
+    response.emit('data', Buffer.from('{}'));
+    response.emit('end');
+    await readAll(res);
+    expect(isGatewayTransportRequest(ownDial(URL_A))).toBe(false);
+  });
+
+  test('never matches a request a page made for the same URL', async () => {
+    const { promise, request } = startNetFetch(URL_A);
+    expect(isGatewayTransportRequest({ url: URL_A, webContentsId: 7 })).toBe(false);
+    expect(isGatewayTransportRequest({ url: URL_A, webContentsId: 0 })).toBe(false);
+    expect(isGatewayTransportRequest(ownDial('https://ccip.example/other'))).toBe(false);
+    request.emit('error', new Error('net::ERR_FAILED'));
+    await promise.catch(() => {});
+  });
+
+  test.each([
+    ['a redirect', (request) => request.emit('redirect', 302, 'GET', 'https://x.example/', {})],
+    ['a network error', (request) => request.emit('error', new Error('net::ERR_FAILED'))],
+    [
+      'a null-body status',
+      (request) => request.emit('response', new FakeIncomingMessage({ statusCode: 204 })),
+    ],
+  ])('is released after %s', async (_label, answer) => {
+    const url = 'https://gw.example/released';
+    const { promise, request } = startNetFetch(url, { redirect: 'error' });
+    expect(isGatewayTransportRequest(ownDial(url))).toBe(true);
+    answer(request);
+    await promise.catch(() => {});
+    expect(isGatewayTransportRequest(ownDial(url))).toBe(false);
+  });
+
+  test('is released when the caller aborts or cancels the body', async () => {
+    const url = 'https://gw.example/aborted';
+    const controller = new AbortController();
+    const first = startNetFetch(url, { signal: controller.signal });
+    controller.abort();
+    await expect(first.promise).rejects.toThrow();
+    expect(isGatewayTransportRequest(ownDial(url))).toBe(false);
+
+    const second = startNetFetch(url);
+    second.request.emit('response', new FakeIncomingMessage({ statusCode: 200 }));
+    const res = await second.promise;
+    await res.body.cancel();
+    expect(isGatewayTransportRequest(ownDial(url))).toBe(false);
+  });
+
+  test('two concurrent dials of one URL stay matched until both are over', async () => {
+    const url = 'https://gw.example/twice';
+    const a = startNetFetch(url);
+    const b = startNetFetch(url);
+    a.request.emit('error', new Error('net::ERR_FAILED'));
+    await a.promise.catch(() => {});
+    expect(isGatewayTransportRequest(ownDial(url))).toBe(true);
+    b.request.emit('error', new Error('net::ERR_FAILED'));
+    await b.promise.catch(() => {});
+    expect(isGatewayTransportRequest(ownDial(url))).toBe(false);
+  });
+
+  test('a dial whose request cannot be created leaves nothing registered', async () => {
+    const url = 'https://gw.example/no-net';
+    await expect(netGatewayFetch(url)).rejects.toThrow('Electron net.request is unavailable');
+    expect(isGatewayTransportRequest(ownDial(url))).toBe(false);
   });
 });

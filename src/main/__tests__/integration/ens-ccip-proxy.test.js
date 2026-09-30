@@ -131,6 +131,25 @@ describeWithElectron('ENS CCIP-Read gateway fetch in a real Electron process', (
     expect(results.clearnetDirect.socksSeen).toEqual([]);
   });
 
+  // #462 R1-M1/M2: a transport dial reaches the session's webRequest
+  // listeners with no webContents, and the app's page-facing handlers
+  // (adblock, x402-detect) must be able to recognise it at both events they
+  // act on — while a bare net.request that isn't the transport's stays theirs.
+  test("the app's webRequest handlers can tell a CCIP dial is the transport's own", () => {
+    const events = results.clearnetDirect.listenerSaw.map(({ event, webContentsId, own }) => ({
+      event,
+      webContentsId,
+      own,
+    }));
+    expect(events).toEqual([
+      { event: 'onBeforeRequest', webContentsId: null, own: true },
+      { event: 'onHeadersReceived', webContentsId: null, own: true },
+    ]);
+    expect(results.clearnetDirect.ownAfterwards).toBe(false);
+    expect(results.listenerControl.length).toBeGreaterThan(0);
+    expect(results.listenerControl.every((entry) => entry.own === false)).toBe(true);
+  });
+
   test('no session cookie or credential travels to a gateway', () => {
     // Control: the cookie is really on the session and would be sent.
     expect(results.cookieControl).toEqual(['session=must-not-travel']);

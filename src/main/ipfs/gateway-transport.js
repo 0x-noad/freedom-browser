@@ -162,6 +162,67 @@ async function assertOnionRoutable(url, deps) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Which requests on the session are this transport's own
+//
+// A `net.request` dial goes through the default session's `webRequest`
+// listeners like any page request (`webrequest-dispatcher.js`), so the
+// page-facing handlers there see gateway and CCIP-Read traffic too: adblock
+// would judge it as a third-party `other` request (an ENS name's offchain
+// resolution — or an `ipfs://` load — could then hinge on filter-list content)
+// and x402's detector logs the URL of any unattributed 402 (for a CCIP GET that
+// is `{sender}/{data}`, i.e. the DNS-encoded name being resolved, which
+// `ccip-fetch.js` promises never to log). undici never reached those listeners.
+//
+// Chromium hands the listeners no header we could tag and no request id we
+// know in advance, so the transport records the canonical URL of every dial it
+// has in flight; `isGatewayTransportRequest(details)` matches a listener's
+// `details` against that set. It only ever matches a request with no
+// `webContentsId` — a page's (or tab's) own request for the same URL at the
+// same moment still gets every page-level handler. A URL Chromium canonicalises
+// differently from WHATWG `URL` simply doesn't match, i.e. falls back to the
+// handlers seeing it, never the other way round.
+// ---------------------------------------------------------------------------
+
+const inFlightDials = new Map(); // canonical href -> number of live dials
+
+function canonicalUrl(url) {
+  try {
+    return new URL(String(url)).href;
+  } catch {
+    return null;
+  }
+}
+
+// Returns an idempotent release, called once the dial is over.
+function trackInFlightDial(url) {
+  const key = canonicalUrl(url);
+  if (key == null) return () => {};
+  inFlightDials.set(key, (inFlightDials.get(key) || 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const left = (inFlightDials.get(key) || 0) - 1;
+    if (left > 0) inFlightDials.set(key, left);
+    else inFlightDials.delete(key);
+  };
+}
+
+/**
+ * True when a `session.webRequest` listener's `details` belong to a dial this
+ * transport has in flight (the app's own gateway / CCIP-Read traffic), not to
+ * anything a page asked for.
+ *
+ * @param {{url?: string, webContentsId?: number}} details
+ */
+function isGatewayTransportRequest(details) {
+  if (!details || inFlightDials.size === 0) return false;
+  if (typeof details.webContentsId === 'number' && details.webContentsId >= 0) return false;
+  const key = canonicalUrl(details.url);
+  return key != null && inFlightDials.has(key);
+}
+
 // Statuses the fetch spec forbids a body on. Chromium delivers no body for
 // them either, and `new Response(body, { status })` throws if one is passed.
 // The spec's list also names the informational 101/103, but they are
@@ -290,35 +351,47 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       return;
     }
 
-    const request = requestImpl({
-      method,
-      url,
-      redirect: 'manual',
-      // Nothing from the session but its proxy policy: no cookies and no
-      // stored credentials travel to a third-party gateway, matching what
-      // undici sent (nothing) on this path.
-      credentials: 'omit',
-      useSessionCookies: false,
-      // Neither read from nor written to Chromium's HTTP cache — undici had no
-      // cache at all, and both halves of that matter here:
-      //  - Kubo serves every `/ipfs/<cid>` (the reachability probe's
-      //    `bafkqaaa` included) with `Cache-Control: public, max-age=29030400,
-      //    immutable`, so a cached 200 would answer `probeExternalGateway`
-      //    forever — a dead remote gateway would read healthy across restarts
-      //    and the unreachable-status/retry path (#351) would never arm.
-      //  - `ipfs://` loads from a private window come through this same
-      //    handler, so storing would write visited CIDs, gateway host and page
-      //    bytes into the *default* profile's on-disk cache — as would
-      //    `ens-prefetch.js`, for content the user only ever resolved.
-      cache: 'no-store',
-      // Straight to the network — never back into a registered `http(s)`
-      // protocol handler (the test harness registers one).
-      bypassCustomProtocolHandlers: true,
-    });
+    // Registered before the request exists, so its very first webRequest
+    // event (onBeforeRequest) already matches; released by `detach`, which
+    // every terminal path (end, cancel, redirect, null body, failure) runs.
+    const releaseDial = trackInFlightDial(url);
+    let request;
+    try {
+      request = requestImpl({
+        method,
+        url,
+        redirect: 'manual',
+        // Nothing from the session but its proxy policy: no cookies and no
+        // stored credentials travel to a third-party gateway, matching what
+        // undici sent (nothing) on this path.
+        credentials: 'omit',
+        useSessionCookies: false,
+        // Neither read from nor written to Chromium's HTTP cache — undici had no
+        // cache at all, and both halves of that matter here:
+        //  - Kubo serves every `/ipfs/<cid>` (the reachability probe's
+        //    `bafkqaaa` included) with `Cache-Control: public, max-age=29030400,
+        //    immutable`, so a cached 200 would answer `probeExternalGateway`
+        //    forever — a dead remote gateway would read healthy across restarts
+        //    and the unreachable-status/retry path (#351) would never arm.
+        //  - `ipfs://` loads from a private window come through this same
+        //    handler, so storing would write visited CIDs, gateway host and page
+        //    bytes into the *default* profile's on-disk cache — as would
+        //    `ens-prefetch.js`, for content the user only ever resolved.
+        cache: 'no-store',
+        // Straight to the network — never back into a registered `http(s)`
+        // protocol handler (the test harness registers one).
+        bypassCustomProtocolHandlers: true,
+      });
+    } catch (err) {
+      releaseDial();
+      reject(err);
+      return;
+    }
 
     const detach = () => {
       if (onAbort && signal) signal.removeEventListener('abort', onAbort);
       onAbort = null;
+      releaseDial();
     };
     const abortRequest = () => {
       try {
@@ -499,4 +572,5 @@ module.exports = {
   isLoopbackGatewayUrl,
   isOnionHostname,
   isOnionGatewayUrl,
+  isGatewayTransportRequest,
 };

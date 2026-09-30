@@ -39,6 +39,7 @@ app.setPath('userData', PROBE_USER_DATA);
 
 const { ccipReadFetch } = require('../../ens/ccip-fetch');
 const { applyOnionProxy, clearOnionProxy } = require('../../tor-proxy');
+const { isGatewayTransportRequest } = require('../../ipfs/gateway-transport');
 
 const TX = { to: '0xeEeEEEeE14D718C2B47D9923Deab1335E144EeEe' };
 const ANSWER = '0xcafe';
@@ -225,14 +226,31 @@ async function main() {
   // that dies in the resolver reaches no server, so without this "refused"
   // and "dialled and failed" look the same.
   const chromiumSaw = [];
+  // What the app's page-facing webRequest handlers (adblock, x402-detect) are
+  // handed for each dial, and whether they can tell it is the transport's own
+  // (`isGatewayTransportRequest`, #462 R1-M1/M2) — at both events they act on.
+  const listenerSaw = [];
+  const recordListener = (event, details) =>
+    listenerSaw.push({
+      event,
+      path: new URL(details.url).pathname,
+      webContentsId: details.webContentsId ?? null,
+      own: isGatewayTransportRequest(details),
+    });
   ses.webRequest.onBeforeRequest((details, callback) => {
     chromiumSaw.push(details.url);
+    recordListener('onBeforeRequest', details);
+    callback({});
+  });
+  ses.webRequest.onHeadersReceived((details, callback) => {
+    recordListener('onHeadersReceived', details);
     callback({});
   });
   const reset = () => {
     socksSeen.length = 0;
     originSeen.length = 0;
     chromiumSaw.length = 0;
+    listenerSaw.length = 0;
   };
 
   const clearnet = `https://${CLEARNET_HOST}:${originPort}`;
@@ -246,6 +264,8 @@ async function main() {
   reset();
   await netWithSessionCookies(`${clearnet}/ok/control`);
   results.cookieControl = originSeen.map((entry) => entry.cookie);
+  // A bare `net.request` that is not the transport's: no handler may skip it.
+  results.listenerControl = [...listenerSaw];
 
   reset();
   results.clearnetDirect = {
@@ -253,7 +273,11 @@ async function main() {
     ...(await attempt([`${clearnet}/ok/{data}`])),
     originSeen: [...originSeen],
     socksSeen: [...socksSeen],
+    listenerSaw: [...listenerSaw],
   };
+  results.clearnetDirect.ownAfterwards = isGatewayTransportRequest({
+    url: `${clearnet}/ok/0x`,
+  });
 
   // ---- Tor NOT up yet: an onion gateway is refused, not resolved ----------
   reset();
