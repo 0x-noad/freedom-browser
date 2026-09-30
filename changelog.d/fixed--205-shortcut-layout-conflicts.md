@@ -1,0 +1,2 @@
+- A remapped shortcut no longer fires together with another one on German and other non-US keyboard layouts ([#205](https://github.com/solardev-xyz/freedom-browser/issues/205))
+  - On a German layout, remapping a command to Ctrl+Shift+0 was accepted, but that press also types `=` and so zoomed in as well; Settings > Shortcuts now reports such a combination as taken, and a saved remap like this is reset with a notice on its row
