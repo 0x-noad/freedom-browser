@@ -2099,4 +2099,76 @@ describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile pag
     vm.runInContext('new HTMLIFrameElement().contentWindow;', parent);
     expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
   });
+
+  // window[i] / frames[i] (#414): no accessor to hook, so every DOM insertion
+  // API is wrapped to adopt the inserting document's new frames right after
+  // the call. The parent realm models a Node whose appendChild "creates" the
+  // child frame, reachable only by index.
+  function makeFramesRealms() {
+    const { child } = makeRealms();
+    const parent = vm.createContext({ __child: vm.runInContext('globalThis', child) });
+    vm.runInContext(
+      `var window = globalThis;
+       var location = { href: 'https://www.youtube.com/watch?v=x' };
+       var frameCount = 0;
+       Object.defineProperty(globalThis, 'length', {
+         configurable: true, enumerable: true, get() { return frameCount; }, set(v) {},
+       });
+       Object.defineProperty(globalThis, '0', {
+         configurable: true, get() { return frameCount ? __child : undefined; },
+       });
+       function Document() {}
+       Object.defineProperty(Document.prototype, 'defaultView', {
+         configurable: true, enumerable: true, get() { return window; },
+       });
+       var document = new Document();
+       function Node() {}
+       Object.defineProperty(Node.prototype, 'ownerDocument', {
+         configurable: true, enumerable: true, get() { return document; },
+       });
+       Node.prototype.appendChild = function appendChild(node) { frameCount = 1; return node; };
+       function Range() {}`,
+      parent
+    );
+    return { parent, child };
+  }
+
+  test.each([
+    ['an untouched page', ''],
+    [
+      'window.length shadowed',
+      "Object.defineProperty(window, 'length', { value: 0, configurable: true });",
+    ],
+    ['WeakSet.prototype.has replaced', 'WeakSet.prototype.has = () => true;'],
+    ['Reflect.apply replaced', 'Reflect.apply = () => {};'],
+    ['the Array iterator replaced', 'Array.prototype[Symbol.iterator] = function* () {};'],
+  ])('patches a child reached only as window[i] with %s', (_label, sabotage) => {
+    const src = bundleSource();
+    const { parent, child } = makeFramesRealms();
+    vm.runInContext(`(${src})()`, parent);
+    expect(vm.runInContext('window.__freedomScriptletRan', parent)).toBe(1);
+    // The wrapper keeps the native's result and name.
+    expect(
+      vm.runInContext(
+        `${sabotage}\n var n = {}; [new Node().appendChild(n) === n, Node.prototype.appendChild.name]`,
+        parent
+      )
+    ).toEqual([true, 'appendChild']);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+    // Seen once: later insertions don't re-run it.
+    vm.runInContext('new Node().appendChild({});', parent);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+  });
+
+  test('a throwing insertion still throws, and still sweeps', () => {
+    const src = bundleSource();
+    const { parent, child } = makeFramesRealms();
+    vm.runInContext(
+      `Node.prototype.appendChild = function appendChild() { frameCount = 1; throw new Error('boom'); };`,
+      parent
+    );
+    vm.runInContext(`(${src})()`, parent);
+    expect(() => vm.runInContext('new Node().appendChild({});', parent)).toThrow('boom');
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+  });
 });

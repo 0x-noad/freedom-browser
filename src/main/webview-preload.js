@@ -66,22 +66,48 @@ function scriptletMatchUrl() {
 // `frame-created` and WebFrameMain.executeJavaScript are asynchronous, while
 // a page can append an iframe and call `iframe.contentWindow.JSON.parse` in
 // the same synchronous run. So the parent patches such a child itself, from
-// its own main world, the moment the page first reaches into it:
-// inheritScriptletsIntoChildRealms below is appended to the scriptlet bundle
-// and wraps the `contentWindow` / `contentDocument` getters, running the same
-// scriptlets (the parent's, i.e. matched on the inheriting document's URL) in
-// a same-origin about:blank child's realm before handing it back — and
-// installing the same getters there, for nesting. Known gap (tracked in
-// #414): `window.frames[i]` / `window[i]` reach a child without
-// any hookable accessor, so a page going that way still gets the child's
-// unpatched globals.
+// its own main world: inheritScriptletsIntoChildRealms below is appended to
+// the scriptlet bundle and runs the same scriptlets (the parent's, i.e.
+// matched on the inheriting document's URL) in a same-origin about:blank
+// child's realm before the page can touch it — and installs the same hooks
+// there, for nesting. Two routes lead into a child, so it hooks both:
+//
+// - `iframe.contentWindow` / `contentDocument` (and <frame>/<object>'s):
+//   the getters are wrapped and adopt the child before handing it back.
+// - `window[i]` / `window.frames[i]` (#414): indexed WindowProxy access has
+//   no accessor to wrap. But a frame only comes into existence when a frame
+//   element is inserted into a document, and every script-reachable way to
+//   insert one (appendChild … replaceChildren, innerHTML/outerHTML,
+//   insertAdjacent*, setHTML*, document.write, Range#insertNode, the
+//   document.body setter, execCommand) is wrapped to sweep the inserting
+//   document's `window[i]` right after the call — before the inserting
+//   script's next line. Probed
+//   in real Chromium: even an iframe whose src is a cross-origin or
+//   same-origin http URL is reachable as a same-origin about:blank realm
+//   until its navigation commits, and no load event fires synchronously on
+//   insertion, so the sweep (not an event) is what closes this. Frames the
+//   parser inserts are swept by a MutationObserver instead: the parser runs
+//   a microtask checkpoint before each script, so the observer has fired
+//   before the next inline script can read `frames[i]`. It sweeps one last
+//   time and disconnects at DOMContentLoaded, after which only script
+//   insertions remain.
+//
+// These wrappers sit on hot DOM APIs, so the sweep is kept cheap: it only
+// looks at the one window whose document the call inserted into, not
+// recursively (a frame is always born empty, so a new one can't bring
+// grandchildren along), and only at WindowProxies it hasn't seen before —
+// a child is adopted, or found cross-origin, once in its lifetime. Remaining
+// gaps: a `<script>` inserted in the same call as a frame, or inside markup
+// written by document.write, runs before the sweep does; and an existing
+// frame navigated to about:blank later is re-adopted only through
+// contentWindow/contentDocument.
 //
 // Runs in the page's main world, stringified into the bundle: no closures
 // over this file. Everything it needs later is captured up front, since page
 // scripts run between install and the first hooked access — so no call below
 // goes through a page-replaceable global or prototype method (String,
-// String.prototype.startsWith, Array iteration…) once the page has run.
-// Serialized into the page by buildScriptletBundle, so it must be
+// String.prototype.startsWith, Array iteration, window.length…) once the page
+// has run. Serialized into the page by buildScriptletBundle, so it must be
 // self-contained: `istanbul ignore` keeps coverage counters (which only exist
 // in the test runner's realm) from being compiled into its source.
 /* istanbul ignore next */
@@ -90,9 +116,56 @@ function inheritScriptletsIntoChildRealms(runIn) {
   const { defineProperty, getOwnPropertyDescriptor } = Object;
   const { startsWith } = String.prototype;
   const adopted = new WeakSet();
+  const seen = new WeakSet();
   const { has, add } = WeakSet.prototype;
+  const root = globalThis;
   const CTORS = ['HTMLIFrameElement', 'HTMLFrameElement', 'HTMLObjectElement'];
   const PROPS = ['contentWindow', 'contentDocument'];
+  // Everything that can put a frame element into a document, by the
+  // interface that owns it. ShadowRoot inherits DocumentFragment's append &
+  // co., which is why a fragment's are wrapped too.
+  const CHILD_NODE = ['before', 'after', 'replaceWith'];
+  const PARENT_NODE = ['append', 'prepend', 'replaceChildren'];
+  const INSERT_METHODS = [
+    ['Node', ['appendChild', 'insertBefore', 'replaceChild']],
+    [
+      'Element',
+      [
+        ...CHILD_NODE,
+        ...PARENT_NODE,
+        'insertAdjacentElement',
+        'insertAdjacentHTML',
+        'setHTMLUnsafe',
+        'setHTML',
+      ],
+    ],
+    ['CharacterData', CHILD_NODE],
+    ['DocumentType', CHILD_NODE],
+    ['Document', [...PARENT_NODE, 'write', 'writeln', 'execCommand']],
+    ['DocumentFragment', PARENT_NODE],
+    ['ShadowRoot', ['setHTMLUnsafe', 'setHTML']],
+    ['Range', ['insertNode', 'surroundContents']],
+  ];
+  const INSERT_SETTERS = [
+    ['Element', ['innerHTML', 'outerHTML']],
+    ['ShadowRoot', ['innerHTML']],
+    ['Document', ['body']],
+  ];
+  // [Replaceable]: a page can shadow `window.length` with its own value, so
+  // read the native getter.
+  // Looked up the prototype chain: Range's startContainer, say, lives on
+  // AbstractRange.prototype. Install time only, before any page script.
+  const getter = (ctor, prop) => {
+    for (let o = ctor && (ctor.prototype || ctor); o; o = Object.getPrototypeOf(o)) {
+      const desc = getOwnPropertyDescriptor(o, prop);
+      if (desc) return typeof desc.get === 'function' ? desc.get : null;
+    }
+    return null;
+  };
+  const lengthGet = getter(root, 'length');
+  const ownerDocumentGet = getter(root.Node, 'ownerDocument');
+  const defaultViewGet = getter(root.Document, 'defaultView');
+  const startContainerGet = getter(root.Range, 'startContainer');
   const adopt = (win) => {
     try {
       // Cross-origin children throw here; http(s)/srcdoc documents ran
@@ -111,9 +184,43 @@ function inheritScriptletsIntoChildRealms(runIn) {
       // Leave the child as it is rather than break the page.
     }
   };
+  // Adopt the frames of `win` not seen before. Never throws: it runs after
+  // the page's own DOM call, whose result or exception must stand.
+  const sweep = (win) => {
+    try {
+      const length = lengthGet ? apply(lengthGet, win, []) : win.length;
+      for (let i = 0; i < length; i++) {
+        const child = win[i];
+        if (!child || apply(has, seen, [child])) continue;
+        apply(add, seen, [child]);
+        adopt(child);
+      }
+    } catch {
+      // Nothing to sweep (no browsing context, or not a window).
+    }
+  };
+  // The window a call inserted into: that of the node's document (a
+  // Document is its own), or of a Range's start container. Taken from the
+  // node rather than the realm, so the parent's appendChild applied to a
+  // child's node sweeps the child.
+  const windowOfNode = (node) => {
+    const doc = (node && apply(ownerDocumentGet, node, [])) || node;
+    return apply(defaultViewGet, doc, []);
+  };
+  const windowOfRange = (range) => windowOfNode(apply(startContainerGet, range, []));
+  const sweepAfter = (target, windowOf) => {
+    let win;
+    try {
+      win = windowOf(target);
+    } catch {
+      return;
+    }
+    if (win) sweep(win);
+  };
   const install = (realm) => {
-    // Indexed loops, not for…of: install() also runs for a child at hooked-
-    // access time, and for…of would call the page's Array iterator.
+    // Indexed loops and reads, not for…of or array destructuring: install()
+    // also runs for a child at hooked-access time, and both would call the
+    // page's Array iterator.
     for (let i = 0; i < CTORS.length; i++) {
       const ctor = CTORS[i];
       const proto = realm[ctor] && realm[ctor].prototype;
@@ -137,9 +244,87 @@ function inheritScriptletsIntoChildRealms(runIn) {
         defineProperty(proto, prop, { ...desc, get });
       }
     }
+    for (let i = 0; i < INSERT_METHODS.length; i++) {
+      const ctor = INSERT_METHODS[i][0];
+      const names = INSERT_METHODS[i][1];
+      const proto = realm[ctor] && realm[ctor].prototype;
+      if (!proto) continue;
+      for (let j = 0; j < names.length; j++) {
+        const name = names[j];
+        const desc = getOwnPropertyDescriptor(proto, name);
+        if (!desc || typeof desc.value !== 'function') continue;
+        const native = desc.value;
+        const windowOf = ctor === 'Range' ? windowOfRange : windowOfNode;
+        // A method definition: keeps the name and, like the native, is not
+        // a constructor.
+        const value = {
+          [name](...args) {
+            try {
+              return apply(native, this, args);
+            } finally {
+              sweepAfter(this, windowOf);
+            }
+          },
+        }[name];
+        defineProperty(proto, name, { ...desc, value });
+      }
+    }
+    for (let i = 0; i < INSERT_SETTERS.length; i++) {
+      const ctor = INSERT_SETTERS[i][0];
+      const names = INSERT_SETTERS[i][1];
+      const proto = realm[ctor] && realm[ctor].prototype;
+      if (!proto) continue;
+      for (let j = 0; j < names.length; j++) {
+        const name = names[j];
+        const desc = getOwnPropertyDescriptor(proto, name);
+        if (!desc || typeof desc.set !== 'function') continue;
+        const nativeSet = desc.set;
+        const { set } = getOwnPropertyDescriptor(
+          {
+            set [name](v) {
+              try {
+                apply(nativeSet, this, [v]);
+              } finally {
+                sweepAfter(this, windowOfNode);
+              }
+            },
+          },
+          name
+        );
+        defineProperty(proto, name, { ...desc, set });
+      }
+    }
   };
   apply(add, adopted, [Object]);
-  install(globalThis);
+  install(root);
+  // Parser-inserted frames: swept at the microtask checkpoint the parser
+  // runs before each script, and one last time at DOMContentLoaded (window,
+  // capture: ahead of every page listener), when parsing is over. The
+  // readyState check covers a document.open() having erased that listener.
+  try {
+    const doc = root.document;
+    const MO = root.MutationObserver;
+    const readyStateGet = getter(root.Document, 'readyState');
+    const addEventListener = root.EventTarget && root.EventTarget.prototype.addEventListener;
+    if (doc && MO && readyStateGet && addEventListener) {
+      const { observe, disconnect } = MO.prototype;
+      const observer = new MO(() => {
+        sweep(root);
+        if (apply(readyStateGet, doc, []) !== 'loading') apply(disconnect, observer, []);
+      });
+      apply(observe, observer, [doc, { childList: true, subtree: true }]);
+      apply(addEventListener, root, [
+        'DOMContentLoaded',
+        () => {
+          sweep(root);
+          apply(disconnect, observer, []);
+        },
+        true,
+      ]);
+    }
+  } catch {
+    // No observer: script insertions are still covered.
+  }
 }
 
 // The main-world bundle: the frame's scriptlets for its own realm, then the
