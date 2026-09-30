@@ -96,6 +96,11 @@ let sendTxState = {
 // holds — see signature-flight.js.
 let sendFlight = null;
 
+// The opener's `onClose`, run once when this send screen closes (the publish
+// setup returns to its pay step). Kept apart from sendTxState, which
+// resetSendState clears mid-flow.
+let sendCloseCallback = null;
+
 export function initSend() {
   sendScreen = document.getElementById('sidebar-send');
   sendBackBtn = document.getElementById('send-back');
@@ -274,17 +279,24 @@ export function updateSendAvailability() {
   sendBtn.title = reason || '';
 }
 
+/**
+ * Open the Send screen, pre-filled from `options` (recipient, chainId,
+ * tokenKey/tokenSymbol, amount). `options.onClose` runs once when the screen
+ * closes again. Resolves `{ opened: true }`, or `{ opened: false, reason }`
+ * when Send is not available, so a programmatic opener can say why instead
+ * of the click doing nothing.
+ */
 export async function openSend(options = {}) {
   if (!walletState.fullAddresses.wallet) {
     console.error('[WalletUI] No wallet address available');
-    return;
+    return { opened: false, reason: 'The wallet address is not available yet.' };
   }
   // Guards the programmatic openers (x402 top-up links etc.) — the
   // Send button itself is disabled via updateSendAvailability.
   const blockedReason = sendBlockedReason();
   if (blockedReason) {
     console.warn('[WalletUI] Send is not available:', blockedReason);
-    return;
+    return { opened: false, reason: blockedReason };
   }
 
   // One pending SafeTx per Safe: while one is waiting for signatures,
@@ -294,7 +306,11 @@ export async function openSend(options = {}) {
     const pending = await window.wallet.safeState(safe.index);
     if (pending.success && pending.state) {
       openSafeSigningBoard(safe.index);
-      return;
+      return {
+        opened: false,
+        reason:
+          'This Safe already has a transaction waiting for signatures. Finish or discard it first.',
+      };
     }
   }
 
@@ -306,11 +322,12 @@ export async function openSend(options = {}) {
   // so this is not merely belt-and-braces.
   if (isSignatureInFlight()) {
     console.warn('[WalletUI] Send screen not opened: a signature is already in flight');
-    return;
+    return { opened: false, reason: 'Another signature is waiting for confirmation.' };
   }
 
   resetSendState();
   applySendOpenOptions(options);
+  sendCloseCallback = typeof options.onClose === 'function' ? options.onClose : null;
 
   walletState.identityView?.classList.add('hidden');
   sendScreen?.classList.remove('hidden');
@@ -323,6 +340,7 @@ export async function openSend(options = {}) {
       sendRecipientInput?.focus();
     }
   }, 100);
+  return { opened: true };
 }
 
 export function closeSend() {
@@ -342,6 +360,9 @@ export function closeSend() {
     // let the status card re-evaluate without a module cycle.
     window.dispatchEvent(new CustomEvent('wallet:send-closed'));
   }
+  const onClose = sendCloseCallback;
+  sendCloseCallback = null;
+  onClose?.();
 }
 
 function resetSendState() {
