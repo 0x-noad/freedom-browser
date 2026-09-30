@@ -23,6 +23,7 @@
 //   node scripts/check-mac-bundle-dylibs.js <path/to/Freedom.app>
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
@@ -90,13 +91,32 @@ function walkFiles(dir) {
 }
 
 /**
+ * `otool -L` for one file. Xcode's `otool` shim re-splits its arguments, so a
+ * path with parentheses fails ("Freedom Helper (GPU)" became "Freedom Helper "
+ * on the macos-14 runner's Xcode 15.4). It is handed a symlink with a plain
+ * name instead; otool reads through it, and the header line naming the link is
+ * skipped by foreignLibraries anyway.
+ * @param {string} file
+ * @returns {string}
+ */
+function otoolLibraries(file) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'otool-'));
+  const link = path.join(dir, 'macho');
+  try {
+    fs.symlinkSync(file, link);
+    return execFileSync('otool', ['-L', link], { encoding: 'utf8' });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
  * @param {string} appPath
  * @param {{otool?: (file: string) => string}} [options]
  * @returns {{checked: number, problems: {file: string, libs: string[]}[]}}
  */
 function checkBundle(appPath, options = {}) {
-  const otool =
-    options.otool || ((file) => execFileSync('otool', ['-L', file], { encoding: 'utf8' }));
+  const otool = options.otool || otoolLibraries;
   const problems = [];
   let checked = 0;
   for (const file of walkFiles(appPath)) {
