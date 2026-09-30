@@ -177,6 +177,14 @@ jobs:
       - name: Run lint
         run: npm run lint
 
+      # Two suites spawn a real Electron (`ipfs-gateway-proxy`, `ens-ccip-proxy`)
+      # and electron 44 downloads its binary on the first `require('electron')`.
+      # Left to the tests, parallel jest workers both start that download and
+      # one spawns the binary while the other is still writing it
+      # (`spawn ETXTBSY`). Pull it once, here, before any worker starts.
+      - name: Warm the Electron binary download
+        run: node -e "require('electron')"
+
       - name: Run test coverage
         run: npm run test:coverage
 
@@ -733,6 +741,13 @@ jobs:
 
       - name: Install Electron system dependencies
         uses: ./.github/actions/install-playwright-deps
+
+      # Before jest: both suites below resolve the binary through
+      # `require('electron')`, and two workers racing that first-use download
+      # fail with `spawn ETXTBSY` (seen on this job when #359 added the second
+      # suite).
+      - name: Warm the Electron binary download
+        run: node -e "require('electron')"
 
       - name: Run the external gateway and ENS CCIP-Read proxy integration tests
         env:

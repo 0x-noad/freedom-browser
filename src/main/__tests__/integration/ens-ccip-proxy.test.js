@@ -13,7 +13,8 @@
  *
  * Skipped when the Electron binary cannot be resolved; the `ipfs-gateway-proxy`
  * CI job sets `FREEDOM_ELECTRON_NET_TEST=1`, which turns a missing binary into
- * a failure instead (see `ipfs-gateway-proxy.test.js` for the details).
+ * a failure instead (see `ipfs-gateway-proxy.test.js` for the details, including
+ * why CI fetches the binary before jest starts).
  */
 
 const { spawn } = require('child_process');
