@@ -182,6 +182,16 @@ async function assertOnionRoutable(url, deps) {
 // same moment still gets every page-level handler. A URL Chromium canonicalises
 // differently from WHATWG `URL` simply doesn't match, i.e. falls back to the
 // handlers seeing it, never the other way round.
+//
+// A dial is tracked from before the request exists until its response headers
+// are back (or it fails, redirects, or is aborted) — not until its body ends.
+// The only listeners that consult the set run on `onBeforeRequest` (adblock)
+// and `onHeadersReceived` (x402-detect/receipt), and Chromium runs both before
+// `net.request` emits `response`, so nothing after that point needs the match.
+// Holding it until the body ended would let a caller that abandons a body
+// without reading or cancelling it (`if (!res.ok) return null`) pin the URL in
+// the set forever, exempting every later unattributed request for it (a
+// service worker's, say) from adblock and x402-detect.
 // ---------------------------------------------------------------------------
 
 const inFlightDials = new Map(); // canonical href -> number of live dials
@@ -352,8 +362,9 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
     }
 
     // Registered before the request exists, so its very first webRequest
-    // event (onBeforeRequest) already matches; released by `detach`, which
-    // every terminal path (end, cancel, redirect, null body, failure) runs.
+    // event (onBeforeRequest) already matches; released as soon as response
+    // headers arrive (see the tracking note above), and by `detach`, which
+    // every other terminal path (cancel, redirect, failure) runs.
     const releaseDial = trackInFlightDial(url);
     let request;
     try {
@@ -449,6 +460,10 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
     });
 
     request.on('response', (response) => {
+      // onBeforeRequest and onHeadersReceived — the only listeners that ask
+      // `isGatewayTransportRequest` — have both run by now. Released here, not
+      // when the body ends, so an abandoned body cannot pin the URL.
+      releaseDial();
       // Every response this handler abandons (drained or destroyed) still needs
       // an 'error' listener: it is an EventEmitter, so a socket error emitted on
       // one with no listener is an uncaught main-process exception, not a failed

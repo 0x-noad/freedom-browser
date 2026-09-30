@@ -600,13 +600,30 @@ describe('isGatewayTransportRequest', () => {
     );
     const response = new FakeIncomingMessage({ statusCode: 200 });
     request.emit('response', response);
+    // Headers are back: onBeforeRequest and onHeadersReceived — the only
+    // listeners that ask — have run, so the dial is released.
+    expect(isGatewayTransportRequest(ownDial(URL_A))).toBe(false);
     const res = await promise;
-    // Headers are back but the body is still streaming: still ours.
-    expect(isGatewayTransportRequest(ownDial(URL_A))).toBe(true);
     response.emit('data', Buffer.from('{}'));
     response.emit('end');
     await readAll(res);
     expect(isGatewayTransportRequest(ownDial(URL_A))).toBe(false);
+  });
+
+  // R2-M1 on #462: `detectExternalGatewayVersion`'s `if (!res.ok) return null`
+  // walks away from a body it never reads or cancels. That must not leave the
+  // URL tracked — every later unattributed request for it would skip adblock
+  // and x402-detect.
+  test('an abandoned, never-ending body does not pin the URL', async () => {
+    const url = 'https://gw.example/api/v0/version';
+    const { promise, request } = startNetFetch(url, { method: 'POST' });
+    const response = new FakeIncomingMessage({ statusCode: 500 });
+    request.emit('response', response);
+    const res = await promise;
+    expect(res.ok).toBe(false);
+    response.emit('data', Buffer.from('first chunk'));
+    // …and nothing ever reads, cancels, or ends it.
+    expect(isGatewayTransportRequest(ownDial(url))).toBe(false);
   });
 
   test('never matches a request a page made for the same URL', async () => {
