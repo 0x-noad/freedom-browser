@@ -317,13 +317,63 @@ describe('netGatewayFetch', () => {
     expect(request.aborted).toBe(true);
   });
 
-  test('refuses any redirect mode but manual', async () => {
-    await expect(netGatewayFetch(REMOTE, { redirect: 'follow' })).rejects.toThrow(
-      /redirect: 'manual' only/
-    );
-    await expect(netGatewayFetch(REMOTE, { redirect: 'error' })).rejects.toThrow(
-      /redirect: 'manual' only/
-    );
+  test('refuses redirect: follow (and anything but manual/error) before dialling', async () => {
+    const requestImpl = jest.fn();
+    for (const redirect of ['follow', 'MANUAL', '']) {
+      await expect(netGatewayFetch(REMOTE, { redirect }, { requestImpl })).rejects.toThrow(
+        /redirect: 'manual' or 'error' only/
+      );
+    }
+    expect(requestImpl).not.toHaveBeenCalled();
+  });
+
+  // #359: CCIP-Read's contract. Chromium still gets `manual`, so the hop is
+  // reported and dropped exactly as in manual mode — only what the caller sees
+  // differs: a rejection (undici's `redirect: 'error'`) instead of the 3xx.
+  test("redirect: 'error' rejects on a 3xx and never takes the hop", async () => {
+    const { promise, requestImpl, request } = startNetFetch(REMOTE, { redirect: 'error' });
+    expect(requestImpl.mock.calls[0][0].redirect).toBe('manual');
+    request.emit('redirect', 302, 'GET', 'http://127.0.0.1:1633/', {
+      location: ['http://127.0.0.1:1633/'],
+    });
+
+    await expect(promise).rejects.toThrow(TypeError);
+    await expect(promise).rejects.toThrow(/redirect refused \(status 302\)/);
+    expect(request.aborted).toBe(true);
+  });
+
+  test("redirect: 'error' still answers an ordinary response", async () => {
+    const { promise, request } = startNetFetch(REMOTE, { redirect: 'error' });
+    const upstream = new FakeIncomingMessage({ statusCode: 200 });
+    request.emit('response', upstream);
+    const response = await promise;
+    const read = readAll(response);
+    upstream.emit('data', Buffer.from('ok'));
+    upstream.emit('end');
+
+    expect((await read).toString()).toBe('ok');
+  });
+
+  test('writes a POST body before ending the request', () => {
+    const { request } = startNetFetch(REMOTE, {
+      method: 'POST',
+      redirect: 'error',
+      body: '{"sender":"0x","data":"0x"}',
+    });
+
+    expect(request.options.method).toBe('POST');
+    expect(Buffer.concat(request.written).toString()).toBe('{"sender":"0x","data":"0x"}');
+    expect(request.ended).toBe(true);
+  });
+
+  test.each([
+    ['a GET with a body', { method: 'GET', body: 'x' }, /GET request cannot carry a body/],
+    ['a HEAD with a body', { method: 'HEAD', body: 'x' }, /HEAD request cannot carry a body/],
+    ['a stream body', { method: 'POST', body: new ReadableStream() }, /string or Buffer body/],
+  ])('refuses %s before dialling', async (_label, init, message) => {
+    const requestImpl = jest.fn();
+    await expect(netGatewayFetch(REMOTE, init, { requestImpl })).rejects.toThrow(message);
+    expect(requestImpl).not.toHaveBeenCalled();
   });
 
   test('surfaces a 3xx with its Location instead of following it', async () => {

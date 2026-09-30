@@ -2,7 +2,9 @@
  * The one way this app dials a configured content-node endpoint: the external
  * IPFS gateway (`ipfs-manager.js`) and the speculative gateway warm-up
  * (`ens-prefetch.js`, for the Ant API too — it is configurable to a remote
- * host in exactly the same way).
+ * host in exactly the same way). ENS CCIP-Read gateways (`ens/ccip-fetch.js`)
+ * dial through `netGatewayFetch` too (#359): their URLs are named by the
+ * contract being resolved and can sit on a `.onion` host just the same.
  *
  * WHY THIS EXISTS
  *
@@ -229,23 +231,41 @@ function defaultNetRequest(options) {
  * `fetch`-shaped GET/HEAD over Chromium's network stack, so the request
  * follows the session's proxy configuration.
  *
- * Supports exactly what the external gateway path uses: `method`, `headers`,
- * `signal` and `redirect: 'manual'`. Any other redirect mode is rejected
- * outright — `follow` on this path is the SSRF hole `redirect: 'manual'` was
- * added to close (a gateway answering `302 Location: http://127.0.0.1:1633/…`
- * would have Freedom fetch the user's own loopback services and hand the body
- * back under the `ipfs://` origin), so it must not be reachable by accident.
+ * Supports exactly what its callers use: `method`, `headers`, `signal`, a
+ * string/Buffer `body` (CCIP-Read POSTs one; never on GET/HEAD), and
+ * `redirect: 'manual'` (the IPFS gateway paths) or `redirect: 'error'` (CCIP).
+ * `follow` is rejected outright — on the gateway path it is the SSRF hole
+ * `redirect: 'manual'` was added to close (a gateway answering `302 Location:
+ * http://127.0.0.1:1633/…` would have Freedom fetch the user's own loopback
+ * services and hand the body back under the `ipfs://` origin), and on the CCIP
+ * path it would let a resolver-named HTTPS URL bounce to HTTP or to a host
+ * `ccipReadFetch` refuses to dial — so it must not be reachable by accident.
+ *
+ * Both modes dial Chromium with `redirect: 'manual'`, so a hop is never taken
+ * in either; they differ only in what the caller gets back. `manual` answers
+ * with the 3xx itself, `error` rejects with a `TypeError` the way undici's
+ * `fetch(url, { redirect: 'error' })` does.
  *
  * @param {string} url
- * @param {{method?: string, headers?: Headers, signal?: AbortSignal, redirect?: string}} init
+ * @param {{method?: string, headers?: Headers, signal?: AbortSignal, redirect?: string, body?: string|Buffer}} init
  * @param {{requestImpl?: Function, resolveProxy?: Function}} deps - test seams for
  *   `net.request` and `session.resolveProxy`
  * @returns {Promise<Response>}
  */
 async function netGatewayFetch(url, init = {}, deps = {}) {
-  const { method = 'GET', headers, signal, redirect = 'manual' } = init;
-  if (redirect !== 'manual') {
-    throw new Error(`gateway transport supports redirect: 'manual' only (got '${redirect}')`);
+  const { method = 'GET', headers, signal, redirect = 'manual', body: requestBody } = init;
+  if (redirect !== 'manual' && redirect !== 'error') {
+    throw new Error(
+      `gateway transport supports redirect: 'manual' or 'error' only (got '${redirect}')`
+    );
+  }
+  if (requestBody != null) {
+    if (method === 'GET' || method === 'HEAD') {
+      throw new TypeError(`a ${method} request cannot carry a body`);
+    }
+    if (typeof requestBody !== 'string' && !Buffer.isBuffer(requestBody)) {
+      throw new TypeError('gateway transport accepts a string or Buffer body only');
+    }
   }
   if (signal?.aborted) throw abortError();
   // Refused before the request exists, so Chromium is never asked to resolve
@@ -335,14 +355,19 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       signal.addEventListener('abort', onAbort, { once: true });
     }
 
-    // `redirect: 'manual'`: the hop is reported, never taken. Aborting here is
-    // what stops Chromium from following it (an unanswered `redirect` event
-    // leaves the request hanging), and the 3xx goes back to the caller with
-    // its headers so `Location` can be rewritten into the `ipfs://` space.
+    // The hop is reported, never taken. Aborting here is what stops Chromium
+    // from following it (an unanswered `redirect` event leaves the request
+    // hanging). Under `redirect: 'manual'` the 3xx goes back to the caller with
+    // its headers so `Location` can be rewritten into the `ipfs://` space;
+    // under `redirect: 'error'` the request fails, as undici's would.
     request.on('redirect', (status, _method, _redirectUrl, responseHeaders) => {
       abortRequest();
       detach();
       if (settled) return;
+      if (redirect === 'error') {
+        fail(new TypeError(`redirect refused (status ${status}) under redirect: 'error'`));
+        return;
+      }
       try {
         succeed(buildResponse(null, { status, headers: headersFromNetResponse(responseHeaders) }));
       } catch (err) {
@@ -436,6 +461,7 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       for (const [name, value] of entries) {
         request.setHeader(name, value);
       }
+      if (requestBody != null) request.write(requestBody);
       request.end();
     } catch (err) {
       // The request exists but was never ended: settle it, or a rejected
