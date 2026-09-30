@@ -50,6 +50,7 @@ const { addEntry, updateEntry } = require('./publish-history');
 const messagingService = require('./messaging-service');
 const subscriptionRegistry = require('./subscription-registry');
 const { getAntApiUrl } = require('../service-registry');
+const { getPublishReadiness } = require('./publish-setup-service');
 const { getDerivedKeys, getPublisherKey, getUserWalletKey } = require('../identity-manager');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
 const log = require('electron-log');
@@ -73,6 +74,9 @@ const LIMITS = {
 
 const SPEC_VERSION = '1.0';
 const MAX_U64 = (1n << 64n) - 1n;
+// A read's reachability probe: a node that stopped answering must not hang
+// the page's request.
+const REACHABLE_TIMEOUT_MS = 5_000;
 
 const READ_BUDGETS = {
   connected: {
@@ -1929,7 +1933,9 @@ async function checkBeeReachable() {
   const beeUrl = getAntApiUrl();
   if (!beeUrl) return { ok: false, reason: 'node-stopped' };
   try {
-    const res = await fetch(`${beeUrl}/node`);
+    const res = await fetch(`${beeUrl}/node`, {
+      signal: AbortSignal.timeout(REACHABLE_TIMEOUT_MS),
+    });
     if (!res.ok) return { ok: false, reason: 'node-stopped' };
     await res.json(); // consume response body
     return { ok: true };
@@ -1939,46 +1945,16 @@ async function checkBeeReachable() {
 }
 
 /**
- * Pre-flight check: is Bee running, in light mode, with usable stamps?
- * @returns {{ ok: boolean, reason?: string }}
+ * Pre-flight for writes: can the node publish right now? Asks the publish
+ * setup service, the one place that reads the node's chain init, mode, peer
+ * readiness and usable stamps (publish-setup-service.js). `reason` is one of
+ * `node-stopped`, `node-not-ready`, `ultra-light-mode`, `no-usable-stamps`.
+ * @returns {Promise<{ ok: boolean, reason?: string }>}
  */
 async function checkSwarmPreFlight() {
   try {
-    const beeUrl = getAntApiUrl();
-    if (!beeUrl) {
-      return { ok: false, reason: 'node-stopped' };
-    }
-
-    // Check node mode
-    const nodeRes = await fetch(`${beeUrl}/node`);
-    if (!nodeRes.ok) {
-      return { ok: false, reason: 'node-stopped' };
-    }
-    const nodeData = await nodeRes.json();
-    const beeMode = nodeData.beeMode || '';
-    if (beeMode === 'ultra-light' || beeMode === 'ultralight') {
-      return { ok: false, reason: 'ultra-light-mode' };
-    }
-
-    // Check readiness
-    const readinessRes = await fetch(`${beeUrl}/readiness`);
-    if (!readinessRes.ok) {
-      return { ok: false, reason: 'node-not-ready' };
-    }
-
-    // Check for usable stamps
-    const stampsRes = await fetch(`${beeUrl}/stamps`);
-    if (!stampsRes.ok) {
-      return { ok: false, reason: 'no-usable-stamps' };
-    }
-    const stampsData = await stampsRes.json();
-    const stamps = Array.isArray(stampsData.stamps) ? stampsData.stamps : [];
-    const usable = stamps.filter((s) => s.usable === true);
-    if (usable.length === 0) {
-      return { ok: false, reason: 'no-usable-stamps' };
-    }
-
-    return { ok: true };
+    const readiness = await getPublishReadiness();
+    return readiness.ok ? { ok: true } : { ok: false, reason: readiness.reason };
   } catch (err) {
     log.error('[SwarmProvider] Pre-flight check failed:', err.message);
     return { ok: false, reason: 'node-stopped' };

@@ -43,6 +43,16 @@ function resetBeeClient() {
 const SIZE_SAFETY_MARGIN = 1.5;
 
 /**
+ * Whether the node can stamp uploads with this batch. The one usable-stamp
+ * check in Freedom: it takes the node's raw `/stamps` JSON and bee-js batch
+ * objects alike, and publish readiness, the swarm provider and batch
+ * selection all use it.
+ */
+function isUsableStamp(batch) {
+  return batch?.usable === true;
+}
+
+/**
  * Select the best usable postage batch for an upload of the given size.
  * "Best" = usable, enough remaining space (with 1.5x safety margin),
  * longest TTL. Returns the batch ID hex string, or null if none qualifies.
@@ -67,7 +77,7 @@ async function selectBestBatch(estimatedSizeBytes, options = {}) {
   let fullMutableTtl = -1;
 
   for (const batch of batches) {
-    if (!batch.usable) continue;
+    if (!isUsableStamp(batch)) continue;
 
     const remaining = batch.remainingSize && typeof batch.remainingSize.toBytes === 'function'
       ? batch.remainingSize.toBytes()
@@ -113,5 +123,6 @@ module.exports = {
   getBee,
   resetBeeClient,
   selectBestBatch,
+  isUsableStamp,
   toHex,
 };
