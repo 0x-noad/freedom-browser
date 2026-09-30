@@ -1,4 +1,4 @@
-- Publishing on Swarm takes one xDAI payment to your node, which buys the storage and funds its chequebook itself:
+- Publishing on Swarm takes one xDAI payment to your node, which buys the storage and funds its chequebook itself ([#459](https://github.com/solardev-xyz/freedom-browser/pull/459)):
   - Storage plans priced in xDAI, paid from the Freedom wallet or by QR code from any wallet
   - No Swarm node mode to switch in Settings > Experimental
   - Extending or growing storage is paid the same way
