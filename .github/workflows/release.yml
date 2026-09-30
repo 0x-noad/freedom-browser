@@ -905,6 +905,14 @@ jobs:
             exit 1
           fi
           echo "Bundled arti present ($(stat -f %z "$arti") bytes)"
+          # Presence is not enough: the 2.6.0 nightly shipped an arti linked
+          # against Homebrew's liblzma, which this runner has, so only the
+          # link table shows it. Anything outside the OS fails here.
+          if otool -L "$arti" | tail -n +2 | grep -vE '^[[:space:]]+(/usr/lib/|/System/Library/)'; then
+            echo "The bundled arti links libraries that are not part of macOS (listed above)" >&2
+            exit 1
+          fi
+          "$arti" --version
 
       # What a user's first double-click asks Gatekeeper, on the copy rather
       # than on the build tree the mac-arm64 job assessed: an app whose ticket
@@ -981,6 +989,14 @@ jobs:
             exit 1
           fi
           echo "Bundled arti present ($(stat -f %z "$arti") bytes)"
+          # Presence is not enough: the 2.6.0 nightly shipped an arti linked
+          # against Homebrew's liblzma, which this runner has, so only the
+          # link table shows it. Anything outside the OS fails here.
+          if otool -L "$arti" | tail -n +2 | grep -vE '^[[:space:]]+(/usr/lib/|/System/Library/)'; then
+            echo "The bundled arti links libraries that are not part of macOS (listed above)" >&2
+            exit 1
+          fi
+          "$arti" --version
 
       # Same assertion as for the disk image: the two artifacts are signed and
       # packed separately, and the `-mac.zip` is what electron-updater installs
