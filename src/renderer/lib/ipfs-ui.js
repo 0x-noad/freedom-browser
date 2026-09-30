@@ -53,8 +53,17 @@ const isExternalMode = () => state.registry?.ipfs?.mode === 'external';
 // numbers worth showing (#417): the managed node reports its own gateway
 // counters, an external one its peers and bandwidth off the Kubo RPC API. The
 // panel's `external` class picks which rows are visible (services.css).
-const syncIpfsInfoMode = () => {
-  ipfsInfoPanel?.classList.toggle('external', isExternalMode());
+//
+// Whenever the external rows come into view without a reading of their own —
+// the menu opening, or the profile flipping to external while it is open — they
+// read `Unknown` until the first stats poll lands, not the markup/reset `0`
+// (a slow or filtered RPC can take up to its 2s timeout to answer).
+const syncIpfsInfoMode = ({ opening = false } = {}) => {
+  if (!ipfsInfoPanel) return;
+  const external = isExternalMode();
+  const wasExternal = ipfsInfoPanel.classList.contains('external');
+  ipfsInfoPanel.classList.toggle('external', external);
+  if (external && (opening || !wasExternal)) renderExternalNodeStats(null);
 };
 
 // Peers/bandwidth for an external node. `stats` is null when the RPC could not
@@ -174,7 +183,7 @@ export const startIpfsInfoPolling = () => {
     return;
   }
 
-  syncIpfsInfoMode();
+  syncIpfsInfoMode({ opening: !ipfsInfoPanel?.classList.contains('visible') });
   ipfsInfoPanel?.classList.add('visible');
 
   // fetchNativeStats also reads the node version off the same getStatus call and

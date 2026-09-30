@@ -271,11 +271,46 @@ async function fetchExternalNodeStats(gatewayUrl, options) {
     if (Array.isArray(peers.Peers)) peerCount = peers.Peers.length;
     else if (peers.Peers === null) peerCount = 0;
   }
-  return {
+  const stats = {
     peers: peerCount,
     rateIn: finiteOrNull(bandwidth?.RateIn),
     rateOut: finiteOrNull(bandwidth?.RateOut),
   };
+  // Something answered on :5001 but not in Kubo's shape: no stats either.
+  if (Object.values(stats).every((value) => value === null)) return null;
+  return stats;
+}
+
+// Back-off after a stats read that learned nothing (RPC down, filtered, or not
+// Kubo). The menu polls every second while open; without this a loopback
+// gateway whose :5001 is something else — or nothing — would get two POSTs a
+// second for as long as the menu stays open. Doubles per consecutive miss, up
+// to a minute; any answer resets it, and a new activation starts clean.
+const EXTERNAL_NODE_STATS_BACKOFF_BASE_MS = 5_000;
+const EXTERNAL_NODE_STATS_BACKOFF_MAX_MS = 60_000;
+let externalNodeStatsBackoff = null; // { generation, failures, retryAt }
+
+function externalNodeStatsBackingOff(generation) {
+  return (
+    externalNodeStatsBackoff?.generation === generation &&
+    Date.now() < externalNodeStatsBackoff.retryAt
+  );
+}
+
+function recordExternalNodeStatsResult(generation, stats) {
+  // A read from a previous activation says nothing about the current node.
+  if (generation !== externalStateGeneration) return;
+  if (stats) {
+    if (externalNodeStatsBackoff?.generation === generation) externalNodeStatsBackoff = null;
+    return;
+  }
+  const failures =
+    externalNodeStatsBackoff?.generation === generation ? externalNodeStatsBackoff.failures + 1 : 1;
+  const delay = Math.min(
+    EXTERNAL_NODE_STATS_BACKOFF_BASE_MS * 2 ** (failures - 1),
+    EXTERNAL_NODE_STATS_BACKOFF_MAX_MS
+  );
+  externalNodeStatsBackoff = { generation, failures, retryAt: Date.now() + delay };
 }
 
 // One in-flight stats read per external activation. The nodes menu polls every
@@ -289,10 +324,13 @@ async function getExternalNodeStats() {
   if (currentMode !== MODE.EXTERNAL || !externalGatewayUrl) return null;
   const generation = externalStateGeneration;
   if (!externalNodeStatsRead || externalNodeStatsRead.generation !== generation) {
+    if (externalNodeStatsBackingOff(generation)) return null;
     const read = {
       generation,
-      promise: fetchExternalNodeStats(externalGatewayUrl).finally(() => {
+      promise: fetchExternalNodeStats(externalGatewayUrl).then((stats) => {
         if (externalNodeStatsRead === read) externalNodeStatsRead = null;
+        recordExternalNodeStatsResult(generation, stats);
+        return stats;
       }),
     };
     externalNodeStatsRead = read;

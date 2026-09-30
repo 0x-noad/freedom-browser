@@ -537,6 +537,64 @@ describe('ipfs-ui', () => {
     expect(ctx.elements.ipfsActiveRequestsCount.textContent).toBe('7');
   });
 
+  // R1-M1: until the first stats read lands (the RPC may take up to its 2s
+  // timeout), the external rows read Unknown, not the markup/reset `0`/blank —
+  // on first open, on a reopen after close, and on a flip to external mode.
+  test('external rows read Unknown until the first stats read lands', async () => {
+    const external = {
+      status: 'running',
+      error: null,
+      diagnostics: {
+        externalGateway: 'http://127.0.0.1:8080',
+        externalVersion: 'Kubo 0.30.0',
+        externalNodeStats: { peers: 5, rateIn: 0, rateOut: 0 },
+      },
+    };
+    const ctx = await loadIpfsModule({
+      antMenuOpen: true,
+      currentIpfsStatus: 'running',
+      mode: 'external',
+    });
+    const pending = [];
+    ctx.ipfsApi.getStatus.mockImplementation(
+      () => new Promise((resolve) => pending.push(() => resolve(external)))
+    );
+
+    ctx.mod.initIpfsUi();
+    ctx.elements.ipfsPeersCount.textContent = '0'; // markup default
+    ctx.mod.startIpfsInfoPolling();
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('Unknown');
+    expect(ctx.elements.ipfsBandwidth.textContent).toBe('Unknown');
+
+    // A repeat start while already open (updateIpfsUi) must not blank a reading.
+    pending.splice(0).forEach((resolve) => resolve());
+    await flushMicrotasks();
+    await flushMicrotasks();
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('5');
+    ctx.mod.startIpfsInfoPolling();
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('5');
+
+    // Close resets to 0; reopening shows Unknown again, not the stale reset.
+    ctx.mod.stopIpfsInfoPolling();
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('0');
+    ctx.mod.startIpfsInfoPolling();
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('Unknown');
+    expect(ctx.elements.ipfsBandwidth.textContent).toBe('Unknown');
+    pending.splice(0).forEach((resolve) => resolve());
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    // Flip managed -> external while the menu stays open.
+    ctx.mod.stopIpfsInfoPolling();
+    ctx.state.registry.ipfs.mode = 'bundled';
+    ctx.mod.startIpfsInfoPolling();
+    ctx.elements.ipfsPeersCount.textContent = '0';
+    ctx.state.registry.ipfs.mode = 'external';
+    ctx.mod.startIpfsInfoPolling();
+    expect(ctx.elements.ipfsInfoPanel.classList.contains('external')).toBe(true);
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('Unknown');
+  });
+
   test('reads Unknown, not 0 peers, when the external node exposes no RPC', async () => {
     const ctx = await loadIpfsModule({
       antMenuOpen: true,
