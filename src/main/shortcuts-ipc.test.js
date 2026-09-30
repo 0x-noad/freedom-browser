@@ -324,6 +324,30 @@ describe('shortcuts IPC', () => {
     }
   });
 
+  test('set-override refuses a swap whose handed-over binding would collide', async () => {
+    // Swapping would give Reopen Closed Tab Ctrl+Alt+Shift+0, which shares a
+    // German press with tab.new's new Ctrl+Alt+Shift+= — the save-time
+    // sanitize would then silently drop the remap just made.
+    ctx = loadShortcutsIpc({
+      initialOverrides: {
+        'tab.new': 'Ctrl+Alt+Shift+0',
+        'tab.reopenClosed': 'Ctrl+Alt+Shift+Plus',
+      },
+    });
+    const preview = await ctx.ipcMain.invoke(IPC.SHORTCUTS_PREVIEW_BINDING, {
+      id: 'tab.new',
+      event: recordedKey('=', 'Equal', { ctrlKey: true, altKey: true, shiftKey: true }),
+    });
+    expect(preview.conflict).toMatchObject({ id: 'tab.reopenClosed', fixed: true });
+    const refused = await ctx.ipcMain.invoke(IPC.SHORTCUTS_SET_OVERRIDE, {
+      id: 'tab.new',
+      accelerator: 'Ctrl+Alt+Shift+=',
+      swapWithConflict: true,
+    });
+    expect(refused).toMatchObject({ ok: false, reason: 'conflict' });
+    expect(ctx.saveSettings).not.toHaveBeenCalled();
+  });
+
   test('putting a shortcut back on its own default is never refused', async () => {
     // Zoom Out's Ctrl+- shares a Nordic press with Zoom In's Ctrl+Plus alias
     // (a registry-shipped ambiguity resolved by dispatch order), so it must

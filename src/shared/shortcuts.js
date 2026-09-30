@@ -973,7 +973,9 @@ function getEffectiveAccelerator(entryOrId, overrides, platform) {
  * keydown matcher accepts layout-produced keys, so string-distinct chords
  * can double-fire (#205). Returns null or { id, settingsLabel, fixed } —
  * `fixed: true` means a swap cannot clear it: the collision is with a fixed
- * alias, a non-editable entry, or more than one binding at once.
+ * alias, a non-editable entry, or more than one binding at once, or the
+ * swapped state would itself collide (the binding handed over fires on the
+ * same press as the new one).
  *
  * Every consumer of this name is a Settings > Shortcuts surface (the
  * conflict banner, the reverted-remap row notice), which labels its rows
@@ -982,6 +984,10 @@ function getEffectiveAccelerator(entryOrId, overrides, platform) {
  * two casings at once (#277).
  */
 function findConflict(entryOrId, accelerator, overrides, platform) {
+  return collectConflict(entryOrId, accelerator, overrides, platform, true);
+}
+
+function collectConflict(entryOrId, accelerator, overrides, platform, checkSwap) {
   const self = typeof entryOrId === 'string' ? entryOrId : entryOrId?.id;
   const normalized = normalizeAccelerator(accelerator, platform);
   if (!normalized) return null;
@@ -1027,7 +1033,31 @@ function findConflict(entryOrId, accelerator, overrides, platform) {
   if (hits.length === 0) return null;
   const firstFixed = hits.find((hit) => hit.fixed);
   if (firstFixed) return conflict(firstFixed.entry, true);
-  return conflict(hits[0].entry, hits.length > 1);
+  if (hits.length > 1) return conflict(hits[0].entry, true);
+
+  // One swappable binding collides. A swap hands it this shortcut's
+  // previous binding, which is only a resolution if the swapped state is
+  // itself conflict-free: per keypress, that previous binding can collide
+  // with the *new* one (Ctrl+Alt+Shift+0 and Ctrl+Alt+Shift+= are one German
+  // press), and sanitizeOverrides would then drop the remap the user just
+  // made. Simulate the swap exactly as setOverride applies it and offer it
+  // only when both sides stand.
+  const other = hits[0].entry;
+  if (checkSwap && selfEntry) {
+    const previous = normalizeAccelerator(
+      getEffectiveAccelerator(selfEntry, overrides, platform),
+      platform
+    );
+    const swapped = { ...(overrides || {}), [other.id]: previous, [self]: normalized };
+    if (
+      !previous ||
+      collectConflict(selfEntry, normalized, swapped, platform, false) ||
+      collectConflict(other, previous, swapped, platform, false)
+    ) {
+      return conflict(other, true);
+    }
+  }
+  return conflict(other, false);
 }
 
 /**
@@ -1083,7 +1113,9 @@ function sanitizeOverrides(raw, platform, { onDrop } = {}) {
     for (const entry of SHORTCUTS) {
       const accelerator = clean[entry.id];
       if (!accelerator) continue;
-      const conflict = findConflict(entry, accelerator, clean, platform);
+      // No swap is offered here, so skip findConflict's swap simulation:
+      // only whether (and with what) the override collides matters.
+      const conflict = collectConflict(entry, accelerator, clean, platform, false);
       if (!conflict) continue;
       delete clean[entry.id];
       dropped = true;

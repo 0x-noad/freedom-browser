@@ -1073,6 +1073,39 @@ describe('conflicts are judged per keypress, like the matcher (#205)', () => {
     ).toMatchObject({ id: 'tab.new', fixed: false });
   });
 
+  test('no swap is offered when the handed-over binding collides with the new one', () => {
+    // tab.new sits on Ctrl+Alt+Shift+0; recording Ctrl+Alt+Shift+= hits only
+    // Reopen Closed Tab's Ctrl+Alt+Shift+Plus (US Shift+= types '+'). A swap
+    // would give Reopen Closed Tab Ctrl+Alt+Shift+0 — one German press with
+    // the new Ctrl+Alt+Shift+= — so sanitizeOverrides would then drop the
+    // user's own new remap. Report it as not swappable instead.
+    const overrides = {
+      'tab.new': 'Ctrl+Alt+Shift+0',
+      'tab.reopenClosed': 'Ctrl+Alt+Shift+Plus',
+    };
+    expect(sanitizeOverrides(overrides, 'linux')).toEqual(overrides);
+    expect(findConflict('tab.new', 'Ctrl+Alt+Shift+=', overrides, 'linux')).toEqual({
+      id: 'tab.reopenClosed',
+      settingsLabel: 'Reopen closed tab',
+      fixed: true,
+    });
+    // The premise: applying that swap anyway loses the new remap.
+    expect(
+      sanitizeOverrides(
+        { 'tab.reopenClosed': 'Ctrl+Alt+Shift+0', 'tab.new': 'Ctrl+Alt+Shift+=' },
+        'linux'
+      )
+    ).not.toHaveProperty('tab.new');
+    // Control: from an unrelated previous binding the same swap stands.
+    const plain = { 'tab.new': 'Ctrl+Alt+Shift+U', 'tab.reopenClosed': 'Ctrl+Alt+Shift+Plus' };
+    expect(findConflict('tab.new', 'Ctrl+Alt+Shift+=', plain, 'linux')).toMatchObject({
+      id: 'tab.reopenClosed',
+      fixed: false,
+    });
+    const swapped = { 'tab.reopenClosed': 'Ctrl+Alt+Shift+U', 'tab.new': 'Ctrl+Alt+Shift+=' };
+    expect(sanitizeOverrides(swapped, 'linux')).toEqual(swapped);
+  });
+
   test('the registry ships exactly the known built-in collisions', () => {
     // Collisions between two entries' own defaults/aliases are resolved by
     // dispatch order, and findConflict lets an entry return to its default
