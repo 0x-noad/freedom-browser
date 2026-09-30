@@ -68,6 +68,7 @@ describe('stamp-service', () => {
         batchId: 'abc123',
         depth: 22,
         usable: true,
+        pending: false,
         isMutable: true,
         sizeBytes: 5368709120,
         remainingBytes: 4000000000,
@@ -97,6 +98,7 @@ describe('stamp-service', () => {
         batchId: 'def456',
         depth: null,
         usable: false,
+        pending: true,
         isMutable: false,
         sizeBytes: 1000,
         remainingBytes: 500,
@@ -104,6 +106,19 @@ describe('stamp-service', () => {
         ttlSeconds: 86400,
         expiresApprox: null,
       });
+    });
+
+    // Bee's "exists, awaiting confirmations": what Ant reports for a batch
+    // storer peers have not synced yet. Expired or missing batches are gone.
+    test('tells a batch still being confirmed from one that is gone', () => {
+      const confirming = normalizeBatch(makeBatch({ usable: false }));
+      expect(confirming).toMatchObject({ usable: false, pending: true });
+      const expired = normalizeBatch(
+        makeBatch({ usable: false, duration: { toSeconds: () => 0 } })
+      );
+      expect(expired.pending).toBe(false);
+      const missing = normalizeBatch(makeBatch({ usable: false, exists: false }));
+      expect(missing.pending).toBe(false);
     });
 
     test('handles empty/undefined fields gracefully', () => {
@@ -135,6 +150,7 @@ describe('stamp-service', () => {
         batchId: 'abc123',
         depth: 22,
         usable: true,
+        pending: false,
         isMutable: false,
         sizeBytes: 5368709120,
         remainingBytes: 4000000000,

@@ -1417,7 +1417,7 @@ const renderSwarmPublishingRow = (settings, setupState) => {
   }
 
   const readiness = setupState.readiness || {};
-  if (readiness.ok) {
+  if (readiness.ok || readiness.key === 'storage-pending') {
     swarmPublishingHelp.textContent = readiness.message;
     showAction('Manage storage', 'storage');
     return;
@@ -1429,7 +1429,9 @@ const renderSwarmPublishingRow = (settings, setupState) => {
       ? 'Waiting for your payment to the Swarm node.'
       : op?.phase === 'executing'
         ? 'Buying storage…'
-        : readiness.message || 'Publishing is not set up.';
+        : op?.phase === 'confirming'
+          ? 'Your storage is bought. The Swarm network is confirming it.'
+          : readiness.message || 'Publishing is not set up.';
   showAction('Set up publishing', 'setup');
 };
 

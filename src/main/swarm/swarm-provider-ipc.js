@@ -51,6 +51,7 @@ const messagingService = require('./messaging-service');
 const subscriptionRegistry = require('./subscription-registry');
 const { getAntApiUrl } = require('../service-registry');
 const { getPublishReadiness } = require('./publish-setup-service');
+const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { getDerivedKeys, getPublisherKey, getUserWalletKey } = require('../identity-manager');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
 const log = require('electron-log');
@@ -99,6 +100,25 @@ const ERRORS = {
   INVALID_PARAMS: { code: -32602, message: 'Invalid parameters' },
   INTERNAL_ERROR: { code: -32603, message: 'Internal error' },
 };
+
+/**
+ * The error for a write the node took but could not complete. A batch bought
+ * moments ago that storer peers have not synced yet is "node not ready", with
+ * the pre-flight's own reason, so an app can retry shortly; anything else is
+ * an internal error carrying the node's message.
+ */
+function nodeWriteError(err) {
+  if (isBatchNotYetKnownError(err?.message)) {
+    return {
+      error: {
+        ...ERRORS.NODE_UNAVAILABLE,
+        message: BATCH_NOT_YET_KNOWN_MESSAGE,
+        data: { reason: 'node-not-ready' },
+      },
+    };
+  }
+  return { error: { ...ERRORS.INTERNAL_ERROR, message: err?.message } };
+}
 
 const KNOWN_METHODS = [
   'swarm_requestAccess',
@@ -526,7 +546,7 @@ async function handlePublishData(params, origin) {
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] publishData failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -679,7 +699,7 @@ async function handlePublishFiles(params, origin) {
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] publishFiles failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -767,7 +787,7 @@ async function handlePublishChunk(params, origin) {
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] publishChunk failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -871,7 +891,7 @@ async function handleWriteSingleOwnerChunk(params, origin) {
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] writeSingleOwnerChunk failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -1144,7 +1164,7 @@ async function handleCreateFeed(params, origin) {
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] createFeed failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -1218,7 +1238,7 @@ async function handleUpdateFeed(params, origin) {
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] updateFeed failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -1311,7 +1331,7 @@ async function handleWriteFeedEntry(params, origin) {
     }
 
     log.error(`[SwarmProvider] writeFeedEntry failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -1587,7 +1607,7 @@ async function handleSendPss(params, origin) {
     return { result: { sent: true } };
   } catch (err) {
     log.error(`[SwarmProvider] sendPss failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -1638,7 +1658,7 @@ async function handleSendGsoc(params, origin) {
     return { result: { sent: true, address: result.address } };
   } catch (err) {
     log.error(`[SwarmProvider] sendGsoc failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 

@@ -225,7 +225,7 @@ function show(el, visible) {
 function currentView(state) {
   const op = state?.operation;
   if (op) {
-    if (op.phase === 'executing') return 'executing';
+    if (op.phase === 'executing' || op.phase === 'confirming') return 'executing';
     if (op.phase === 'done') return 'done';
     if (op.phase === 'failed') return 'failed';
     return 'pay';
@@ -233,7 +233,8 @@ function currentView(state) {
   const key = state?.readiness?.key;
   if (!state || key === 'checking') return 'node';
   if (!state.canBuy) return 'node';
-  if (key === 'ready' && !showPlans) return 'ready';
+  // Storage that exists but is still reaching the network needs no purchase.
+  if ((key === 'ready' || key === 'storage-pending') && !showPlans) return 'ready';
   if (key === 'ready' || key === 'needs-storage') return 'plans';
   return 'node';
 }

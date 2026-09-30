@@ -149,6 +149,22 @@ function isUncertainWrite(res) {
 }
 
 /**
+ * Whether an upload failed because storer peers do not know its postage batch
+ * yet: antd's `pushsync: postage batch 0x… rejected by N peer(s) as not found
+ * on-chain`. For a batch bought moments ago this means the peers have not
+ * synced its creation; the node keeps probing and the batch becomes usable
+ * again once they have, so the upload is worth retrying shortly.
+ */
+function isBatchNotYetKnownError(message) {
+  return (
+    typeof message === 'string' && /rejected by \d+ peer\(s\) as not found on-chain/i.test(message)
+  );
+}
+
+const BATCH_NOT_YET_KNOWN_MESSAGE =
+  'Your storage is still reaching the Swarm network. Try again in a minute.';
+
+/**
  * A sentence for the user from a failed response. `action` names what was
  * attempted ("Buying storage") for the errors whose own message is technical.
  * 400 and 409 bodies are written for users by the node and pass through.
@@ -197,6 +213,8 @@ module.exports = {
   topUpSettlementDeposit,
   isStorageRouteMissing,
   isUncertainWrite,
+  isBatchNotYetKnownError,
+  BATCH_NOT_YET_KNOWN_MESSAGE,
   describeAntError,
   READ_TIMEOUT_MS,
   QUOTE_TIMEOUT_MS,

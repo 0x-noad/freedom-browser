@@ -133,12 +133,15 @@ function renderBatchList(stamps) {
   stamps.forEach((batch) => {
     const card = document.createElement('div');
     card.className = 'stamp-batch-card';
-    if (!batch.usable) card.classList.add('unusable');
+    const status = batch.usable ? 'usable' : batch.pending ? 'pending' : 'unusable';
+    if (status === 'unusable') card.classList.add('unusable');
 
     const statusBadge = document.createElement('div');
     statusBadge.className = 'stamp-batch-status';
-    statusBadge.dataset.status = batch.usable ? 'usable' : 'unusable';
-    statusBadge.textContent = batch.usable ? 'Usable' : 'Not usable';
+    statusBadge.dataset.status = status;
+    statusBadge.textContent = { usable: 'Usable', pending: 'Confirming', unusable: 'Not usable' }[
+      status
+    ];
     card.appendChild(statusBadge);
 
     card.appendChild(createRow('Size', batch.sizeBytes > 0 ? formatBytes(batch.sizeBytes) : '--'));

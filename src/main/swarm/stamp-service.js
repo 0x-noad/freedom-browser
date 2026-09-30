@@ -57,6 +57,9 @@ function normalizeBatch(batch) {
     batchId,
     depth: Number.isInteger(batch.depth) ? batch.depth : null,
     usable: batch.usable === true,
+    // Bee's "exists, awaiting confirmations": Ant reports a just-bought
+    // batch this way until storer peers accept its stamps.
+    pending: batch.usable !== true && batch.exists !== false && ttlSeconds > 0,
     isMutable: batch.immutableFlag === false,
     sizeBytes,
     remainingBytes,

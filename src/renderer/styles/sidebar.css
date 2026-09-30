@@ -1808,6 +1808,12 @@
   color: #ff9800;
 }
 
+/* Bought, and the network is still confirming it: in progress, not a fault. */
+.stamp-batch-status[data-status="pending"] {
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 .stamp-batch-row {
   display: flex;
   justify-content: space-between;

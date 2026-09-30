@@ -138,6 +138,16 @@ describe('classifying failures', () => {
     expect(api.isStorageRouteMissing({ ok: true, status: 200 })).toBe(false);
   });
 
+  test('an upload refused because peers have not synced the batch yet', () => {
+    expect(
+      api.isBatchNotYetKnownError(
+        'Unprocessable Entity: {"code":422,"message":"push chunk failed: pushsync: postage batch 0xb8be73e4475fe3166d58a935d31bcfae417e6265143ba037cd271e89430b6ab1 rejected by 2 peer(s) as not found on-chain (peer said: invalid stamp: batchstore get: get batch b8be73e4475fe3166d58a935d31bcfae417e6265143ba037cd271e89430b6ab1: storage: not found, not found)"}'
+      )
+    ).toBe(true);
+    expect(api.isBatchNotYetKnownError('pushsync: no peers')).toBe(false);
+    expect(api.isBatchNotYetKnownError(undefined)).toBe(false);
+  });
+
   test('a write whose outcome is unknown', () => {
     expect(api.isUncertainWrite(res(504, 'chain transaction timed out'))).toBe(true);
     expect(api.isUncertainWrite(res(0, null, { timedOut: true }))).toBe(true);

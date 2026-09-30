@@ -53,6 +53,18 @@ function isUsableStamp(batch) {
 }
 
 /**
+ * Whether a batch exists and is alive but the node does not let it stamp
+ * yet: bee's "discovered, awaiting enough on-chain confirmations". Ant
+ * reports a batch this way while storer peers still reject its stamps as
+ * unknown (a batch bought moments ago whose creation they have not synced).
+ * An expired batch (`batchTTL: 0`) or one the chain does not hold
+ * (`exists: false`) is not pending, it is gone.
+ */
+function isPendingStamp(batch) {
+  return batch?.usable !== true && batch?.exists !== false && Number(batch?.batchTTL) > 0;
+}
+
+/**
  * Select the best usable postage batch for an upload of the given size.
  * "Best" = usable, enough remaining space (with 1.5x safety margin),
  * longest TTL. Returns the batch ID hex string, or null if none qualifies.
@@ -124,5 +136,6 @@ module.exports = {
   resetBeeClient,
   selectBestBatch,
   isUsableStamp,
+  isPendingStamp,
   toHex,
 };

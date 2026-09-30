@@ -361,6 +361,32 @@ describe('swarm-provider-ipc', () => {
       mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
     }
 
+    test('a batch the network does not know yet is node-not-ready, not an internal error', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockPreFlightOk();
+      mockPublishData.mockRejectedValue(new Error("Unprocessable Entity: {\"code\":422,\"message\":\"push chunk failed: pushsync: postage batch 0xb8be73e4475fe3166d58a935d31bcfae417e6265143ba037cd271e89430b6ab1 rejected by 2 peer(s) as not found on-chain (peer said: invalid stamp: batchstore get: get batch b8be73e4475fe3166d58a935d31bcfae417e6265143ba037cd271e89430b6ab1: storage: not found, not found)\"}"));
+
+      const result = await invokeProvider(
+        'swarm_publishData',
+        { data: 'Hello world', contentType: 'text/plain' },
+        'myapp.eth'
+      );
+      expect(result.error).toEqual({
+        code: 4900,
+        message: 'Your storage is still reaching the Swarm network. Try again in a minute.',
+        data: { reason: 'node-not-ready' },
+      });
+
+      mockPreFlightOk();
+      mockPublishData.mockRejectedValue(new Error('disk full'));
+      const other = await invokeProvider(
+        'swarm_publishData',
+        { data: 'Hello world', contentType: 'text/plain' },
+        'myapp.eth'
+      );
+      expect(other.error).toMatchObject({ code: -32603, message: 'disk full' });
+    });
+
     test('publishes data and returns reference + bzzUrl', async () => {
       mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
       mockPreFlightOk();

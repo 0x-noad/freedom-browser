@@ -78,6 +78,24 @@ describe('swarm-readiness view helpers', () => {
     );
   });
 
+  test('a bought batch still reaching the network is not called ready yet', () => {
+    const confirming = { phase: 'confirming', request: { kind: 'buy', planId: 'starter' } };
+    expect(mod.describeExecuting(confirming).title).toBe('Almost Ready');
+    expect(mod.describeDone({ request: { kind: 'buy' }, result: { slow: true } })).toMatch(
+      /still catching up/
+    );
+    expect(mod.describeDone({ request: { kind: 'buy' }, result: {} })).toBe(
+      'Your storage is ready. You can publish on Swarm now.'
+    );
+    expect(mod.describePublishCta(stateWith({ operation: confirming }))).toMatchObject({
+      label: 'Confirming Storage…',
+      target: 'setup',
+    });
+    expect(
+      mod.describePublishCta(stateWith({ readiness: { ok: false, key: 'storage-pending' } }))
+    ).toMatchObject({ label: 'Manage Storage', target: 'storage' });
+  });
+
   test('builds an EIP-681 payment request for a plain xDAI transfer on Gnosis', () => {
     expect(mod.buildPaymentUri(ADDRESS, '460000000000000000')).toBe(
       `ethereum:${ADDRESS}@100?value=460000000000000000`

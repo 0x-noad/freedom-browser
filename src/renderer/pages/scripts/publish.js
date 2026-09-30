@@ -134,7 +134,10 @@ async function ensurePublishReady() {
     const state = await window.freedomAPI?.getPublishSetupState?.();
     const readiness = state?.readiness;
     if (!readiness || readiness.ok) return true;
-    showError(readiness.message || 'Publishing is not set up.', { offerSetup: true });
+    // Storage that is still reaching the network needs a moment, not setup.
+    showError(readiness.message || 'Publishing is not set up.', {
+      offerSetup: readiness.key !== 'storage-pending',
+    });
     return false;
   } catch {
     // Can't check — let the publish attempt proceed and fail if needed

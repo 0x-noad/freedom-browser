@@ -76,6 +76,12 @@ export function describeOperationTitle(operation) {
 }
 
 export function describeExecuting(operation) {
+  if (operation?.phase === 'confirming') {
+    return {
+      title: 'Almost Ready',
+      text: 'Your storage is bought. The Swarm network is confirming it, which takes a moment. You can close this screen.',
+    };
+  }
   switch (operation?.request?.kind) {
     case 'extend':
       return {
@@ -103,6 +109,9 @@ export function describeDone(operation) {
       : 'The chequebook deposit is topped up. Uploads can pay for bandwidth again.';
   }
   if (kind === 'extend') return 'Your storage is extended.';
+  if (operation?.result?.slow) {
+    return 'Your storage is bought, but the Swarm network is still catching up. Publishing may fail for a few more minutes.';
+  }
   return 'Your storage is ready. You can publish on Swarm now.';
 }
 
@@ -142,6 +151,9 @@ export function describePublishCta(state) {
   });
   const op = state.operation;
   if (op?.phase === 'executing') return cta('Buying Storage…', 'This takes about a minute');
+  if (op?.phase === 'confirming') {
+    return cta('Confirming Storage…', 'The network is confirming your storage');
+  }
   if (op?.phase === 'awaiting-funds' && op.quote) {
     return cta('Waiting for Payment', `Send ${op.quote.send.display} xDAI to your node`);
   }
@@ -153,6 +165,8 @@ export function describePublishCta(state) {
   switch (state.readiness?.key) {
     case 'ready':
       return cta('Manage Storage', 'View and extend your storage', 'storage');
+    case 'storage-pending':
+      return cta('Manage Storage', 'New storage is reaching the network', 'storage');
     case 'needs-storage':
       return cta('Set Up Publishing', 'Buy storage to publish on Swarm');
     case 'checking':

@@ -32,7 +32,7 @@ const { ipcMain } = require('electron');
 const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
 const antStorageApi = require('./ant-storage-api');
-const { isUsableStamp } = require('./swarm-service');
+const { isUsableStamp, isPendingStamp } = require('./swarm-service');
 
 const GNOSIS_CHAIN_ID = 100;
 
@@ -65,6 +65,11 @@ const PROBE_TIMEOUT_MS = 5_000;
 const READINESS_MAX_AGE_MS = 2_000;
 const STATE_MAX_AGE_MS = 5_000;
 const FUNDING_TX_POLL_MS = 4_000;
+// After a buy, how often and how long to wait for the node to call the new
+// batch usable: storer peers only accept its stamps once they have synced
+// its creation.
+const CONFIRM_POLL_MS = 3_000;
+const CONFIRM_TIMEOUT_MS = 10 * 60_000;
 const FUNDING_TX_TIMEOUT_MS = 15 * 60_000;
 // antd's chain init has no timeout of its own. After this long the setup
 // screen suggests checking the Gnosis RPC or restarting the node.
@@ -236,6 +241,13 @@ function classifyReadiness({ node, probe, runningSince = null, now = Date.now() 
     return result('connecting', 'node-not-ready', 'The Swarm node is connecting to peers…');
   }
   if (!probe.stamps?.known) return result('checking', 'node-not-ready', 'Checking your storage…');
+  if (probe.stamps.usable === 0 && probe.stamps.pending > 0) {
+    return result(
+      'storage-pending',
+      'node-not-ready',
+      'Your new storage is reaching the Swarm network. Publishing works in a moment.'
+    );
+  }
   if (probe.stamps.usable === 0) {
     return result(
       'needs-storage',
@@ -312,6 +324,7 @@ function createPublishSetupService({
   let watchTimer = null;
   let quoteTimer = null;
   let txTimer = null;
+  let confirmTimer = null;
   let probeInflight = null;
   let accountInflight = null;
   let lastPublished = null;
@@ -370,8 +383,13 @@ function createPublishSetupService({
       chainReady: probe?.chainReady ?? null,
       nodeMode: probe?.nodeMode ?? null,
       stamps: probe?.stamps
-        ? { known: probe.stamps.known, usable: probe.stamps.usable, total: probe.stamps.total }
-        : { known: false, usable: 0, total: 0 },
+        ? {
+            known: probe.stamps.known,
+            usable: probe.stamps.usable,
+            pending: probe.stamps.pending,
+            total: probe.stamps.total,
+          }
+        : { known: false, usable: 0, pending: 0, total: 0 },
       account: account ? publicAccount(account) : null,
       canBuy: canBuy(),
       canRestart: mode !== 'reused' && mode !== 'disabled' && operation?.phase !== 'executing',
@@ -445,7 +463,12 @@ function createPublishSetupService({
       nodeMode: nodeRes.ok ? normalizeSwarmMode(nodeRes.data?.beeMode) : null,
       peersReady: readinessRes.status === 0 ? null : readinessRes.ok,
       stamps: stamps
-        ? { known: true, usable: stamps.filter(isUsableStamp).length, total: stamps.length }
+        ? {
+            known: true,
+            usable: stamps.filter(isUsableStamp).length,
+            pending: stamps.filter(isPendingStamp).length,
+            total: stamps.length,
+          }
         : { known: false },
     };
   }
@@ -631,6 +654,11 @@ function createPublishSetupService({
     txTimer = null;
   }
 
+  function stopConfirmPoll() {
+    clearTimeout(confirmTimer);
+    confirmTimer = null;
+  }
+
   function scheduleQuote(current) {
     clearQuoteTimer();
     if (disposed || operation !== current || !QUOTING_PHASES.has(current.phase)) return;
@@ -674,6 +702,7 @@ function createPublishSetupService({
   function finishOperation(current, result) {
     clearQuoteTimer();
     stopTxPoll();
+    stopConfirmPoll();
     current.phase = 'done';
     current.result = result;
     current.notice = null;
@@ -685,6 +714,7 @@ function createPublishSetupService({
   function failOperation(current, message, { uncertain = false } = {}) {
     clearQuoteTimer();
     stopTxPoll();
+    stopConfirmPoll();
     current.phase = 'failed';
     current.error = message;
     current.notice = null;
@@ -697,6 +727,42 @@ function createPublishSetupService({
     const res = await api.getStamps({ timeoutMs: PROBE_TIMEOUT_MS });
     if (!res.ok || !Array.isArray(res.data?.stamps)) return null;
     return new Set(res.data.stamps.map((s) => normalizeBatchId(s?.batchID)).filter(Boolean));
+  }
+
+  async function pollConfirm(current, deadline) {
+    confirmTimer = null;
+    if (operation !== current || current.phase !== 'confirming') return;
+    const res = await api.getStamps({ timeoutMs: PROBE_TIMEOUT_MS });
+    if (operation !== current || current.phase !== 'confirming') return;
+    const batch = Array.isArray(res.data?.stamps)
+      ? res.data.stamps.find((s) => normalizeBatchId(s?.batchID) === current.result.batchId)
+      : null;
+    if (res.ok && isUsableStamp(batch)) {
+      finishOperation(current, current.result);
+      return;
+    }
+    if (now() >= deadline) {
+      log.warn(
+        `[PublishSetup] batch ${current.result.batchId} not usable after the confirm window`
+      );
+      finishOperation(current, { ...current.result, slow: true });
+      return;
+    }
+    confirmTimer = setTimeout(() => void pollConfirm(current, deadline), CONFIRM_POLL_MS);
+  }
+
+  /**
+   * A bought batch is paid for and registered, but storer peers accept its
+   * stamps only once they have synced its creation from the chain; until then
+   * an upload fails with "not found on-chain". Stay in `confirming` until the
+   * node reports the batch usable, so "done" means "you can publish now".
+   */
+  function confirmBatch(current, batchId) {
+    current.phase = 'confirming';
+    current.result = { batchId };
+    current.notice = null;
+    emit();
+    void pollConfirm(current, now() + CONFIRM_TIMEOUT_MS);
   }
 
   async function execute(current) {
@@ -722,7 +788,8 @@ function createPublishSetupService({
       log.info(
         `[PublishSetup] ${actionLabel(current.kind)} succeeded${batchId ? `: batch ${batchId}` : ''}`
       );
-      finishOperation(current, current.kind === 'deposit' ? { deposit: true } : { batchId });
+      if (current.kind === 'buy' && batchId) confirmBatch(current, batchId);
+      else finishOperation(current, current.kind === 'deposit' ? { deposit: true } : { batchId });
       return;
     }
 
@@ -745,7 +812,7 @@ function createPublishSetupService({
         if (operation !== current) return;
         const added = after ? [...after].find((id) => !before.has(id)) : null;
         if (added) {
-          finishOperation(current, { batchId: added });
+          confirmBatch(current, added);
           return;
         }
       }
@@ -819,6 +886,12 @@ function createPublishSetupService({
     if (operation?.phase === 'executing') {
       return { ok: false, error: 'Freedom is already buying storage. Wait for it to finish.' };
     }
+    if (operation?.phase === 'confirming') {
+      return {
+        ok: false,
+        error: 'Your new storage is still reaching the network. Wait a moment for it to finish.',
+      };
+    }
     if (node.registryMode === 'reused') {
       return { ok: false, error: 'This Swarm node is managed outside Freedom.' };
     }
@@ -853,6 +926,7 @@ function createPublishSetupService({
     operation = null;
     clearQuoteTimer();
     stopTxPoll();
+    stopConfirmPoll();
     emit();
     return { ok: true, state: getState() };
   }
@@ -986,6 +1060,7 @@ function createPublishSetupService({
     watchTimer = null;
     clearQuoteTimer();
     stopTxPoll();
+    stopConfirmPoll();
     watchers.clear();
   }
 
@@ -1108,5 +1183,7 @@ module.exports = {
   WATCH_REFRESH_MS,
   STARTUP_REFRESH_MS,
   FUNDING_TX_POLL_MS,
+  CONFIRM_POLL_MS,
+  CONFIRM_TIMEOUT_MS,
   CHAIN_INIT_SLOW_MS,
 };

@@ -10,7 +10,10 @@ jest.mock('../logger', () => ({
   error: jest.fn(),
   debug: jest.fn(),
 }));
-jest.mock('./swarm-service', () => ({ isUsableStamp: (batch) => batch?.usable === true }));
+jest.mock('./swarm-service', () => {
+  const { isUsableStamp, isPendingStamp } = jest.requireActual('./swarm-service');
+  return { isUsableStamp, isPendingStamp };
+});
 
 const {
   createPublishSetupService,
@@ -22,6 +25,8 @@ const {
   REQUOTE_MS,
   WATCH_REFRESH_MS,
   FUNDING_TX_POLL_MS,
+  CONFIRM_POLL_MS,
+  CONFIRM_TIMEOUT_MS,
   CHAIN_INIT_SLOW_MS,
 } = require('./publish-setup-service');
 
@@ -136,6 +141,11 @@ function setup({
 
 // Let every pending promise chain settle without moving the clock.
 const settle = () => jest.advanceTimersByTimeAsync(0);
+
+// The node lists the batch the buy returns (BATCH_A) as usable at once, as
+// antd v0.5.50 does: the purchase goes straight from confirming to done.
+const listBoughtBatchAsUsable = (api) =>
+  api.getStamps.mockResolvedValue(ok({ stamps: [{ batchID: BATCH_A, usable: true }] }));
 
 beforeEach(() => {
   jest.useFakeTimers();
@@ -411,6 +421,7 @@ describe('the armed purchase', () => {
 
   test('buys at once when the node already holds enough', async () => {
     const { service, api } = setup();
+    listBoughtBatchAsUsable(api);
     api.getStorageQuote.mockResolvedValue(ok(funded()));
     service.arm({ kind: 'buy', planId: 'plus' });
     await settle();
@@ -421,6 +432,7 @@ describe('the armed purchase', () => {
 
   test('never runs a second buy while one is on its way', async () => {
     const { service, api } = setup();
+    listBoughtBatchAsUsable(api);
     api.getStorageQuote.mockResolvedValue(ok(funded()));
     let finishBuy;
     api.buyStorage.mockReturnValue(
@@ -450,6 +462,7 @@ describe('the armed purchase', () => {
     // The timer's re-quote is slow; the payment confirmation starts a second
     // one that answers first. Whichever lands second must not buy again.
     const { service, api, getTransactionStatus } = setup();
+    listBoughtBatchAsUsable(api);
     service.arm({ kind: 'buy', planId: 'starter' });
     await settle();
 
@@ -476,6 +489,7 @@ describe('the armed purchase', () => {
 
   test('on 409 it waits, re-quotes and tries again', async () => {
     const { service, api } = setup();
+    listBoughtBatchAsUsable(api);
     api.getStorageQuote.mockResolvedValue(ok(funded()));
     api.buyStorage
       .mockResolvedValueOnce(fail(409, 'another on-chain operation is in progress'))
@@ -642,6 +656,71 @@ describe('the armed purchase', () => {
   });
 });
 
+describe('confirming a bought batch', () => {
+  // Bee's shape for a batch that exists but may not stamp yet.
+  const pending = { batchID: BATCH_A, usable: false, exists: true, batchTTL: 2_592_000 };
+  const usable = { batchID: BATCH_A, usable: true, exists: true, batchTTL: 2_592_000 };
+
+  test('stays confirming until the node calls the new batch usable', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.getStamps.mockResolvedValue(ok({ stamps: [pending] }));
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    expect(service.getState().operation).toMatchObject({
+      phase: 'confirming',
+      result: { batchId: BATCH_A },
+    });
+    // Busy, not done: no second purchase, and the readiness says why.
+    expect(service.arm({ kind: 'buy', planId: 'starter' })).toMatchObject({ ok: false });
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+      ok: false,
+      reason: 'node-not-ready',
+      message: 'Your new storage is reaching the Swarm network. Publishing works in a moment.',
+    });
+
+    api.getStamps.mockResolvedValue(ok({ stamps: [usable] }));
+    await jest.advanceTimersByTimeAsync(CONFIRM_POLL_MS);
+    expect(service.getState().operation).toMatchObject({
+      phase: 'done',
+      result: { batchId: BATCH_A },
+    });
+    expect(service.getState().operation.result.slow).toBeUndefined();
+    expect(api.buyStorage).toHaveBeenCalledTimes(1);
+  });
+
+  test('gives up waiting after the confirm window and says the network is slow', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.getStamps.mockResolvedValue(ok({ stamps: [pending] }));
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    await jest.advanceTimersByTimeAsync(CONFIRM_TIMEOUT_MS + CONFIRM_POLL_MS);
+    expect(service.getState().operation).toMatchObject({
+      phase: 'done',
+      result: { batchId: BATCH_A, slow: true },
+    });
+  });
+
+  test('a batch that is gone or expired is not pending', async () => {
+    const { service, api } = setup();
+    api.getStamps.mockResolvedValue(
+      ok({
+        stamps: [
+          { batchID: BATCH_A, usable: false, exists: false, batchTTL: -1 },
+          { batchID: BATCH_B, usable: false, exists: true, batchTTL: 0 },
+        ],
+      })
+    );
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+      reason: 'no-usable-stamps',
+    });
+    expect(service.getState().stamps).toEqual({ known: true, usable: 0, pending: 0, total: 2 });
+  });
+});
+
 describe('extend and deposit', () => {
   test('extends by days, and resizes with a depth, passing the quoted amount', async () => {
     const { service, api } = setup();
@@ -726,6 +805,7 @@ describe('extend and deposit', () => {
 describe('the payment from the Freedom wallet', () => {
   test('a confirmed payment re-quotes at once instead of waiting for the next tick', async () => {
     const { service, api, getTransactionStatus } = setup();
+    listBoughtBatchAsUsable(api);
     service.arm({ kind: 'buy', planId: 'starter' });
     await settle();
 
