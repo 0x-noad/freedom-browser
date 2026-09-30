@@ -95,7 +95,6 @@ const FRESH_WASM_MODULES = ['runtime_wasm.js', 'wasm.js'].map((file) =>
 );
 
 let registeredStorage = null;
-let currentRuntime = null;
 let runtimeResets = 0;
 let onRuntimeReset = null;
 // guarded runtime -> marks it retired. Weak, so a dropped instance is not kept.
@@ -111,17 +110,19 @@ function loadFreshWasmRuntime() {
   // forever — ~1.7 MB per reset, and a page can trigger resets at will through
   // read-only `eth_getTransactionReceipt` calls for unknown hashes. Only the
   // copy about to be replaced is in the list at this point; the live runtime
-  // is held by `currentRuntime` and upstream's cache, not by this list.
+  // is held by upstream's cache, not by this list.
   module.children = module.children.filter((child) => !FRESH_WASM_MODULES.includes(child.id));
   return require(FRESH_WASM_MODULES[0]).getWasmRuntime();
 }
 
 function resetPoisonedRuntime(runtime, err) {
-  // Only the first trap on the current instance swaps it; later traps from
-  // requests still draining on an already-replaced instance change nothing.
+  // Runs only for the first trap on an instance: retiring it here makes every
+  // later call on it (a request still draining there) refuse before it can
+  // trap again, so a stale instance can never swap out its replacement. The
+  // trapping instance is therefore always the live one: the only call made on
+  // a fresh instance before `provideRuntime` hands it out is `registerStorage`,
+  // a plain JS assignment that cannot trap.
   retiredRuntimes.get(runtime)?.();
-  if (runtime !== currentRuntime) return;
-  currentRuntime = null;
   runtimeResets += 1;
   upstreamRuntime.setRuntimeProvider(provideRuntime);
   try {
@@ -175,7 +176,6 @@ async function provideRuntime() {
   // registered last — Colibri's disk store in the main process, the in-memory
   // map in the checkpoint worker — before anyone can use the new instance.
   if (registeredStorage) runtime.registerStorage(registeredStorage);
-  currentRuntime = runtime;
   return runtime;
 }
 

@@ -334,9 +334,11 @@ describe('a Colibri WASM trap fails one request instead of the process (#453)', 
         await rt.Colibri.register_storage(storage);
         const first = await getRuntime();
         try { first.executeRpcCtx(${BAD_CTX}); } catch (err) { out.trap = err.constructor.name; }
-        // A request still draining on the retired instance traps again; that
-        // must not throw away the replacement a second time.
-        try { first.executeRpcCtx(${BAD_CTX}); } catch { /* expected */ }
+        // A request still draining on the retired instance repeats the call
+        // that trapped; it is refused before reaching WASM, so it must not
+        // throw away the replacement a second time (see \`count\`).
+        try { first.executeRpcCtx(${BAD_CTX}); out.retiredRetry = 'ran'; }
+        catch (err) { out.retiredRetry = err instanceof WebAssembly.RuntimeError ? 'trap' : 'refused'; }
         // Nothing keeps running on the trapped instance: a request that
         // captured it before the trap gets a refusal, not a working call...
         try { first.getMethodType(1n, 'eth_blockNumber', null, 0); out.retiredCall = 'ran'; }
@@ -379,8 +381,8 @@ describe('a Colibri WASM trap fails one request instead of the process (#453)', 
     `, { exe: exe || process.execPath, env });
     expect(result).toEqual({
       probe: true,
-      // One for the first trap (the draining second one changes nothing, see
-      // \`count\`), then one per loop iteration below.
+      // One for the first trap (the refused draining retry changes nothing,
+      // see \`count\`), then one per loop iteration below.
       resets: Array(6).fill('RuntimeError'),
       trap: 'RuntimeError',
       fresh: true,
@@ -388,6 +390,7 @@ describe('a Colibri WASM trap fails one request instead of the process (#453)', 
       works: 1,
       count: 1,
       storageReads: true,
+      retiredRetry: 'refused',
       retiredCall: 'refused',
       retiredFree: 'noop',
       resetsAfterLoop: 6,
