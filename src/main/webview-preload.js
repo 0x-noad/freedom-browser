@@ -93,13 +93,25 @@ function scriptletMatchUrl() {
 //   time and disconnects at DOMContentLoaded, after which only script
 //   insertions remain.
 //
+// Page code can also run *inside* a wrapped insertion, before its sweep:
+// custom-element reactions (connectedCallback and the other lifecycle
+// callbacks) fire at the end of the native call, with the new frame already
+// in the document (probed in Chromium: a fragment [iframe, x-a] appended to
+// body, x-a's connectedCallback reading frames[frames.length - 1].JSON.parse
+// got the unpatched one). customElements.define is wrapped so every
+// lifecycle callback it registers sweeps the element's window first.
+//
 // These wrappers sit on hot DOM APIs, so the sweep is kept cheap: it only
 // looks at the one window whose document the call inserted into, not
 // recursively (a frame is always born empty, so a new one can't bring
 // grandchildren along), and only at WindowProxies it hasn't seen before —
 // a child is adopted, or found cross-origin, once in its lifetime. Remaining
 // gaps: a `<script>` inserted in the same call as a frame, or inside markup
-// written by document.write, runs before the sweep does; an existing frame
+// written by document.write, runs before the sweep does, and so does a
+// custom element's constructor when the insertion upgrades it (an element
+// created before its define(), or parsed by innerHTML) — the constructor
+// is the class itself and can't be swapped without changing what
+// customElements.get returns; an existing frame
 // navigated to about:blank later is re-adopted only through
 // contentWindow/contentDocument; and the indexed setters `select[i] = option`
 // / `select.options[i] = option` (an <option> can carry an <iframe> child)
@@ -110,9 +122,16 @@ function scriptletMatchUrl() {
 //
 // The wrappers keep the shape of what they replace — name, `length`, not a
 // constructor — and Function.prototype.toString is masked in every realm
-// they're installed in so they print as the native they wrap: anti-adblock
-// scripts fingerprint exactly these hot DOM methods (`appendChild.length`,
-// `/native code/.test(…)`), only on the pages where scriptlets run.
+// they're installed in, so that realm's toString prints them as the native
+// they wrap: anti-adblock scripts fingerprint exactly these hot DOM methods
+// (`appendChild.length`, `/native code/.test(…)`), only on the pages where
+// scriptlets run. That is shape, not invisibility. Not masked: an
+// Error.stack thrown through a wrapper (`appendChild(null)`) or through the
+// masked toString (`toString.call({})`) carries an extra frame pointing into
+// this bundle; and another realm's own toString prints the wrapper's source
+// — a same-origin child realm not adopted by this bundle (one inserted
+// through `select[i] =` before any sweep, see above) or one that ran its own
+// bundle (srcdoc/blob:/http(s) children keep a mask table of their own).
 //
 // Runs in the page's main world, stringified into the bundle: no closures
 // over this file. Everything it needs later is captured up front, since page
@@ -243,6 +262,42 @@ function inheritScriptletsIntoChildRealms(runIn) {
     }
     if (win) sweep(win);
   };
+  // Custom-element reactions (connectedCallback & co.) run inside the
+  // native insertion, at the end of its [CEReactions] scope — after the
+  // frame is in the document but before our wrapper's own sweep. define()
+  // reads each callback off the prototype once, at define time, so the
+  // wrapper hands it a sweeping version for that one read and puts the
+  // prototype back as it was: the class, its prototype and customElements.get
+  // are left untouched.
+  const CE_CALLBACKS = [
+    'connectedCallback',
+    'disconnectedCallback',
+    'adoptedCallback',
+    'attributeChangedCallback',
+    'connectedMoveCallback',
+  ];
+  const { deleteProperty } = Reflect;
+  const lend = (proto, name) => {
+    const callback = proto[name];
+    if (typeof callback !== 'function') return null;
+    const own = getOwnPropertyDescriptor(proto, name);
+    if (own && !own.configurable) return null;
+    const value = {
+      [name](...args) {
+        sweepAfter(this, windowOfNode);
+        return apply(callback, this, args);
+      },
+    }[name];
+    const lengthDesc = getOwnPropertyDescriptor(callback, 'length');
+    if (lengthDesc) defineProperty(value, 'length', lengthDesc);
+    defineProperty(proto, name, {
+      value: mask(value, callback),
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+    return () => (own ? defineProperty(proto, name, own) : deleteProperty(proto, name));
+  };
   const install = (realm) => {
     // Mask toString first, so every wrapper below prints as its native.
     try {
@@ -344,6 +399,48 @@ function inheritScriptletsIntoChildRealms(runIn) {
         );
         defineProperty(proto, name, { ...desc, set: mask(set, nativeSet) });
       }
+    }
+    try {
+      const registryProto = realm.CustomElementRegistry && realm.CustomElementRegistry.prototype;
+      const desc = registryProto && getOwnPropertyDescriptor(registryProto, 'define');
+      if (desc && typeof desc.value === 'function') {
+        const nativeDefine = desc.value;
+        const value = {
+          define(...args) {
+            // Null-prototype: an index write can't hit a page setter on
+            // Array.prototype.
+            const restore = { __proto__: null };
+            let lent = 0;
+            try {
+              const proto = args[1] && args[1].prototype;
+              if (proto && (typeof proto === 'object' || typeof proto === 'function')) {
+                for (let i = 0; i < CE_CALLBACKS.length; i++) {
+                  const undo = lend(proto, CE_CALLBACKS[i]);
+                  if (undo) restore[lent++] = undo;
+                }
+              }
+            } catch {
+              // Frozen prototype, throwing getter…: define sees it as it is.
+            }
+            try {
+              return apply(nativeDefine, this, args);
+            } finally {
+              for (let i = lent - 1; i >= 0; i--) {
+                try {
+                  restore[i]();
+                } catch {
+                  // Left lent: still the page's callback, just sweeping first.
+                }
+              }
+            }
+          },
+        }.define;
+        const lengthDesc = getOwnPropertyDescriptor(nativeDefine, 'length');
+        if (lengthDesc) defineProperty(value, 'length', lengthDesc);
+        defineProperty(registryProto, 'define', { ...desc, value: mask(value, nativeDefine) });
+      }
+    } catch {
+      // No custom elements in this realm.
     }
   };
   apply(add, adopted, [Object]);

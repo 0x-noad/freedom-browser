@@ -139,6 +139,17 @@ const sameOriginFramesScript = `
   option.appendChild(document.createElement('iframe'));
   select.add(option);
   window.__page.framesSelect = Object.keys(last().JSON.parse(${PLAYER_JSON})).sort();
+  // Page code running inside the insertion itself (#466 R2-M1): a custom
+  // element's connectedCallback fires at the end of appendChild, with the
+  // fragment's iframe already in the document.
+  customElements.define('x-frames-probe', class extends HTMLElement {
+    connectedCallback() {
+      window.__page.framesCustomElement = Object.keys(frames[frames.length - 1].JSON.parse(${PLAYER_JSON})).sort();
+    }
+  });
+  var fragment = document.createDocumentFragment();
+  fragment.append(document.createElement('iframe'), document.createElement('x-frames-probe'));
+  document.documentElement.appendChild(fragment);
   var blob = document.createElement('iframe');
   blob.src = URL.createObjectURL(new Blob([${JSON.stringify(blobHtml).replace(/</g, '\\u003c')}], { type: 'text/html' }));
   document.documentElement.appendChild(blob);
@@ -295,6 +306,7 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
       framesNested: PRUNED,
       framesTable: PRUNED,
       framesSelect: PRUNED,
+      framesCustomElement: PRUNED,
       framesParser: PRUNED,
     },
     embed: { initial: PRUNED, api: PRUNED, wallet: false },
@@ -326,6 +338,7 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
       framesNested: UNTOUCHED,
       framesTable: UNTOUCHED,
       framesSelect: UNTOUCHED,
+      framesCustomElement: UNTOUCHED,
       framesParser: UNTOUCHED,
     },
     embed: { initial: UNTOUCHED, api: UNTOUCHED, wallet: false },
@@ -361,6 +374,7 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
       framesNested: UNTOUCHED,
       framesTable: UNTOUCHED,
       framesSelect: UNTOUCHED,
+      framesCustomElement: UNTOUCHED,
       framesParser: UNTOUCHED,
     },
     embed: { initial: UNTOUCHED, api: UNTOUCHED, wallet: false },

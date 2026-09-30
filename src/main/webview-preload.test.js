@@ -2231,6 +2231,91 @@ describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile pag
     expect(vm.runInContext(shape, child)).toEqual(before);
   });
 
+  // R2-M1: custom-element reactions run inside the native insertion, after
+  // the frame exists but before the wrapper's sweep. The fake registry reads
+  // the callbacks off the prototype at define time, like the real one, and
+  // the fake appendChild runs the stored connectedCallback before returning.
+  function makeCustomElementRealms() {
+    const realms = makeFramesRealms();
+    vm.runInContext(
+      `function CustomElementRegistry() { this.defs = {}; }
+       CustomElementRegistry.prototype.define = function define(name, ctor, options) {
+         var p = ctor.prototype;
+         this.defs[name] = { ctor: ctor, connected: p.connectedCallback,
+           attributeChanged: p.attributeChangedCallback };
+       };
+       var customElements = new CustomElementRegistry();
+       Node.prototype.appendChild = function appendChild(node) {
+         frameCount = 1;
+         var def = node.__def && customElements.defs[node.__def];
+         if (def && def.connected) def.connected.call(node);
+         return node;
+       };`,
+      realms.parent
+    );
+    return realms;
+  }
+
+  test('a custom element connectedCallback run by the insertion sees an adopted frame', () => {
+    const src = bundleSource();
+    const { parent, child } = makeCustomElementRealms();
+    vm.runInContext(`(${src})()`, parent);
+    const result = vm.runInContext(
+      `function Base() {}
+       Base.prototype = Object.create(Node.prototype);
+       Base.prototype.connectedCallback = function connectedCallback() {
+         // What the page's callback would find in window[i] right now.
+         seenInCallback = window[0].__freedomScriptletRan;
+       };
+       function XA() {}
+       XA.prototype = Object.create(Base.prototype);
+       var ownBefore = Object.getOwnPropertyDescriptor(XA.prototype, 'connectedCallback');
+       customElements.define('x-a', XA);
+       var el = new XA(); el.__def = 'x-a';
+       new Node().appendChild(el);
+       [
+         seenInCallback,
+         // The prototype is left exactly as the page made it…
+         Object.getOwnPropertyDescriptor(XA.prototype, 'connectedCallback') === ownBefore,
+         XA.prototype.connectedCallback === Base.prototype.connectedCallback,
+         // …no callback is invented where the class has none…
+         customElements.defs['x-a'].attributeChanged,
+         // …and the stored callback prints as the page's own.
+         String(customElements.defs['x-a'].connected) === String(Base.prototype.connectedCallback),
+         customElements.defs['x-a'].connected.name,
+         String(CustomElementRegistry.prototype.define).includes('this.defs'),
+         CustomElementRegistry.prototype.define.length,
+       ]`,
+      parent
+    );
+    expect(result).toEqual([1, true, true, undefined, true, 'connectedCallback', true, 3]);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+  });
+
+  test('define restores an own callback and still registers a frozen class', () => {
+    const src = bundleSource();
+    const { parent } = makeCustomElementRealms();
+    vm.runInContext(`(${src})()`, parent);
+    const result = vm.runInContext(
+      `function XB() {}
+       XB.prototype.connectedCallback = function connectedCallback() {};
+       var own = XB.prototype.connectedCallback;
+       customElements.define('x-b', XB);
+       function XC() {}
+       XC.prototype.connectedCallback = function connectedCallback() {};
+       Object.freeze(XC.prototype);
+       customElements.define('x-c', XC);
+       [
+         XB.prototype.connectedCallback === own,
+         Object.getOwnPropertyDescriptor(XB.prototype, 'connectedCallback').enumerable,
+         customElements.defs['x-b'].connected !== own,
+         customElements.defs['x-c'].connected === XC.prototype.connectedCallback,
+       ]`,
+      parent
+    );
+    expect(result).toEqual([true, true, true, true]);
+  });
+
   test('a throwing insertion still throws, and still sweeps', () => {
     const src = bundleSource();
     const { parent, child } = makeFramesRealms();
