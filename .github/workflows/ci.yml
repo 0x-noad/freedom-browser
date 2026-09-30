@@ -968,6 +968,11 @@ jobs:
   # harness project's CI retries absorb a blip, and
   # FREEDOM_SAFE_E2E_REQUIRED=1 turns an outage into a failure rather than a
   # green skip. `safe-phone.spec.js` stays on the not-in-CI list for #452.
+  #
+  # The fixtures read Gnosis from the fork only (a proof source verifies the
+  # live chain), so the specs no longer pass through Colibri on chain 100; the
+  # crash itself is pinned by the jest step below, which needs this job's
+  # Electron binary.
   e2e-safe:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -1010,6 +1015,18 @@ jobs:
           rm "$archive"
           ./anvil --version
           echo "$dir" >> "$GITHUB_PATH"
+
+      # The jest guard for the fix itself (#453): a Colibri WASM trap must be
+      # a catchable error in Electron's *full* main process, and must swap in
+      # a fresh instance. The `test` job runs it too but has no Electron
+      # binary, so there it skips; here the binary is fetched first (the
+      # `electron` package downloads it on first require) and a skip fails.
+      - name: Colibri WASM trap guard under Electron's main process
+        env:
+          FREEDOM_COLIBRI_TRAP_PROBE_REQUIRED: '1'
+        run: |
+          node -e "require('electron')"
+          npx jest src/main/ens/colibri-runtime.test.js
 
       - name: Run Safe E2E
         env:

@@ -281,6 +281,11 @@ describe('a Colibri WASM trap fails one request instead of the process (#453)', 
 
   test('the trap is a catchable RuntimeError in Electron\'s full main process', () => {
     const exe = electronBinary();
+    if (!exe && process.env.FREEDOM_COLIBRI_TRAP_PROBE_REQUIRED === '1') {
+      // The CI `test` job never downloads Electron, so this would skip there;
+      // `e2e-safe` (which has the binary) sets this to make a skip a failure.
+      throw new Error('FREEDOM_COLIBRI_TRAP_PROBE_REQUIRED=1 but no Electron binary is installed');
+    }
     if (!exe) {
       console.warn(
         '[colibri-runtime.test] skipped: no Electron binary in node_modules; the ' +
