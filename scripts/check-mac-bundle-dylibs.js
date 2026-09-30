@@ -62,16 +62,37 @@ function isMachO(file) {
  * Library references in `otool -L` output that are neither part of macOS nor
  * resolved inside the app. Header lines (the file itself, and one per
  * architecture of a universal binary) end with ':' and are skipped.
+ *
+ * For a dylib (a `.node` addon is one), `otool -L` also lists the library's
+ * own install name (LC_ID_DYLIB). That is a label, not a dependency: an addon
+ * is loaded by path and its id is never resolved. Rust bakes the build tree
+ * into it (e.g. `/Users/runner/work/myotis/…/libmyotis_node.dylib`), so it is
+ * dropped via `ownIds` (`otool -D`), or it would read as a foreign library.
  * @param {string} otoolOutput
+ * @param {string[]} [ownIds]
  * @returns {string[]}
  */
-function foreignLibraries(otoolOutput) {
+function foreignLibraries(otoolOutput, ownIds = []) {
   return String(otoolOutput)
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line && !line.endsWith(':'))
     .map((line) => line.replace(/\s+\((compatibility|current) version.*$/, ''))
+    .filter((lib) => !ownIds.includes(lib))
     .filter((lib) => !ALLOWED_PREFIXES.some((prefix) => lib.startsWith(prefix)));
+}
+
+/**
+ * Install names in `otool -D` output (one per architecture of a universal
+ * binary; none for an executable).
+ * @param {string} otoolDOutput
+ * @returns {string[]}
+ */
+function installNames(otoolDOutput) {
+  return String(otoolDOutput)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.endsWith(':'));
 }
 
 /**
@@ -91,20 +112,23 @@ function walkFiles(dir) {
 }
 
 /**
- * `otool -L` for one file. Xcode's `otool` shim re-splits its arguments, so a
+ * `otool -L` and `otool -D` for one file. Xcode's `otool` shim re-splits its arguments, so a
  * path with parentheses fails ("Freedom Helper (GPU)" became "Freedom Helper "
  * on the macos-14 runner's Xcode 15.4). It is handed a symlink with a plain
  * name instead; otool reads through it, and the header line naming the link is
  * skipped by foreignLibraries anyway.
  * @param {string} file
- * @returns {string}
+ * @returns {{list: string, ids: string[]}}
  */
 function otoolLibraries(file) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'otool-'));
   const link = path.join(dir, 'macho');
   try {
     fs.symlinkSync(file, link);
-    return execFileSync('otool', ['-L', link], { encoding: 'utf8' });
+    return {
+      list: execFileSync('otool', ['-L', link], { encoding: 'utf8' }),
+      ids: installNames(execFileSync('otool', ['-D', link], { encoding: 'utf8' })),
+    };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -112,7 +136,7 @@ function otoolLibraries(file) {
 
 /**
  * @param {string} appPath
- * @param {{otool?: (file: string) => string}} [options]
+ * @param {{otool?: (file: string) => (string | {list: string, ids: string[]})}} [options]
  * @returns {{checked: number, problems: {file: string, libs: string[]}[]}}
  */
 function checkBundle(appPath, options = {}) {
@@ -122,7 +146,10 @@ function checkBundle(appPath, options = {}) {
   for (const file of walkFiles(appPath)) {
     if (!isMachO(file)) continue;
     checked += 1;
-    const libs = [...new Set(foreignLibraries(otool(file)))];
+    // A test double may return plain `otool -L` text.
+    const result = otool(file);
+    const { list, ids } = typeof result === 'string' ? { list: result, ids: [] } : result;
+    const libs = [...new Set(foreignLibraries(list, ids))];
     if (libs.length > 0) problems.push({ file: path.relative(appPath, file), libs });
   }
   return { checked, problems };
@@ -159,4 +186,11 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { isMachO, foreignLibraries, walkFiles, checkBundle, ALLOWED_PREFIXES };
+module.exports = {
+  isMachO,
+  foreignLibraries,
+  installNames,
+  walkFiles,
+  checkBundle,
+  ALLOWED_PREFIXES,
+};

@@ -8,7 +8,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { isMachO, foreignLibraries, checkBundle } = require('./check-mac-bundle-dylibs');
+const {
+  isMachO,
+  foreignLibraries,
+  installNames,
+  checkBundle,
+} = require('./check-mac-bundle-dylibs');
 
 // `otool -L` of the arti binary from the broken 2026-09-29 nightly.
 const BROKEN_ARTI = [
@@ -63,6 +68,45 @@ describe('foreignLibraries', () => {
       '\t/opt/homebrew/lib/libzstd.1.dylib (compatibility version 1.0.0, current version 1.5.7)',
     ].join('\n');
     expect(foreignLibraries(fat)).toEqual(['/opt/homebrew/lib/libzstd.1.dylib']);
+  });
+});
+
+// `otool -L` / `otool -D` of the Myotis addon from the macOS release build:
+// its own install name points at the build tree, which is harmless.
+const MYOTIS_ADDON_L = [
+  'Freedom.app/Contents/Resources/myotis-node/myotis-node.node:',
+  '\t/Users/runner/work/myotis/myotis/rust/target/aarch64-apple-darwin/release/deps/libmyotis_node.dylib (compatibility version 0.0.0, current version 0.0.0)',
+  '\t/System/Library/Frameworks/Security.framework/Versions/A/Security (compatibility version 1.0.0, current version 61439.1.1)',
+  '\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)',
+].join('\n');
+const MYOTIS_ADDON_D = [
+  'Freedom.app/Contents/Resources/myotis-node/myotis-node.node:',
+  '/Users/runner/work/myotis/myotis/rust/target/aarch64-apple-darwin/release/deps/libmyotis_node.dylib',
+].join('\n');
+
+describe("a dylib's own install name", () => {
+  test('is not a dependency', () => {
+    expect(foreignLibraries(MYOTIS_ADDON_L, installNames(MYOTIS_ADDON_D))).toEqual([]);
+  });
+
+  test('without it the build-tree id would be flagged', () => {
+    expect(foreignLibraries(MYOTIS_ADDON_L)).toHaveLength(1);
+  });
+
+  test('does not hide a real foreign dependency of the same dylib', () => {
+    const withHomebrew = `${MYOTIS_ADDON_L}\n\t/opt/homebrew/lib/libzstd.1.dylib (compatibility version 1.0.0, current version 1.5.7)`;
+    expect(foreignLibraries(withHomebrew, installNames(MYOTIS_ADDON_D))).toEqual([
+      '/opt/homebrew/lib/libzstd.1.dylib',
+    ]);
+  });
+
+  test('installNames reads one id per architecture and none for an executable', () => {
+    expect(installNames('arti:\n')).toEqual([]);
+    expect(
+      installNames(
+        'x (architecture x86_64):\n/a/lib.dylib\nx (architecture arm64):\n/a/lib.dylib\n'
+      )
+    ).toEqual(['/a/lib.dylib', '/a/lib.dylib']);
   });
 });
 
