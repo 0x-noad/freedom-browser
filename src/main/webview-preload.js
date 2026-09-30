@@ -76,12 +76,13 @@ function scriptletMatchUrl() {
 //   the getters are wrapped and adopt the child before handing it back.
 // - `window[i]` / `window.frames[i]` (#414): indexed WindowProxy access has
 //   no accessor to wrap. But a frame only comes into existence when a frame
-//   element is inserted into a document, and every script-reachable way to
-//   insert one (appendChild … replaceChildren, innerHTML/outerHTML,
-//   insertAdjacent*, setHTML*, document.write, Range#insertNode, the
-//   document.body setter, execCommand) is wrapped to sweep the inserting
-//   document's `window[i]` right after the call — before the inserting
-//   script's next line. Probed
+//   element is inserted into a document, and every wrappable way to insert
+//   one (appendChild … replaceChildren, innerHTML/outerHTML, insertAdjacent*,
+//   setHTML*, document.write, Range#insertNode, the document.body setter,
+//   execCommand, the table caption/tHead/tFoot setters, select.add and
+//   select.options.add) is wrapped to sweep the inserting document's
+//   `window[i]` right after the call — before the inserting script's next
+//   line. Probed
 //   in real Chromium: even an iframe whose src is a cross-origin or
 //   same-origin http URL is reachable as a same-origin about:blank realm
 //   until its navigation commits, and no load event fires synchronously on
@@ -98,9 +99,20 @@ function scriptletMatchUrl() {
 // grandchildren along), and only at WindowProxies it hasn't seen before —
 // a child is adopted, or found cross-origin, once in its lifetime. Remaining
 // gaps: a `<script>` inserted in the same call as a frame, or inside markup
-// written by document.write, runs before the sweep does; and an existing
-// frame navigated to about:blank later is re-adopted only through
-// contentWindow/contentDocument.
+// written by document.write, runs before the sweep does; an existing frame
+// navigated to about:blank later is re-adopted only through
+// contentWindow/contentDocument; and the indexed setters `select[i] = option`
+// / `select.options[i] = option` (an <option> can carry an <iframe> child)
+// can't be wrapped at all — a legacy platform object handles an indexed
+// [[Set]] itself, without consulting any prototype — so a frame inserted
+// that way is adopted by the next wrapped insertion's sweep of the same
+// window, by the parser-time observer, or through contentWindow.
+//
+// The wrappers keep the shape of what they replace — name, `length`, not a
+// constructor — and Function.prototype.toString is masked in every realm
+// they're installed in so they print as the native they wrap: anti-adblock
+// scripts fingerprint exactly these hot DOM methods (`appendChild.length`,
+// `/native code/.test(…)`), only on the pages where scriptlets run.
 //
 // Runs in the page's main world, stringified into the bundle: no closures
 // over this file. Everything it needs later is captured up front, since page
@@ -118,6 +130,13 @@ function inheritScriptletsIntoChildRealms(runIn) {
   const adopted = new WeakSet();
   const seen = new WeakSet();
   const { has, add } = WeakSet.prototype;
+  // wrapper -> the native it stands in for, read by the masked toString.
+  const masks = new WeakMap();
+  const { get: maskGet, set: maskSet } = WeakMap.prototype;
+  const mask = (wrapper, native) => {
+    apply(maskSet, masks, [wrapper, native]);
+    return wrapper;
+  };
   const root = globalThis;
   const CTORS = ['HTMLIFrameElement', 'HTMLFrameElement', 'HTMLObjectElement'];
   const PROPS = ['contentWindow', 'contentDocument'];
@@ -145,11 +164,15 @@ function inheritScriptletsIntoChildRealms(runIn) {
     ['DocumentFragment', PARENT_NODE],
     ['ShadowRoot', ['setHTMLUnsafe', 'setHTML']],
     ['Range', ['insertNode', 'surroundContents']],
+    // An <option>/<optgroup> can carry a frame element.
+    ['HTMLSelectElement', ['add']],
+    ['HTMLOptionsCollection', ['add']],
   ];
   const INSERT_SETTERS = [
     ['Element', ['innerHTML', 'outerHTML']],
     ['ShadowRoot', ['innerHTML']],
     ['Document', ['body']],
+    ['HTMLTableElement', ['caption', 'tHead', 'tFoot']],
   ];
   // [Replaceable]: a page can shadow `window.length` with its own value, so
   // read the native getter.
@@ -208,16 +231,36 @@ function inheritScriptletsIntoChildRealms(runIn) {
     return apply(defaultViewGet, doc, []);
   };
   const windowOfRange = (range) => windowOfNode(apply(startContainerGet, range, []));
-  const sweepAfter = (target, windowOf) => {
+  // An HTMLOptionsCollection isn't a node and doesn't expose its <select>,
+  // but the element it just inserted is now in that select's document.
+  const windowOfInserted = (_collection, args) => windowOfNode(args[0]);
+  const sweepAfter = (target, windowOf, args) => {
     let win;
     try {
-      win = windowOf(target);
+      win = windowOf(target, args);
     } catch {
       return;
     }
     if (win) sweep(win);
   };
   const install = (realm) => {
+    // Mask toString first, so every wrapper below prints as its native.
+    try {
+      const fnProto = realm.Function.prototype;
+      const desc = getOwnPropertyDescriptor(fnProto, 'toString');
+      if (desc && typeof desc.value === 'function') {
+        const nativeToString = desc.value;
+        const value = {
+          toString() {
+            const native = apply(maskGet, masks, [this]);
+            return apply(nativeToString, native === undefined ? this : native, []);
+          },
+        }.toString;
+        defineProperty(fnProto, 'toString', { ...desc, value: mask(value, nativeToString) });
+      }
+    } catch {
+      // Wrappers still work, they just print as themselves.
+    }
     // Indexed loops and reads, not for…of or array destructuring: install()
     // also runs for a child at hooked-access time, and both would call the
     // page's Array iterator.
@@ -241,7 +284,7 @@ function inheritScriptletsIntoChildRealms(runIn) {
           },
           prop
         );
-        defineProperty(proto, prop, { ...desc, get });
+        defineProperty(proto, prop, { ...desc, get: mask(get, nativeGet) });
       }
     }
     for (let i = 0; i < INSERT_METHODS.length; i++) {
@@ -254,19 +297,27 @@ function inheritScriptletsIntoChildRealms(runIn) {
         const desc = getOwnPropertyDescriptor(proto, name);
         if (!desc || typeof desc.value !== 'function') continue;
         const native = desc.value;
-        const windowOf = ctor === 'Range' ? windowOfRange : windowOfNode;
+        const windowOf =
+          ctor === 'Range'
+            ? windowOfRange
+            : ctor === 'HTMLOptionsCollection'
+              ? windowOfInserted
+              : windowOfNode;
         // A method definition: keeps the name and, like the native, is not
-        // a constructor.
+        // a constructor. Its `length` (0, from the rest parameter) is reset
+        // to the native's below.
         const value = {
           [name](...args) {
             try {
               return apply(native, this, args);
             } finally {
-              sweepAfter(this, windowOf);
+              sweepAfter(this, windowOf, args);
             }
           },
         }[name];
-        defineProperty(proto, name, { ...desc, value });
+        const lengthDesc = getOwnPropertyDescriptor(native, 'length');
+        if (lengthDesc) defineProperty(value, 'length', lengthDesc);
+        defineProperty(proto, name, { ...desc, value: mask(value, native) });
       }
     }
     for (let i = 0; i < INSERT_SETTERS.length; i++) {
@@ -291,7 +342,7 @@ function inheritScriptletsIntoChildRealms(runIn) {
           },
           name
         );
-        defineProperty(proto, name, { ...desc, set });
+        defineProperty(proto, name, { ...desc, set: mask(set, nativeSet) });
       }
     }
   };

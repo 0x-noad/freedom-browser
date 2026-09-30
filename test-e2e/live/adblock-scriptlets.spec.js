@@ -125,6 +125,20 @@ const sameOriginFramesScript = `
   var outer = last();
   outer.document.body.appendChild(outer.document.createElement('iframe'));
   window.__page.framesNested = Object.keys(outer[0].JSON.parse(${PLAYER_JSON})).sort();
+  // Insertion APIs outside Node/ParentNode (#466 R1-M1): a frame carried in
+  // by a table's caption setter, and by select.add inside an <option>.
+  var table = document.createElement('table');
+  document.documentElement.appendChild(table);
+  var caption = document.createElement('caption');
+  caption.appendChild(document.createElement('iframe'));
+  table.caption = caption;
+  window.__page.framesTable = Object.keys(last().JSON.parse(${PLAYER_JSON})).sort();
+  var select = document.createElement('select');
+  document.documentElement.appendChild(select);
+  var option = document.createElement('option');
+  option.appendChild(document.createElement('iframe'));
+  select.add(option);
+  window.__page.framesSelect = Object.keys(last().JSON.parse(${PLAYER_JSON})).sort();
   var blob = document.createElement('iframe');
   blob.src = URL.createObjectURL(new Blob([${JSON.stringify(blobHtml).replace(/</g, '\\u003c')}], { type: 'text/html' }));
   document.documentElement.appendChild(blob);
@@ -279,6 +293,8 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
       framesInnerHTML: PRUNED,
       framesPending: PRUNED,
       framesNested: PRUNED,
+      framesTable: PRUNED,
+      framesSelect: PRUNED,
       framesParser: PRUNED,
     },
     embed: { initial: PRUNED, api: PRUNED, wallet: false },
@@ -308,6 +324,8 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
       framesInnerHTML: UNTOUCHED,
       framesPending: UNTOUCHED,
       framesNested: UNTOUCHED,
+      framesTable: UNTOUCHED,
+      framesSelect: UNTOUCHED,
       framesParser: UNTOUCHED,
     },
     embed: { initial: UNTOUCHED, api: UNTOUCHED, wallet: false },
@@ -341,6 +359,8 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
       framesInnerHTML: UNTOUCHED,
       framesPending: UNTOUCHED,
       framesNested: UNTOUCHED,
+      framesTable: UNTOUCHED,
+      framesSelect: UNTOUCHED,
       framesParser: UNTOUCHED,
     },
     embed: { initial: UNTOUCHED, api: UNTOUCHED, wallet: false },

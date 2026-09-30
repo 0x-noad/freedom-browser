@@ -2124,10 +2124,20 @@ describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile pag
        var document = new Document();
        function Node() {}
        Object.defineProperty(Node.prototype, 'ownerDocument', {
-         configurable: true, enumerable: true, get() { return document; },
+         // Brand-checked like the real one: a non-node (HTMLOptionsCollection) throws.
+         configurable: true, enumerable: true,
+         get() { if (!(this instanceof Node)) throw new TypeError('Illegal invocation'); return document; },
        });
        Node.prototype.appendChild = function appendChild(node) { frameCount = 1; return node; };
-       function Range() {}`,
+       function Range() {}
+       function HTMLTableElement() {}
+       Object.setPrototypeOf(HTMLTableElement.prototype, Node.prototype);
+       Object.defineProperty(HTMLTableElement.prototype, 'caption', {
+         configurable: true, enumerable: true, get() { return null; }, set(v) { frameCount = 1; },
+       });
+       // Not a node: the window comes from the element it inserted.
+       function HTMLOptionsCollection() {}
+       HTMLOptionsCollection.prototype.add = function add(element) { frameCount = 1; };`,
       parent
     );
     return { parent, child };
@@ -2158,6 +2168,67 @@ describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile pag
     // Seen once: later insertions don't re-run it.
     vm.runInContext('new Node().appendChild({});', parent);
     expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+  });
+
+  test.each([
+    ['the table caption setter', 'new HTMLTableElement().caption = new Node();'],
+    ['HTMLOptionsCollection#add', 'new HTMLOptionsCollection().add(new Node());'],
+  ])('patches a child inserted through %s', (_label, insert) => {
+    const src = bundleSource();
+    const { parent, child } = makeFramesRealms();
+    vm.runInContext(`(${src})()`, parent);
+    vm.runInContext(insert, parent);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+  });
+
+  // R1-M2: anti-adblock scripts fingerprint hot DOM methods by `length` and
+  // by whether they print as [native code].
+  test('wrappers keep the native length and print as the native', () => {
+    const src = bundleSource();
+    const { parent } = makeFramesRealms();
+    const shape = `[
+      Node.prototype.appendChild.length,
+      Function.prototype.toString.call(Node.prototype.appendChild),
+      String(Object.getOwnPropertyDescriptor(HTMLTableElement.prototype, 'caption').set),
+      Function.prototype.toString.toString(),
+      Function.prototype.toString.length,
+      Function.prototype.toString.name,
+      Object.getOwnPropertyDescriptor(Function.prototype, 'toString').enumerable,
+    ]`;
+    const before = vm.runInContext(shape, parent);
+    vm.runInContext('var appendChildBefore = Node.prototype.appendChild;', parent);
+    vm.runInContext(`(${src})()`, parent);
+    // Sanity: the method really was replaced, it just doesn't show.
+    expect(vm.runInContext('Node.prototype.appendChild === appendChildBefore', parent)).toBe(false);
+    expect(vm.runInContext(shape, parent)).toEqual(before);
+    expect(before[0]).toBe(1);
+    // Ordinary functions still print their own source.
+    expect(vm.runInContext('String(function f(a) { return a; })', parent)).toBe(
+      'function f(a) { return a; }'
+    );
+    // Non-functions still throw, as the native does (a TypeError from the
+    // parent realm, so matched on the message).
+    expect(() => vm.runInContext('Function.prototype.toString.call({})', parent)).toThrow(
+      /requires that 'this' be a Function/
+    );
+  });
+
+  test('wrappers installed in an adopted child print as the child’s natives', () => {
+    const src = bundleSource();
+    const { parent, child } = makeFramesRealms();
+    vm.runInContext(
+      `function Node() {}
+       Node.prototype.appendChild = function appendChild(node) { return node; };
+       var nativeAppend = Node.prototype.appendChild;`,
+      child
+    );
+    const shape = `[Node.prototype.appendChild.length, String(Node.prototype.appendChild)]`;
+    const before = vm.runInContext(shape, child);
+    vm.runInContext(`(${src})()`, parent);
+    vm.runInContext('new Node().appendChild({});', parent);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+    expect(vm.runInContext('Node.prototype.appendChild === nativeAppend', child)).toBe(false);
+    expect(vm.runInContext(shape, child)).toEqual(before);
   });
 
   test('a throwing insertion still throws, and still sweeps', () => {
