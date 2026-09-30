@@ -65,8 +65,11 @@ function packagedLaunchTarget() {
     args.push('.');
   } else if ((process.env[NO_SANDBOX_VAR] || '').trim() === '1') {
     // Headless CI runners generally cannot use Chromium's setuid/namespace
-    // sandbox. Only ever passed in packaged mode — a source run under
-    // `npm run test:e2e` / `npm run test:e2e:live` keeps the sandbox on.
+    // sandbox. This repo only passes it explicitly in packaged mode, but on
+    // Linux Playwright's own electron.launch() already prepends
+    // `--no-sandbox` whenever `chromiumSandbox` is unset (playwright-core
+    // 1.63.0), so source runs under `npm run test:e2e` / `test:e2e:live` are
+    // unsandboxed there too; this flag matters on macOS/Windows.
     args.push('--no-sandbox');
   }
 

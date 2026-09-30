@@ -46,7 +46,7 @@ sudo chown root:root node_modules/electron/dist/chrome-sandbox
 sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
 ```
 
-Repeat all three commands after every `npm ci` and every Electron version bump: both discard the binary, and the fresh download is owned by you again. `--no-sandbox`, which the headless skill in `.claude/skills/run-freedom/` and the packaged CI smoke tests pass, is for throwaway headless runs only; don't develop with it, because a browser running with the renderer sandbox disabled hides real behaviour.
+Repeat all three commands after every `npm ci` and every Electron version bump: both discard the binary, and the fresh download is owned by you again. `--no-sandbox` is for throwaway headless runs only — the headless skill in `.claude/skills/run-freedom/`, the packaged CI smoke tests, and every Playwright e2e run on Linux use it (Playwright's own Electron launcher adds it on Linux unless a test opts in with `chromiumSandbox: true`, so `npm run test:e2e` does not exercise the sandbox there); don't develop with it, because a browser running with the renderer sandbox disabled hides real behaviour.
 
 Swarm and IPFS start automatically by default, while Radicle and Myotis are opt-in under **Settings → Startup**. Install the embedded Radicle addon with `npm run radicle:download` (macOS, Linux, and Windows x64/ARM64), then enable Radicle for the profile under **Settings → Nodes**. Install optional Tor support with `npm run tor:download` (macOS, Linux, and Windows x64 — it compiles Arti for the host), then enable it under **Settings → Experimental**; the Tor rows stay hidden until that binary exists.
 
