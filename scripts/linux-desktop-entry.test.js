@@ -1,16 +1,21 @@
 // Pins the Linux window ↔ desktop-entry association (issue #142).
 //
-// Electron derives the X11 WM_CLASS and the Wayland app_id from `desktopName`
-// in package.json (minus `.desktop`); without it, from a slug of the app name
-// ("Freedom" → `freedom`). GNOME links a running window to its launcher entry
-// by matching that against the entry's file name / StartupWMClass. Before
-// #142 the packaged entry said `StartupWMClass=freedom-browser` while the
-// packaged window's WM_CLASS was `freedom` (checked with xprop), so the two
-// never matched.
+// Electron fixes CHROME_DESKTOP at startup from package.json's `desktopName`,
+// or, when that is unset, from `<package name>.desktop`, and derives the X11
+// WM_CLASS and the Wayland app_id from it. Setting `app.name` later in
+// index.js does not change it. Before #142 there was no desktopName, so the
+// packaged window was `WM_CLASS "freedom-browser", "freedom-browser"` (checked
+// with xprop). That *did* match the entry's hand-written
+// `StartupWMClass=freedom-browser`, so X11 was fine. What didn't match was the
+// Wayland app_id and CHROME_DESKTOP, `freedom-browser.desktop`: no entry by
+// that name is installed. The real entry is `freedom.desktop`, and portals and
+// xdg-activation resolve the app by that identity.
 //
 // With `desktopName` set and `linux.syncDesktopName: true`, electron-builder
 // names the installed entry after desktopName and derives StartupWMClass from
-// it, so both sides come from the one value checked here.
+// it, so both sides come from the one value checked here. Source-tree runs
+// override it at runtime (src/main/linux-desktop-name.js) so `npm start` doesn't
+// borrow the installed app's identity.
 
 const pkg = require('../package.json');
 

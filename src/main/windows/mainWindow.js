@@ -195,7 +195,12 @@ function focusBrowserWindow(window) {
       // nudge the cold-start path uses in ready-to-show. Deliberately no
       // flashFrame() fallback here: on Linux that *sets* demands-attention,
       // i.e. it would post the very notification this is trying to avoid.
-      // Wayland-native windows ignore this (issue #142).
+      // Unproven, kept for parity with cold start: headless mutter 50.1 on
+      // X11 (probed 2026-10, PR #470) accepted a bare focus() here too, so this
+      // only matters for stricter WMs (e.g. KWin focus-stealing "medium"/
+      // "high"), which nobody has tested. Wayland-native windows ignore it, and
+      // that is where #142 still reproduces: raising another process's window
+      // needs an xdg-activation token, which Electron can't mint or pass on.
       window.setAlwaysOnTop(true);
       window.focus();
       window.setAlwaysOnTop(false);
