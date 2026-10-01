@@ -1,2 +1,0 @@
-- On Linux, Freedom's windows now carry the same app identity as its launcher entry ([#142](https://github.com/solardev-xyz/freedom-browser/issues/142))
-  - Switching to an already-open profile gets the same focus nudge as opening a new one
