@@ -84,8 +84,9 @@ let plansLoading = false;
 let plansRequestId = 0;
 // The site whose publish request brought the user here.
 let requestOrigin = null;
-// Set while the Send screen we opened for the pay step is up.
-let payingFromWallet = false;
+// The payment the Send screen we opened for the pay step was prefilled with
+// ({ to, wei }), while that screen is up.
+let walletPayment = null;
 let renderedQrUri = null;
 
 export function initPublishSetup() {
@@ -174,10 +175,13 @@ export function initPublishSetup() {
   });
 
   // The pay step's own Send: follow the transaction to its receipt, since a
-  // mined but reverted payment sends nothing.
+  // mined but reverted payment sends nothing. Only a transaction that still
+  // pays the node is tracked: the user can edit the prefilled Send.
   window.addEventListener('wallet:tx-success', (event) => {
     const hash = event.detail?.hash;
-    if (payingFromWallet && hash) void window.publishSetup?.trackFundingTx(hash);
+    if (hash && isNodePayment(event.detail, walletPayment)) {
+      void window.publishSetup?.trackFundingTx(hash);
+    }
   });
 }
 
@@ -235,7 +239,9 @@ function currentView(state) {
   if (!state.canBuy) return 'node';
   // Storage that exists but is still reaching the network needs no purchase.
   if ((key === 'ready' || key === 'storage-pending') && !showPlans) return 'ready';
-  if (key === 'ready' || key === 'needs-storage') return 'plans';
+  // "Buy More Storage" from either: a batch still reaching the network can
+  // also be one the peers never accept, so a new plan stays one click away.
+  if (key === 'ready' || key === 'storage-pending' || key === 'needs-storage') return 'plans';
   return 'node';
 }
 
@@ -461,7 +467,7 @@ async function payFromWallet() {
   show(payWalletError, false);
 
   closePublishSetup();
-  payingFromWallet = true;
+  walletPayment = { to: quote.walletAddress, wei: quote.send.wei };
   const result = await openSend({
     recipient: quote.walletAddress,
     chainId: GNOSIS_CHAIN_ID,
@@ -471,7 +477,10 @@ async function payFromWallet() {
     onClose: returnFromSend,
   });
   if (!result?.opened) {
-    payingFromWallet = false;
+    walletPayment = null;
+    // A Safe with a transaction already waiting opens its signing board
+    // instead; that board explains itself and keeps the sidebar.
+    if (!isWalletHomeShown()) return;
     await openPublishSetup();
     if (payWalletError) {
       payWalletError.textContent = result?.reason || 'The Send screen could not open.';
@@ -480,12 +489,41 @@ async function payFromWallet() {
   }
 }
 
-function returnFromSend() {
-  payingFromWallet = false;
-  // A sidebar close also closes Send; only come back while the user is here.
+function returnFromSend({ handedOff = false } = {}) {
+  walletPayment = null;
+  // A Safe send hands the sidebar to its signing board: stay away.
+  if (handedOff) return;
+  // A sidebar close also closes Send; only come back while the user is here
+  // and no other screen has taken the sidebar meanwhile.
   setTimeout(() => {
-    if (isSidebarVisible() && setupState?.operation) void openPublishSetup();
+    if (isSidebarVisible() && isWalletHomeShown() && setupState?.operation) {
+      void openPublishSetup();
+    }
   }, 0);
+}
+
+// The wallet home is what a closed sub-screen leaves behind; any other
+// screen up hides it.
+function isWalletHomeShown() {
+  return !walletState.identityView?.classList.contains('hidden');
+}
+
+/**
+ * Whether a sent transaction (the `wallet:tx-success` detail) is the pay
+ * step's payment: native xDAI on Gnosis to the node wallet, at least the
+ * prefilled amount.
+ */
+export function isNodePayment(detail, expected) {
+  if (!detail || !expected?.to || !expected.wei) return false;
+  if (Number(detail.chainId) !== GNOSIS_CHAIN_ID || detail.asset != null) return false;
+  if (typeof detail.to !== 'string' || detail.to.toLowerCase() !== expected.to.toLowerCase()) {
+    return false;
+  }
+  try {
+    return BigInt(detail.value) >= BigInt(expected.wei);
+  } catch {
+    return false;
+  }
 }
 
 async function copyPaymentAddress() {

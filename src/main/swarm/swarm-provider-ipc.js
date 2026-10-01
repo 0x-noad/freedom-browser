@@ -1956,7 +1956,11 @@ async function checkBeeReachable() {
     const res = await fetch(`${beeUrl}/node`, {
       signal: AbortSignal.timeout(REACHABLE_TIMEOUT_MS),
     });
-    if (!res.ok) return { ok: false, reason: 'node-stopped' };
+    if (!res.ok) {
+      // Nobody reads this body: release the stream instead of leaving it to GC.
+      res.body?.cancel?.().catch(() => {});
+      return { ok: false, reason: 'node-stopped' };
+    }
     await res.json(); // consume response body
     return { ok: true };
   } catch {

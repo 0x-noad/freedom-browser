@@ -242,7 +242,7 @@ function setupSendScreen() {
   }
 
   if (sendDoneBtn) {
-    sendDoneBtn.addEventListener('click', closeSend);
+    sendDoneBtn.addEventListener('click', () => closeSend());
   }
 
   bindExplorerLink(sendExplorerLink, () => sendExplorerLink.href, createTab);
@@ -343,7 +343,13 @@ export async function openSend(options = {}) {
   return { opened: true };
 }
 
-export function closeSend() {
+/**
+ * Close the Send screen. `handedOff` marks a close whose sidebar another
+ * screen takes over at once (a Safe send moving to its signing board): the
+ * opener's `onClose` learns this, so it does not paint its own screen back
+ * over the new one.
+ */
+export function closeSend({ handedOff = false } = {}) {
   // Same ownership rule as the screen hider, on the other teardown path:
   // Back, a sidebar close and the coordinator's closeAllSubscreens() all
   // land here. Resetting state under a live device prompt would strand the
@@ -362,7 +368,7 @@ export function closeSend() {
   }
   const onClose = sendCloseCallback;
   sendCloseCallback = null;
-  onClose?.();
+  onClose?.({ handedOff });
 }
 
 function resetSendState() {
@@ -1419,7 +1425,7 @@ async function handleSendConfirm() {
       if (!created.success) {
         throw new Error(created.error || 'Failed to create the transaction');
       }
-      closeSend();
+      closeSend({ handedOff: true });
       await openSafeSigningBoard(safe.index, created.state);
       return;
     }
@@ -1441,7 +1447,18 @@ async function handleSendConfirm() {
     console.log('[WalletUI] Transaction sent:', result.hash);
     showSendSuccessView(result.explorerUrl);
 
-    window.dispatchEvent(new CustomEvent('wallet:tx-success', { detail: { hash: result.hash } }));
+    // What was paid, so a listener can tell its own payment from another.
+    window.dispatchEvent(
+      new CustomEvent('wallet:tx-success', {
+        detail: {
+          hash: result.hash,
+          chainId: sendTxState.chainId,
+          asset: token.address,
+          to: sendTxState.recipient,
+          value: amountResult.value,
+        },
+      })
+    );
     setTimeout(() => refreshBalances(), 3000);
   } catch (err) {
     console.error('[WalletUI] Transaction failed:', err);

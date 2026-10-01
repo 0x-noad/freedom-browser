@@ -1863,10 +1863,13 @@ describe('swarm-provider-ipc', () => {
 
     test('returns not-ok when /node returns error', async () => {
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch.mockResolvedValueOnce({ ok: false });
+      const cancel = jest.fn().mockResolvedValue();
+      global.fetch.mockResolvedValueOnce({ ok: false, body: { cancel } });
 
       const result = await checkBeeReachable();
       expect(result).toEqual({ ok: false, reason: 'node-stopped' });
+      // The unread body is released, not left streaming until GC.
+      expect(cancel).toHaveBeenCalledTimes(1);
     });
 
     test('returns not-ok when fetch throws', async () => {

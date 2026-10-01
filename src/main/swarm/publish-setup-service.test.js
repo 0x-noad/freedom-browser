@@ -27,6 +27,7 @@ const {
   FUNDING_TX_POLL_MS,
   CONFIRM_POLL_MS,
   CONFIRM_TIMEOUT_MS,
+  PENDING_STALE_MS,
   CHAIN_INIT_SLOW_MS,
 } = require('./publish-setup-service');
 
@@ -701,6 +702,38 @@ describe('confirming a bought batch', () => {
     expect(service.getState().operation).toMatchObject({
       phase: 'done',
       result: { batchId: BATCH_A, slow: true },
+    });
+  });
+
+  test('a batch that stays unusable past the pending window asks for a plan again', async () => {
+    // Ant reports a phantom batch (peers keep rejecting it) like a fresh one.
+    const { service, api } = setup();
+    api.getStamps.mockResolvedValue(ok({ stamps: [pending] }));
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+      reason: 'node-not-ready',
+    });
+    expect(service.getState().readiness.key).toBe('storage-pending');
+
+    await jest.advanceTimersByTimeAsync(PENDING_STALE_MS - 60_000);
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+      reason: 'node-not-ready',
+    });
+
+    await jest.advanceTimersByTimeAsync(60_000);
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+      reason: 'no-usable-stamps',
+      message: 'None of your storage can be used anymore. Buy a storage plan to publish.',
+    });
+    expect(service.getState().stamps).toMatchObject({ usable: 0, pending: 0, total: 1 });
+
+    // A batch that leaves the list and comes back starts a fresh window.
+    api.getStamps.mockResolvedValue(ok({ stamps: [] }));
+    await jest.advanceTimersByTimeAsync(5_000);
+    await service.getPublishReadiness();
+    api.getStamps.mockResolvedValue(ok({ stamps: [pending] }));
+    await jest.advanceTimersByTimeAsync(5_000);
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+      reason: 'node-not-ready',
     });
   });
 

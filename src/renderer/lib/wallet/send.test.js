@@ -263,6 +263,33 @@ describe('send screen sidebar ownership', () => {
     expect(flight.isSignatureInFlight()).toBe(false);
   });
 
+  test('a confirmed send reports what it paid, and close tells the opener', async () => {
+    const { mod, elements, send } = await loadSendScreen();
+    const onClose = jest.fn();
+
+    await mod.openSend({ recipient: ADDRESS, chainId: 100, amount: '0.45', onClose });
+    elements['send-confirm-btn'].dispatch('click');
+    await flush();
+    send.resolve({ success: true, hash: '0xfeedface', explorerUrl: 'https://ex/0xfeedface' });
+    await flush();
+
+    // The publish setup tracks only a payment that still goes to its node.
+    const event = window.dispatchEvent.mock.calls
+      .map(([e]) => e)
+      .find((e) => e.type === 'wallet:tx-success');
+    expect(event.detail).toEqual({
+      hash: '0xfeedface',
+      chainId: 100,
+      asset: null,
+      to: ADDRESS,
+      value: '1000',
+    });
+
+    elements['send-done-btn'].dispatch('click');
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith({ handedOff: false });
+  });
+
   test('nothing may hide the send screen while its signature is in flight', async () => {
     const { mod, state, elements, send } = await loadSendScreen();
 
