@@ -177,6 +177,8 @@ const navigateTo = async (window, value) => {
 // verified / user-configured, through the soft block's own "Continue once"
 // button for unverified, and onto the hard-block interstitial for a conflict
 // (whose address bar keeps the bare name, which is what carries the shield).
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 const loadLevel = async (window, harness, level) => {
   const { name, fixture } = LEVELS[level];
   await harness.setEnsFixture(name, fixture);
@@ -204,7 +206,7 @@ const loadLevel = async (window, harness, level) => {
     }
     await expect
       .poll(() => webviewUrl(window), { timeout: 15_000 })
-      .toMatch(new RegExp(`^ipfs://${name.replace('.', '\\.')}`));
+      .toMatch(new RegExp(`^ipfs://${escapeRegExp(name)}`));
   }
 
   const shield = window.locator('#trust-shield');
@@ -283,19 +285,20 @@ for (const level of Object.keys(LEVELS)) {
     expect(withoutDisplay(trustRows)).toEqual(expected.trustRows);
 
     const content = window.locator('#trust-popover-content');
+    const contentRows = await readRows(window, 'trust-popover-content-fields');
     if (expected.contentRows) {
       await expect(content).toBeVisible();
       await expect(window.locator('#trust-popover-content-title')).toHaveText('Resolves to');
-      const contentRows = await readRows(window, 'trust-popover-content-fields');
       expect(withoutDisplay(contentRows)).toEqual(expected.contentRows);
-      // A row with nothing to copy reads as plain text: no copy target, and
-      // the class that drops the pointer cursor.
-      for (const row of [...trustRows, ...contentRows]) {
-        expect(row.uncopyable).toBe(row.copy === null);
-      }
     } else {
       await expect(content).toBeHidden();
-      expect(await readRows(window, 'trust-popover-content-fields')).toEqual([]);
+      expect(contentRows).toEqual([]);
+    }
+    // A row with nothing to copy reads as plain text: no copy target, and
+    // the class that drops the pointer cursor. Checked for every level,
+    // including conflict, whose rows are all trust-section summaries.
+    for (const row of [...trustRows, ...contentRows]) {
+      expect(row.uncopyable).toBe(row.copy === null);
     }
 
     await window.screenshot({ path: testInfo.outputPath(`${level}-popover.png`) });
@@ -342,7 +345,12 @@ test('clicking a value row copies its full, untruncated text', async ({
     .click();
   await expect.poll(copies).toEqual([LONG_HOST, LONG_CID]);
 
-  // A summary row has no copy target: clicking it copies nothing.
+  // A summary row has no copy target: clicking it copies nothing. Rather than
+  // wait an arbitrary beat for a copy that should never come, click a copyable
+  // row afterwards as a barrier: clicks dispatch in order and the clipboard
+  // IPC is handled in order, so any stray copy from the summary rows would
+  // land in the recorder *before* the barrier's — once the barrier shows up,
+  // the sequence is final.
   await window
     .locator('#trust-popover-content-fields .trust-popover-field-uncopyable')
     .first()
@@ -351,8 +359,9 @@ test('clicking a value row copies its full, untruncated text', async ({
     .locator('#trust-popover-trust-fields .trust-popover-field-uncopyable')
     .first()
     .click();
-  await waitForPopoverFrame(window);
-  expect(await copies()).toEqual([LONG_HOST, LONG_CID]);
+  await hostValue.click();
+  await expect.poll(async () => (await copies()).length).toBeGreaterThanOrEqual(3);
+  expect(await copies()).toEqual([LONG_HOST, LONG_CID, LONG_HOST]);
 });
 
 // The shield deliberately lets its click bubble (navigation.js), so with a
