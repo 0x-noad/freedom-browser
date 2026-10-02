@@ -235,6 +235,8 @@ async function kuboRpcJson(gatewayUrl, rpcPath, { timeoutMs = 2000 } = {}) {
   try {
     const res = await gatewayFetch(url, { method: 'POST', signal: controller.signal });
     if (!res.ok) {
+      // Nothing reads an error body: cancel it so the request is closed now
+      // rather than left paused behind an unread stream.
       res.body?.cancel?.().catch(() => {});
       return null;
     }
