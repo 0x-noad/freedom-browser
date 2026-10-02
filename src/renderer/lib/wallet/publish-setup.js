@@ -94,8 +94,14 @@ let startError = null;
 // the screen dismisses it, so a later visit starts from readiness instead of
 // a stale result.
 let shownFinishedOpId = null;
-// The site whose publish request brought the user here.
+// The site whose publish request brought the user here, and the provider's
+// 4900 reason for refusing it.
 let requestOrigin = null;
+let requestReason = null;
+// The finished (done/failed) operation this window has left. The main process
+// keeps it while another window still shows it, so this window hides it
+// itself rather than open on it again.
+let dismissedOpId = null;
 // The payment the Send screen we opened for the pay step was prefilled with
 // ({ to, wei }), while that screen is up.
 let walletPayment = null;
@@ -201,17 +207,18 @@ export function initPublishSetup() {
 
 /**
  * Open the setup screen. `origin` names a site whose publish request failed
- * for a setup reason (the swarm provider routes it here); `error` says why a
- * purchase the opener tried to start was refused (the storage and deposit
- * screens arm before they hand over).
+ * for a setup reason (the swarm provider routes it here) and `reason` is that
+ * refusal's 4900 reason; `error` says why a purchase the opener tried to start
+ * was refused (the storage and deposit screens arm before they hand over).
  */
-export async function openPublishSetup({ origin = null, error = null } = {}) {
+export async function openPublishSetup({ origin = null, error = null, reason = null } = {}) {
   if (refuseSubscreenWhileInFlight('Publish setup screen')) return;
 
   walletState.identityView?.classList.add('hidden');
   screen?.classList.remove('hidden');
   isOpen = true;
   requestOrigin = typeof origin === 'string' && origin ? origin : null;
+  requestReason = requestOrigin && typeof reason === 'string' ? reason : null;
   showPlans = false;
   plans = null;
   plansLoadedAt = 0;
@@ -233,8 +240,9 @@ export async function openPublishSetup({ origin = null, error = null } = {}) {
 export function closePublishSetup() {
   if (isOpen) void window.publishSetup?.watch('publish-setup', false);
   // A result the user has seen is over once they leave it: dismiss it, or
-  // the next visit (Buy More Storage, a site's request) opens on it.
-  const op = setupState?.operation;
+  // the next visit (Buy More Storage, a site's request) opens on it. Only for
+  // this window: main keeps it while another window's screen shows it.
+  const op = visibleOperation(setupState);
   if (
     isOpen &&
     op &&
@@ -247,6 +255,7 @@ export function closePublishSetup() {
   startError = null;
   isOpen = false;
   requestOrigin = null;
+  requestReason = null;
   screen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
 }
@@ -259,8 +268,28 @@ function show(el, visible) {
   el?.classList.toggle('hidden', !visible);
 }
 
-function currentView(state) {
+// The operation this window shows: a finished one it has left is gone here
+// even while main still holds it for another window.
+function visibleOperation(state) {
   const op = state?.operation;
+  if (!op) return null;
+  if (op.id === dismissedOpId && (op.phase === 'done' || op.phase === 'failed')) return null;
+  return op;
+}
+
+// A site's write found no batch with room for it while the node can publish:
+// the storage exists, it is just too small or full for that upload.
+function isRoomShortfall(state) {
+  return (
+    Boolean(requestOrigin) &&
+    requestReason === 'no-usable-stamps' &&
+    state?.readiness?.key === 'ready' &&
+    !visibleOperation(state)
+  );
+}
+
+function currentView(state) {
+  const op = visibleOperation(state);
   if (op) {
     if (op.phase === 'executing' || op.phase === 'confirming') return 'executing';
     if (op.phase === 'done') return 'done';
@@ -283,7 +312,8 @@ function render() {
   if (!isOpen) return;
   const state = setupState;
   const view = currentView(state);
-  const op = state?.operation;
+  const op = visibleOperation(state);
+  const roomShortfall = isRoomShortfall(state);
 
   if (titleEl) titleEl.textContent = describeOperationTitle(op);
 
@@ -293,7 +323,9 @@ function render() {
   show(errorNote, Boolean(startError));
   if (errorNote) errorNote.textContent = startError || '';
   if (originText && requestOrigin) {
-    originText.textContent = `${requestOrigin} wants to publish on Swarm. Set up publishing to let it.`;
+    originText.textContent = roomShortfall
+      ? `${requestOrigin} tried to publish more than your storage has room for.`
+      : `${requestOrigin} wants to publish on Swarm. Set up publishing to let it.`;
   }
 
   show(nodeView, view === 'node');
@@ -306,7 +338,11 @@ function render() {
 
   if (view === 'node') renderNode(state);
   if (view === 'plans') renderPlans();
-  if (view === 'ready' && readyText) readyText.textContent = state.readiness.message;
+  if (view === 'ready' && readyText) {
+    readyText.textContent = roomShortfall
+      ? 'None of your storage batches has room for that upload. Make one bigger under Manage Storage, or buy more storage.'
+      : state.readiness.message;
+  }
   if (view === 'pay') renderPay(state, op);
   if (view === 'executing') {
     const copy = describeExecuting(op);
@@ -482,11 +518,13 @@ async function cancelOperation() {
   render();
 }
 
-// Dismiss the finished operation on screen, and only that one.
+// Dismiss the finished operation on screen, and only that one: hidden here at
+// once, dropped in main once no other window's screen shows it.
 async function dismissOperation() {
-  const id = setupState?.operation?.id;
+  const id = visibleOperation(setupState)?.id;
   if (id == null) return;
-  const result = await window.publishSetup?.cancel(id);
+  dismissedOpId = id;
+  const result = await window.publishSetup?.dismiss(id);
   if (result?.state) setupState = result.state;
 }
 
@@ -544,7 +582,7 @@ function returnFromSend({ handedOff = false } = {}) {
   // A sidebar close also closes Send; only come back while the user is here
   // and no other screen has taken the sidebar meanwhile.
   setTimeout(() => {
-    if (isSidebarVisible() && isWalletHomeShown() && setupState?.operation) {
+    if (isSidebarVisible() && isWalletHomeShown() && visibleOperation(setupState)) {
       void openPublishSetup();
     }
   }, 0);

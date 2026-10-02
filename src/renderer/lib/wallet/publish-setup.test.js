@@ -100,6 +100,7 @@ async function load({ state, openSendResult = { opened: true } }) {
       trackFundingTx: jest.fn().mockResolvedValue(),
       arm: jest.fn(),
       cancel: jest.fn(),
+      dismiss: jest.fn(),
     },
   };
 
@@ -144,6 +145,42 @@ afterEach(() => {
 });
 
 describe('views', () => {
+  test('a site whose write found no room is told why, not "Ready to publish"', async () => {
+    const { mod, elements, visible } = await load({
+      state: { canBuy: true, readiness: readiness('ready'), plans: [] },
+    });
+    await mod.openPublishSetup({ origin: 'app.eth', reason: 'no-usable-stamps' });
+    expect(visible('publish-setup-ready')).toBe(true);
+    expect(visible('publish-setup-origin')).toBe(true);
+    expect(elements['publish-setup-origin-text'].textContent).toBe(
+      'app.eth tried to publish more than your storage has room for.'
+    );
+    expect(elements['publish-setup-ready-text'].textContent).toMatch(
+      /has room for that upload\. Make one bigger under Manage Storage, or buy more storage\./
+    );
+
+    // Any other reason, or no site, keeps the readiness wording.
+    await mod.openPublishSetup({ origin: 'app.eth', reason: 'node-not-ready' });
+    expect(elements['publish-setup-origin-text'].textContent).toBe(
+      'app.eth wants to publish on Swarm. Set up publishing to let it.'
+    );
+    expect(elements['publish-setup-ready-text'].textContent).toBe('readiness ready');
+    await mod.openPublishSetup({ reason: 'no-usable-stamps' });
+    expect(visible('publish-setup-origin')).toBe(false);
+    expect(elements['publish-setup-ready-text'].textContent).toBe('readiness ready');
+  });
+
+  test('a site sent for no storage at all still gets the setup wording', async () => {
+    const { mod, elements, visible } = await load({
+      state: { canBuy: true, readiness: readiness('needs-storage'), plans: [] },
+    });
+    await mod.openPublishSetup({ origin: 'app.eth', reason: 'no-usable-stamps' });
+    expect(visible('publish-setup-plans')).toBe(true);
+    expect(elements['publish-setup-origin-text'].textContent).toBe(
+      'app.eth wants to publish on Swarm. Set up publishing to let it.'
+    );
+  });
+
   test.each(['ready', 'storage-pending'])(
     'Buy More Storage from %s shows the plan list',
     async (key) => {
@@ -267,14 +304,40 @@ describe('finished operations and refusals', () => {
     'leaving a %s result the user saw dismisses it, and only that one',
     async (phase) => {
       const { mod, elements, visible } = await load({ state: finished(phase) });
-      window.publishSetup.cancel.mockResolvedValue({ ok: true });
+      window.publishSetup.dismiss.mockResolvedValue({ ok: true });
       await mod.openPublishSetup();
       expect(visible(`publish-setup-${phase}`)).toBe(true);
 
       elements['publish-setup-back'].dispatch('click');
-      expect(window.publishSetup.cancel).toHaveBeenCalledWith(7);
+      expect(window.publishSetup.dismiss).toHaveBeenCalledWith(7);
+      // A dismissal, not a cancel: main keeps the result while another
+      // window's setup screen still shows it.
+      expect(window.publishSetup.cancel).not.toHaveBeenCalled();
     }
   );
+
+  test('a result this window left stays hidden here while main still holds it', async () => {
+    const state = finished('failed', { uncertain: true });
+    const { mod, elements, visible } = await load({ state });
+    // Main keeps the operation: another window is showing it.
+    window.publishSetup.dismiss.mockResolvedValue({ ok: true, state });
+    await mod.openPublishSetup();
+    expect(visible('publish-setup-failed')).toBe(true);
+
+    elements['publish-setup-back'].dispatch('click');
+    await flush();
+    await mod.openPublishSetup();
+    expect(visible('publish-setup-failed')).toBe(false);
+    expect(visible('publish-setup-ready')).toBe(true);
+
+    // A new operation armed later shows as usual.
+    window.publishSetup.getState.mockResolvedValue({
+      ...state,
+      operation: { ...state.operation, id: 8, phase: 'failed', uncertain: false },
+    });
+    await mod.openPublishSetup();
+    expect(visible('publish-setup-failed')).toBe(true);
+  });
 
   test('leaving the pay step keeps the purchase armed', async () => {
     const { mod, elements } = await load({ state: { ...payState(), operation: { ...payState().operation, id: 3 } } });

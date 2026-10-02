@@ -610,6 +610,9 @@ contextBridge.exposeInMainWorld('publishSetup', {
     ipcRenderer.invoke('swarm:setup-get-extend-options', batchId, depth),
   arm: (request) => ipcRenderer.invoke('swarm:setup-arm', request),
   cancel: (opId) => ipcRenderer.invoke('swarm:setup-cancel', opId),
+  // Leave a finished result this window showed; another window's screen may
+  // still have it up, so main drops it only once none does.
+  dismiss: (opId) => ipcRenderer.invoke('swarm:setup-cancel', opId, { dismiss: true }),
   trackFundingTx: (hash) => ipcRenderer.invoke('swarm:setup-track-funding-tx', hash),
   restartNode: () => ipcRenderer.invoke('swarm:setup-restart-node'),
   onState: (callback) => {

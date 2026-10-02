@@ -89,6 +89,8 @@ const CHAIN_INIT_SLOW_MS = 3 * 60_000;
 const MAX_EXTEND_DAYS = 3650;
 
 const QUOTING_PHASES = new Set(['quoting', 'awaiting-funds']);
+// The surface name the chrome's setup screen watches under (publish-setup.js).
+const SETUP_SCREEN_SURFACE = 'publish-setup';
 
 const UNCERTAIN_MESSAGE =
   'Gnosis Chain did not confirm the transaction in time. It may still go through, so check your storage in a minute before you try again.';
@@ -976,6 +978,26 @@ function createPublishSetupService({
     return { ok: true, state: getState() };
   }
 
+  /**
+   * A window leaving a finished (done/failed) result it showed. The result is
+   * shared by every window, so it is dropped only once no other window has
+   * the setup screen up: a tab switch in one window must not take a failure
+   * (an uncertain one included) off the screen of another. `viewer` is the
+   * leaving window's watch-key prefix; its own screen hides the result
+   * itself. Never drops an operation that is still running.
+   */
+  function dismiss(opId, viewer = '') {
+    if (!operation || operation.id !== opId) return { ok: true, state: getState() };
+    if (operation.phase !== 'done' && operation.phase !== 'failed') {
+      return { ok: true, state: getState() };
+    }
+    const shownElsewhere = [...watchers].some(
+      (key) => key.endsWith(`:${SETUP_SCREEN_SURFACE}`) && !(viewer && key.startsWith(viewer))
+    );
+    if (shownElsewhere) return { ok: true, state: getState() };
+    return cancel(opId);
+  }
+
   async function pollFundingTx(current, tx, deadline) {
     txTimer = null;
     if (operation !== current || current.fundingTx !== tx || tx.status !== 'pending') return;
@@ -1118,6 +1140,7 @@ function createPublishSetupService({
     handleNodeStatus,
     arm,
     cancel,
+    dismiss,
     trackFundingTx,
     restartNode: restartNodeAction,
     getPlans,
@@ -1205,9 +1228,16 @@ function registerPublishSetupIpc() {
     svc.getExtendOptions(batchId, depth)
   );
   ipcMain.handle(IPC.SWARM_SETUP_ARM, (_event, request) => svc.arm(request));
-  ipcMain.handle(IPC.SWARM_SETUP_CANCEL, (_event, opId) =>
-    svc.cancel(Number.isInteger(opId) ? opId : null)
-  );
+  // `{ dismiss: true }`: the screen is leaving a finished result it showed,
+  // which another window may still have up (dismiss() above).
+  ipcMain.handle(IPC.SWARM_SETUP_CANCEL, (event, opId, options) => {
+    const id = Number.isInteger(opId) ? opId : null;
+    if (options?.dismiss === true) {
+      if (id === null) return { ok: true, state: svc.getState() };
+      return svc.dismiss(id, `${event.sender.id}:`);
+    }
+    return svc.cancel(id);
+  });
   ipcMain.handle(IPC.SWARM_SETUP_TRACK_FUNDING_TX, (_event, hash) => svc.trackFundingTx(hash));
   ipcMain.handle(IPC.SWARM_SETUP_RESTART_NODE, () => svc.restartNode());
 

@@ -400,14 +400,16 @@ const publishSetupRoutedAt = new Map();
  * the user is busy in the sidebar or was sent there for this site a moment
  * ago. Opening the setup switches tabs, which closes every sub-screen (a
  * half-filled Send form included), so any open one wins over the site.
+ * `reason` is the 4900 reason, so the screen can say why when the node is
+ * otherwise ready (a write with no batch that has room for it).
  */
-export function routeToPublishSetup(origin) {
+export function routeToPublishSetup(origin, reason = null) {
   if (isSignatureInFlight()) return false;
   if (document.querySelector('#sidebar .sidebar-subscreen:not(.hidden)')) return false;
   const now = Date.now();
   const last = publishSetupRoutedAt.get(origin);
   if (last !== undefined && now - last < PUBLISH_SETUP_ROUTE_INTERVAL_MS) return false;
-  if (!openPublishSetupFlow('setup', { origin })) return false;
+  if (!openPublishSetupFlow('setup', { origin, reason })) return false;
   publishSetupRoutedAt.set(origin, now);
   return true;
 }

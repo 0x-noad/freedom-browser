@@ -315,7 +315,7 @@ describe('routing setup failures into the publish setup', () => {
     await flush();
     await flush();
 
-    expect(mockRouteToPublishSetup).toHaveBeenCalledWith('app.eth');
+    expect(mockRouteToPublishSetup).toHaveBeenCalledWith('app.eth', 'no-usable-stamps');
     // The page still gets its error: routing is for the user, not the app.
     const [, response] = responsesSentTo(webview).at(-1);
     expect(response.error).toMatchObject({ code: 4900, data: { reason: 'no-usable-stamps' } });

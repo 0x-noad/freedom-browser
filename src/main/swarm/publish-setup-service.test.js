@@ -689,6 +689,43 @@ describe('the armed purchase', () => {
     expect(service.getState().operation).toBeNull();
   });
 
+  test('a window leaving a finished result drops it only once no other window shows it', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(fail(501, 'not implemented in ant'));
+    api.getSettlementDeposit.mockResolvedValue(fail(501, 'not implemented in ant'));
+    service.watch('1:publish-setup', true);
+    service.watch('2:publish-setup', true);
+    service.watch('2:node-card', true);
+    await settle();
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    const { id } = service.getState().operation;
+    expect(service.getState().operation.phase).toBe('failed');
+
+    // Window 1 leaves (a tab switch): window 2 still has the failure up.
+    service.watch('1:publish-setup', false);
+    expect(service.dismiss(id, '1:')).toMatchObject({ ok: true });
+    expect(service.getState().operation).toMatchObject({ id, phase: 'failed' });
+
+    // Window 2 leaves too: nobody shows it any more. Its node card does not
+    // count as showing the result.
+    service.watch('2:publish-setup', false);
+    expect(service.dismiss(id, '2:')).toMatchObject({ ok: true });
+    expect(service.getState().operation).toBeNull();
+  });
+
+  test('a dismissal never drops a running operation or another one', async () => {
+    const { service } = setup();
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    const { id } = service.getState().operation;
+    expect(service.getState().operation.phase).not.toMatch(/done|failed/);
+
+    expect(service.dismiss(id, '1:')).toMatchObject({ ok: true });
+    expect(service.dismiss(id + 1, '1:')).toMatchObject({ ok: true });
+    expect(service.getState().operation).toMatchObject({ id });
+  });
+
   test('refuses requests it cannot price', () => {
     const { service } = setup();
     expect(service.arm({ kind: 'buy', planId: 'huge' })).toEqual({
@@ -1190,6 +1227,24 @@ describe('registerPublishSetupIpc', () => {
     expect(settings.send).toHaveBeenCalledTimes(1);
     expect(page.send).not.toHaveBeenCalled();
     expect(lookalike.send).not.toHaveBeenCalled();
+  });
+
+  test('setup-cancel with { dismiss: true } is a dismissal, not a cancel', () => {
+    const cancel = mockIpcHandlers.get('swarm:setup-cancel');
+    const armed = mockIpcHandlers.get('swarm:setup-arm')({}, { kind: 'buy', planId: 'starter' });
+    expect(armed).toMatchObject({ ok: true });
+    const { id } = armed.state.operation;
+
+    // A dismissal never drops a purchase that is still running…
+    expect(cancel({ sender: { id: 3 } }, id, { dismiss: true })).toMatchObject({
+      ok: true,
+      state: { operation: { id } },
+    });
+    expect(cancel({ sender: { id: 3 } }, 'x', { dismiss: true })).toMatchObject({
+      state: { operation: { id } },
+    });
+    // …while a cancel does.
+    expect(cancel({ sender: { id: 3 } }, id)).toMatchObject({ ok: true, state: { operation: null } });
   });
 
   test('drops a closed window’s watches', async () => {

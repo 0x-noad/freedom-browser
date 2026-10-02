@@ -181,7 +181,7 @@ async function handleSwarmRequest(webview, request) {
       SETUP_ROUTED_METHODS.has(method) &&
       SETUP_REASONS.has(error.data?.reason)
     ) {
-      routeToPublishSetup(permissionKey);
+      routeToPublishSetup(permissionKey, error.data.reason);
     }
     sendSwarmResponse(webview, id, null, {
       code: error.code || ERRORS.INTERNAL_ERROR.code,
