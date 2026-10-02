@@ -246,3 +246,103 @@ describe('paying from the Freedom wallet', () => {
     expect(ctx.visible('sidebar-publish-setup')).toBe(false);
   });
 });
+
+describe('finished operations and refusals', () => {
+  const finished = (phase, extra = {}) => ({
+    canBuy: true,
+    readiness: readiness('ready'),
+    plans: [],
+    operation: {
+      id: 7,
+      phase,
+      kind: 'extend',
+      request: { kind: 'extend', batchId: 'a'.repeat(64), days: 30, depth: null },
+      result: phase === 'done' ? { batchId: 'a'.repeat(64) } : null,
+      error: phase === 'failed' ? 'The extension failed.' : null,
+      ...extra,
+    },
+  });
+
+  test.each(['done', 'failed'])(
+    'leaving a %s result the user saw dismisses it, and only that one',
+    async (phase) => {
+      const { mod, elements, visible } = await load({ state: finished(phase) });
+      window.publishSetup.cancel.mockResolvedValue({ ok: true });
+      await mod.openPublishSetup();
+      expect(visible(`publish-setup-${phase}`)).toBe(true);
+
+      elements['publish-setup-back'].dispatch('click');
+      expect(window.publishSetup.cancel).toHaveBeenCalledWith(7);
+    }
+  );
+
+  test('leaving the pay step keeps the purchase armed', async () => {
+    const { mod, elements } = await load({ state: { ...payState(), operation: { ...payState().operation, id: 3 } } });
+    await mod.openPublishSetup();
+    elements['publish-setup-back'].dispatch('click');
+    expect(window.publishSetup.cancel).not.toHaveBeenCalled();
+  });
+
+  test('a refused Try Again says why over the failed view', async () => {
+    const { mod, elements, visible } = await load({ state: finished('failed') });
+    window.publishSetup.arm.mockResolvedValue({
+      ok: false,
+      error: 'Freedom is already buying storage. Wait for it to finish.',
+    });
+    await mod.openPublishSetup();
+    expect(visible('publish-setup-error')).toBe(false);
+
+    elements['publish-failed-retry'].dispatch('click');
+    await flush();
+    expect(visible('publish-setup-failed')).toBe(true);
+    expect(visible('publish-setup-error')).toBe(true);
+    expect(elements['publish-setup-error'].textContent).toBe(
+      'Freedom is already buying storage. Wait for it to finish.'
+    );
+  });
+
+  test('an opener’s refusal (storage, deposit screens) shows on arrival, and not on the next visit', async () => {
+    const { mod, elements, visible } = await load({ state: payState() });
+    await mod.openPublishSetup({ error: 'Your new storage is still reaching the network.' });
+    expect(visible('publish-setup-error')).toBe(true);
+    expect(elements['publish-setup-error'].textContent).toMatch(/still reaching/);
+
+    mod.closePublishSetup();
+    await mod.openPublishSetup();
+    expect(visible('publish-setup-error')).toBe(false);
+  });
+
+  test('a stale "Send screen could not open" is gone on the next visit', async () => {
+    const ctx = await load({
+      state: payState(),
+      openSendResult: { opened: false, reason: 'The Send screen could not open.' },
+    });
+    await ctx.mod.openPublishSetup();
+    ctx.elements['publish-pay-wallet'].dispatch('click');
+    await flush();
+    expect(ctx.visible('publish-pay-wallet-error')).toBe(true);
+
+    ctx.mod.closePublishSetup();
+    await ctx.mod.openPublishSetup();
+    expect(ctx.visible('publish-pay-wallet-error')).toBe(false);
+  });
+
+  test('a failed price fetch is retried once it is stale', async () => {
+    const state = { canBuy: true, readiness: readiness('needs-storage'), plans: [] };
+    const { mod } = await load({ state });
+    window.publishSetup.getPlans.mockRejectedValueOnce(new Error('node busy'));
+    await mod.openPublishSetup();
+    await flush();
+    expect(window.publishSetup.getPlans).toHaveBeenCalledTimes(1);
+
+    // The next state push re-renders; a fresh failure is not refetched yet.
+    const push = window.publishSetup.onState.mock.calls[0][0];
+    push(state);
+    expect(window.publishSetup.getPlans).toHaveBeenCalledTimes(1);
+
+    jest.setSystemTime(Date.now() + 10_000);
+    push(state);
+    await flush();
+    expect(window.publishSetup.getPlans).toHaveBeenCalledTimes(2);
+  });
+});

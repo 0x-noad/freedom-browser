@@ -37,6 +37,7 @@ let titleEl;
 let backBtn;
 let originNote;
 let originText;
+let errorNote;
 let nodeView;
 let nodeText;
 let nodeActionBtn;
@@ -82,6 +83,17 @@ let showPlans = false;
 let plans = null;
 let plansLoading = false;
 let plansRequestId = 0;
+// When the plan prices were last fetched; a failed fetch is retried on a
+// later render once this is PLANS_RETRY_MS old.
+let plansLoadedAt = 0;
+const PLANS_RETRY_MS = 10_000;
+// Why the last purchase, extension or top-up could not start (arm refused),
+// shown above whichever view is up until the user does something else.
+let startError = null;
+// The id of a finished (done/failed) operation this screen has shown. Leaving
+// the screen dismisses it, so a later visit starts from readiness instead of
+// a stale result.
+let shownFinishedOpId = null;
 // The site whose publish request brought the user here.
 let requestOrigin = null;
 // The payment the Send screen we opened for the pay step was prefilled with
@@ -95,6 +107,7 @@ export function initPublishSetup() {
   backBtn = document.getElementById('publish-setup-back');
   originNote = document.getElementById('publish-setup-origin');
   originText = document.getElementById('publish-setup-origin-text');
+  errorNote = document.getElementById('publish-setup-error');
   nodeView = document.getElementById('publish-setup-node');
   nodeText = document.getElementById('publish-setup-node-text');
   nodeActionBtn = document.getElementById('publish-setup-node-action');
@@ -139,6 +152,7 @@ export function initPublishSetup() {
   manageBtn?.addEventListener('click', () => openStorage());
   buyMoreBtn?.addEventListener('click', () => {
     showPlans = true;
+    startError = null;
     render();
   });
   payWalletBtn?.addEventListener('click', () => payFromWallet());
@@ -187,9 +201,11 @@ export function initPublishSetup() {
 
 /**
  * Open the setup screen. `origin` names a site whose publish request failed
- * for a setup reason (the swarm provider routes it here).
+ * for a setup reason (the swarm provider routes it here); `error` says why a
+ * purchase the opener tried to start was refused (the storage and deposit
+ * screens arm before they hand over).
  */
-export async function openPublishSetup({ origin = null } = {}) {
+export async function openPublishSetup({ origin = null, error = null } = {}) {
   if (refuseSubscreenWhileInFlight('Publish setup screen')) return;
 
   walletState.identityView?.classList.add('hidden');
@@ -198,7 +214,11 @@ export async function openPublishSetup({ origin = null } = {}) {
   requestOrigin = typeof origin === 'string' && origin ? origin : null;
   showPlans = false;
   plans = null;
+  plansLoadedAt = 0;
   renderedQrUri = null;
+  startError = typeof error === 'string' && error ? error : null;
+  shownFinishedOpId = null;
+  show(payWalletError, false);
   void window.publishSetup?.watch('publish-setup', true);
 
   render();
@@ -212,6 +232,19 @@ export async function openPublishSetup({ origin = null } = {}) {
 
 export function closePublishSetup() {
   if (isOpen) void window.publishSetup?.watch('publish-setup', false);
+  // A result the user has seen is over once they leave it: dismiss it, or
+  // the next visit (Buy More Storage, a site's request) opens on it.
+  const op = setupState?.operation;
+  if (
+    isOpen &&
+    op &&
+    op.id === shownFinishedOpId &&
+    (op.phase === 'done' || op.phase === 'failed')
+  ) {
+    void dismissOperation();
+  }
+  shownFinishedOpId = null;
+  startError = null;
   isOpen = false;
   requestOrigin = null;
   screen?.classList.add('hidden');
@@ -254,7 +287,11 @@ function render() {
 
   if (titleEl) titleEl.textContent = describeOperationTitle(op);
 
+  if ((view === 'done' || view === 'failed') && op?.id != null) shownFinishedOpId = op.id;
+
   show(originNote, Boolean(requestOrigin) && view !== 'done');
+  show(errorNote, Boolean(startError));
+  if (errorNote) errorNote.textContent = startError || '';
   if (originText && requestOrigin) {
     originText.textContent = `${requestOrigin} wants to publish on Swarm. Set up publishing to let it.`;
   }
@@ -320,7 +357,9 @@ function renderNode(state) {
 }
 
 function renderPlans() {
-  if (!plans && !plansLoading) void loadPlans();
+  const failed = Boolean(plans?.some((p) => p.error));
+  const stale = failed && Date.now() - plansLoadedAt >= PLANS_RETRY_MS;
+  if ((!plans || stale) && !plansLoading) void loadPlans();
   if (!planList) return;
 
   const byId = new Map((plans || []).map((p) => [p.id, p]));
@@ -364,7 +403,10 @@ async function loadPlans() {
     if (requestId !== plansRequestId) return;
     plans = [{ error: err.message || 'Could not get prices from the Swarm node.' }];
   } finally {
-    if (requestId === plansRequestId) plansLoading = false;
+    if (requestId === plansRequestId) {
+      plansLoading = false;
+      plansLoadedAt = Date.now();
+    }
   }
   render();
 }
@@ -419,13 +461,14 @@ function describePayStatus(op) {
 // ============================================
 
 async function armOperation(request) {
+  startError = null;
+  show(payWalletError, false);
   const result = await window.publishSetup?.arm(request);
   if (result && !result.ok) {
-    showPlans = true;
-    if (plansError) {
-      plansError.textContent = result.error || 'Could not start the purchase.';
-      show(plansError, true);
-    }
+    // Shown above whatever view is up: a refused Try Again leaves the
+    // failed view in place, where the plan list's own error is hidden.
+    startError = result.error || 'Could not start the purchase.';
+    render();
     return;
   }
   if (result?.state) setupState = result.state;
@@ -433,13 +476,17 @@ async function armOperation(request) {
 }
 
 async function cancelOperation() {
+  startError = null;
   const result = await window.publishSetup?.cancel();
   if (result?.state) setupState = result.state;
   render();
 }
 
+// Dismiss the finished operation on screen, and only that one.
 async function dismissOperation() {
-  const result = await window.publishSetup?.cancel();
+  const id = setupState?.operation?.id;
+  if (id == null) return;
+  const result = await window.publishSetup?.cancel(id);
   if (result?.state) setupState = result.state;
 }
 

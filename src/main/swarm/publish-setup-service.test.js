@@ -11,9 +11,9 @@ jest.mock('../logger', () => ({
   debug: jest.fn(),
 }));
 jest.mock('./swarm-service', () => {
-  const { isUsableStamp, isPendingStamp, isPropagatingStamp } =
+  const { isUsableStamp, isPendingStamp, isPropagatingStamp, isFullImmutableStamp } =
     jest.requireActual('./swarm-service');
-  return { isUsableStamp, isPendingStamp, isPropagatingStamp };
+  return { isUsableStamp, isPendingStamp, isPropagatingStamp, isFullImmutableStamp };
 });
 
 const {
@@ -342,6 +342,40 @@ describe('publish readiness', () => {
     expect(api.getStamps).toHaveBeenCalledTimes(1);
   });
 
+  test('a full immutable batch is not storage: readiness asks for a plan', async () => {
+    // depth 20, bucketDepth 16: a bucket holds 2^4 = 16 chunks.
+    const full = {
+      batchID: BATCH_A,
+      usable: true,
+      immutableFlag: true,
+      depth: 20,
+      bucketDepth: 16,
+      utilization: 16,
+    };
+    const { service, api } = setup();
+    api.getStamps.mockResolvedValue(ok({ stamps: [full] }));
+    await expect(service.getPublishReadiness()).resolves.toEqual({
+      ok: false,
+      reason: 'no-usable-stamps',
+      message: 'Your storage is full. Buy a storage plan to keep publishing.',
+    });
+    expect(service.getState().stamps).toMatchObject({ usable: 0, total: 1 });
+
+    // One chunk short of full still publishes; so does a full mutable batch,
+    // which keeps stamping by overwriting (messaging relies on it).
+    const { service: room, api: roomApi } = setup();
+    roomApi.getStamps.mockResolvedValue(
+      ok({
+        stamps: [
+          { ...full, utilization: 15 },
+          { ...full, batchID: BATCH_B, immutableFlag: false },
+        ],
+      })
+    );
+    await expect(room.getPublishReadiness()).resolves.toMatchObject({ ok: true });
+    expect(room.getState().stamps).toMatchObject({ usable: 2 });
+  });
+
   test('during chain init it reports node-not-ready, not missing stamps', async () => {
     // antd answers GET /stamps with an empty list until chain init is done.
     const { service, api } = setup();
@@ -643,6 +677,18 @@ describe('the armed purchase', () => {
     expect(api.getStorageQuote).toHaveBeenCalledTimes(1);
   });
 
+  test('a cancel naming another operation leaves the current one alone', async () => {
+    const { service } = setup();
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    const { id } = service.getState().operation;
+
+    expect(service.cancel(id + 1)).toMatchObject({ ok: true });
+    expect(service.getState().operation).toMatchObject({ id });
+    expect(service.cancel(id)).toMatchObject({ ok: true });
+    expect(service.getState().operation).toBeNull();
+  });
+
   test('refuses requests it cannot price', () => {
     const { service } = setup();
     expect(service.arm({ kind: 'buy', planId: 'huge' })).toEqual({
@@ -741,6 +787,40 @@ describe('confirming a bought batch', () => {
       message: 'None of your storage can be used anymore. Buy a storage plan to publish.',
     });
     expect(service.getState().stamps).toMatchObject({ usable: 0, pending: 0, total: 1 });
+  });
+
+  test('a bought batch peers reject fails the purchase instead of holding the spinner', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.getStamps.mockResolvedValue(ok({ stamps: [{ ...pending, propagating: true }] }));
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    expect(service.getState().operation.phase).toBe('confirming');
+
+    api.getStamps.mockResolvedValue(ok({ stamps: [{ ...pending, propagating: false }] }));
+    await jest.advanceTimersByTimeAsync(CONFIRM_POLL_MS);
+    expect(service.getState().operation).toMatchObject({
+      phase: 'failed',
+      uncertain: false,
+      error: expect.stringMatching(/did not accept it/),
+    });
+    // Not stuck for the confirm window: a new plan can be armed right away.
+    expect(service.arm({ kind: 'buy', planId: 'starter' })).toMatchObject({ ok: true });
+    expect(api.buyStorage).toHaveBeenCalledTimes(1);
+  });
+
+  test('a batch not listed yet, or still without the flag, keeps confirming', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.getStamps.mockResolvedValue(ok({ stamps: [] }));
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    await jest.advanceTimersByTimeAsync(CONFIRM_POLL_MS);
+    api.getStamps.mockResolvedValue(ok({ stamps: [pending] }));
+    await jest.advanceTimersByTimeAsync(CONFIRM_POLL_MS);
+    expect(service.getState().operation.phase).toBe('confirming');
   });
 
   test('a node without the flag: the awaiting-confirmations shape is pending, and publishing is held back', async () => {

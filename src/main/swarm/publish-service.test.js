@@ -216,6 +216,8 @@ describe('publish-service', () => {
       const result = await invokeIpc('swarm:publish-data', 'test');
       expect(result.success).toBe(false);
       expect(result.error).toContain('No usable postage batch');
+      // freedom://publish offers the setup on this one.
+      expect(result.needsStorage).toBe(true);
     });
 
     test('swarm:publish-data rejects empty input', async () => {

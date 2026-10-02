@@ -160,8 +160,9 @@ and accidental local access, not hostile software running as the same user.
 `ant-chain-bridge.test.js` exercises the HTTP boundary with real loopback sockets:
 authorization/Origin/Host checks, request limits, exact forwarding, source
 reporting, error/revert propagation, broadcast restrictions, cancellation,
-capacity and split-log redaction. Manager tests cover mode selection, close,
-bind/spawn failure and stop during startup. Router tests ensure cancellation
+capacity and split-log redaction. Manager tests cover starting the daemon with
+its write-capable chain transport, close, bind/spawn failure and stop during
+startup. Router tests ensure cancellation
 prevents later fallback or a second direct broadcaster.
 `ant-log-scan-routing.test.js` pins the ranking rule as a matrix over the
 real router with the bridge's own options and error mapping, under fake

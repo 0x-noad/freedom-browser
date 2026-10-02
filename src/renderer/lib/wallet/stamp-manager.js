@@ -111,11 +111,11 @@ async function loadBatchList() {
 
 async function startOperation(request) {
   const result = await window.publishSetup?.arm(request);
-  if (result && !result.ok) {
-    console.warn('[StampManager] Could not start:', result.error);
-  }
+  // A refusal (another purchase still running, say) is shown on the setup
+  // screen, over the operation that is in the way.
+  const error = result && !result.ok ? result.error || 'Could not start.' : null;
   closeStampManager();
-  openPublishSetup();
+  openPublishSetup({ error });
 }
 
 // ============================================

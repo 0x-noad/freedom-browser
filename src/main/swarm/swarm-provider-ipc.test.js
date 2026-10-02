@@ -387,6 +387,24 @@ describe('swarm-provider-ipc', () => {
       expect(other.error).toMatchObject({ code: -32603, message: 'disk full' });
     });
 
+    test('no batch with room for the upload is no-usable-stamps, so the page routes to setup', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockPreFlightOk();
+      const { noUsableBatchError, NO_USABLE_BATCH_MESSAGE } = jest.requireActual('./batch-errors');
+      mockPublishData.mockRejectedValue(noUsableBatchError());
+
+      const result = await invokeProvider(
+        'swarm_publishData',
+        { data: 'Hello world', contentType: 'text/plain' },
+        'myapp.eth'
+      );
+      expect(result.error).toEqual({
+        code: 4900,
+        message: NO_USABLE_BATCH_MESSAGE,
+        data: { reason: 'no-usable-stamps' },
+      });
+    });
+
     test('publishes data and returns reference + bzzUrl', async () => {
       mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
       mockPreFlightOk();

@@ -58,6 +58,25 @@ describe('antRequest', () => {
     ).resolves.toMatchObject({ status: 0, timedOut: false, unreachable: true });
   });
 
+  test('a refused connection never delivered the request; a reset mid-request may have', async () => {
+    // undici's shape: TypeError('fetch failed') with the socket error as cause.
+    const failed = (code) => Object.assign(new TypeError('fetch failed'), { cause: { code } });
+    const refused = await api.buyStorage(
+      { depth: 20, amountPerChunk: '1' },
+      { fetchImpl: jest.fn().mockRejectedValue(failed('ECONNREFUSED')) }
+    );
+    expect(refused).toMatchObject({ status: 0, unreachable: true, refused: true });
+    expect(api.isUncertainWrite(refused)).toBe(false);
+    expect(api.describeAntError(refused)).toBe('Cannot reach the Swarm node.');
+
+    const reset = await api.buyStorage(
+      { depth: 20, amountPerChunk: '1' },
+      { fetchImpl: jest.fn().mockRejectedValue(failed('ECONNRESET')) }
+    );
+    expect(reset).toMatchObject({ status: 0, unreachable: true, refused: false });
+    expect(api.isUncertainWrite(reset)).toBe(true);
+  });
+
   test('keeps a non-JSON body out of `data`', async () => {
     await expect(api.getNode({ fetchImpl: respond('<html>', 502) })).resolves.toEqual({
       ok: false,
@@ -153,6 +172,7 @@ describe('classifying failures', () => {
     expect(api.isUncertainWrite(res(0, null, { timedOut: true }))).toBe(true);
     expect(api.isUncertainWrite(res(0, null, { unreachable: true }))).toBe(true);
     expect(api.isUncertainWrite(res(0, null, { notSent: true }))).toBe(false);
+    expect(api.isUncertainWrite(res(0, null, { unreachable: true, refused: true }))).toBe(false);
     expect(api.isUncertainWrite(res(502, 'reverted'))).toBe(false);
     expect(api.isUncertainWrite(res(409, 'busy'))).toBe(false);
   });

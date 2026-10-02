@@ -45,6 +45,24 @@ function buildUrl(base, endpoint, query) {
   return `${base}${endpoint}${qs ? `?${qs}` : ''}`;
 }
 
+// Errors (undici puts the socket's on `cause`) raised before a connection
+// existed: the request bytes never left Freedom. A reset or a socket closed
+// mid-request is not one of them; the node may have acted on it.
+const CONNECT_FAILURE_CODES = new Set([
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EADDRNOTAVAIL',
+  'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+function isConnectFailure(err) {
+  const causes = [err, err?.cause, err?.cause?.cause];
+  return causes.some((e) => CONNECT_FAILURE_CODES.has(e?.code));
+}
+
 async function antRequest(
   method,
   endpoint,
@@ -65,7 +83,16 @@ async function antRequest(
     text = await response.text();
   } catch (err) {
     const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError';
-    return { ok: false, status: 0, data: null, message: null, timedOut, unreachable: !timedOut };
+    return {
+      ok: false,
+      status: 0,
+      data: null,
+      message: null,
+      timedOut,
+      unreachable: !timedOut,
+      // No connection was ever made, so a write cannot have reached the node.
+      refused: !timedOut && isConnectFailure(err),
+    };
   }
 
   let data;
@@ -141,10 +168,11 @@ function isStorageRouteMissing(res) {
 
 /**
  * Whether a failed write may still land on chain: the node took the request
- * but its answer never arrived, or it gave up waiting for the receipt.
+ * but its answer never arrived, or it gave up waiting for the receipt. A
+ * refused connection (the node was down) never delivered the request.
  */
 function isUncertainWrite(res) {
-  if (!res || res.ok || res.notSent) return false;
+  if (!res || res.ok || res.notSent || res.refused) return false;
   return res.status === 504 || res.timedOut === true || res.unreachable === true;
 }
 

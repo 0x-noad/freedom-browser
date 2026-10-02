@@ -9,7 +9,7 @@
  */
 
 const { ipcMain } = require('electron');
-const { getBee, isPendingStamp } = require('./swarm-service');
+const { getBee, isPendingStamp, batchIdKey } = require('./swarm-service');
 const antApi = require('./ant-storage-api');
 const log = require('electron-log');
 
@@ -81,13 +81,13 @@ async function getStamps() {
   const raw = new Map();
   if (rawRes.ok && Array.isArray(rawRes.data?.stamps)) {
     for (const entry of rawRes.data.stamps) {
-      raw.set(String(entry.batchID || '').toLowerCase(), entry);
+      raw.set(batchIdKey(entry.batchID), entry);
     }
   }
   return batches.map((batch) => {
     const id = batch.batchID;
     const hex = id && typeof id.toHex === 'function' ? id.toHex() : String(id || '');
-    return normalizeBatch(batch, raw.get(hex.toLowerCase()) || null);
+    return normalizeBatch(batch, raw.get(batchIdKey(hex)) || null);
   });
 }
 

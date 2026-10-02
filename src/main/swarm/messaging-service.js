@@ -31,6 +31,7 @@
 
 const { Topic, Identifier, Bytes } = require('@ethersphere/bee-js');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
+const { noUsableBatchError } = require('./batch-errors');
 const log = require('electron-log');
 
 // GSOC topic → address derivation (Freedom profile v1).
@@ -144,7 +145,7 @@ async function selectMessageBatch() {
   // still rolls.
   const batchId = await selectBestBatch(4096, { allowFullMutable: true });
   if (!batchId) {
-    throw new Error('No usable postage batch available. Purchase stamps first.');
+    throw noUsableBatchError();
   }
   return batchId;
 }

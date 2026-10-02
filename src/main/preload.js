@@ -609,7 +609,7 @@ contextBridge.exposeInMainWorld('publishSetup', {
   getExtendOptions: (batchId, depth) =>
     ipcRenderer.invoke('swarm:setup-get-extend-options', batchId, depth),
   arm: (request) => ipcRenderer.invoke('swarm:setup-arm', request),
-  cancel: () => ipcRenderer.invoke('swarm:setup-cancel'),
+  cancel: (opId) => ipcRenderer.invoke('swarm:setup-cancel', opId),
   trackFundingTx: (hash) => ipcRenderer.invoke('swarm:setup-track-funding-tx', hash),
   restartNode: () => ipcRenderer.invoke('swarm:setup-restart-node'),
   onState: (callback) => {

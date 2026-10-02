@@ -31,6 +31,8 @@ const {
   selectBestBatch,
   isPendingStamp,
   isPropagatingStamp,
+  isFullImmutableStamp,
+  batchIdKey,
 } = require('./swarm-service');
 const { getAntApiUrl } = require('../service-registry');
 
@@ -110,6 +112,17 @@ describe('swarm-service', () => {
       ]);
       mockRawStamps.mockResolvedValue(
         rawStamps({ batchID: FRESH.toUpperCase(), usable: false, propagating: true })
+      );
+
+      expect(await selectBestBatch(4096)).toBe(FRESH);
+    });
+
+    test('matches a raw listing that writes batch IDs with a 0x prefix', async () => {
+      mockGetPostageBatches.mockResolvedValue([
+        makeBatch({ id: FRESH, usable: false, remainingBytes: 1_000_000, ttlSeconds: 500 }),
+      ]);
+      mockRawStamps.mockResolvedValue(
+        rawStamps({ batchID: `0x${FRESH.toUpperCase()}`, usable: false, propagating: true })
       );
 
       expect(await selectBestBatch(4096)).toBe(FRESH);
@@ -217,6 +230,26 @@ describe('swarm-service', () => {
   });
 
   // Raw /stamps JSON, the node's own shape.
+  describe('isFullImmutableStamp and batchIdKey', () => {
+    const batch = { usable: true, immutableFlag: true, depth: 20, bucketDepth: 16 };
+    test.each([
+      ['an immutable batch at its bucket limit', { ...batch, utilization: 16 }, true],
+      ['an immutable batch one chunk short', { ...batch, utilization: 15 }, false],
+      ['a full mutable batch, which overwrites', { ...batch, immutableFlag: false, utilization: 16 }, false],
+      ['a batch without utilization', batch, false],
+      ['nothing', null, false],
+    ])('%s: full %s', (_, input, full) => {
+      expect(isFullImmutableStamp(input)).toBe(full);
+    });
+
+    test('compares IDs as bare lower-case hex', () => {
+      expect(batchIdKey('0xABcd')).toBe('abcd');
+      expect(batchIdKey(' abCD ')).toBe('abcd');
+      expect(batchIdKey({ toHex: () => 'EF01' })).toBe('ef01');
+      expect(batchIdKey(undefined)).toBe('');
+    });
+  });
+
   describe('isPendingStamp and isPropagatingStamp', () => {
     test.each([
       ['usable', { usable: true, propagating: false, exists: true, batchTTL: 900 }, false, false],

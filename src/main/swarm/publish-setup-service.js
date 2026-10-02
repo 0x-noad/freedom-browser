@@ -32,7 +32,19 @@ const { ipcMain } = require('electron');
 const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
 const antStorageApi = require('./ant-storage-api');
-const { isUsableStamp, isPendingStamp, isPropagatingStamp } = require('./swarm-service');
+const {
+  isUsableStamp,
+  isPendingStamp,
+  isPropagatingStamp,
+  isFullImmutableStamp,
+} = require('./swarm-service');
+
+// A batch uploads can stamp: usable, and not an immutable one that is full
+// (selectBestBatch skips those, so counting them would say "ready" while
+// every publish fails for want of a batch).
+function hasRoom(batch) {
+  return isUsableStamp(batch) && !isFullImmutableStamp(batch);
+}
 
 const GNOSIS_CHAIN_ID = 100;
 
@@ -80,6 +92,9 @@ const QUOTING_PHASES = new Set(['quoting', 'awaiting-funds']);
 
 const UNCERTAIN_MESSAGE =
   'Gnosis Chain did not confirm the transaction in time. It may still go through, so check your storage in a minute before you try again.';
+
+const REJECTED_BATCH_MESSAGE =
+  'Your storage was bought, but the Swarm network did not accept it, so it cannot be used to publish. Restarting the node can help; otherwise pick a plan again.';
 
 const WEI_PER_CENT = 10n ** 16n;
 
@@ -263,9 +278,11 @@ function classifyReadiness({ node, probe, runningSince = null, now = Date.now() 
     return result(
       'needs-storage',
       'no-usable-stamps',
-      probe.stamps.total > 0
-        ? 'None of your storage can be used anymore. Buy a storage plan to publish.'
-        : 'Publishing needs storage. Pick a storage plan to start.'
+      probe.stamps.full > 0
+        ? 'Your storage is full. Buy a storage plan to keep publishing.'
+        : probe.stamps.total > 0
+          ? 'None of your storage can be used anymore. Buy a storage plan to publish.'
+          : 'Publishing needs storage. Pick a storage plan to start.'
     );
   }
   const count = probe.stamps.usable;
@@ -476,7 +493,8 @@ function createPublishSetupService({
       stamps: stamps
         ? {
             known: true,
-            usable: stamps.filter(isUsableStamp).length,
+            usable: stamps.filter(hasRoom).length,
+            full: stamps.filter((s) => isUsableStamp(s) && isFullImmutableStamp(s)).length,
             pending: stamps.filter(isPendingStamp).length,
             propagating: stamps.filter(isPropagatingStamp).length,
             total: stamps.length,
@@ -753,6 +771,14 @@ function createPublishSetupService({
       finishOperation(current, current.result);
       return;
     }
+    if (res.ok && batch && batch.propagating === false) {
+      // Ant gave up on it (storer peers rejected it, or the chain says it is
+      // gone): waiting out the confirm window would only hold the screen on
+      // a spinner and refuse a new plan. Fail so the user can act.
+      log.warn(`[PublishSetup] batch ${current.result.batchId} stopped propagating`);
+      failOperation(current, REJECTED_BATCH_MESSAGE);
+      return;
+    }
     if (now() >= deadline) {
       log.warn(
         `[PublishSetup] batch ${current.result.batchId} not usable after the confirm window`
@@ -930,8 +956,15 @@ function createPublishSetupService({
     return { ok: true, state: getState() };
   }
 
-  function cancel() {
+  /**
+   * Drop the operation. With `opId`, only that one: a screen dismissing a
+   * result it showed must not cancel a newer operation armed meanwhile.
+   */
+  function cancel(opId = null) {
     if (!operation) return { ok: true, state: getState() };
+    if (opId !== null && opId !== undefined && operation.id !== opId) {
+      return { ok: true, state: getState() };
+    }
     if (operation.phase === 'executing') {
       return { ok: false, error: 'The purchase is already on its way and cannot be cancelled.' };
     }
@@ -1172,7 +1205,9 @@ function registerPublishSetupIpc() {
     svc.getExtendOptions(batchId, depth)
   );
   ipcMain.handle(IPC.SWARM_SETUP_ARM, (_event, request) => svc.arm(request));
-  ipcMain.handle(IPC.SWARM_SETUP_CANCEL, () => svc.cancel());
+  ipcMain.handle(IPC.SWARM_SETUP_CANCEL, (_event, opId) =>
+    svc.cancel(Number.isInteger(opId) ? opId : null)
+  );
   ipcMain.handle(IPC.SWARM_SETUP_TRACK_FUNDING_TX, (_event, hash) => svc.trackFundingTx(hash));
   ipcMain.handle(IPC.SWARM_SETUP_RESTART_NODE, () => svc.restartNode());
 

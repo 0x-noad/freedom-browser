@@ -163,7 +163,7 @@ async function handlePublishFile() {
     const result = await swarm.publishFilePath(picked.path);
 
     if (!result?.success) {
-      showError(result?.error || 'Upload failed.');
+      showError(result?.error || 'Upload failed.', { offerSetup: result?.needsStorage === true });
       return;
     }
 
@@ -191,7 +191,7 @@ async function handlePublishFolder() {
     const result = await swarm.publishDirectoryPath(picked.path);
 
     if (!result?.success) {
-      showError(result?.error || 'Upload failed.');
+      showError(result?.error || 'Upload failed.', { offerSetup: result?.needsStorage === true });
       return;
     }
 
@@ -218,7 +218,7 @@ async function handlePublishText() {
     const result = await swarm.publishData(text);
 
     if (!result?.success) {
-      showError(result?.error || 'Publish failed.');
+      showError(result?.error || 'Publish failed.', { offerSetup: result?.needsStorage === true });
       return;
     }
 

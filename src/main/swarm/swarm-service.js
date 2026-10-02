@@ -81,16 +81,42 @@ function isPropagatingStamp(batch) {
 }
 
 /**
+ * Whether an immutable batch has no room left, from the node's raw `/stamps`
+ * JSON: its fullest bucket holds `2^(depth - bucketDepth)` chunks, and an
+ * immutable batch refuses a stamp once it is reached. bee-js reports such a
+ * batch's remainingSize as 0, so selectBestBatch never picks it; readiness
+ * must not count it as storage either. A full *mutable* batch keeps
+ * stamping by overwriting its oldest stamps (see selectBestBatch), so only
+ * the immutable kind is full here.
+ */
+function isFullImmutableStamp(batch) {
+  if (batch?.immutableFlag !== true) return false;
+  const { utilization, depth, bucketDepth } = batch;
+  if (![utilization, depth, bucketDepth].every(Number.isInteger) || depth < bucketDepth) {
+    return false;
+  }
+  return utilization >= 2 ** (depth - bucketDepth);
+}
+
+/**
+ * The key a batch ID is compared by: lower-case hex without a `0x` prefix.
+ * bee-js `toHex()` gives bare hex; a node's raw `/stamps` JSON may carry
+ * either form, so every comparison between the two goes through this.
+ */
+function batchIdKey(value) {
+  return toHex(value).trim().replace(/^0x/i, '').toLowerCase();
+}
+
+/**
  * IDs of the node's propagating batches, from its raw `/stamps` (bee-js
- * drops the flag). Empty when the node can't be read: the caller then
- * treats the batch as not usable, as it did before the flag existed.
+ * drops the flag), as batchIdKey keys. Empty when the node can't be read:
+ * the caller then treats the batch as not usable, as it did before the flag
+ * existed.
  */
 async function getPropagatingBatchIds() {
   const res = await antApi.getStamps();
   const stamps = res.ok && Array.isArray(res.data?.stamps) ? res.data.stamps : [];
-  return new Set(
-    stamps.filter(isPropagatingStamp).map((s) => String(s.batchID || '').toLowerCase())
-  );
+  return new Set(stamps.filter(isPropagatingStamp).map((s) => batchIdKey(s.batchID)));
 }
 
 /**
@@ -150,7 +176,7 @@ async function selectBestBatch(estimatedSizeBytes, options = {}) {
   if (!best && batches.some((batch) => !isUsableStamp(batch))) {
     const propagating = await getPropagatingBatchIds();
     for (const batch of batches) {
-      if (isUsableStamp(batch) || !propagating.has(toHex(batch.batchID).toLowerCase())) continue;
+      if (isUsableStamp(batch) || !propagating.has(batchIdKey(batch.batchID))) continue;
       const ttl = ttlOf(batch);
       if (remainingOf(batch) >= requiredBytes && ttl > bestTtl) {
         best = batch;
@@ -192,6 +218,8 @@ module.exports = {
   isUsableStamp,
   isPendingStamp,
   isPropagatingStamp,
+  isFullImmutableStamp,
+  batchIdKey,
   getPropagatingBatchIds,
   toHex,
 };

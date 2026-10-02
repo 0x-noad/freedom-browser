@@ -98,11 +98,15 @@ function render() {
 
 async function handleTopUp() {
   if (depositBtn) depositBtn.disabled = true;
+  let error = null;
   try {
-    await window.publishSetup?.arm({ kind: 'deposit' });
+    const result = await window.publishSetup?.arm({ kind: 'deposit' });
+    if (result && !result.ok) error = result.error || 'Could not start the top-up.';
+  } catch (err) {
+    error = err?.message || 'Could not start the top-up.';
   } finally {
     if (depositBtn) depositBtn.disabled = false;
   }
   closeChequebookDeposit();
-  openPublishSetup();
+  openPublishSetup({ error });
 }

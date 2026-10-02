@@ -52,6 +52,7 @@ const subscriptionRegistry = require('./subscription-registry');
 const { getAntApiUrl } = require('../service-registry');
 const { getPublishReadiness } = require('./publish-setup-service');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
+const { isNoUsableBatchError } = require('./batch-errors');
 const { getDerivedKeys, getPublisherKey, getUserWalletKey } = require('../identity-manager');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
 const log = require('electron-log');
@@ -104,10 +105,21 @@ const ERRORS = {
 /**
  * The error for a write the node took but could not complete. A batch bought
  * moments ago that storer peers have not synced yet is "node not ready", with
- * the pre-flight's own reason, so an app can retry shortly; anything else is
- * an internal error carrying the node's message.
+ * the pre-flight's own reason, so an app can retry shortly. No batch with
+ * room for the write (the pre-flight cannot know an upload's size) is the
+ * pre-flight's `no-usable-stamps`, so the page routes the user to the setup.
+ * Anything else is an internal error carrying the node's message.
  */
 function nodeWriteError(err) {
+  if (isNoUsableBatchError(err)) {
+    return {
+      error: {
+        ...ERRORS.NODE_UNAVAILABLE,
+        message: err.message,
+        data: { reason: 'no-usable-stamps' },
+      },
+    };
+  }
   if (isBatchNotYetKnownError(err?.message)) {
     return {
       error: {

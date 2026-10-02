@@ -290,6 +290,22 @@ describe('send screen sidebar ownership', () => {
     expect(onClose).toHaveBeenCalledWith({ handedOff: false });
   });
 
+  test('another screen taking the sidebar ends the opener\'s Send as handed off', async () => {
+    const { mod, state } = await loadSendScreen();
+    const onClose = jest.fn();
+
+    await mod.openSend({ recipient: ADDRESS, chainId: 100, amount: '0.45', onClose });
+    // A dApp prompt (connect, sign) hides every sub-screen.
+    state.hideAllSubscreens();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith({ handedOff: true });
+
+    // A later close (another Send, the coordinator) must not fire it again:
+    // the publish setup would reopen over whatever the user went to.
+    mod.closeSend();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   test('nothing may hide the send screen while its signature is in flight', async () => {
     const { mod, state, elements, send } = await loadSendScreen();
 

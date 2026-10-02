@@ -160,6 +160,13 @@ export function initSend() {
     // direct hider call.
     if (sendFlight) return;
     sendScreen?.classList.add('hidden');
+    // Another screen took the sidebar: this Send is over for whoever opened
+    // it. Tell them so now, as handed off, rather than leaving the callback
+    // armed for some later closeSend() to fire into a screen the user has
+    // long left (the publish setup would reopen uninvited).
+    const onClose = sendCloseCallback;
+    sendCloseCallback = null;
+    onClose?.({ handedOff: true });
   });
 
   setupSendScreen();

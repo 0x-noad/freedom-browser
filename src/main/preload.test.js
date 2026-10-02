@@ -220,7 +220,7 @@ describe('preload', () => {
       [exposures.publishSetup, 'getPlans', [], IPC.SWARM_SETUP_GET_PLANS, []],
       [exposures.publishSetup, 'getExtendOptions', ['ab'.repeat(32), 20], IPC.SWARM_SETUP_GET_EXTEND_OPTIONS, ['ab'.repeat(32), 20]],
       [exposures.publishSetup, 'arm', [{ kind: 'buy', planId: 'starter' }], IPC.SWARM_SETUP_ARM, [{ kind: 'buy', planId: 'starter' }]],
-      [exposures.publishSetup, 'cancel', [], IPC.SWARM_SETUP_CANCEL, []],
+      [exposures.publishSetup, 'cancel', [7], IPC.SWARM_SETUP_CANCEL, [7]],
       [exposures.publishSetup, 'trackFundingTx', ['0x' + '1'.repeat(64)], IPC.SWARM_SETUP_TRACK_FUNDING_TX, ['0x' + '1'.repeat(64)]],
       [exposures.publishSetup, 'restartNode', [], IPC.SWARM_SETUP_RESTART_NODE, []],
     ];
