@@ -12,6 +12,12 @@
 // Settings are seeded so only Ant auto-starts (the node relevant to issue #90).
 // IPFS reports ephemeral native identity mode and does not need a binary
 // or running daemon for this regression.
+//
+// Unlike the safe/remote-signing fixtures, this one always SHOWS the window and
+// ignores FREEDOM_E2E_HEADED: a hidden window starves Playwright's actionability
+// checks of frames (#479, see the launch env below). A local run therefore pops
+// up a window; on Linux use `xvfb-run -a npm run test:e2e:onboarding` to keep it
+// on a virtual display.
 
 const { test: base, expect, _electron: electron } = require('@playwright/test');
 const path = require('path');
@@ -84,6 +90,10 @@ const test = base.extend({
         // (spec:72) and #backup-confirmed (spec:92) sat at "waiting for element
         // to be visible, enabled and stable" for the full 30s with no
         // re-check logged, even though both were on screen and enabled (#479).
+        // Set to '0' explicitly rather than left unset, so an inherited =1 from
+        // the caller's environment (ci.yml's Myotis step exports one) can't
+        // re-hide it.
+        FREEDOM_TEST_HIDE_WINDOW: '0',
         ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
         LANG: 'en_US.UTF-8',
       },
@@ -110,9 +120,10 @@ const test = base.extend({
     await win.waitForSelector('[data-test="address-input"]', { state: 'visible' });
     // Pin the precondition above: if the window ever goes back to hidden, fail
     // here with the reason instead of as a 30s actionability timeout mid-wizard.
-    const shown = await electronApp.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows().some((w) => w.isVisible())
-    );
+    // Check the BrowserWindow behind the page under test, not "any window", so
+    // a second visible window can't mask a hidden main one.
+    const browserWindow = await electronApp.browserWindow(win);
+    const shown = await browserWindow.evaluate((w) => w.isVisible());
     expect(
       shown,
       'main window must be shown: Playwright actionability needs its frames (#479)'
