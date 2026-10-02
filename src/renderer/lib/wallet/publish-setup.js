@@ -239,8 +239,9 @@ function currentView(state) {
   if (!state.canBuy) return 'node';
   // Storage that exists but is still reaching the network needs no purchase.
   if ((key === 'ready' || key === 'storage-pending') && !showPlans) return 'ready';
-  // "Buy More Storage" from either: a batch still reaching the network can
-  // also be one the peers never accept, so a new plan stays one click away.
+  // "Buy More Storage" from either. On a node without Ant's `propagating`
+  // flag, a batch still "reaching the network" can be one the peers never
+  // accept, so a new plan stays one click away.
   if (key === 'ready' || key === 'storage-pending' || key === 'needs-storage') return 'plans';
   return 'node';
 }

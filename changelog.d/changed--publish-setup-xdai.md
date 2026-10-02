@@ -2,4 +2,5 @@
   - Storage plans priced in xDAI, paid from the Freedom wallet or by QR code from any wallet
   - No Swarm node mode to switch in Settings > Experimental
   - Extending or growing storage is paid the same way
+  - New storage is immutable: once full, it takes no more uploads until you make it bigger or buy more, instead of overwriting what you published earlier
   - A site whose publish fails for lack of storage opens the setup

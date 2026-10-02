@@ -1,23 +1,27 @@
 /**
  * Stamp Service
  *
- * Lists the node's postage batches via bee-js. All bee-js types stay behind
- * this boundary — the renderer receives normalized Freedom batch model
- * objects. Buying, extending and resizing batches, and the chequebook
+ * Lists the node's postage batches via bee-js, plus the node's raw `/stamps`
+ * for the fields bee-js drops. All bee-js types stay behind this boundary —
+ * the renderer receives normalized Freedom batch model objects. Buying, extending and resizing batches, and the chequebook
  * deposit, go through the node's xDAI storage routes instead
  * (publish-setup-service.js), which price and pay for them in one step.
  */
 
 const { ipcMain } = require('electron');
-const { getBee } = require('./swarm-service');
+const { getBee, isPendingStamp } = require('./swarm-service');
+const antApi = require('./ant-storage-api');
 const log = require('electron-log');
 
 /**
  * Normalize a bee-js PostageBatch to the Freedom batch model.
  * Uses public bee-js class methods (toBytes, toSeconds) rather than
- * private properties.
+ * private properties. `raw` is the same batch from the node's own `/stamps`
+ * JSON, when it could be read: bee-js drops `exists` and `propagating` and
+ * clamps an expired `batchTTL` to 1, so whether a batch is still on its way
+ * is read from there.
  */
-function normalizeBatch(batch) {
+function normalizeBatch(batch, raw = null) {
   let sizeBytes = 0;
   if (batch.size && typeof batch.size.toBytes === 'function') {
     sizeBytes = batch.size.toBytes();
@@ -57,9 +61,8 @@ function normalizeBatch(batch) {
     batchId,
     depth: Number.isInteger(batch.depth) ? batch.depth : null,
     usable: batch.usable === true,
-    // Bee's "exists, awaiting confirmations": Ant reports a just-bought
-    // batch this way until storer peers accept its stamps.
-    pending: batch.usable !== true && batch.exists !== false && ttlSeconds > 0,
+    // A just-bought batch the network does not know yet (see isPendingStamp).
+    pending: batch.usable !== true && isPendingStamp(raw),
     isMutable: batch.immutableFlag === false,
     sizeBytes,
     remainingBytes,
@@ -74,8 +77,18 @@ function normalizeBatch(batch) {
  */
 async function getStamps() {
   const bee = getBee();
-  const batches = await bee.stamp.getAll();
-  return batches.map(normalizeBatch);
+  const [batches, rawRes] = await Promise.all([bee.stamp.getAll(), antApi.getStamps()]);
+  const raw = new Map();
+  if (rawRes.ok && Array.isArray(rawRes.data?.stamps)) {
+    for (const entry of rawRes.data.stamps) {
+      raw.set(String(entry.batchID || '').toLowerCase(), entry);
+    }
+  }
+  return batches.map((batch) => {
+    const id = batch.batchID;
+    const hex = id && typeof id.toHex === 'function' ? id.toHex() : String(id || '');
+    return normalizeBatch(batch, raw.get(hex.toLowerCase()) || null);
+  });
 }
 
 /**

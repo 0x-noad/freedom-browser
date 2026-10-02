@@ -29,6 +29,12 @@ jest.mock('electron-log', () => ({
   error: jest.fn(),
 }));
 
+// The node's raw /stamps, which carries what bee-js drops.
+const mockRawStamps = jest.fn();
+jest.mock('./ant-storage-api', () => ({
+  getStamps: (...args) => mockRawStamps(...args),
+}));
+
 const { normalizeBatch, registerSwarmIpc } = require('./stamp-service');
 
 // Register handlers once
@@ -98,7 +104,7 @@ describe('stamp-service', () => {
         batchId: 'def456',
         depth: null,
         usable: false,
-        pending: true,
+        pending: false,
         isMutable: false,
         sizeBytes: 1000,
         remainingBytes: 500,
@@ -108,17 +114,39 @@ describe('stamp-service', () => {
       });
     });
 
-    // Bee's "exists, awaiting confirmations": what Ant reports for a batch
-    // storer peers have not synced yet. Expired or missing batches are gone.
-    test('tells a batch still being confirmed from one that is gone', () => {
-      const confirming = normalizeBatch(makeBatch({ usable: false }));
-      expect(confirming).toMatchObject({ usable: false, pending: true });
-      const expired = normalizeBatch(
-        makeBatch({ usable: false, duration: { toSeconds: () => 0 } })
-      );
-      expect(expired.pending).toBe(false);
-      const missing = normalizeBatch(makeBatch({ usable: false, exists: false }));
-      expect(missing.pending).toBe(false);
+    // bee-js drops `exists` and `propagating` and clamps an expired batchTTL
+    // to 1, so these batches look alike to it; the node's raw entry decides.
+    test.each([
+      [
+        'propagating (Ant v0.5.52+)',
+        { usable: false, propagating: true, exists: true, batchTTL: 2592000 },
+        true,
+      ],
+      [
+        'rejected by peers',
+        { usable: false, propagating: false, exists: true, batchTTL: 2592000 },
+        false,
+      ],
+      ['expired', { usable: false, propagating: false, exists: true, batchTTL: 0 }, false],
+      ['not on chain', { usable: false, propagating: false, exists: false, batchTTL: -1 }, false],
+      [
+        'awaiting confirmations (no flag)',
+        { usable: false, exists: true, batchTTL: 2592000 },
+        true,
+      ],
+      ['expired (no flag)', { usable: false, exists: true, batchTTL: 0 }, false],
+      ['not on chain (no flag)', { usable: false, exists: false, batchTTL: -1 }, false],
+    ])('a not-usable batch the node reports as %s: pending is %s', (_, raw, pending) => {
+      const beeJs = makeBatch({ usable: false, duration: { toSeconds: () => 1 } });
+      expect(normalizeBatch(beeJs, raw).pending).toBe(pending);
+    });
+
+    test('a not-usable batch without a raw entry is not pending', () => {
+      expect(normalizeBatch(makeBatch({ usable: false })).pending).toBe(false);
+    });
+
+    test('a usable batch is never pending', () => {
+      expect(normalizeBatch(makeBatch(), { usable: true, propagating: true }).pending).toBe(false);
     });
 
     test('handles empty/undefined fields gracefully', () => {
@@ -138,6 +166,7 @@ describe('stamp-service', () => {
   describe('IPC handlers', () => {
     beforeEach(() => {
       jest.clearAllMocks();
+      mockRawStamps.mockResolvedValue({ ok: true, data: { stamps: [] } });
     });
 
     test('swarm:get-stamps returns normalized batches', async () => {
@@ -158,6 +187,37 @@ describe('stamp-service', () => {
         ttlSeconds: 2592000,
         expiresApprox: '2026-04-14T00:00:00.000Z',
       });
+    });
+
+    test('swarm:get-stamps reads pending from the raw /stamps entry with the same ID', async () => {
+      mockGetPostageBatches.mockResolvedValue([
+        makeBatch({ batchID: makeBatchId('aa11'), usable: false }),
+        makeBatch({ batchID: makeBatchId('bb22'), usable: false }),
+      ]);
+      mockRawStamps.mockResolvedValue({
+        ok: true,
+        data: {
+          stamps: [
+            { batchID: 'AA11', usable: false, propagating: true },
+            { batchID: 'bb22', usable: false, propagating: false },
+          ],
+        },
+      });
+
+      const result = await invokeIpc('swarm:get-stamps');
+      expect(result.stamps.map((b) => [b.batchId, b.pending])).toEqual([
+        ['aa11', true],
+        ['bb22', false],
+      ]);
+    });
+
+    test('swarm:get-stamps still lists batches when the raw /stamps read fails', async () => {
+      mockGetPostageBatches.mockResolvedValue([makeBatch({ usable: false })]);
+      mockRawStamps.mockResolvedValue({ ok: false, status: 0, data: null, timedOut: true });
+
+      const result = await invokeIpc('swarm:get-stamps');
+      expect(result.success).toBe(true);
+      expect(result.stamps[0]).toMatchObject({ batchId: 'abc123', usable: false, pending: false });
     });
 
     test('swarm:get-stamps handles errors', async () => {

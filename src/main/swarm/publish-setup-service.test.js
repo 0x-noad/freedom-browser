@@ -11,8 +11,9 @@ jest.mock('../logger', () => ({
   debug: jest.fn(),
 }));
 jest.mock('./swarm-service', () => {
-  const { isUsableStamp, isPendingStamp } = jest.requireActual('./swarm-service');
-  return { isUsableStamp, isPendingStamp };
+  const { isUsableStamp, isPendingStamp, isPropagatingStamp } =
+    jest.requireActual('./swarm-service');
+  return { isUsableStamp, isPendingStamp, isPropagatingStamp };
 });
 
 const {
@@ -27,7 +28,6 @@ const {
   FUNDING_TX_POLL_MS,
   CONFIRM_POLL_MS,
   CONFIRM_TIMEOUT_MS,
-  PENDING_STALE_MS,
   CHAIN_INIT_SLOW_MS,
 } = require('./publish-setup-service');
 
@@ -299,6 +299,18 @@ describe('classifyReadiness', () => {
         probe: probe({ stamps: { known: true, usable: 0, total: 2 } }),
       }).message
     ).toMatch(/can be used anymore/);
+    expect(
+      classifyReadiness({
+        node: running,
+        probe: probe({ stamps: { known: true, usable: 0, pending: 1, propagating: 1, total: 1 } }),
+      })
+    ).toMatchObject({ ok: true, key: 'storage-pending', reason: null });
+    expect(
+      classifyReadiness({
+        node: running,
+        probe: probe({ stamps: { known: true, usable: 0, pending: 1, propagating: 0, total: 1 } }),
+      })
+    ).toMatchObject({ ok: false, key: 'storage-pending', reason: 'node-not-ready' });
     expect(
       classifyReadiness({
         node: running,
@@ -705,36 +717,41 @@ describe('confirming a bought batch', () => {
     });
   });
 
-  test('a batch that stays unusable past the pending window asks for a plan again', async () => {
-    // Ant reports a phantom batch (peers keep rejecting it) like a fresh one.
+  test('a propagating batch lets publishing through while it reaches the network', async () => {
+    // Ant v0.5.52+ takes uploads with such a batch and holds each push.
     const { service, api } = setup();
-    api.getStamps.mockResolvedValue(ok({ stamps: [pending] }));
-    await expect(service.getPublishReadiness()).resolves.toMatchObject({
-      reason: 'node-not-ready',
+    api.getStamps.mockResolvedValue(ok({ stamps: [{ ...pending, propagating: true }] }));
+    await expect(service.getPublishReadiness()).resolves.toEqual({
+      ok: true,
+      reason: null,
+      message:
+        'Your new storage is reaching the Swarm network. Uploads you start now finish once it arrives.',
     });
     expect(service.getState().readiness.key).toBe('storage-pending');
+    expect(service.getState().stamps).toMatchObject({ usable: 0, pending: 1 });
+  });
 
-    await jest.advanceTimersByTimeAsync(PENDING_STALE_MS - 60_000);
-    await expect(service.getPublishReadiness()).resolves.toMatchObject({
-      reason: 'node-not-ready',
-    });
-
-    await jest.advanceTimersByTimeAsync(60_000);
-    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+  test('a batch peers rejected asks for a plan at once', async () => {
+    // Same shape as a fresh batch, but Ant says waiting won't help.
+    const { service, api } = setup();
+    api.getStamps.mockResolvedValue(ok({ stamps: [{ ...pending, propagating: false }] }));
+    await expect(service.getPublishReadiness()).resolves.toEqual({
+      ok: false,
       reason: 'no-usable-stamps',
       message: 'None of your storage can be used anymore. Buy a storage plan to publish.',
     });
     expect(service.getState().stamps).toMatchObject({ usable: 0, pending: 0, total: 1 });
+  });
 
-    // A batch that leaves the list and comes back starts a fresh window.
-    api.getStamps.mockResolvedValue(ok({ stamps: [] }));
-    await jest.advanceTimersByTimeAsync(5_000);
-    await service.getPublishReadiness();
+  test('a node without the flag: the awaiting-confirmations shape is pending, and publishing is held back', async () => {
+    const { service, api } = setup();
     api.getStamps.mockResolvedValue(ok({ stamps: [pending] }));
-    await jest.advanceTimersByTimeAsync(5_000);
-    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+    await expect(service.getPublishReadiness()).resolves.toEqual({
+      ok: false,
       reason: 'node-not-ready',
+      message: 'Your new storage is reaching the Swarm network. Publishing works in a moment.',
     });
+    expect(service.getState().readiness.key).toBe('storage-pending');
   });
 
   test('a batch that is gone or expired is not pending', async () => {

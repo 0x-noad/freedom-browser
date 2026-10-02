@@ -50,7 +50,7 @@ launching can use `open -n -a Freedom --args --profile=<id>`.
 
 - **Toolbar Toggle**: Click the network icon to access the Nodes panel with independent on/off switches.
 - **Live Statistics**: View connected peers, visible network peers, and the Ant node version in real-time.
-- **Publishing Setup**: One step from browsing to publishing. Pick a storage plan in the wallet sidebar's **Nodes** tab (or from **Settings → Experimental → Swarm publishing**) and send the quoted xDAI to the node, from the Freedom wallet or any wallet by QR code. The node swaps it for xBZZ, buys the storage and funds its chequebook deposit itself. There is no node mode to switch; the storage screen extends or grows a batch the same way.
+- **Publishing Setup**: One step from browsing to publishing. Pick a storage plan in the wallet sidebar's **Nodes** tab (or from **Settings → Experimental → Swarm publishing**) and send the quoted xDAI to the node, from the Freedom wallet or any wallet by QR code. The node swaps it for xBZZ, buys the storage and funds its chequebook deposit itself. There is no node mode to switch; the storage screen extends or grows a batch the same way. Storage is bought immutable, so a full batch never overwrites earlier uploads. For about a minute after a purchase the batch reads as **Confirming** while the network learns about it; uploads started then wait in the node and finish once it arrives.
 - **Automatic Configuration**: First-run setup generates keys and config automatically.
 
 ## Integrated IPFS Native Node

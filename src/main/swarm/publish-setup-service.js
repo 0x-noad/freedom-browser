@@ -32,7 +32,7 @@ const { ipcMain } = require('electron');
 const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
 const antStorageApi = require('./ant-storage-api');
-const { isUsableStamp, isPendingStamp } = require('./swarm-service');
+const { isUsableStamp, isPendingStamp, isPropagatingStamp } = require('./swarm-service');
 
 const GNOSIS_CHAIN_ID = 100;
 
@@ -70,13 +70,6 @@ const FUNDING_TX_POLL_MS = 4_000;
 // its creation.
 const CONFIRM_POLL_MS = 3_000;
 const CONFIRM_TIMEOUT_MS = 10 * 60_000;
-// How long a batch may sit in bee's "awaiting confirmations" shape and still
-// count as storage on its way. Ant reports a phantom batch (one storer peers
-// keep rejecting) the same way as a fresh one, so past this a not-usable
-// batch is unusable storage and the setup offers a plan again. Longer than
-// CONFIRM_TIMEOUT_MS, so a slow fresh batch still reads as pending while the
-// purchase waits for it.
-const PENDING_STALE_MS = 20 * 60_000;
 const FUNDING_TX_TIMEOUT_MS = 15 * 60_000;
 // antd's chain init has no timeout of its own. After this long the setup
 // screen suggests checking the Gnosis RPC or restarting the node.
@@ -248,7 +241,18 @@ function classifyReadiness({ node, probe, runningSince = null, now = Date.now() 
     return result('connecting', 'node-not-ready', 'The Swarm node is connecting to peers…');
   }
   if (!probe.stamps?.known) return result('checking', 'node-not-ready', 'Checking your storage…');
+  if (probe.stamps.usable === 0 && probe.stamps.propagating > 0) {
+    // Ant takes uploads with a propagating batch and holds each push until
+    // the network knows it, so publishing need not wait for the batch.
+    return result(
+      'storage-pending',
+      null,
+      'Your new storage is reaching the Swarm network. Uploads you start now finish once it arrives.',
+      { ok: true }
+    );
+  }
   if (probe.stamps.usable === 0 && probe.stamps.pending > 0) {
+    // A node without the flag refuses uploads until the batch is usable.
     return result(
       'storage-pending',
       'node-not-ready',
@@ -323,8 +327,6 @@ function createPublishSetupService({
   let node = readNode();
   let runningSince = node.status === 'running' ? now() : null;
   let probe = null;
-  // batchId -> when a probe first saw that batch pending (see PENDING_STALE_MS).
-  const pendingSeenAt = new Map();
   let account = null;
   let operation = null;
   let restart = { inProgress: false, error: null };
@@ -475,32 +477,12 @@ function createPublishSetupService({
         ? {
             known: true,
             usable: stamps.filter(isUsableStamp).length,
-            pending: countFreshPending(stamps, at),
+            pending: stamps.filter(isPendingStamp).length,
+            propagating: stamps.filter(isPropagatingStamp).length,
             total: stamps.length,
           }
         : { known: false },
     };
-  }
-
-  /**
-   * Pending batches first seen pending less than PENDING_STALE_MS ago. The
-   * clock starts at the first probe that sees a batch pending, so a batch
-   * that turns usable (or disappears) and comes back starts over.
-   */
-  function countFreshPending(stamps, at) {
-    const seen = new Set();
-    let fresh = 0;
-    for (const batch of stamps) {
-      if (!isPendingStamp(batch)) continue;
-      const id = normalizeBatchId(batch.batchID ?? batch.batchId) || JSON.stringify(batch);
-      seen.add(id);
-      if (!pendingSeenAt.has(id)) pendingSeenAt.set(id, at);
-      if (at - pendingSeenAt.get(id) < PENDING_STALE_MS) fresh += 1;
-    }
-    for (const id of pendingSeenAt.keys()) {
-      if (!seen.has(id)) pendingSeenAt.delete(id);
-    }
-    return fresh;
   }
 
   function accountFromDeposit(data, at) {
@@ -1215,6 +1197,5 @@ module.exports = {
   FUNDING_TX_POLL_MS,
   CONFIRM_POLL_MS,
   CONFIRM_TIMEOUT_MS,
-  PENDING_STALE_MS,
   CHAIN_INIT_SLOW_MS,
 };

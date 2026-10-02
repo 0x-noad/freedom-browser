@@ -8,6 +8,7 @@
 
 const { Bee } = require('@ethersphere/bee-js');
 const { getAntApiUrl } = require('../service-registry');
+const antApi = require('./ant-storage-api');
 const log = require('electron-log');
 
 let beeClient = null;
@@ -53,35 +54,76 @@ function isUsableStamp(batch) {
 }
 
 /**
- * Whether a batch exists and is alive but the node does not let it stamp
- * yet: bee's "discovered, awaiting enough on-chain confirmations". Ant
- * reports a batch this way while storer peers still reject its stamps as
- * unknown (a batch bought moments ago whose creation they have not synced).
- * An expired batch (`batchTTL: 0`) or one the chain does not hold
- * (`exists: false`) is not pending, it is gone.
+ * Whether a batch the node does not let stamp yet is on its way to usable.
+ * Ant v0.5.52+ says so outright: `propagating` is true while a batch this
+ * node just bought is inside bee's ~70 s confirmation window, and false for
+ * one waiting won't fix (storer peers rejected it, or the chain says it is
+ * gone or expired). A node that sends no flag (older Ant, bee) is read by
+ * bee's "exists, awaiting confirmations" shape instead, which cannot tell a
+ * fresh batch from a rejected one.
+ *
+ * Takes the node's raw `/stamps` JSON: bee-js drops `exists` and
+ * `propagating` and clamps `batchTTL` to at least 1.
  */
 function isPendingStamp(batch) {
-  return batch?.usable !== true && batch?.exists !== false && Number(batch?.batchTTL) > 0;
+  if (!batch || batch.usable === true) return false;
+  if (typeof batch.propagating === 'boolean') return batch.propagating;
+  return batch.exists !== false && Number(batch.batchTTL) > 0;
 }
 
 /**
- * Select the best usable postage batch for an upload of the given size.
+ * Whether uploads can use a not-yet-usable batch right away: Ant accepts a
+ * propagating batch and holds each push until the network knows it. Only a
+ * node that reports the flag promises that. Raw `/stamps` JSON, as above.
+ */
+function isPropagatingStamp(batch) {
+  return batch?.usable !== true && batch?.propagating === true;
+}
+
+/**
+ * IDs of the node's propagating batches, from its raw `/stamps` (bee-js
+ * drops the flag). Empty when the node can't be read: the caller then
+ * treats the batch as not usable, as it did before the flag existed.
+ */
+async function getPropagatingBatchIds() {
+  const res = await antApi.getStamps();
+  const stamps = res.ok && Array.isArray(res.data?.stamps) ? res.data.stamps : [];
+  return new Set(
+    stamps.filter(isPropagatingStamp).map((s) => String(s.batchID || '').toLowerCase())
+  );
+}
+
+/**
+ * Select the best postage batch for an upload of the given size.
  * "Best" = usable, enough remaining space (with 1.5x safety margin),
  * longest TTL. Returns the batch ID hex string, or null if none qualifies.
  *
+ * When no usable batch has room, a propagating one that does is next (see
+ * isPropagatingStamp): a publish started right after a buy then waits in
+ * the node for the network instead of failing here.
+ *
  * With `allowFullMutable`, a usable mutable batch without remaining space
- * is accepted as a fallback when no batch has room. bee-js reports
- * remainingSize 0 once a mutable batch's buckets are full, but the node
- * keeps accepting writes by overwriting the oldest stamp per bucket —
- * which evicts whatever those stamps protected. That trade-off is only
- * acceptable for ephemeral traffic (messaging), never for content
- * publishes, so it is opt-in per call site.
+ * is the last fallback. bee-js reports remainingSize 0 once a mutable
+ * batch's buckets are full, but the node keeps accepting writes by
+ * overwriting the oldest stamp per bucket — which evicts whatever those
+ * stamps protected. That trade-off is only acceptable for ephemeral
+ * traffic (messaging), never for content publishes, so it is opt-in per
+ * call site. Freedom buys immutable batches, so only a batch bought
+ * elsewhere or before that can be such a fallback.
  */
 async function selectBestBatch(estimatedSizeBytes, options = {}) {
   const bee = getBee();
   const batches = await bee.stamp.getAll();
 
   const requiredBytes = estimatedSizeBytes * SIZE_SAFETY_MARGIN;
+  const remainingOf = (batch) =>
+    batch.remainingSize && typeof batch.remainingSize.toBytes === 'function'
+      ? batch.remainingSize.toBytes()
+      : 0;
+  const ttlOf = (batch) =>
+    batch.duration && typeof batch.duration.toSeconds === 'function'
+      ? batch.duration.toSeconds()
+      : 0;
 
   let best = null;
   let bestTtl = -1;
@@ -91,13 +133,8 @@ async function selectBestBatch(estimatedSizeBytes, options = {}) {
   for (const batch of batches) {
     if (!isUsableStamp(batch)) continue;
 
-    const remaining = batch.remainingSize && typeof batch.remainingSize.toBytes === 'function'
-      ? batch.remainingSize.toBytes()
-      : 0;
-
-    const ttl = batch.duration && typeof batch.duration.toSeconds === 'function'
-      ? batch.duration.toSeconds()
-      : 0;
+    const remaining = remainingOf(batch);
+    const ttl = ttlOf(batch);
 
     if (remaining >= requiredBytes) {
       if (ttl > bestTtl) {
@@ -107,6 +144,23 @@ async function selectBestBatch(estimatedSizeBytes, options = {}) {
     } else if (options.allowFullMutable && batch.immutableFlag !== true && ttl > fullMutableTtl) {
       fullMutable = batch;
       fullMutableTtl = ttl;
+    }
+  }
+
+  if (!best && batches.some((batch) => !isUsableStamp(batch))) {
+    const propagating = await getPropagatingBatchIds();
+    for (const batch of batches) {
+      if (isUsableStamp(batch) || !propagating.has(toHex(batch.batchID).toLowerCase())) continue;
+      const ttl = ttlOf(batch);
+      if (remainingOf(batch) >= requiredBytes && ttl > bestTtl) {
+        best = batch;
+        bestTtl = ttl;
+      }
+    }
+    if (best) {
+      log.info(
+        `[SwarmService] Using propagating batch ${toHex(best.batchID)}; the node holds the upload until the network knows it`
+      );
     }
   }
 
@@ -137,5 +191,7 @@ module.exports = {
   selectBestBatch,
   isUsableStamp,
   isPendingStamp,
+  isPropagatingStamp,
+  getPropagatingBatchIds,
   toHex,
 };
