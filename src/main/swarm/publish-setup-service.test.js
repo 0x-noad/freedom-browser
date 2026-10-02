@@ -714,6 +714,52 @@ describe('the armed purchase', () => {
     expect(service.getState().operation).toBeNull();
   });
 
+  async function failedWithTwoScreens() {
+    const ctx = setup();
+    ctx.api.getStorageQuote.mockResolvedValue(fail(501, 'not implemented in ant'));
+    ctx.api.getSettlementDeposit.mockResolvedValue(fail(501, 'not implemented in ant'));
+    ctx.service.watch('1:publish-setup', true);
+    ctx.service.watch('2:publish-setup', true);
+    await settle();
+    ctx.service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    expect(ctx.service.getState().operation.phase).toBe('failed');
+    return { ...ctx, id: ctx.service.getState().operation.id };
+  }
+
+  test('a window that already left a result does not keep it alive by reopening', async () => {
+    const { service, id } = await failedWithTwoScreens();
+    // Window 1 leaves (deferred: window 2 shows it), then reopens the screen,
+    // which hides the result it already left and never dismisses it again.
+    service.watch('1:publish-setup', false);
+    service.dismiss(id, '1:');
+    service.watch('1:publish-setup', true);
+    expect(service.getState().operation).toMatchObject({ id, phase: 'failed' });
+
+    // Window 2 leaves: only window 1's screen is up, and it left the result.
+    service.watch('2:publish-setup', false);
+    service.dismiss(id, '2:');
+    expect(service.getState().operation).toBeNull();
+  });
+
+  test('closing the last window showing a result another left drops it', async () => {
+    const { service, id } = await failedWithTwoScreens();
+    service.watch('1:publish-setup', false);
+    service.dismiss(id, '1:');
+    expect(service.getState().operation).toMatchObject({ id });
+
+    // Window 2 closes with the result on screen: no dismissal ever comes.
+    service.unwatchPrefix('2:');
+    expect(service.getState().operation).toBeNull();
+  });
+
+  test('a result nobody has left yet survives its screens going away', async () => {
+    const { service, id } = await failedWithTwoScreens();
+    service.unwatchPrefix('1:');
+    service.watch('2:publish-setup', false);
+    expect(service.getState().operation).toMatchObject({ id, phase: 'failed' });
+  });
+
   test('a dismissal never drops a running operation or another one', async () => {
     const { service } = setup();
     service.arm({ kind: 'buy', planId: 'starter' });
@@ -1244,7 +1290,10 @@ describe('registerPublishSetupIpc', () => {
       state: { operation: { id } },
     });
     // …while a cancel does.
-    expect(cancel({ sender: { id: 3 } }, id)).toMatchObject({ ok: true, state: { operation: null } });
+    expect(cancel({ sender: { id: 3 } }, id)).toMatchObject({
+      ok: true,
+      state: { operation: null },
+    });
   });
 
   test('drops a closed window’s watches', async () => {

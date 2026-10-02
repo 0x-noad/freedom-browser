@@ -351,6 +351,8 @@ function createPublishSetupService({
   let restart = { inProgress: false, error: null };
   let opSeq = 0;
   const watchers = new Set();
+  // Windows (watch-key prefixes) that have left the current finished result.
+  let dismissal = { opId: null, viewers: new Set() };
   let watchTimer = null;
   let quoteTimer = null;
   let txTimer = null;
@@ -641,6 +643,7 @@ function createPublishSetupService({
     const before = watchers.size;
     if (on) watchers.add(key);
     else watchers.delete(key);
+    if (!on) settleDismissal();
     if (before === 0 && watchers.size > 0) {
       void refresh({ withAccount: true }).then(scheduleWatch);
       return;
@@ -652,6 +655,7 @@ function createPublishSetupService({
     for (const key of [...watchers]) {
       if (key.startsWith(prefix)) watchers.delete(key);
     }
+    settleDismissal();
     scheduleWatch();
   }
 
@@ -980,22 +984,45 @@ function createPublishSetupService({
 
   /**
    * A window leaving a finished (done/failed) result it showed. The result is
-   * shared by every window, so it is dropped only once no other window has
-   * the setup screen up: a tab switch in one window must not take a failure
-   * (an uncertain one included) off the screen of another. `viewer` is the
-   * leaving window's watch-key prefix; its own screen hides the result
-   * itself. Never drops an operation that is still running.
+   * shared by every window, so it is dropped only once no window that has not
+   * left it still has the setup screen up: a tab switch in one window must not
+   * take a failure (an uncertain one included) off the screen of another.
+   * `viewer` is the leaving window's watch-key prefix. Main remembers every
+   * window that left: such a window hides the result itself if it reopens the
+   * screen and never sends a second dismissal, so its open screen must not
+   * keep the result alive, and the last other window leaving or closing (a
+   * watch going off, see settleDismissal) drops it. Never drops an operation
+   * that is still running.
    */
   function dismiss(opId, viewer = '') {
     if (!operation || operation.id !== opId) return { ok: true, state: getState() };
     if (operation.phase !== 'done' && operation.phase !== 'failed') {
       return { ok: true, state: getState() };
     }
-    const shownElsewhere = [...watchers].some(
-      (key) => key.endsWith(`:${SETUP_SCREEN_SURFACE}`) && !(viewer && key.startsWith(viewer))
-    );
-    if (shownElsewhere) return { ok: true, state: getState() };
+    if (dismissal.opId !== opId) dismissal = { opId, viewers: new Set() };
+    if (viewer) dismissal.viewers.add(viewer);
+    if (shownToUndismissedViewer()) return { ok: true, state: getState() };
     return cancel(opId);
+  }
+
+  /** Is the setup screen up in a window that has not left the result? */
+  function shownToUndismissedViewer() {
+    const viewers = [...dismissal.viewers];
+    return [...watchers].some(
+      (key) => key.endsWith(`:${SETUP_SCREEN_SURFACE}`) && !viewers.some((v) => key.startsWith(v))
+    );
+  }
+
+  /**
+   * After a setup screen goes away (left, or its window closed), drop a
+   * finished result some window already left once no window that has not
+   * left it still shows it.
+   */
+  function settleDismissal() {
+    if (!operation || dismissal.opId !== operation.id || dismissal.viewers.size === 0) return;
+    if (operation.phase !== 'done' && operation.phase !== 'failed') return;
+    if (shownToUndismissedViewer()) return;
+    cancel(operation.id);
   }
 
   async function pollFundingTx(current, tx, deadline) {
