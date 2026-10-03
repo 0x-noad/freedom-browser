@@ -61,6 +61,7 @@ function setupState({ needsTopUp = false, deposit = '0.001' } = {}) {
       storage: 'available',
       walletAddress: '0x' + 'cd'.repeat(20),
       xdai: '0.42',
+      xdaiWei: '420000000000000000',
       bzz: '0',
       chequebook: {
         address: CHEQUEBOOK,
@@ -298,6 +299,14 @@ test.describe('Nodes tab: browsing credit (#488)', () => {
       '0.5 xBZZ≈ 850 MB fully paid',
     ]);
     await expect(window.locator('#chequebook-deposit-btn')).toHaveText('Top Up 0.1 xBZZ');
+    // An amount is not capped by the node's target, so that row gives way to
+    // the node wallet's xDAI, which the node swaps first.
+    await expect(window.locator('#chequebook-target-row')).toBeHidden();
+    await expect(window.locator('#chequebook-wallet-xdai')).toHaveText('0.42 xDAI');
+    await expect(window.locator('#chequebook-amount-spend')).toHaveText(
+      'Your node pays for this from its wallet first: it swaps up to the 0.42 xDAI it holds for xBZZ, and asks you for xDAI only if that is not enough.'
+    );
+    await shoot(window, 'deposit-amount-wallet');
   });
 
   test('empty credit: free tier for downloads and uploads, still a top-up', async ({
@@ -334,6 +343,9 @@ test.describe('Nodes tab: browsing credit (#488)', () => {
       await expect(window.locator('#sidebar-chequebook-deposit')).toBeVisible();
       await expect(window.locator('#chequebook-deposit-btn')).toHaveText('Top Up Deposit');
       await expect(window.locator('#chequebook-amount')).toBeHidden();
+      // A target top-up: the target is what it fills to.
+      await expect(window.locator('#chequebook-target-bzz')).toHaveText('0.001 xBZZ');
+      await expect(window.locator('#chequebook-wallet-row')).toBeHidden();
       await shoot(window, 'legacy-deposit-screen');
     });
 
@@ -609,6 +621,10 @@ test.describe('Nodes tab: browsing credit on an Ant with freedom-hq/ant#126', ()
     await expect(window.locator('#chequebook-amount .safe-preset.selected')).toHaveCount(0);
     await shoot(window, 'deposit-amount');
 
+    // The node wallet is empty: nothing of it is at stake, so no spend note.
+    await expect(window.locator('#chequebook-wallet-xdai')).toHaveText('0 xDAI');
+    await expect(window.locator('#chequebook-amount-spend')).toBeHidden();
+
     await window.click('#chequebook-deposit-btn');
 
     await expect(window.locator('#publish-pay-label')).toHaveText(
@@ -631,5 +647,29 @@ test.describe('Nodes tab: browsing credit on an Ant with freedom-hq/ant#126', ()
       depositPlur: '2510000000000000',
     });
     await shoot(window, 'deposit-amount-done');
+  });
+
+  test('a node wallet holding xDAI: the screen says it is spent first, and only that much is', async ({
+    electronApp,
+    window,
+  }) => {
+    await electronApp.evaluate(() => {
+      globalThis.__fakeAnt.state.walletXdaiWei = 90_000_000_000_000_000n;
+    });
+    await window.click('#swarm-credit-topup');
+    await expect(window.locator('#chequebook-wallet-xdai')).toHaveText('0.09 xDAI');
+    await expect(window.locator('#chequebook-amount-spend')).toContainText(
+      'it swaps up to the 0.09 xDAI it holds'
+    );
+    // xDAI lands after the screen showed 0.09: main refuses to let the node
+    // swap more than the user saw, and sends nothing.
+    await electronApp.evaluate(() => {
+      globalThis.__fakeAnt.state.walletXdaiWei = 500_000_000_000_000_000n;
+    });
+    await window.click('#chequebook-deposit-btn');
+    await expect(window.locator('#publish-failed-text')).toContainText(
+      'more xDAI than when you chose this top-up'
+    );
+    expect((await fakeAnt(electronApp)).deposits).toEqual([]);
   });
 });

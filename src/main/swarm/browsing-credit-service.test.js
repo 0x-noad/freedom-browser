@@ -227,11 +227,12 @@ function makeService(overrides = {}) {
   // The running antd's live switch (freedom-hq/ant#126), started from the
   // setting as config.yaml would have it.
   const node = { swapEnabled: swap };
+  // An ultra-light node reports the switch too, with `supported: false`.
   const settlement = () => ({
-    supported: true,
+    supported: support !== 'no-settlement',
     swapSwitch: true,
     swapEnabled: node.swapEnabled,
-    paying: node.swapEnabled,
+    paying: support !== 'no-settlement' && node.swapEnabled,
     chequebook: CHEQUEBOOK,
   });
   const api = {
@@ -406,6 +407,7 @@ describe('createBrowsingCreditService', () => {
     test.each([
       ['supported', { support: 'supported', paying: true, depositAmount: true }],
       ['unsupported', { support: 'unsupported', paying: null, depositAmount: false }],
+      ['no-settlement', { support: 'no-settlement', paying: false }],
       ['unknown', { support: 'unknown', paying: null, depositAmount: false }],
       ['unmanaged', { support: 'unmanaged', paying: true, depositAmount: true }],
     ])('a %s node', async (support, expected) => {
@@ -489,6 +491,7 @@ describe('createBrowsingCreditService', () => {
 
     test.each([
       ['unsupported', 'Not supported by this node version.'],
+      ['no-settlement', expect.stringMatching(/cannot pay peers .*ultra-light/)],
       ['unknown', 'Could not check the Swarm node. Try again in a moment.'],
       ['unmanaged', 'Freedom does not manage this Swarm node.'],
     ])('refuses on a %s node and changes nothing', async (support, error) => {

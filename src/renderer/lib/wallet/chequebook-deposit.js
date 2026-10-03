@@ -29,6 +29,10 @@ let depositScreen;
 let depositBackBtn;
 let currentBzzEl;
 let targetBzzEl;
+let targetRow;
+let walletRow;
+let walletXdaiEl;
+let amountSpend;
 let depositText;
 let depositBtn;
 let amountSection;
@@ -48,6 +52,10 @@ export function initChequebookDeposit() {
   depositBackBtn = document.getElementById('chequebook-deposit-back');
   currentBzzEl = document.getElementById('chequebook-current-bzz');
   targetBzzEl = document.getElementById('chequebook-target-bzz');
+  targetRow = document.getElementById('chequebook-target-row');
+  walletRow = document.getElementById('chequebook-wallet-row');
+  walletXdaiEl = document.getElementById('chequebook-wallet-xdai');
+  amountSpend = document.getElementById('chequebook-amount-spend');
   depositText = document.getElementById('chequebook-deposit-text');
   depositBtn = document.getElementById('chequebook-deposit-btn');
   amountSection = document.getElementById('chequebook-amount');
@@ -157,6 +165,19 @@ function render() {
   if (depositText) depositText.textContent = text;
 
   amountSection?.classList.toggle('hidden', !amountMode);
+  // The node's target caps only a target top-up; an amount can go past it, so
+  // the row would read like a limit. The node wallet's xDAI shows instead:
+  // an amount deposit is paid from it first.
+  targetRow?.classList.toggle('hidden', amountMode);
+  walletRow?.classList.toggle('hidden', !amountMode);
+  if (walletXdaiEl) walletXdaiEl.textContent = account?.xdai ? `${account.xdai} xDAI` : '--';
+  const walletHolds = amountMode && walletXdaiWei(account) > 0n;
+  if (amountSpend) {
+    amountSpend.textContent = walletHolds
+      ? `Your node pays for this from its wallet first: it swaps up to the ${account.xdai} xDAI it holds for xBZZ, and asks you for xDAI only if that is not enough.`
+      : '';
+    amountSpend.classList.toggle('hidden', !walletHolds);
+  }
   if (amountMode) {
     const typed = Boolean(amountInput?.value.trim());
     for (const btn of presetButtons) {
@@ -188,12 +209,27 @@ function render() {
   depositBtn?.classList.toggle('hidden', !canTopUp);
 }
 
+/** The node wallet's xDAI in wei, 0n when unknown. */
+function walletXdaiWei(account) {
+  try {
+    return typeof account?.xdaiWei === 'string' ? BigInt(account.xdaiWei) : 0n;
+  } catch {
+    return 0n;
+  }
+}
+
 async function handleTopUp() {
   let request = { kind: 'deposit' };
   if (amountSection && !amountSection.classList.contains('hidden')) {
     const amount = chosenAmount();
     if (!amount.plur) return;
-    request = { kind: 'deposit', amountPlur: amount.plur };
+    // The wallet xDAI shown above: the node may swap up to that before
+    // Freedom has a price (publish-setup-service.js refuses past it).
+    request = {
+      kind: 'deposit',
+      amountPlur: amount.plur,
+      walletXdaiWei: walletXdaiWei(setupState?.account).toString(),
+    };
   }
   if (depositBtn) depositBtn.disabled = true;
   let error = null;

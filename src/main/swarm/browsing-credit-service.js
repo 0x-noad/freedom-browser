@@ -111,6 +111,9 @@ function normalizeSettlement(raw) {
   };
 }
 
+const NO_SETTLEMENT_MESSAGE =
+  'This node cannot pay peers in the mode it runs in (ultra-light), so the switch changes nothing.';
+
 /** A sentence for a failed `PUT /v0/settlement/swap`. */
 function describeSwitchError(res) {
   if (res?.notSent) return 'The Swarm node is not running.';
@@ -332,13 +335,17 @@ function createBrowsingCreditService({
 
   /**
    * `'supported'` (the running node has the live switch), `'unsupported'` (it
-   * answered `/node` without one), `'unmanaged'` (reused, external or
-   * disabled: its own configuration decides), `'unknown'` (not read yet).
+   * answered `/node` without one), `'no-settlement'` (it has the switch but
+   * runs in a mode that never pays peers, e.g. ultra-light: Ant reports
+   * `swapSwitch: true` with `supported: false` there, and flipping it would
+   * change nothing), `'unmanaged'` (reused, external or disabled: its own
+   * configuration decides), `'unknown'` (not read yet).
    */
   function swapSupport() {
     if (!isManaged()) return 'unmanaged';
     if (nodeStatus() !== 'running' || !nodeInfo) return 'unknown';
-    return nodeInfo.settlement?.swapSwitch ? 'supported' : 'unsupported';
+    if (!nodeInfo.settlement?.swapSwitch) return 'unsupported';
+    return nodeInfo.settlement.supported ? 'supported' : 'no-settlement';
   }
 
   async function readChequebookAddress() {
@@ -505,7 +512,9 @@ function createBrowsingCreditService({
         error:
           support === 'unsupported'
             ? 'Not supported by this node version.'
-            : 'Could not check the Swarm node. Try again in a moment.',
+            : support === 'no-settlement'
+              ? NO_SETTLEMENT_MESSAGE
+              : 'Could not check the Swarm node. Try again in a moment.',
       };
     }
     if (previous === enabled && nodeInfo.settlement.swapEnabled === enabled) {

@@ -123,6 +123,21 @@ describe('describeBrowsingCredit', () => {
     expect(view.costNote).toBe('');
   });
 
+  test('an ultra-light node reports the switch but cannot pay: disabled, and says why', () => {
+    const view = mod.describeBrowsingCredit(
+      credit({ support: 'no-settlement', paying: false }),
+      setup()
+    );
+    expect(view.tier.value).toBe('free');
+    expect(view.status).toMatch(/cannot pay peers .*ultra-light/);
+    expect(view.toggle).toEqual({
+      checked: false,
+      disabled: true,
+      hint: 'This node cannot pay peers in the mode it runs in (ultra-light).',
+    });
+    expect(view.costNote).toBe('');
+  });
+
   test('a node Freedom does not run: no tier claim, switch disabled', () => {
     const view = mod.describeBrowsingCredit(credit({ support: 'unmanaged', paying: null }), setup());
     expect(view.tier).toBeNull();

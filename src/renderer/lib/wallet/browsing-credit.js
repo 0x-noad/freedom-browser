@@ -111,6 +111,14 @@ function describeToggle(credit) {
       };
     case 'unsupported':
       return { ...base, checked: false, hint: 'Not supported by this node version.' };
+    case 'no-settlement':
+      // Ant reports the switch on an ultra-light node too (`settlement.supported`
+      // false), where flipping it changes nothing.
+      return {
+        ...base,
+        checked: false,
+        hint: 'This node cannot pay peers in the mode it runs in (ultra-light).',
+      };
     case 'unmanaged':
       return {
         ...base,
@@ -179,6 +187,9 @@ export function describeBrowsingCredit(credit, setupState) {
     // This node never spends from the chequebook on downloads.
     view.costNote = '';
     view.status = `Paying peers is not supported by this node version, so ${SLOW}.`;
+  } else if (credit.support === 'no-settlement') {
+    view.costNote = '';
+    view.status = `This node cannot pay peers in the mode it runs in (ultra-light), so ${SLOW}.`;
   } else if (credit.support === 'unmanaged') {
     if (credit.paying == null) view.tier = null;
     view.status = 'Whether this node pays peers is set in its own configuration.';

@@ -110,6 +110,9 @@ const PLUR_PER_BZZ = 10n ** 16n;
 const MIN_DEPOSIT_AMOUNT_PLUR = PLUR_PER_BZZ / 1000n;
 const MAX_DEPOSIT_AMOUNT_PLUR = 10n * PLUR_PER_BZZ;
 
+const WALLET_GREW_MESSAGE =
+  'Your node wallet now holds more xDAI than when you chose this top-up, and the node pays from it first. Choose the amount again to go ahead.';
+
 const OLD_NODE_DEPOSIT_AMOUNT_MESSAGE =
   'This Swarm node can only top its deposit up to its default target. A newer Ant adds any amount.';
 
@@ -386,7 +389,17 @@ function parseRequest(request) {
     if (request.amountPlur == null) return { kind, request: { kind }, params: {} };
     const amountPlur = parseDepositAmount(request.amountPlur);
     if (!amountPlur) return { error: 'Choose an amount between 0.001 and 10 xBZZ.' };
-    return { kind, request: { kind, amountPlur }, params: { amountPlur } };
+    // The node wallet's xDAI the deposit screen showed when the user chose
+    // this: the most the node may swap before Freedom has a price for it.
+    const spend = request.walletXdaiWei == null ? '0' : request.walletXdaiWei;
+    if (typeof spend !== 'string' || !/^(0|[1-9]\d{0,40})$/.test(spend)) {
+      return { error: 'Invalid wallet balance.' };
+    }
+    return {
+      kind,
+      request: { kind, amountPlur, walletXdaiWei: spend },
+      params: { amountPlur, walletSpendCapWei: BigInt(spend) },
+    };
   }
   return { error: 'Unknown operation.' };
 }
@@ -450,6 +463,7 @@ function createPublishSetupService({
       storage: acc.storage,
       walletAddress: acc.walletAddress,
       xdai: formatUnits(acc.xdaiWei, 18),
+      xdaiWei: toBigInt(acc.xdaiWei) === null ? null : toBigInt(acc.xdaiWei).toString(),
       bzz: formatUnits(acc.bzzPlur, 16),
       chequebook: cb
         ? {
@@ -1016,6 +1030,11 @@ function createPublishSetupService({
    * xDAI the wallet lacks. That becomes the pay step's figure, and the write
    * is tried again once the wallet holds that much more.
    *
+   * The node swaps from its wallet before Freedom has any price, so that first
+   * write may spend only the xDAI the deposit screen showed the user as
+   * at stake (`walletSpendCapWei`, from the request). A wallet that has grown
+   * since fails the operation instead of spending xDAI nobody agreed to.
+   *
    * An Ant release from before #126 ignores `?amount=` and would top up to its
    * target instead, so the node must report `/node`'s `settlement` first.
    */
@@ -1045,7 +1064,15 @@ function createPublishSetupService({
     }
     current.walletAddress = data.walletAddress.toLowerCase();
     current.walletXdaiWei = wallet;
-    if (current.xdaiNeededWei == null || wallet >= current.xdaiNeededWei) {
+    if (current.xdaiNeededWei == null) {
+      if (wallet > current.params.walletSpendCapWei) {
+        failOperation(current, WALLET_GREW_MESSAGE);
+        return;
+      }
+      await execute(current);
+      return;
+    }
+    if (wallet >= current.xdaiNeededWei) {
       await execute(current);
       return;
     }

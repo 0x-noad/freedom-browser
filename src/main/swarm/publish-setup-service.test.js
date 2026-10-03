@@ -1040,7 +1040,7 @@ describe('a deposit of a chosen amount (freedom-hq/ant#126)', () => {
     expect(api.topUpSettlementDeposit).toHaveBeenLastCalledWith({ amountPlur: AMOUNT });
     expect(service.getState().operation).toMatchObject({
       phase: 'awaiting-funds',
-      request: { kind: 'deposit', amountPlur: AMOUNT },
+      request: { kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '0' },
       notice: null,
       quote: {
         walletAddress: WALLET,
@@ -1071,16 +1071,64 @@ describe('a deposit of a chosen amount (freedom-hq/ant#126)', () => {
     });
   });
 
-  test('a node that already holds the xDAI deposits at once', async () => {
+  test('a node that already holds the xDAI deposits at once, once the user saw that balance', async () => {
     const { service, api } = setup();
     withSettlement(api);
     api.getSettlementDeposit.mockResolvedValue(
       ok(depositBody({ needsTopUp: false, walletXdaiWei: '900000000000000000' }))
     );
-    service.arm({ kind: 'deposit', amountPlur: AMOUNT });
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '900000000000000000' });
     await settle();
     expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
     expect(service.getState().operation.phase).toBe('done');
+  });
+
+  test('never lets the node swap wallet xDAI the deposit screen did not show', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '900000000000000000' }))
+    );
+    // No balance shown (an older screen, or a wallet read as empty)…
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT });
+    await settle();
+    expect(service.getState().operation).toMatchObject({
+      phase: 'failed',
+      error: expect.stringMatching(/more xDAI than when you chose/),
+    });
+    // …or a smaller one than the wallet holds now: nothing is sent either.
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '100000000000000000' });
+    await settle();
+    expect(service.getState().operation.phase).toBe('failed');
+    expect(api.topUpSettlementDeposit).not.toHaveBeenCalled();
+  });
+
+  test('a wallet that grew after the price was known pays without asking again', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '0' }))
+    );
+    api.topUpSettlementDeposit.mockResolvedValue(fail(400, SHORT));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '0' });
+    await settle();
+    expect(service.getState().operation.phase).toBe('awaiting-funds');
+    // The user paid the figure the pay step showed (and a little more).
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '200000000000000000' }))
+    );
+    api.topUpSettlementDeposit.mockResolvedValue(ok(depositBody({ needsTopUp: false })));
+    await jest.advanceTimersByTimeAsync(REQUOTE_MS);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(2);
+    expect(service.getState().operation.phase).toBe('done');
+  });
+
+  test('the wallet balance the screen showed must be a wei integer', () => {
+    const { service } = setup();
+    for (const walletXdaiWei of ['-1', '1.5', 'abc', '01', 5]) {
+      expect(service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei }).ok).toBe(false);
+    }
+    expect(service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '0' }).ok).toBe(true);
   });
 
   test('an Ant from before #126 would ignore the amount, so nothing is sent', async () => {
@@ -1205,6 +1253,7 @@ describe('watching and the account snapshot', () => {
       storage: 'available',
       walletAddress: WALLET,
       xdai: '0.25',
+      xdaiWei: '250000000000000000',
       bzz: '0',
       chequebook: {
         address: CHEQUEBOOK,
@@ -1233,6 +1282,7 @@ describe('watching and the account snapshot', () => {
       storage: 'missing',
       walletAddress: WALLET,
       xdai: '0.25',
+      xdaiWei: '250000000000000000',
       bzz: '0.5',
       chequebook: {
         address: CHEQUEBOOK,
