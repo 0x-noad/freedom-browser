@@ -572,6 +572,28 @@ describe('chain-data-router', () => {
     expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
   });
 
+  test('never routes to an excluded source', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['colibri', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    mockRequestViaColibri.mockResolvedValue('0xcolibri');
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
+    });
+
+    await expect(
+      request(100, 'eth_getLogs', [{}], { excludeSources: ['colibri'] })
+    ).resolves.toMatchObject({ result: '0xrpc', source: 'direct' });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+
+    await expect(request(100, 'eth_getLogs', [{}])).resolves.toMatchObject({
+      result: '0xcolibri',
+      source: 'colibri',
+    });
+  });
+
   test('falls through after two seconds and temporarily bypasses a timed-out Myotis route', async () => {
     jest.useFakeTimers({ now: 1_000_000 });
     mockRegistry.getNetwork.mockReturnValue({

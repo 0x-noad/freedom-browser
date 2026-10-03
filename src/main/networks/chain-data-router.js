@@ -1115,6 +1115,9 @@ async function request(
     // failure across every tier and retry is kept and reported, and a
     // REQUEST-ranked one ends the request (see createErrorKeeper).
     rankError = null,
+    // Sources this caller must never be routed to, e.g. Colibri for Ant's log
+    // scans (its verifier runs on the main thread).
+    excludeSources = [],
   } = {}
 ) {
   if (!isReadMethod(method)) throw new Error(`Unsupported read method: ${method}`);
@@ -1122,8 +1125,9 @@ async function request(
   if (!network) throw new Error(`Unsupported chain ID: ${chainId}`);
   const params = normalizeParams(method, rawParams);
   const supportsMyotis = myotis.NETWORKS?.has(Number(chainId)) === true;
-  const order = network.access?.readOrder ||
-    (supportsMyotis ? DEFAULT_READ_ORDER : DEFAULT_NON_MYOTIS_READ_ORDER);
+  const order = (network.access?.readOrder ||
+    (supportsMyotis ? DEFAULT_READ_ORDER : DEFAULT_NON_MYOTIS_READ_ORDER))
+    .filter((source) => !excludeSources.includes(source));
   // Only a page-driven read (an app supplies its routing context) trades
   // verification for interactive latency. Wallet-internal reads have no user
   // watching a frame and keep the chain's configured timeout.
