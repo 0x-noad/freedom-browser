@@ -25,8 +25,9 @@ also passes `excludeSources: ['colibri']` for its log scans). Colibri's WASM
 verifier runs synchronously on the main thread, so verifying a wide log range
 froze the whole browser for 20-30 s, and it answers a range its RPC refuses
 with only the latest blocks' logs, marked verified. Ant's log scans therefore
-go Myotis (which does not serve logs) → quorum → direct, and a page's
-`eth_getLogs` comes back `verified: false` from quorum or direct. Ant's reads
+go Myotis (which does not serve logs) → quorum → direct. A page's
+`eth_getLogs` therefore comes back `verified: true` when RPC quorum agrees and
+`verified: false` only when it falls through to direct RPC. Ant's reads
 are background work: they use Myotis only when its
 single in-flight slot is idle and never queue for it, so the node's polling
 cannot push interactive wallet/app reads into queue-full fallback.
