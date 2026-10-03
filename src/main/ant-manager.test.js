@@ -1133,6 +1133,21 @@ describe('ant-manager', () => {
       await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('unsupported');
     });
 
+    test('a longer flag that starts with --swap-enable is not the switch', async () => {
+      const ctx = loadAntManagerModule({
+        execFile: helpWith('      --swap-enable-pushsync <BOOL>\n      --swap-enable_x\n'),
+      });
+      await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('unsupported');
+    });
+
+    test.each(['--swap-enable', '--swap-enable=<BOOL>', '  --swap-enable [default: true]'])(
+      'reads %j as the switch',
+      async (line) => {
+        const ctx = loadAntManagerModule({ execFile: helpWith(`Options:\n${line}\n`) });
+        await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('supported');
+      }
+    );
+
     test('asks the binary once per file, again after it changes', async () => {
       const execFile = helpWith('--swap-enable');
       const ctx = loadAntManagerModule({ execFile });

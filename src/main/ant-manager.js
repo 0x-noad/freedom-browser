@@ -255,7 +255,7 @@ function probeSwapEnableSupport(binPath) {
         { timeout: SWAP_SUPPORT_PROBE_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024 },
         (err, stdout = '', stderr = '') => {
           const text = `${stdout}\n${stderr}`;
-          if (/(^|\s)--swap-enable\b/m.test(text)) {
+          if (/(^|\s)--swap-enable(?![\w-])/m.test(text)) {
             resolve('supported');
             return;
           }

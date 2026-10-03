@@ -167,7 +167,7 @@ test.describe('Nodes tab: browsing credit (#488)', () => {
     await expect(window.locator('#swarm-credit-available')).toHaveText('0.0008');
     await expect(window.locator('#swarm-credit-detail')).toHaveText('Of 0.001 xBZZ deposited');
     await expect(window.locator('#swarm-credit-spend')).toHaveText(
-      'Spent today 0.00012 xBZZ · this week 0.0002 xBZZ'
+      'Spent 0.00012 xBZZ in 24 h · 0.0002 xBZZ in 7 days'
     );
     await expect(window.locator('#swarm-credit-topup-cta')).toBeHidden();
     await expect(window.locator('#swarm-credit-switch')).toBeChecked();

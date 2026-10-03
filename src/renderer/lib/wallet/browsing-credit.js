@@ -83,7 +83,7 @@ export function describeBrowsingCredit(credit, setupState) {
   };
 
   if (credit.spend) {
-    view.spend = `Spent today ${credit.spend.day} xBZZ · this week ${credit.spend.week} xBZZ`;
+    view.spend = `Spent ${credit.spend.day} xBZZ in 24 h · ${credit.spend.week} xBZZ in 7 days`;
   }
 
   if (cb === undefined) {

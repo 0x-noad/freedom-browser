@@ -14,11 +14,12 @@
  *     written is counted, cashed or not).
  *   - `GET /settlements`: per-peer cumulative `sent`. The node reports the
  *     peers it currently knows, not a ledger of every payment, so the spend
- *     over the last day and week is built here: each reading is folded into
+ *     over the last 24 hours and 7 days is built here: each reading is folded into
  *     a per-chequebook high-water mark per peer, and what a peer's figure
  *     grew by is recorded as spend in an hourly bucket, persisted under the
  *     profile's userData. A peer that drops out and comes back with the same
- *     figure adds nothing.
+ *     figure adds nothing, and a peer seen for the first time is a baseline
+ *     (its lifetime total is not dated).
  *   - The node-wide `swap-enable` switch ("Pay peers from the chequebook"):
  *     the `antSwapEnable` setting, which ant-manager writes into config.yaml.
  *     Ant exposes the runtime switch only on its control socket, which
@@ -42,7 +43,7 @@ const antStorageApi = require('./ant-storage-api');
 const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;
 const WEEK_MS = 7 * DAY_MS;
-// Spend is kept in hourly buckets: "last day" is accurate to the hour.
+// Spend is kept in hourly buckets: "last 24 hours" is accurate to the hour.
 const BUCKET_MS = HOUR_MS;
 const KEEP_MS = WEEK_MS + DAY_MS;
 // /settlements is answered from the node's memory: sample it in the
@@ -83,14 +84,36 @@ function formatPlur(value, maxDecimals = 6) {
   return fraction ? `${raw / unit}.${fraction}` : `${raw / unit}`;
 }
 
+// A peer's high-water mark is refreshed at most this often while its figure
+// is unchanged, so an idle sample does not rewrite the file.
+const PEER_SEEN_REFRESH_MS = DAY_MS;
+
+/** `[sent, seenAt]` from a stored peer entry (a bare string: an older shape). */
+function readPeer(entry, at) {
+  if (Array.isArray(entry)) {
+    const sent = toBigInt(entry[0]);
+    return sent === null ? null : { sent, seen: Number.isFinite(entry[1]) ? entry[1] : at };
+  }
+  const sent = toBigInt(entry);
+  return sent === null ? null : { sent, seen: null };
+}
+
 /**
  * Fold one `/settlements` reading into a chequebook's spend ledger.
  *
- * `ledger` is `{ since, peers: { <peer>: <cumulative sent> }, buckets:
- * [[<hour start ms>, <plur>]] }` or null. The first reading for a chequebook
- * is a baseline: what peers were paid before Freedom watched is not dated,
- * so it is not counted as recent spend. After that, a peer's growth is
- * spend, and so is the whole figure of a peer seen for the first time.
+ * `ledger` is `{ since, peers: { <peer>: [<cumulative sent>, <last seen ms>] },
+ * buckets: [[<hour start ms>, <plur>]] }` or null. Only a peer's growth
+ * between two readings is spend. A figure seen for the first time — the
+ * chequebook's first reading, or a peer not in the ledger — is a baseline
+ * and counts nothing: Ant's `/settlements` lists only the peers connected
+ * now, so a peer paid last month shows up with its lifetime total whenever
+ * it reconnects, and that total has no date. (The cost: a peer that is both
+ * new and paid within one sample interval has that first cheque missed.)
+ *
+ * Peers not listed for longer than the kept history are dropped, so the
+ * ledger does not grow with every overlay the node has ever met; one that
+ * comes back afterwards is a fresh baseline, so dropping it never invents
+ * spend.
  *
  * Pure: returns `{ ledger, changed }` and never mutates its input.
  */
@@ -106,27 +129,38 @@ function recordSettlements(ledger, rows, at) {
 
   if (!ledger) {
     const peers = {};
-    for (const [peer, sent] of current) peers[peer] = sent.toString();
+    for (const [peer, sent] of current) peers[peer] = [sent.toString(), at];
     return { ledger: { since: at, peers, buckets: [] }, changed: true };
   }
 
-  const peers = { ...ledger.peers };
+  const cutoff = at - KEEP_MS;
+  const peers = {};
   let spent = 0n;
   let changed = false;
-  for (const [peer, sent] of current) {
-    const known = toBigInt(peers[peer]);
-    if (known === null) {
-      spent += sent;
-    } else if (sent > known) {
-      spent += sent - known;
-    } else {
+  for (const [peer, entry] of Object.entries(ledger.peers || {})) {
+    const known = readPeer(entry, at);
+    if (!known || (known.seen !== null && known.seen <= cutoff && !current.has(peer))) {
+      changed = true;
       continue;
     }
-    peers[peer] = sent.toString();
-    changed = true;
+    if (known.seen === null) changed = true; // rewrite in the current shape
+    peers[peer] = [known.sent.toString(), known.seen ?? at];
+  }
+  for (const [peer, sent] of current) {
+    const known = peers[peer] ? { sent: BigInt(peers[peer][0]), seen: peers[peer][1] } : null;
+    if (!known) {
+      peers[peer] = [sent.toString(), at];
+      changed = true;
+    } else if (sent > known.sent) {
+      spent += sent - known.sent;
+      peers[peer] = [sent.toString(), at];
+      changed = true;
+    } else if (at - known.seen >= PEER_SEEN_REFRESH_MS) {
+      peers[peer] = [known.sent.toString(), at];
+      changed = true;
+    }
   }
 
-  const cutoff = at - KEEP_MS;
   let buckets = (ledger.buckets || []).filter(
     ([start, plur]) => Number.isFinite(start) && start + BUCKET_MS > cutoff && toBigInt(plur) !== null
   );
@@ -144,7 +178,11 @@ function recordSettlements(ledger, rows, at) {
   return { ledger: { since: ledger.since, peers, buckets }, changed };
 }
 
-/** Spend recorded in the buckets that overlap the last `windowMs`. */
+/**
+ * Spend recorded in the buckets that overlap the last `windowMs`: a rolling
+ * window, not a calendar day, and up to one bucket (an hour) longer than
+ * `windowMs` since the oldest bucket counts whole. The sidebar labels it so.
+ */
 function spendWithin(ledger, windowMs, at) {
   const from = at - windowMs;
   let total = 0n;

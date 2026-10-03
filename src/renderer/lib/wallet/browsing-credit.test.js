@@ -58,7 +58,7 @@ describe('describeBrowsingCredit', () => {
       visible: true,
       available: '0.0008',
       detail: 'Of 0.001 xBZZ deposited',
-      spend: 'Spent today 0.0002 xBZZ · this week 0.0005 xBZZ',
+      spend: 'Spent 0.0002 xBZZ in 24 h · 0.0005 xBZZ in 7 days',
       tier: { text: 'Paying peers', value: 'paying' },
       level: 'ok',
       status: '',

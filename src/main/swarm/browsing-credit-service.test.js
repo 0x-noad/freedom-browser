@@ -31,16 +31,63 @@ describe('recordSettlements', () => {
   test('the first reading is a baseline, not spend', () => {
     const { ledger } = recordSettlements(null, [{ peer: 'aa', sent: plur(0.5) }], T0);
     expect(ledger.since).toBe(T0);
-    expect(ledger.peers).toEqual({ aa: plur(0.5) });
+    expect(ledger.peers).toEqual({ aa: [plur(0.5), T0] });
     expect(spendWithin(ledger, WEEK_MS, T0)).toBe(0n);
   });
 
   test('growth per peer is spend, bucketed by hour', () => {
     let { ledger } = recordSettlements(null, [{ peer: 'aa', sent: '100' }], T0);
     ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '150' }, { peer: 'bb', sent: '30' }], T0 + 60_000));
-    ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '170' }], T0 + 120_000));
-    expect(ledger.buckets).toEqual([[Math.floor(T0 / BUCKET_MS) * BUCKET_MS, '100']]);
-    expect(spendWithin(ledger, DAY_MS, T0 + 120_000)).toBe(100n);
+    ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '170' }, { peer: 'bb', sent: '45' }], T0 + 120_000));
+    // aa: +50 +20; bb: first seen at 30 (a baseline), then +15.
+    expect(ledger.buckets).toEqual([[Math.floor(T0 / BUCKET_MS) * BUCKET_MS, '85']]);
+    expect(spendWithin(ledger, DAY_MS, T0 + 120_000)).toBe(85n);
+  });
+
+  test('a peer first seen after the baseline counts nothing for its lifetime total', () => {
+    // /settlements lists only connected peers: one paid last month that
+    // reconnects later shows its whole cumulative figure, which has no date.
+    let { ledger } = recordSettlements(null, [{ peer: 'aa', sent: '100' }], T0);
+    let changed;
+    ({ ledger, changed } = recordSettlements(ledger, [{ peer: 'aa', sent: '100' }, { peer: 'bb', sent: plur(2) }], T0 + 10 * 60_000));
+    expect(changed).toBe(true);
+    expect(ledger.peers.bb).toEqual([plur(2), T0 + 10 * 60_000]);
+    expect(spendWithin(ledger, WEEK_MS, T0 + 10 * 60_000)).toBe(0n);
+    ({ ledger } = recordSettlements(ledger, [{ peer: 'bb', sent: (BigInt(plur(2)) + 7n).toString() }], T0 + 20 * 60_000));
+    expect(spendWithin(ledger, DAY_MS, T0 + 20 * 60_000)).toBe(7n);
+  });
+
+  test('peers unseen for longer than the kept history are dropped, and come back as a baseline', () => {
+    let { ledger } = recordSettlements(null, [{ peer: 'aa', sent: '100' }, { peer: 'bb', sent: '50' }], T0);
+    let changed;
+    // aa stays listed (its last-seen refreshes at most daily); bb goes away.
+    for (let d = 1; d <= 7; d += 1) {
+      ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '100' }], T0 + d * DAY_MS));
+    }
+    expect(Object.keys(ledger.peers).sort()).toEqual(['aa', 'bb']);
+    ({ ledger, changed } = recordSettlements(ledger, [{ peer: 'aa', sent: '100' }], T0 + 8 * DAY_MS));
+    expect(changed).toBe(true);
+    expect(Object.keys(ledger.peers)).toEqual(['aa']);
+    ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '100' }, { peer: 'bb', sent: '80' }], T0 + 9 * DAY_MS));
+    expect(spendWithin(ledger, WEEK_MS, T0 + 9 * DAY_MS)).toBe(0n);
+  });
+
+  test('an unchanged figure does not rewrite the ledger until its last-seen is a day old', () => {
+    let { ledger } = recordSettlements(null, [{ peer: 'aa', sent: '100' }], T0);
+    let changed;
+    ({ changed } = recordSettlements(ledger, [{ peer: 'aa', sent: '100' }], T0 + DAY_MS - 1));
+    expect(changed).toBe(false);
+    ({ ledger, changed } = recordSettlements(ledger, [{ peer: 'aa', sent: '100' }], T0 + DAY_MS));
+    expect(changed).toBe(true);
+    expect(ledger.peers.aa).toEqual(['100', T0 + DAY_MS]);
+  });
+
+  test('reads the older bare-string peer shape', () => {
+    const old = { since: T0, peers: { aa: '100' }, buckets: [] };
+    const { ledger, changed } = recordSettlements(old, [{ peer: 'aa', sent: '130' }], T0 + 1000);
+    expect(changed).toBe(true);
+    expect(ledger.peers.aa).toEqual(['130', T0 + 1000]);
+    expect(spendWithin(ledger, DAY_MS, T0 + 1000)).toBe(30n);
   });
 
   test('a peer that drops out and comes back with the same figure adds nothing', () => {
@@ -57,13 +104,13 @@ describe('recordSettlements', () => {
   test('a lower figure never counts as negative spend', () => {
     let { ledger } = recordSettlements(null, [{ peer: 'aa', sent: '100' }], T0);
     ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '40' }], T0 + 1000));
-    expect(ledger.peers.aa).toBe('100');
+    expect(ledger.peers.aa[0]).toBe('100');
     ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '130' }], T0 + 2000));
     expect(spendWithin(ledger, DAY_MS, T0 + 2000)).toBe(30n);
   });
 
   test('day and week windows, and old buckets are dropped', () => {
-    let { ledger } = recordSettlements(null, [], T0);
+    let { ledger } = recordSettlements(null, [{ peer: 'aa', sent: '0' }], T0);
     ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '10' }], T0));
     ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '30' }], T0 + 3 * DAY_MS));
     const at = T0 + 3 * DAY_MS + 1000;
