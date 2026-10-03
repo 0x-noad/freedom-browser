@@ -132,8 +132,7 @@ export function buildFundUrl(address, xdai) {
 /**
  * The node card's publishing button: `{ visible, disabled, label, hint,
  * target }`, where `target` is the screen it opens ('setup' or 'storage').
- */
-/**
+ *
  * @param state  the publish setup state
  * @param credit  browsingCredit.getState() result, if read (#488). Readiness
  *   itself does not block on the `swap-enable` switch, since a small upload
