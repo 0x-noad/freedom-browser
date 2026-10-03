@@ -114,8 +114,8 @@ function readPeer(entry, at) {
  *
  * `ledger` is `{ since, sampled, peers: { <peer>: [<cumulative sent>, <last
  * seen ms>] }, buckets: [[<hour start ms>, <plur>]] }` or null. Only a peer's
- * growth between two readings no more than `MAX_SAMPLE_GAP_MS` apart is
- * spend; `lastAt` is the previous reading's time (default: the ledger's
+ * growth between two readings no more than `MAX_SAMPLE_GAP_MS` apart (and
+ * in order — a previous time later than `at` dates nothing) is spend; `lastAt` is the previous reading's time (default: the ledger's
  * `sampled`, which is saved only with some other change, so after a restart it
  * can be older than the real last reading — that errs towards a baseline,
  * never towards invented spend). After a longer gap, or with no previous time
@@ -151,10 +151,14 @@ function recordSettlements(ledger, rows, at, lastAt = ledger?.sampled) {
   }
 
   const cutoff = at - KEEP_MS;
-  const dated = Number.isFinite(lastAt) && at - lastAt <= MAX_SAMPLE_GAP_MS;
+  // A previous reading later than now (the clock was ahead, then corrected)
+  // says nothing about how long the node went unwatched, so it dates nothing.
+  const gap = Number.isFinite(lastAt) ? at - lastAt : NaN;
+  const dated = gap >= 0 && gap <= MAX_SAMPLE_GAP_MS;
   const peers = {};
   let spent = 0n;
-  let changed = false;
+  // A saved `sampled` in the future is rewritten to now, like a peer's.
+  let changed = Number.isFinite(ledger.sampled) && ledger.sampled > at;
   for (const [peer, entry] of Object.entries(ledger.peers || {})) {
     const known = readPeer(entry, at);
     if (!known || (known.seen !== null && known.seen <= cutoff && !current.has(peer))) {
@@ -292,7 +296,10 @@ function createBrowsingCreditService({
     const at = now();
     settlementsAt = at;
     const previous = store.get(address);
-    const lastAt = Math.max(lastSampled.get(address) ?? -Infinity, previous?.sampled ?? -Infinity);
+    // A previous time later than now (the clock stepped back) is dropped, so a
+    // stale future `sampled` can't outrank the real in-memory last reading.
+    const past = (t) => (Number.isFinite(t) && t <= at ? t : -Infinity);
+    const lastAt = Math.max(past(lastSampled.get(address)), past(previous?.sampled));
     const { ledger, changed } = recordSettlements(previous, res.data.settlements, at, lastAt);
     lastSampled.set(address, at);
     if (changed) store.set(address, ledger);

@@ -170,6 +170,26 @@ describe('recordSettlements', () => {
     expect(Object.keys(ledger.peers)).toEqual(['aa']);
   });
 
+  test('a saved sampled time in the future dates nothing, and is rewritten to now', () => {
+    // Saved with the clock two days ahead; the clock is then corrected and
+    // Freedom stays closed a day while a reused node pays aa 1 xBZZ.
+    const old = { since: T0, sampled: T0 + 2 * DAY_MS, peers: { aa: ['100', T0] }, buckets: [] };
+    const at = T0 + DAY_MS;
+    const grown = (BigInt(plur(1)) + 100n).toString();
+    let { ledger, changed } = recordSettlements(old, [{ peer: 'aa', sent: grown }], at);
+    expect(changed).toBe(true);
+    expect(ledger.peers.aa).toEqual([grown, at]);
+    expect(ledger.buckets).toEqual([]);
+    expect(spendWithin(ledger, DAY_MS, at)).toBe(0n);
+    // Unchanged figures still rewrite the future `sampled` so it isn't kept.
+    ({ ledger, changed } = recordSettlements({ ...old, peers: { aa: ['100', at] } }, [{ peer: 'aa', sent: '100' }], at));
+    expect(changed).toBe(true);
+    expect(ledger.sampled).toBe(at);
+    // An explicit previous time later than now dates nothing either.
+    ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '150' }], at + SAMPLE_MS, at + 2 * SAMPLE_MS));
+    expect(spendWithin(ledger, DAY_MS, at + SAMPLE_MS)).toBe(0n);
+  });
+
   test('ignores malformed rows', () => {
     const { ledger } = recordSettlements(null, [{ peer: 'aa', sent: 'x' }, { sent: '1' }, null, { peer: 'bb', sent: '-5' }], T0);
     expect(ledger.peers).toEqual({});
@@ -342,6 +362,18 @@ describe('createBrowsingCreditService', () => {
     const state = await ctx.svc.getState();
     expect(ctx.store.data[CHEQUEBOOK].peers.aa[0]).toBe('500');
     expect(state.spend.weekPlur).toBe('30');
+  });
+
+  test('a future saved sampled does not outrank the real last reading', async () => {
+    let sent = '100';
+    const ctx = makeService({ rows: () => [{ peer: 'aa', sent }] });
+    await ctx.svc.getState();
+    // The file carries a `sampled` from a clock that was ahead.
+    ctx.store.data[CHEQUEBOOK] = { ...ctx.store.data[CHEQUEBOOK], sampled: T0 + 2 * DAY_MS };
+    sent = '130';
+    ctx.advance(SAMPLE_MS);
+    expect((await ctx.svc.getState()).spend.dayPlur).toBe('30');
+    expect(ctx.store.data[CHEQUEBOOK].sampled).toBe(T0 + SAMPLE_MS);
   });
 
   describe('setSwapEnable', () => {
