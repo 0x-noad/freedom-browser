@@ -3474,6 +3474,28 @@
 
                 <p class="stamp-manager-intro" id="chequebook-deposit-text"></p>
 
+                <!-- Any amount (freedom-hq/ant#126); hidden on an older node, which
+                     only tops up to its target. Presets come from browsing-credit.js. -->
+                <div class="hidden" id="chequebook-amount">
+                  <div class="send-field">
+                    <span class="send-label">Add to the deposit</span>
+                    <div class="safe-preset-row" id="chequebook-amount-presets"></div>
+                  </div>
+                  <div class="send-field">
+                    <label class="send-label" for="chequebook-amount-input">Other amount</label>
+                    <input
+                      type="text"
+                      class="send-input"
+                      id="chequebook-amount-input"
+                      inputmode="decimal"
+                      placeholder="xBZZ, from 0.001 to 10"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                    <div class="send-field-error hidden" id="chequebook-amount-error"></div>
+                  </div>
+                </div>
+
                 <button type="button" class="stamp-purchase-btn hidden" id="chequebook-deposit-btn">
                   Top Up Deposit
                 </button>
