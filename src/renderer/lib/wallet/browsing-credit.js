@@ -27,6 +27,10 @@ export const COST_NOTE =
   'when it runs out, downloads carry on at the free tier.';
 
 const SLOW = 'downloads use the free tier and may be slow';
+// `swap-enable` is node-wide: with it off the node writes no cheques for
+// uploads either, and pushsync stalls once each peer's free allowance (a few
+// hundred chunks) is used up. The switch's own copy has to say so.
+const SWAP_OFF = `${SLOW}, and large uploads can stall`;
 
 function toBigInt(value) {
   if (typeof value !== 'string') return null;
@@ -45,7 +49,9 @@ function describeToggle(credit) {
       return {
         ...base,
         disabled: false,
-        hint: credit.toggle?.error || 'One switch for the whole node, as in bee.',
+        hint:
+          credit.toggle?.error ||
+          'Pays for downloads and uploads. One switch for the whole node, as in bee.',
       };
     case 'unsupported':
       return { ...base, checked: false, hint: 'Not supported by this node version.' };
@@ -105,7 +111,8 @@ export function describeBrowsingCredit(credit, setupState) {
   const available = toBigInt(cb.availablePlur) ?? 0n;
   view.level = available < EMPTY_BELOW_PLUR ? 'empty' : available < LOW_BELOW_PLUR ? 'low' : 'ok';
 
-  const paying = credit.support === 'supported' && credit.swapEnable !== false && view.level !== 'empty';
+  const paying =
+    credit.support === 'supported' && credit.swapEnable !== false && view.level !== 'empty';
   view.tier = paying
     ? { text: 'Paying peers', value: 'paying' }
     : { text: 'Free tier', value: 'free' };
@@ -121,7 +128,7 @@ export function describeBrowsingCredit(credit, setupState) {
     view.tier = null;
     view.status = '';
   } else if (credit.swapEnable === false) {
-    view.status = `Paying peers is off, so ${SLOW}.`;
+    view.status = `Paying peers is off, so ${SWAP_OFF}.`;
   } else if (view.level === 'empty') {
     view.status = `The credit is used up, so ${SLOW}.`;
   } else if (view.level === 'low') {
@@ -130,7 +137,8 @@ export function describeBrowsingCredit(credit, setupState) {
 
   if (view.level !== 'ok') {
     const deposit = setupState?.account?.chequebook;
-    const canTopUp = Boolean(deposit?.needsTopUp) && deposit.managed !== false && setupState?.canBuy;
+    const canTopUp =
+      Boolean(deposit?.needsTopUp) && deposit.managed !== false && setupState?.canBuy;
     if (canTopUp) {
       view.showTopUp = true;
     } else if (deposit && !deposit.needsTopUp && deposit.managed !== false) {

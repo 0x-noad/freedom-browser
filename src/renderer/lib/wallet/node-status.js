@@ -317,7 +317,11 @@ async function handleSwapToggle(enabled) {
   creditRequest += 1;
   // Show the restart while it runs, with the switch where the user put it.
   if (creditState) {
-    creditState = { ...creditState, swapEnable: enabled, toggle: { inProgress: true, error: null } };
+    creditState = {
+      ...creditState,
+      swapEnable: enabled,
+      toggle: { inProgress: true, error: null },
+    };
   }
   renderCredit();
   let result;
@@ -345,6 +349,8 @@ function setLine(el, text) {
 }
 
 function renderCredit() {
+  // The publish CTA warns when paying peers is off, so it follows the credit.
+  updateSwarmSetupCta();
   const view = describeBrowsingCredit(creditState, setupState);
   creditEls.group?.classList.toggle('hidden', !view.visible);
   if (!view.visible) return;
@@ -398,7 +404,7 @@ function handleSetupCtaClick() {
 }
 
 function updateSwarmSetupCta() {
-  const cta = describePublishCta(setupState);
+  const cta = describePublishCta(setupState, creditState);
 
   swarmSetupCta?.classList.toggle('hidden', !cta.visible);
   currentCtaTarget = cta.visible && !cta.disabled ? cta.target : null;

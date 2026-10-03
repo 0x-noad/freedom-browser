@@ -157,7 +157,10 @@ test.describe('Nodes tab: browsing credit (#488)', () => {
     await openNodesTab(window);
   });
 
-  test('a funded node pays peers and shows the credit, the spend and the cost', async ({ electronApp, window }) => {
+  test('a funded node pays peers and shows the credit, the spend and the cost', async ({
+    electronApp,
+    window,
+  }) => {
     await feed(electronApp, window, { creditState: credit(), setup: setupState() });
 
     const group = window.locator('#swarm-credit-group');
@@ -179,11 +182,18 @@ test.describe('Nodes tab: browsing credit (#488)', () => {
     await shoot(window, 'paying');
   });
 
-  test('the switch writes swap-enable through main and shows the free tier', async ({ electronApp, window }) => {
+  test('the switch writes swap-enable through main and shows the free tier', async ({
+    electronApp,
+    window,
+  }) => {
     await feed(electronApp, window, { creditState: credit(), setup: setupState() });
-    await electronApp.evaluate((_e, off) => {
-      globalThis.__swapAnswer = () => ({ ok: true, error: null, state: off });
-    }, credit({ swapEnable: false }));
+    await expect(window.locator('#swarm-setup-hint')).toHaveText('View and extend your storage');
+    await electronApp.evaluate(
+      (_e, off) => {
+        globalThis.__swapAnswer = () => ({ ok: true, error: null, state: off });
+      },
+      credit({ swapEnable: false })
+    );
 
     await window.locator('.swarm-credit-toggle-row .toggle-switch').click();
 
@@ -191,7 +201,14 @@ test.describe('Nodes tab: browsing credit (#488)', () => {
     await expect(window.locator('#swarm-credit-switch')).not.toBeChecked();
     await expect(window.locator('#swarm-credit-tier')).toHaveText('Free tier');
     await expect(window.locator('#swarm-credit-status')).toHaveText(
-      'Paying peers is off, so downloads use the free tier and may be slow.'
+      'Paying peers is off, so downloads use the free tier and may be slow, and large uploads can stall.'
+    );
+    await expect(window.locator('#swarm-credit-toggle-hint')).toHaveText(
+      'Pays for downloads and uploads. One switch for the whole node, as in bee.'
+    );
+    // swap-enable is node-wide: the ready publish CTA warns about uploads.
+    await expect(window.locator('#swarm-setup-hint')).toHaveText(
+      'Paying peers is off, so large uploads can stall'
     );
     await shoot(window, 'off');
   });
@@ -213,7 +230,10 @@ test.describe('Nodes tab: browsing credit (#488)', () => {
     await expect(window.locator('#swarm-credit-switch')).toBeChecked();
   });
 
-  test('a node version without the switch: disabled, "not supported by this node version"', async ({ electronApp, window }) => {
+  test('a node version without the switch: disabled, "not supported by this node version"', async ({
+    electronApp,
+    window,
+  }) => {
     await feed(electronApp, window, {
       creditState: credit({
         support: 'unsupported',
@@ -237,7 +257,10 @@ test.describe('Nodes tab: browsing credit (#488)', () => {
     await shoot(window, 'unsupported');
   });
 
-  test('low credit offers a top-up that opens the deposit screen', async ({ electronApp, window }) => {
+  test('low credit offers a top-up that opens the deposit screen', async ({
+    electronApp,
+    window,
+  }) => {
     await feed(electronApp, window, {
       // Peers cashed 0.0007 of it: the on-chain deposit is below target.
       creditState: credit({ chequebook: balance(300, 300) }),
@@ -256,7 +279,10 @@ test.describe('Nodes tab: browsing credit (#488)', () => {
     await shoot(window, 'deposit-screen');
   });
 
-  test('empty credit: free tier, and no top-up while the spend is still uncashed', async ({ electronApp, window }) => {
+  test('empty credit: free tier, and no top-up while the spend is still uncashed', async ({
+    electronApp,
+    window,
+  }) => {
     await feed(electronApp, window, {
       creditState: credit({ chequebook: balance(0, 1000) }),
       setup: setupState({ needsTopUp: false }),

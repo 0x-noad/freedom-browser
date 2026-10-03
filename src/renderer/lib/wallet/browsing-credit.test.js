@@ -30,7 +30,14 @@ function setup(chequebook = {}) {
   return {
     canBuy: true,
     account: {
-      chequebook: { address: '0x' + 'ab'.repeat(20), deposit: '0.001', target: '0.001', needsTopUp: false, managed: true, ...chequebook },
+      chequebook: {
+        address: '0x' + 'ab'.repeat(20),
+        deposit: '0.001',
+        target: '0.001',
+        needsTopUp: false,
+        managed: true,
+        ...chequebook,
+      },
     },
   };
 }
@@ -72,15 +79,23 @@ describe('describeBrowsingCredit', () => {
   test('switched off: free tier, the switch still on hand', () => {
     const view = mod.describeBrowsingCredit(credit({ swapEnable: false }), setup());
     expect(view.tier.value).toBe('free');
-    expect(view.status).toBe('Paying peers is off, so downloads use the free tier and may be slow.');
+    expect(view.status).toBe(
+      'Paying peers is off, so downloads use the free tier and may be slow, and large uploads can stall.'
+    );
     expect(view.toggle).toMatchObject({ checked: false, disabled: false });
+    // The switch is node-wide: its hint names uploads too.
+    expect(view.toggle.hint).toMatch(/downloads and uploads/);
   });
 
   test('a node version without the switch: disabled, and says so', () => {
     const view = mod.describeBrowsingCredit(credit({ support: 'unsupported' }), setup());
     expect(view.tier.value).toBe('free');
     expect(view.status).toMatch(/not supported by this node version/);
-    expect(view.toggle).toEqual({ checked: false, disabled: true, hint: 'Not supported by this node version.' });
+    expect(view.toggle).toEqual({
+      checked: false,
+      disabled: true,
+      hint: 'Not supported by this node version.',
+    });
     // The balance still shows: the chequebook reads are bee's API.
     expect(view.available).toBe('0.0008');
     // It never spends on downloads, so no cost note.
@@ -122,7 +137,9 @@ describe('describeBrowsingCredit', () => {
     const view = mod.describeBrowsingCredit(withBalance(0), setup({ needsTopUp: true }));
     expect(view.level).toBe('empty');
     expect(view.tier.value).toBe('free');
-    expect(view.status).toBe('The credit is used up, so downloads use the free tier and may be slow.');
+    expect(view.status).toBe(
+      'The credit is used up, so downloads use the free tier and may be slow.'
+    );
     expect(view.showTopUp).toBe(true);
   });
 
@@ -136,10 +153,12 @@ describe('describeBrowsingCredit', () => {
 
   test('no top-up where the node cannot buy or manages its own deposit', () => {
     expect(
-      mod.describeBrowsingCredit(withBalance(0), { ...setup({ needsTopUp: true }), canBuy: false }).showTopUp
+      mod.describeBrowsingCredit(withBalance(0), { ...setup({ needsTopUp: true }), canBuy: false })
+        .showTopUp
     ).toBe(false);
     expect(
-      mod.describeBrowsingCredit(withBalance(0), setup({ needsTopUp: true, managed: false })).showTopUp
+      mod.describeBrowsingCredit(withBalance(0), setup({ needsTopUp: true, managed: false }))
+        .showTopUp
     ).toBe(false);
   });
 
