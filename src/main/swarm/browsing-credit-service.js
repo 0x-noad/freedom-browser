@@ -19,7 +19,9 @@
  *     grew by is recorded as spend in an hourly bucket, persisted under the
  *     profile's userData. A peer that drops out and comes back with the same
  *     figure adds nothing, and a peer seen for the first time is a baseline
- *     (its lifetime total is not dated).
+ *     (its lifetime total is not dated). So is the first reading after a gap
+ *     in the sampling (Freedom closed while a reused node kept paying, the
+ *     node down): that growth has no hour either, and is left out.
  *   - The node-wide `swap-enable` switch ("Pay peers from the chequebook"):
  *     the `antSwapEnable` setting, which ant-manager writes into config.yaml.
  *     Ant exposes the runtime switch only on its control socket, which
@@ -50,6 +52,11 @@ const KEEP_MS = WEEK_MS + DAY_MS;
 // background while the node runs, so a burst of downloads with the sidebar
 // closed still lands in the right hour.
 const SAMPLE_MS = 5 * 60_000;
+// Growth is only dated when the previous reading is this recent. A longer
+// gap (Freedom closed while a reused node kept paying peers, the node down
+// or unreachable for a while) leaves the growth undated: that reading is a
+// fresh baseline rather than spend in its hour.
+const MAX_SAMPLE_GAP_MS = 3 * SAMPLE_MS;
 // /chequebook/balance is two chain reads: only while the card asks, and no
 // more often than this.
 const BALANCE_MAX_AGE_MS = 15_000;
@@ -92,7 +99,11 @@ const PEER_SEEN_REFRESH_MS = DAY_MS;
 function readPeer(entry, at) {
   if (Array.isArray(entry)) {
     const sent = toBigInt(entry[0]);
-    return sent === null ? null : { sent, seen: Number.isFinite(entry[1]) ? entry[1] : at };
+    // A last-seen in the future (the clock stepped back) is read as now, so
+    // the peer still gets its daily refresh and its pruning clock runs.
+    return sent === null
+      ? null
+      : { sent, seen: Number.isFinite(entry[1]) ? Math.min(entry[1], at) : at, future: entry[1] > at };
   }
   const sent = toBigInt(entry);
   return sent === null ? null : { sent, seen: null };
@@ -101,9 +112,15 @@ function readPeer(entry, at) {
 /**
  * Fold one `/settlements` reading into a chequebook's spend ledger.
  *
- * `ledger` is `{ since, peers: { <peer>: [<cumulative sent>, <last seen ms>] },
- * buckets: [[<hour start ms>, <plur>]] }` or null. Only a peer's growth
- * between two readings is spend. A figure seen for the first time — the
+ * `ledger` is `{ since, sampled, peers: { <peer>: [<cumulative sent>, <last
+ * seen ms>] }, buckets: [[<hour start ms>, <plur>]] }` or null. Only a peer's
+ * growth between two readings no more than `MAX_SAMPLE_GAP_MS` apart is
+ * spend; `lastAt` is the previous reading's time (default: the ledger's
+ * `sampled`, which is saved only with some other change, so after a restart it
+ * can be older than the real last reading — that errs towards a baseline,
+ * never towards invented spend). After a longer gap, or with no previous time
+ * at all, every peer's figure is a baseline: the growth happened while nobody
+ * was looking and has no hour to go in. A figure seen for the first time — the
  * chequebook's first reading, or a peer not in the ledger — is a baseline
  * and counts nothing: Ant's `/settlements` lists only the peers connected
  * now, so a peer paid last month shows up with its lifetime total whenever
@@ -117,7 +134,7 @@ function readPeer(entry, at) {
  *
  * Pure: returns `{ ledger, changed }` and never mutates its input.
  */
-function recordSettlements(ledger, rows, at) {
+function recordSettlements(ledger, rows, at, lastAt = ledger?.sampled) {
   const current = new Map();
   for (const row of Array.isArray(rows) ? rows : []) {
     const peer = typeof row?.peer === 'string' ? row.peer.toLowerCase() : null;
@@ -130,10 +147,11 @@ function recordSettlements(ledger, rows, at) {
   if (!ledger) {
     const peers = {};
     for (const [peer, sent] of current) peers[peer] = [sent.toString(), at];
-    return { ledger: { since: at, peers, buckets: [] }, changed: true };
+    return { ledger: { since: at, sampled: at, peers, buckets: [] }, changed: true };
   }
 
   const cutoff = at - KEEP_MS;
+  const dated = Number.isFinite(lastAt) && at - lastAt <= MAX_SAMPLE_GAP_MS;
   const peers = {};
   let spent = 0n;
   let changed = false;
@@ -143,7 +161,7 @@ function recordSettlements(ledger, rows, at) {
       changed = true;
       continue;
     }
-    if (known.seen === null) changed = true; // rewrite in the current shape
+    if (known.seen === null || known.future) changed = true; // rewrite in the current shape
     peers[peer] = [known.sent.toString(), known.seen ?? at];
   }
   for (const [peer, sent] of current) {
@@ -152,7 +170,7 @@ function recordSettlements(ledger, rows, at) {
       peers[peer] = [sent.toString(), at];
       changed = true;
     } else if (sent > known.sent) {
-      spent += sent - known.sent;
+      if (dated) spent += sent - known.sent;
       peers[peer] = [sent.toString(), at];
       changed = true;
     } else if (at - known.seen >= PEER_SEEN_REFRESH_MS) {
@@ -175,7 +193,7 @@ function recordSettlements(ledger, rows, at) {
     }
   }
 
-  return { ledger: { since: ledger.since, peers, buckets }, changed };
+  return { ledger: { since: ledger.since, sampled: at, peers, buckets }, changed };
 }
 
 /**
@@ -244,6 +262,9 @@ function createBrowsingCreditService({
   let toggle = { inProgress: false, error: null };
   let sampler = null;
   let sampleInflight = null;
+  // When this process last read /settlements for each chequebook: the ledger's
+  // own `sampled` is saved only with a change, so it lags while idle.
+  const lastSampled = new Map();
   let balanceInflight = null;
 
   function nodeStatus() {
@@ -270,7 +291,10 @@ function createBrowsingCreditService({
     if (!res.ok || !Array.isArray(res.data?.settlements)) return;
     const at = now();
     settlementsAt = at;
-    const { ledger, changed } = recordSettlements(store.get(address), res.data.settlements, at);
+    const previous = store.get(address);
+    const lastAt = Math.max(lastSampled.get(address) ?? -Infinity, previous?.sampled ?? -Infinity);
+    const { ledger, changed } = recordSettlements(previous, res.data.settlements, at, lastAt);
+    lastSampled.set(address, at);
     if (changed) store.set(address, ledger);
   }
 
@@ -480,5 +504,6 @@ module.exports = {
   WEEK_MS,
   KEEP_MS,
   SAMPLE_MS,
+  MAX_SAMPLE_GAP_MS,
   BALANCE_MAX_AGE_MS,
 };

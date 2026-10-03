@@ -14,6 +14,7 @@ const {
   DAY_MS,
   WEEK_MS,
   SAMPLE_MS,
+  MAX_SAMPLE_GAP_MS,
   BALANCE_MAX_AGE_MS,
 } = require('./browsing-credit-service');
 
@@ -68,7 +69,9 @@ describe('recordSettlements', () => {
     ({ ledger, changed } = recordSettlements(ledger, [{ peer: 'aa', sent: '100' }], T0 + 8 * DAY_MS));
     expect(changed).toBe(true);
     expect(Object.keys(ledger.peers)).toEqual(['aa']);
-    ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '100' }, { peer: 'bb', sent: '80' }], T0 + 9 * DAY_MS));
+    // Sampled continuously (lastAt one interval back): bb is a baseline
+    // because it was dropped, not because of a gap.
+    ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '100' }, { peer: 'bb', sent: '80' }], T0 + 9 * DAY_MS, T0 + 9 * DAY_MS - SAMPLE_MS));
     expect(spendWithin(ledger, WEEK_MS, T0 + 9 * DAY_MS)).toBe(0n);
   });
 
@@ -84,10 +87,14 @@ describe('recordSettlements', () => {
 
   test('reads the older bare-string peer shape', () => {
     const old = { since: T0, peers: { aa: '100' }, buckets: [] };
-    const { ledger, changed } = recordSettlements(old, [{ peer: 'aa', sent: '130' }], T0 + 1000);
+    let { ledger, changed } = recordSettlements(old, [{ peer: 'aa', sent: '130' }], T0 + 1000, T0);
     expect(changed).toBe(true);
     expect(ledger.peers.aa).toEqual(['130', T0 + 1000]);
     expect(spendWithin(ledger, DAY_MS, T0 + 1000)).toBe(30n);
+    // With no time for the previous reading at all, the growth is undated.
+    ({ ledger } = recordSettlements(old, [{ peer: 'aa', sent: '130' }], T0 + 1000));
+    expect(ledger.peers.aa).toEqual(['130', T0 + 1000]);
+    expect(spendWithin(ledger, DAY_MS, T0 + 1000)).toBe(0n);
   });
 
   test('a peer that drops out and comes back with the same figure adds nothing', () => {
@@ -112,16 +119,55 @@ describe('recordSettlements', () => {
   test('day and week windows, and old buckets are dropped', () => {
     let { ledger } = recordSettlements(null, [{ peer: 'aa', sent: '0' }], T0);
     ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '10' }], T0));
-    ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '30' }], T0 + 3 * DAY_MS));
+    ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '30' }], T0 + 3 * DAY_MS, T0 + 3 * DAY_MS - SAMPLE_MS));
     const at = T0 + 3 * DAY_MS + 1000;
     expect(spendWithin(ledger, DAY_MS, at)).toBe(20n);
     expect(spendWithin(ledger, WEEK_MS, at)).toBe(30n);
 
-    ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '31' }], T0 + 9 * DAY_MS));
+    ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '31' }], T0 + 9 * DAY_MS, T0 + 9 * DAY_MS - SAMPLE_MS));
     // The day-0 bucket is past the kept 8 days; day 3's is inside the week.
     expect(ledger.buckets.map(([, v]) => v)).toEqual(['20', '1']);
     expect(spendWithin(ledger, WEEK_MS, T0 + 9 * DAY_MS)).toBe(21n);
     expect(spendWithin(ledger, DAY_MS, T0 + 9 * DAY_MS)).toBe(1n);
+  });
+
+  test('growth across a gap in the sampling is a baseline, not spend in this hour', () => {
+    // A reused node that kept paying peers for days while Freedom was closed.
+    let { ledger } = recordSettlements(null, [{ peer: 'aa', sent: '100' }], T0);
+    expect(ledger.sampled).toBe(T0);
+    const back = T0 + 5 * DAY_MS;
+    let changed;
+    ({ ledger, changed } = recordSettlements(ledger, [{ peer: 'aa', sent: plur(3) }], back));
+    expect(changed).toBe(true);
+    expect(ledger.peers.aa).toEqual([plur(3), back]);
+    expect(ledger.buckets).toEqual([]);
+    expect(spendWithin(ledger, WEEK_MS, back)).toBe(0n);
+    // Sampling again from there dates the growth as usual.
+    ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: (BigInt(plur(3)) + 9n).toString() }], back + SAMPLE_MS));
+    expect(spendWithin(ledger, DAY_MS, back + SAMPLE_MS)).toBe(9n);
+    // The edge: a reading exactly MAX_SAMPLE_GAP_MS later still counts; one past it does not.
+    const edge = back + SAMPLE_MS + MAX_SAMPLE_GAP_MS;
+    let next;
+    ({ ledger: next } = recordSettlements(ledger, [{ peer: 'aa', sent: (BigInt(plur(3)) + 10n).toString() }], edge));
+    expect(spendWithin(next, DAY_MS, edge)).toBe(10n);
+    ({ ledger: next } = recordSettlements(ledger, [{ peer: 'aa', sent: (BigInt(plur(3)) + 10n).toString() }], edge + 1));
+    expect(spendWithin(next, DAY_MS, edge + 1)).toBe(9n);
+  });
+
+  test('a last-seen in the future (clock stepped back) is clamped to now', () => {
+    const future = T0 + WEEK_MS;
+    const old = { since: T0, sampled: T0, peers: { aa: ['100', future], bb: ['50', future] }, buckets: [] };
+    let { ledger, changed } = recordSettlements(old, [{ peer: 'aa', sent: '100' }], T0);
+    expect(changed).toBe(true);
+    expect(ledger.peers).toEqual({ aa: ['100', T0], bb: ['50', T0] });
+    // aa then gets its daily refresh, and bb is pruned on the normal clock.
+    ({ ledger, changed } = recordSettlements(ledger, [{ peer: 'aa', sent: '100' }], T0 + DAY_MS));
+    expect(changed).toBe(true);
+    expect(ledger.peers.aa).toEqual(['100', T0 + DAY_MS]);
+    for (let d = 2; d <= 8; d += 1) {
+      ({ ledger } = recordSettlements(ledger, [{ peer: 'aa', sent: '100' }], T0 + d * DAY_MS));
+    }
+    expect(Object.keys(ledger.peers)).toEqual(['aa']);
   });
 
   test('ignores malformed rows', () => {
@@ -270,6 +316,32 @@ describe('createBrowsingCreditService', () => {
     ctx.setStatus('stopped');
     ctx.svc.handleNodeStatus();
     expect(ctx.deps.clearIntervalFn).toHaveBeenCalledWith(1);
+  });
+
+  test('idle samples date later growth without rewriting the file; a gap does not', async () => {
+    let sent = '100';
+    const ctx = makeService({ rows: () => [{ peer: 'aa', sent }] });
+    await ctx.svc.getState();
+    expect(ctx.store.set).toHaveBeenCalledTimes(1);
+    // An hour of idle samples: nothing written, so the saved `sampled` lags.
+    for (let i = 0; i < 12; i += 1) {
+      ctx.advance(SAMPLE_MS);
+      await ctx.svc.getState();
+    }
+    expect(ctx.api.getSettlements).toHaveBeenCalledTimes(13);
+    expect(ctx.store.set).toHaveBeenCalledTimes(1);
+    sent = '130';
+    ctx.advance(SAMPLE_MS);
+    expect((await ctx.svc.getState()).spend.dayPlur).toBe('30');
+
+    // The node down for a day while its figure moved on (a reused node).
+    ctx.setStatus('stopped');
+    ctx.advance(DAY_MS);
+    sent = '500';
+    ctx.setStatus('running');
+    const state = await ctx.svc.getState();
+    expect(ctx.store.data[CHEQUEBOOK].peers.aa[0]).toBe('500');
+    expect(state.spend.weekPlur).toBe('30');
   });
 
   describe('setSwapEnable', () => {
