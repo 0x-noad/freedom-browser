@@ -1,1 +1,1 @@
-- The Swarm node's start-up scan of a wallet with history takes seconds rather than many minutes, and takes only results two RPCs agree on ([#484](https://github.com/solardev-xyz/freedom-browser/issues/484))
+- The Swarm node's start-up scan of a wallet's history only takes results that two independent sources agree on ([#484](https://github.com/solardev-xyz/freedom-browser/issues/484))
