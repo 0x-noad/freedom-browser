@@ -1453,14 +1453,39 @@ async function requestSource(
 // fails, the answer is accepted as before, and nothing is learned from the
 // failure (a check that timed out must not cool the endpoints down for the
 // caller's next window).
+//
+// Myotis, Colibri and the quorum bound themselves by `deadlineMs`; Direct only
+// bounds each endpoint, and would try every configured URL in turn. So a
+// Direct check gets one endpoint attempt's worth of wall clock in all (the
+// source deadline, or the caller's wider per-URL budget): an answer already in
+// hand must not wait on N slow endpoints just to be double-checked.
 async function checkLogTruncation(source, chainId, method, params, result, options) {
   const probe = logTruncationProbe(method, params, result);
   if (!probe) return;
   const { logRange, ...rest } = options;
+  let checkSignal = options.signal;
+  let releaseBound = () => {};
+  if (source === 'direct') {
+    const boundMs = Math.max(
+      Number(options.deadlineMs) || configuredSourceTimeoutMs(chainId),
+      Number(options.directTimeoutMs) || 0
+    );
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const timer = setTimeout(abort, boundMs);
+    if (options.signal?.aborted) controller.abort();
+    else options.signal?.addEventListener?.('abort', abort, { once: true });
+    checkSignal = controller.signal;
+    releaseBound = () => {
+      clearTimeout(timer);
+      options.signal?.removeEventListener?.('abort', abort);
+    };
+  }
   let earlier;
   try {
     earlier = await requestSource(source, chainId, method, probe.params, {
       ...rest,
+      signal: checkSignal,
       logRange: logRange && SOURCE_CAPABILITIES[source]?.logSpan === 'learned-per-endpoint'
         ? { ...logRange, span: probe.span, learn: false }
         : null,
@@ -1472,6 +1497,8 @@ async function checkLogTruncation(source, chainId, method, params, result, optio
         `answer accepted: ${safeErrorMessage(err)}`
     );
     return;
+  } finally {
+    releaseBound();
   }
   if (Array.isArray(earlier) && earlier.length > 0) {
     throw new TruncatedLogsError(probe.evidence);
