@@ -276,10 +276,15 @@ function registerHistoryIpc() {
   // Get history (with optional limit)
   ipcMain.handle(IPC.HISTORY_GET, (_event, options = {}) => {
     const { query } = options || {};
-    const limit = Math.min(Number(options?.limit) || HISTORY_GET_MAX, HISTORY_GET_MAX);
+    // A positive integer, capped. Anything else (missing, 0, negative,
+    // fractional, NaN) takes the default: SQLite reads a negative LIMIT as
+    // "no limit", which would hand back the whole table.
+    const requested = Math.floor(Number(options?.limit));
+    const hasLimit = Number.isFinite(requested) && requested > 0;
+    const limit = hasLimit ? Math.min(requested, HISTORY_GET_MAX) : HISTORY_GET_MAX;
 
     if (query) {
-      return searchHistory(query, Number(options.limit) ? limit : 50);
+      return searchHistory(query, hasLimit ? limit : 50);
     }
 
     return getRecentHistory(limit);

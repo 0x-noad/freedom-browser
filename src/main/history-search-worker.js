@@ -9,6 +9,10 @@ let db = null;
 
 function getDb() {
   if (db) return db;
+  // A plain require, as in history.js: in a package this script runs from
+  // app.asar and Electron's asar loader resolves better-sqlite3's native
+  // binding from app.asar.unpacked (`asarUnpack` in package.json), in a
+  // worker thread too. test-e2e/packaged/history-worker.spec.js checks it.
   const Database = require('better-sqlite3');
   db = new Database(workerData.dbPath, { readonly: true, fileMustExist: true });
   return db;

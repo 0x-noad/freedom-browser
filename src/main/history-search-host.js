@@ -10,7 +10,9 @@
 // rest of the session queries on the main thread, as before this module. A
 // request still unanswered after REQUEST_TIMEOUT_MS terminates the worker
 // and fails with a timeout — not a fallback, since a query that slow would
-// freeze the main thread just the same.
+// freeze the main thread just the same. That holds for every other request
+// queued on the same worker too: they fail with the same timeout rather than
+// falling back, since they would run against the same slow table on main.
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const log = require('./logger');
@@ -137,7 +139,14 @@ function runInWorker(dbPath, op, payload) {
       target.pending.delete(id);
       reject(new HistorySearchTimeout(`history ${op} timed out after ${timeoutMs} ms`));
       target.deliberate = true;
-      retire(target, 'timed out');
+      // Requests queued behind the slow one fail the same way, not with
+      // HistorySearchUnavailable: a fallback would run them on main against
+      // the table that just took this long.
+      retire(
+        target,
+        'timed out',
+        () => new HistorySearchTimeout(`history search abandoned: a ${op} timed out ahead of it`)
+      );
     }, timeoutMs);
     target.pending.set(id, { resolve, reject, timer });
     try {

@@ -232,6 +232,16 @@ describe('history bounded queries', () => {
     await expect(ipcMain.invoke(IPC.HISTORY_GET, { limit: 5000 })).resolves.toHaveLength(1000);
     await expect(ipcMain.invoke(IPC.HISTORY_GET, { limit: 3 })).resolves.toHaveLength(3);
     await expect(ipcMain.invoke(IPC.HISTORY_GET, { query: 'x.example' })).resolves.toHaveLength(50);
+    // SQLite reads LIMIT -1 as unlimited: a negative limit must not lift the cap.
+    await expect(ipcMain.invoke(IPC.HISTORY_GET, { limit: -1 })).resolves.toHaveLength(1000);
+    await expect(ipcMain.invoke(IPC.HISTORY_GET, { limit: 0.5 })).resolves.toHaveLength(1000);
+    await expect(ipcMain.invoke(IPC.HISTORY_GET, { limit: 'abc' })).resolves.toHaveLength(1000);
+    await expect(
+      ipcMain.invoke(IPC.HISTORY_GET, { query: 'x.example', limit: -1 })
+    ).resolves.toHaveLength(50);
+    await expect(
+      ipcMain.invoke(IPC.HISTORY_GET, { query: 'x.example', limit: 5000 })
+    ).resolves.toHaveLength(1000);
   });
 });
 

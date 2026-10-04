@@ -105,6 +105,22 @@ test('a request still unanswered at the deadline times out and the worker is rep
   expect(next.split(':')[2]).not.toBe(first.split(':')[2]);
 });
 
+test('requests queued behind a timed-out one time out too, without a main-thread fallback', async () => {
+  host.resetForTest({ timeoutMs: 200, path: scriptedWorker() });
+  const hung = host.runInWorker('db', 'page', { query: 'hang' });
+  // Queued on the same worker; the scripted worker never answers either.
+  const queued = host.runInWorker('db', 'autocomplete', { query: 'hang' });
+  queued.catch(() => {});
+  await expect(hung).rejects.toBeInstanceOf(HistorySearchTimeout);
+  const err = await queued.catch((e) => e);
+  expect(err).toBeInstanceOf(HistorySearchTimeout);
+  expect(err).not.toBeInstanceOf(HistorySearchUnavailable);
+  // Not disabled either: the next request gets a fresh worker.
+  await expect(host.runInWorker('db', 'autocomplete', { query: 'ok' })).resolves.toMatch(
+    /^echo:ok/
+  );
+});
+
 test('a worker that dies mid-request fails it as unavailable, and the next one respawns', async () => {
   host.resetForTest({ path: scriptedWorker() });
   await expect(host.runInWorker('db', 'autocomplete', { query: 'ok' })).resolves.toMatch(
