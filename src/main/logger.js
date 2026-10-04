@@ -1,5 +1,6 @@
 const log = require('electron-log');
 const path = require('path');
+const { flushLogFileSync } = require('./log-file-flush');
 
 // Detect environment safely (app.isPackaged is unavailable in test runners)
 let isPackaged = false;
@@ -28,6 +29,14 @@ if (isTestEnv) {
 
   // File transport captures everything for post-mortem debugging
   log.transports.file.level = 'info';
+
+  // Append off the main thread (#511): electron-log's sync default does an
+  // fs.writeFileSync (open, write, close) per line. Set before the first line,
+  // which is when electron-log creates the File with this mode. Async mode has
+  // no flush of its own: this covers process exit, and index.js drains it at
+  // the end of the quit wind-down and flushes it before a forced exit.
+  log.transports.file.sync = false;
+  process.on('exit', () => flushLogFileSync(log.transports.file));
 
   // Console transport: production shows only warnings+errors, dev shows all
   // Set DEBUG=1 to enable verbose console output in production
