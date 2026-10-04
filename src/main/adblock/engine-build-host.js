@@ -35,8 +35,9 @@ let workerPath = WORKER_PATH;
 
 // A normal build takes well under a second (~460 ms median wall time in the
 // worker, measured on #519 — the ~240 ms figure in #512 is main's old
-// main-thread stall, not the worker's build time); this is generous enough for a slow machine under load and short enough that a
-// wedged build releases the rebuild queue within the session.
+// main-thread stall, not the worker's build time); this is generous enough
+// for a slow machine under load and short enough that a wedged build
+// releases the rebuild queue within the session.
 const BUILD_DEADLINE_MS = 60_000;
 let buildDeadlineMs = BUILD_DEADLINE_MS;
 
