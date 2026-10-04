@@ -14,6 +14,7 @@ const {
 } = require('./radicle-manager');
 const embedded = require('./radicle-embedded');
 const { createProfileTempDir } = require('./profile-paths');
+const fsOffload = require('./fs-offload');
 
 const execFileAsync = promisify(execFile);
 
@@ -99,13 +100,13 @@ function stripAnsi(str) {
   return str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 }
 
-function cleanupTempDir(tempDir) {
+// Off the main thread (#513): a cloned repo can be large, and this runs at the
+// end of every import. `force` already makes a missing dir a no-op.
+async function cleanupTempDir(tempDir) {
   if (!tempDir) return;
 
   try {
-    if (fs.existsSync(tempDir)) {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
+    await fsOffload.removePath(tempDir, { recursive: true, force: true });
   } catch (err) {
     console.warn('[GitHubBridge] Cleanup failed:', err.message);
   } finally {
@@ -485,7 +486,7 @@ async function importGitHubRepo(url, sender) {
 
     return failure(friendlyError.code, friendlyError.message);
   } finally {
-    cleanupTempDir(clonePath);
+    await cleanupTempDir(clonePath);
   }
 }
 

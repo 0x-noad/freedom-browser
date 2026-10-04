@@ -110,6 +110,9 @@ test('imports a GitHub checkout directly through libradicle', async () => {
     'Native project',
     'main'
   );
+  // The clone's temp dir is removed (asynchronously, #513) before the import
+  // resolves.
+  expect(fs.readdirSync(mockTempRoot)).toEqual([]);
 });
 
 test('does not report success or persist a bridge when native import returns an invalid RID', async () => {

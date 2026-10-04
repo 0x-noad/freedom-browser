@@ -417,7 +417,7 @@ function validateProfileDeletionForActiveApp(profileId, expectedDisplayName) {
   return true;
 }
 
-function deleteProfileForActiveApp(profileId, expectedDisplayName) {
+async function deleteProfileForActiveApp(profileId, expectedDisplayName) {
   if (!activeProfile || activeProfile.source !== 'catalog') {
     return null;
   }

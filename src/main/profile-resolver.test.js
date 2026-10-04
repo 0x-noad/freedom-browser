@@ -346,7 +346,7 @@ describe('profile resolver', () => {
     expect(getActiveProfile().metadata.nodes.ipfs).toEqual(expectedIpfs);
   });
 
-  test('creates, lists, and renames catalog profiles for the active app root', () => {
+  test('creates, lists, and renames catalog profiles for the active app root', async () => {
     const userDataDir = track(makeTempDir());
     const app = createAppMock({ isPackaged: true, userDataDir });
     const {
@@ -384,11 +384,11 @@ describe('profile resolver', () => {
     renameProfileForActiveApp('default', 'Personal');
     expect(getActiveProfile().displayName).toBe('Personal');
 
-    expect(() => deleteProfileForActiveApp('default', 'Personal')).toThrow(
+    await expect(deleteProfileForActiveApp('default', 'Personal')).rejects.toThrow(
       'The active profile cannot be deleted'
     );
 
-    deleteProfileForActiveApp('work-profile', 'Work');
+    await deleteProfileForActiveApp('work-profile', 'Work');
     expect(fs.existsSync(workDir)).toBe(false);
 
     const updatedCatalog = JSON.parse(
@@ -466,7 +466,7 @@ describe('profile resolver', () => {
     });
   });
 
-  test('refuses to delete a profile that is open in another process', () => {
+  test('refuses to delete a profile that is open in another process', async () => {
     const userDataDir = track(makeTempDir());
     const app = createAppMock({ isPackaged: true, userDataDir });
     const {
@@ -489,7 +489,7 @@ describe('profile resolver', () => {
     });
 
     try {
-      expect(() => deleteProfileForActiveApp('work', 'Work')).toThrow(
+      await expect(deleteProfileForActiveApp('work', 'Work')).rejects.toThrow(
         'Profile is currently open: Work'
       );
     } finally {
@@ -497,7 +497,7 @@ describe('profile resolver', () => {
     }
   });
 
-  test('deletes dev Radicle short home through the active resolver path', () => {
+  test('deletes dev Radicle short home through the active resolver path', async () => {
     const appDataDir = track(makeTempDir());
     const repoRoot = track(makeRepoRoot());
     const app = createAppMock({
@@ -528,7 +528,7 @@ describe('profile resolver', () => {
     fs.mkdirSync(radicleDir, { recursive: true });
     fs.writeFileSync(path.join(radicleDir, 'radicle.pub'), 'old-radicle-identity');
 
-    deleteProfileForActiveApp('work', 'Work');
+    await deleteProfileForActiveApp('work', 'Work');
 
     expect(fs.existsSync(created.record.dir)).toBe(false);
     expect(fs.existsSync(radicleDir)).toBe(false);
@@ -536,7 +536,7 @@ describe('profile resolver', () => {
 
   // #124: once another profile exists, the default one can be deleted, and
   // nothing that used to assume it exists may bring it back.
-  test('deletes the packaged default profile from another profile and never resurrects it', () => {
+  test('deletes the packaged default profile from another profile and never resurrects it', async () => {
     const userDataDir = track(makeTempDir());
     const app = createAppMock({ isPackaged: true, userDataDir });
     const {
@@ -557,7 +557,7 @@ describe('profile resolver', () => {
     });
     expect(work.id).toBe('work');
 
-    deleteProfileForActiveApp('default', 'My Profile');
+    await deleteProfileForActiveApp('default', 'My Profile');
 
     expect(fs.existsSync(path.join(userDataDir, 'Cookies'))).toBe(false);
     expect(fs.existsSync(path.join(userDataDir, 'profile.json'))).toBe(false);
@@ -583,7 +583,7 @@ describe('profile resolver', () => {
     expect(fs.existsSync(path.join(userDataDir, 'profile.json'))).toBe(false);
 
     // Now the only profile — it cannot be deleted in turn.
-    expect(() => deleteProfileForActiveApp('work', 'Work')).toThrow(
+    await expect(deleteProfileForActiveApp('work', 'Work')).rejects.toThrow(
       'The active profile cannot be deleted'
     );
   });
@@ -614,7 +614,7 @@ describe('profile resolver', () => {
     expect(loadCatalog(userDataDir).profiles.map((p) => p.id)).toEqual(['work']);
   });
 
-  test('an explicit --profile=default recreates a fresh default after deletion', () => {
+  test('an explicit --profile=default recreates a fresh default after deletion', async () => {
     const userDataDir = track(makeTempDir());
     const app = createAppMock({ isPackaged: true, userDataDir });
     const { deleteProfileForActiveApp, initializeProfile, resolveProfile } =
@@ -623,7 +623,7 @@ describe('profile resolver', () => {
     resolveProfile(app, { argv: ['electron', '.'], env: {} });
     fs.writeFileSync(path.join(userDataDir, 'Cookies'), 'old default data');
     initializeProfile(app, { argv: ['electron', '.', '--profile=work'], env: {} });
-    deleteProfileForActiveApp('default', 'My Profile');
+    await deleteProfileForActiveApp('default', 'My Profile');
 
     const relaunched = createAppMock({ isPackaged: true, userDataDir });
     const recreated = resolveProfile(relaunched, {
