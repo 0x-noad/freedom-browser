@@ -44,6 +44,12 @@
  *     written as one `info` line ("not reported as a stall") — never as an
  *     hours-long warn, and never silently.
  *
+ * On Linux/macOS a window that closes without any tick showing the monotonic
+ * clock paused means no sleep happened inside it (inhibited, aborted,
+ * vetoed): the clock would have shown it. Held ticks there can only be awake
+ * time, so they are reported as stalls too — the `info` line is Windows-only,
+ * where a sleep can't be seen that way.
+ *
  * A window with no resume (a vetoed sleep, a lost event) closes on its own
  * after `suspendGraceMs`, the same way as a resume.
  */
@@ -72,6 +78,11 @@ function startEventLoopWatchdog({
   thresholdMs = DEFAULT_THRESHOLD_MS,
   minReportGapMs = DEFAULT_MIN_REPORT_GAP_MS,
   suspendGraceMs = DEFAULT_SUSPEND_GRACE_MS,
+  // Whether `now` keeps counting through system sleep: true for Windows' QPC,
+  // false for CLOCK_MONOTONIC (Linux) and mach_absolute_time (macOS). Where it
+  // doesn't, a sleep always shows up as the wall clock running ahead, so a
+  // window that closes without that signal held only real stalls.
+  monotonicCountsSleep = process.platform === 'win32',
   now = () => performance.now(),
   // Wall clock: runs through system sleep on every platform, unlike `now`
   // on Linux/macOS; comparing the two shows whether `now` paused.
@@ -139,12 +150,14 @@ function startEventLoopWatchdog({
 
   // Close the suspend() window. `stalls`: whether the held late ticks are
   // known to be awake time (the monotonic clock paused through the sleep, so
-  // none of them can contain it).
+  // none of them can contain it). Where the monotonic clock doesn't count
+  // sleep, a close without that signal means no sleep happened in the window
+  // at all, so the held ticks are stalls either way.
   function endSuspension(stalls, t) {
     const { held } = suspended;
     suspended = null;
     if (!held.length) return;
-    if (stalls) {
+    if (stalls || !monotonicCountsSleep) {
       for (const h of held) report(h.blockedMs, h.activity, t);
       return;
     }
@@ -152,7 +165,8 @@ function startEventLoopWatchdog({
     (typeof log.info === 'function' ? log.info : log.warn).call(
       log,
       `[main] event loop: ${held.length} late tick${held.length === 1 ? '' : 's'} ` +
-        `(${Math.round(total)} ms) across system sleep, not reported as a stall`
+        `(${Math.round(total)} ms) during a system-sleep window (likely the sleep itself), ` +
+        'not reported as a stall'
     );
   }
 

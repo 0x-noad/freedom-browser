@@ -117,9 +117,11 @@ describe('event-loop watchdog', () => {
   });
 
   const HOURS_3 = 3 * 3600_000;
+  const WINDOWS = { monotonicCountsSleep: true };
+  const POSIX = { monotonicCountsSleep: false };
 
   test('suspend() on Windows: the sleep gap is not reported even when the overdue tick beats resume', () => {
-    const { log, fireAfter, watchdog, sleep } = harness();
+    const { log, fireAfter, watchdog, sleep } = harness(WINDOWS);
     fireAfter(500);
     watchdog.suspend();
     fireAfter(500); // on time, before the machine actually sleeps
@@ -131,12 +133,12 @@ describe('event-loop watchdog', () => {
     // ...but it isn't silent either: one info line names what was set aside.
     expect(log.info).toHaveBeenCalledTimes(1);
     expect(log.info.mock.calls[0][0]).toMatch(
-      /^\[main\] event loop: 1 late tick \(\d+ ms\) across system sleep, not reported as a stall$/
+      /^\[main\] event loop: 1 late tick \(\d+ ms\) during a system-sleep window \(likely the sleep itself\), not reported as a stall$/
     );
   });
 
   test('suspend() on Windows: a real stall before the sleep does not end the window early', () => {
-    const { log, fireAfter, watchdog, sleep } = harness();
+    const { log, fireAfter, watchdog, sleep } = harness(WINDOWS);
     watchdog.suspend();
     fireAfter(500 + 2000); // a stall between 'suspend' and the actual sleep
     sleep(HOURS_3, { monotonicCounts: true });
@@ -150,7 +152,7 @@ describe('event-loop watchdog', () => {
   });
 
   test('suspend() on Linux/macOS: a stall during wake-up, before resume, is reported', () => {
-    const { log, fireAfter, watchdog, sleep } = harness();
+    const { log, fireAfter, watchdog, sleep } = harness(POSIX);
     fireAfter(500);
     watchdog.suspend();
     fireAfter(500);
@@ -166,7 +168,7 @@ describe('event-loop watchdog', () => {
   });
 
   test('suspend() on Linux/macOS: a wake-up stall is reported even when resume beats the tick', () => {
-    const { log, fireAfter, watchdog, sleep, advance } = harness();
+    const { log, fireAfter, watchdog, sleep, advance } = harness(POSIX);
     fireAfter(500);
     watchdog.suspend();
     sleep(HOURS_3, { monotonicCounts: false });
@@ -178,7 +180,7 @@ describe('event-loop watchdog', () => {
   });
 
   test('suspend() on Linux/macOS: a stall before the sleep is reported once the sleep shows', () => {
-    const { log, fireAfter, watchdog, sleep } = harness();
+    const { log, fireAfter, watchdog, sleep } = harness(POSIX);
     watchdog.suspend();
     fireAfter(500 + 2000); // ambiguous on its own: held
     expect(log.warn).not.toHaveBeenCalled();
@@ -189,13 +191,47 @@ describe('event-loop watchdog', () => {
   });
 
   test('reset() on Windows with no late tick yet absorbs the sleep gap', () => {
-    const { log, fireAfter, watchdog, sleep } = harness();
+    const { log, fireAfter, watchdog, sleep } = harness(WINDOWS);
     fireAfter(500);
     watchdog.suspend();
     sleep(HOURS_3, { monotonicCounts: true });
     watchdog.reset(); // 'resume' beats the overdue tick
     fireAfter(500);
     expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  test('suspend() on Linux/macOS: a stall in a window where no sleep happens is reported, not called sleep', () => {
+    // logind PrepareForSleep(true) → suspend(); the sleep is then inhibited
+    // or aborted and PrepareForSleep(false) → reset(). No tick ever shows the
+    // monotonic clock paused, so the late tick can only be awake time.
+    const { log, fireAfter, watchdog } = harness(POSIX);
+    fireAfter(500);
+    watchdog.suspend();
+    fireAfter(500 + 3000);
+    expect(log.warn).not.toHaveBeenCalled(); // held while it might still be the sleep
+    watchdog.reset();
+    expect(log.warn).toHaveBeenCalledWith('[main] event loop blocked 3000 ms');
+    expect(log.info).not.toHaveBeenCalled();
+  });
+
+  test('suspend() on Windows: the same no-sleep window stays an info line', () => {
+    // QPC can't tell this stall from a sleep gap, so it is held, not warned.
+    const { log, fireAfter, watchdog } = harness(WINDOWS);
+    fireAfter(500);
+    watchdog.suspend();
+    fireAfter(500 + 3000);
+    watchdog.reset();
+    expect(log.warn).not.toHaveBeenCalled();
+    expect(log.info).toHaveBeenCalledTimes(1);
+  });
+
+  test('suspend() on Linux/macOS: held stalls are reported when the grace period expires', () => {
+    const { log, fireAfter, watchdog } = harness({ ...POSIX, suspendGraceMs: 10_000 });
+    watchdog.suspend();
+    fireAfter(500 + 2000); // held
+    for (let k = 0; k < 20; k += 1) fireAfter(500); // no sleep, no resume
+    expect(log.warn).toHaveBeenCalledWith('[main] event loop blocked 2000 ms');
+    expect(log.info).not.toHaveBeenCalled();
   });
 
   test('suspend() with no sleep and no resume expires after the grace period', () => {
