@@ -1688,6 +1688,44 @@ describe('Ant bridge cancellation', () => {
       ]);
     });
 
+    test('a Direct check of a reused quorum answer asks the member that gave it', async () => {
+      jest.useFakeTimers({ now: 1_000_000 });
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['quorum', 'direct'] },
+        quorum: { k: 3, m: 2, timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockReturnValue([
+        'https://a.example', 'https://b.example', 'https://c.example',
+      ]);
+      // a hangs on everything; b cuts the full range to its tail and finds
+      // logs before it; c disagrees, so quorum fails and Direct reuses b's
+      // answer without asking again.
+      global.fetch = jest.fn((url, options) => {
+        const host = new URL(url).hostname;
+        if (host === 'a.example') {
+          return new Promise((_resolve, reject) => {
+            options.signal.addEventListener('abort', () => reject(new Error('aborted')));
+          });
+        }
+        const { toBlock } = JSON.parse(options.body).params[0];
+        const result = host === 'c.example'
+          ? []
+          : toBlock === FULL[0].toBlock ? TAIL : [log(Number(toBlock) - 5)];
+        return Promise.resolve({ ok: true, json: async () => ({ result }) });
+      });
+      const pending = request(100, 'eth_getLogs', FULL).catch((err) => err);
+      await jest.advanceTimersByTimeAsync(10_000);
+      // The check goes to b, the member whose answer was reused, not through
+      // a registry-order walk where the hung a would use up its one attempt.
+      await expect(pending).resolves.toMatchObject({ name: 'TruncatedLogsError' });
+      expect(asked()).toEqual([
+        `a.example ${FULL[0].fromBlock}-${FULL[0].toBlock}`,
+        `b.example ${FULL[0].fromBlock}-${FULL[0].toBlock}`,
+        `c.example ${FULL[0].fromBlock}-${FULL[0].toBlock}`,
+        `b.example ${FULL[0].fromBlock}-${hex(HEAD - 474)}`,
+      ]);
+    });
+
     test.each([
       ['an empty answer', FULL, []],
       ['logs spread past the tail', FULL, [log(HEAD - LOG_TRUNCATION_TAIL_BLOCKS), log(HEAD)]],
