@@ -634,6 +634,62 @@ describe('range caps (#484)', () => {
     expect(kept.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'b', 'c']);
   });
 
+  test('R1-M1: an upstream query timeout bounds an endpoint only briefly', async () => {
+    useEndpoints({ a: FULL, b: 'timeoutReply', c: 'timeoutReply' });
+    // b's and c's upstreams time out at 500 blocks: Ant narrows below it.
+    const first = await scanOnce(logsOver(500));
+    expect(first).toMatchObject({
+      message: 'Chain request failed: query exceeds max block range 499',
+      shrinks: true,
+    });
+    // Right after, wider scans are told that span too.
+    useEndpoints({ a: FULL, b: FULL, c: FULL });
+    const soon = await scanOnce(logsOver(2000));
+    expect(soon).toMatchObject({ message: 'Chain request failed: query exceeds max block range 499' });
+    expect(soon.fetches).toEqual([]);
+    // A busy moment is no range limit: after the cooldown, not 30 minutes,
+    // the wide scan is asked again and answered.
+    await jest.advanceTimersByTimeAsync(router.LOG_SCAN_COOLDOWN_MS);
+    const later = await scanOnce(logsOver(2000));
+    expect(later).toMatchObject({ ...gotLogs });
+    expect(later.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'b', 'c']);
+  });
+
+  test('R1-M1: a timed-out span holds until the cooldown ends, then is asked again', async () => {
+    useEndpoints({ a: FULL, b: ['timeoutReply', 'success'], c: FULL });
+    expect(await scanOnce(logsOver(4000))).toMatchObject({ ...gotLogs });
+    // b is bounded below 4000 for now, so a and c serve the 4000-block scan,
+    const wide = await scanOnce(logsOver(4000));
+    expect(wide.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'c']);
+    // b still serves narrower spans, which leave the bound in place,
+    const narrow = await scanOnce(logsOver(1000));
+    expect(narrow.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'b', 'c']);
+    const still = await scanOnce(logsOver(4000));
+    expect(still.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'c']);
+    // and once the cooldown has passed b is asked for 4000 blocks again.
+    await jest.advanceTimersByTimeAsync(router.LOG_SCAN_COOLDOWN_MS);
+    const again = await scanOnce(logsOver(4000));
+    expect(again.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'b', 'c']);
+  });
+
+  test('R1-M2: a result-count cap is not learned as a block-range cap', async () => {
+    const MANY = { code: -32005, message: 'query returned more than 10000 results' };
+    let dense = true;
+    useEndpoints({ a: FULL, b: FULL, c: FULL });
+    const fetchLogs = global.fetch;
+    global.fetch = jest.fn((url, init) =>
+      dense ? rpcReply({ error: MANY }) : fetchLogs(url, init)
+    );
+    const denseScan = await scanOnce(logsOver(20_000));
+    expect(denseScan).toMatchObject({ code: MANY.code, shrinks: true });
+    // A sparse filter over the same span is asked of every endpoint, not
+    // refused as "max block range 19999".
+    dense = false;
+    const sparse = await scanOnce(logsOver(20_000));
+    expect(sparse).toMatchObject({ ...gotLogs });
+    expect(sparse.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'b', 'c']);
+  });
+
   test('every endpoint down: Ant gets no range wording and stops the scan', async () => {
     const steps = await antScan({ a: 'down', b: 'down', c: 'down' });
     expect(steps).toHaveLength(1);

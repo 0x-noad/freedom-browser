@@ -50,17 +50,41 @@ Public RPCs cap the block span of one `eth_getLogs` differently (measured for
 #484: `rpc.gnosischain.com`, Tenderly, serves the full history; the
 `gateway.fm` and `swiftnodes` hostnames are the same backend; publicnode and
 dRPC's free plan serve 10,000 blocks). The router learns each endpoint's cap
-from the number its refusal names (`logScanRangeCap` in the bridge; a refusal
-without one bounds the span it was asked), in memory only, for 30 minutes,
-after which the endpoint is asked again. A scan asks the first `k` endpoints
-whose cap covers its span. If that round fails, the endpoints it just learned
-about are taken out (capped, or cooling down for 30 s after a hang, refused
-connection, throttle or other endpoint failure) and, if another quorum can
-serve the same span, it is asked straight away. When none can, Ant is told the
-widest span a quorum can still verify, as `-32005 query exceeds max block
-range N`, without any endpoint being asked, and halves its window towards it.
-Only when no quorum can serve any span does Ant get an error it does not halve
-on, and it resumes the scan later from its saved progress.
+from the number its refusal names (`logScanRangeCap` in the bridge; a range
+limit without one bounds the span it was asked), in memory only, for 30
+minutes, after which the endpoint is asked again. Two refusals are not read as
+block-range caps:
+
+- an upstream `query timeout` reply bounds the endpoint below the span it timed
+  out on for 30 s only: a busy server is no range limit to hold every later
+  scan window to for half an hour;
+- a cap on results, logs or response size (`query returned more than 10000
+  results`) is not learned at all. It depends on the filter, not on the
+  endpoint, so a sparse filter over the same range is still asked. Ant still
+  halves the window it was refused.
+
+A scan asks the first `k` endpoints whose cap covers its span. If that round
+fails, the endpoints it just learned about are taken out (capped, or cooling
+down for 30 s after a hang, refused connection, throttle or other endpoint
+failure) and, if another quorum can serve the same span, it is asked straight
+away. When none can, Ant is told the widest span a quorum can still verify, as
+`-32005 query exceeds max block range N`, without any endpoint being asked, and
+halves its window towards it. Only when no quorum can serve any span does Ant
+get an error it does not halve on, and it resumes the scan later from its
+saved progress.
+
+**A quorum is required.** Since no single endpoint's answer is accepted for a
+log scan, a node configured with fewer Gnosis RPC endpoints than the quorum
+size `m` (default 2 of `k` = 3), or with a read order that leaves out
+`quorum`, cannot complete Ant's log scans at all: every `eth_getLogs` fails
+(`RPC quorum needs m endpoints` / `No chain source left`), Ant ends the scan
+and retries it later, and its postage batches and chequebook are not found
+until the configuration changes. Ant's other reads and broadcasts are not
+affected. The bridge logs `eth_getLogs is answered by the RPC quorum only,
+and none is configured for Gnosis` once per node start when this happens. A
+user with a single custom Gnosis RPC must add a second, independent one (two
+hostnames of the same backend agree with each other by construction and are
+no independent check).
 
 ### Which error Ant sees: one ranking rule
 

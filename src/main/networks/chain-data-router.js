@@ -69,18 +69,21 @@ const colibriInFlight = new Set();
 const colibriInFlightByRoute = new Map();
 // What each RPC endpoint can serve for a range-capped log scan (callers that
 // pass rangeCapOf, i.e. the bundled Ant node's eth_getLogs through its bridge):
-// `${chainId} ${url}` -> { refusedFrom, capUntil, coolUntil }. refusedFrom is
-// the smallest block span the endpoint refused, null while none was, and
-// counts until capUntil; coolUntil keeps an endpoint that failed for its own
-// reasons out of these scans for a while. Process-local like the adaptive
-// state: nothing is saved, and a cap is relearned with one refusal.
+// `${chainId} ${url}` -> { refusedFrom, capUntil, slowFrom, slowUntil,
+// coolUntil }. refusedFrom is the smallest block span the endpoint refused as
+// a range limit, null while none was, and counts until capUntil. slowFrom is
+// the smallest span its own upstream timed out on, and counts only until
+// slowUntil (a short while: a busy moment is no range cap). coolUntil keeps an
+// endpoint that failed for its own reasons out of these scans for a while.
+// Process-local like the adaptive state: nothing is saved, and a cap is
+// relearned with one refusal.
 const logRangeState = new Map();
 // How long a learned cap holds. After that the endpoint is asked for wider
 // spans again, so a provider that raises its limit is noticed.
 const LOG_RANGE_CAP_TTL_MS = 30 * 60_000;
 // How long a log scan leaves out an endpoint that hung, refused the
 // connection, throttled or failed some other way that does not depend on the
-// requested range.
+// requested range, and how long a span its upstream timed out on bounds it.
 const LOG_SCAN_COOLDOWN_MS = 30_000;
 // Quorum rounds per log scan: the first, and one with the endpoints left
 // after the first round's failures were taken out.
@@ -337,7 +340,10 @@ function servableLogSpan(chainId, url, now) {
   const entry = logRangeState.get(logRangeKey(chainId, url));
   if (!entry) return Infinity;
   if (entry.coolUntil > now) return 0;
-  return entry.refusedFrom === null || entry.capUntil <= now ? Infinity : entry.refusedFrom - 1;
+  let span = Infinity;
+  if (entry.refusedFrom !== null && entry.capUntil > now) span = entry.refusedFrom - 1;
+  if (entry.slowFrom !== null && entry.slowUntil > now) span = Math.min(span, entry.slowFrom - 1);
+  return span;
 }
 
 // The widest span `m` endpoints can serve together: what a quorum can still
@@ -347,31 +353,41 @@ function quorumLogSpan(chainId, urls, m, now) {
   return spans.length >= m ? spans[m - 1] : 0;
 }
 
-// An answer ends a cooldown, and an answer at or above an expired cap clears
-// it: the provider raised its limit.
+// An answer ends a cooldown, and an answer at or above a cap clears it: the
+// provider raised its limit, or its upstream is no longer slow.
 function noteLogRangeAnswer(chainId, url, span) {
   const key = logRangeKey(chainId, url);
   const entry = logRangeState.get(key);
   if (!entry) return;
-  if (entry.refusedFrom === null || span >= entry.refusedFrom) {
-    logRangeState.delete(key);
-    return;
-  }
   entry.coolUntil = 0;
+  if (entry.refusedFrom !== null && span >= entry.refusedFrom) entry.refusedFrom = null;
+  if (entry.slowFrom !== null && span >= entry.slowFrom) entry.slowFrom = null;
+  if (entry.refusedFrom === null && entry.slowFrom === null) logRangeState.delete(key);
 }
 
-// Learn from one endpoint's failed log query. A cap the reply names, or a
-// range limit or upstream query timeout without one, bounds the span it is
-// asked for. A failure that does not depend on the range (a hang, refused
-// connection, throttle, missing method, lagging node) cools it down instead.
-// Anything else (a reply that may be a throttle or a result-count cap) is not
-// learned from.
+// Learn from one endpoint's failed log query. A block-range cap the caller's
+// capOf reads from the reply (a number it names, or the span below the one
+// asked for a range limit without one) bounds the endpoint for
+// LOG_RANGE_CAP_TTL_MS. An upstream query timeout (TIMEOUT-ranked, not this
+// client's own) bounds it below the span asked, but only for
+// LOG_SCAN_COOLDOWN_MS: the server may have been busy, and a timeout is no
+// range limit to hold a scan to for half an hour. A failure that does not
+// depend on the range (a hang, refused connection, throttle, missing method,
+// lagging node) cools it down instead. Anything else (a reply that may be a
+// throttle, or a result-count cap, which depends on the filter rather than
+// the endpoint's range) is not learned from.
 function noteLogRangeFailure(chainId, url, span, error, { capOf, rank }, now) {
   const key = logRangeKey(chainId, url);
-  const entry = logRangeState.get(key) || { refusedFrom: null, capUntil: 0, coolUntil: 0 };
+  const entry = logRangeState.get(key) || {
+    refusedFrom: null,
+    capUntil: 0,
+    slowFrom: null,
+    slowUntil: 0,
+    coolUntil: 0,
+  };
   let cap;
   try {
-    cap = capOf(error);
+    cap = capOf(error, span);
   } catch {
     cap = null;
   }
@@ -382,15 +398,16 @@ function noteLogRangeFailure(chainId, url, span, error, { capOf, rank }, now) {
     errorRank = ERROR_RANK.ENDPOINT;
   }
   const clientTimeout = failureKind(error) === 'timeout';
-  let refusedFrom = null;
-  if (Number.isSafeInteger(cap) && cap > 0) refusedFrom = cap + 1;
-  else if (!clientTimeout && errorRank >= ERROR_RANK.TIMEOUT) refusedFrom = span;
-  if (refusedFrom !== null) {
+  if (Number.isSafeInteger(cap) && cap > 0) {
     entry.refusedFrom =
       entry.refusedFrom === null || entry.capUntil <= now
-        ? refusedFrom
-        : Math.min(entry.refusedFrom, refusedFrom);
+        ? cap + 1
+        : Math.min(entry.refusedFrom, cap + 1);
     entry.capUntil = now + LOG_RANGE_CAP_TTL_MS;
+  } else if (!clientTimeout && errorRank === ERROR_RANK.TIMEOUT) {
+    entry.slowFrom =
+      entry.slowFrom === null || entry.slowUntil <= now ? span : Math.min(entry.slowFrom, span);
+    entry.slowUntil = now + LOG_SCAN_COOLDOWN_MS;
   } else if (clientTimeout || !(errorRank > ERROR_RANK.ENDPOINT)) {
     entry.coolUntil = now + LOG_SCAN_COOLDOWN_MS;
   } else {
@@ -1093,11 +1110,8 @@ async function requestQuorum(chainId, method, params, options = {}) {
   const askQuorum = (urls) =>
     requestQuorumRound(chainId, method, params, { ...options, keeper, urls });
 
-  if (!logRange) {
-    const urls = endpoints.slice(0, k);
-    if (urls.length < m) throw new SourceUnavailableError(`RPC quorum needs ${m} endpoints`);
-    return askQuorum(urls);
-  }
+  if (endpoints.length < m) throw new SourceUnavailableError(`RPC quorum needs ${m} endpoints`);
+  if (!logRange) return askQuorum(endpoints.slice(0, k));
 
   // A range-capped log scan asks the first k endpoints able to serve its span.
   // A round whose members failed has just taken them out (capped or cooling);
@@ -1316,8 +1330,10 @@ async function request(
     // Sources this caller must never be routed to, e.g. everything but the
     // RPC quorum for Ant's log scans.
     excludeSources = [],
-    // Optional error -> block-range cap the endpoint named (a number), or
-    // null. With rankError, it makes an eth_getLogs over a numeric block
+    // Optional (error, span) -> the widest block span the refusing endpoint
+    // serves (a cap it named, or span - 1 for a range limit without one), or
+    // null when the reply is no block-range limit (a result-count cap, a
+    // throttle). With rankError, it makes an eth_getLogs over a numeric block
     // range a range-capped log scan: the quorum learns each endpoint's cap
     // and asks only endpoints that can serve the span (see logRangeState).
     rangeCapOf = null,
