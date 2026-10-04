@@ -17,6 +17,13 @@ const chainData = require('../networks/chain-data-router');
 const networkRegistry = require('../networks/network-registry');
 const { getPermissionKey } = require('../../shared/origin-utils');
 const { registerWebRequestHandler } = require('../webrequest-dispatcher');
+const { createTaskWorkerHost, TaskWorkerUnavailable } = require('../task-worker-host');
+const {
+  MAX_HTML_BYTES,
+  assertHtmlResultSize,
+  decodeHtmlDocument,
+  decodeHtmlResult,
+} = require('./onchain-html');
 const {
   runWithPrivateLogContext,
   redactUrlForLog,
@@ -27,13 +34,22 @@ const PROVENANCE_HEADER = 'X-Freedom-Onchain-App-Provenance';
 const GATE_HEADER = 'X-Freedom-Onchain-App-Gate';
 const APPROVAL_HEADER = 'X-Freedom-Onchain-App-Approval';
 const DEFAULT_CHAIN_ID = 1;
-const MAX_HTML_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 const PENDING_DOCUMENT_TTL_MS = 5 * 60 * 1000;
 const MAX_PENDING_DOCUMENTS = 8;
 const MAX_APPROVED_DOCUMENTS = 1024;
 const ETHEREUM_ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
-const HTML_RESULT_INTERFACE = new ethers.Interface(['function html() view returns (string)']);
+// Decoding an 8 MiB document takes ~0.7 s (hex check, ABI decode, pure-JS
+// keccak), so it runs in a worker; see onchain-html.js. The input is bounded
+// by MAX_HTML_BYTES, so a decode still running after this is a broken worker,
+// not a big document.
+const DECODE_TIMEOUT_MS = 15_000;
+const htmlWorker = createTaskWorkerHost({
+  name: 'OnchainHtml',
+  workerPath: path.join(__dirname, 'onchain-html-worker.js'),
+  timeoutMs: DECODE_TIMEOUT_MS,
+  resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 32 },
+});
 const provenanceByWebContentsId = new Map();
 const observedWebContentsIds = new Set();
 const ONCHAIN_INTERSTITIAL_URL = pathToFileURL(
@@ -110,14 +126,14 @@ function textResponse(status, message, extraHeaders = {}) {
   });
 }
 
-function buildOnchainProvenance(html, app, chainResult = {}) {
+function buildOnchainProvenance(htmlHash, app, chainResult = {}) {
   const network = networkRegistry.getNetwork(app.chainId);
   return {
     version: 1,
     chainId: app.chainId,
     network: network?.name || `Chain ${app.chainId}`,
     contract: app.address,
-    htmlHash: ethers.keccak256(ethers.toUtf8Bytes(html)),
+    htmlHash,
     trust: chainResult.trust || {
       level: chainResult.verified === true ? 'verified' : 'unverified',
       method: chainResult.source || 'direct',
@@ -218,8 +234,7 @@ function decodeOnchainProvenance(value) {
   }
 }
 
-function htmlResponse(html, app, chainResult, method) {
-  const provenance = buildOnchainProvenance(html, app, chainResult);
+function htmlResponse(html, app, provenance, chainResult, method) {
   const headers = {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
@@ -338,26 +353,17 @@ async function withDeadline(promise, timeoutMs, signal) {
   }
 }
 
-function decodeHtmlResult(result) {
-  if (typeof result !== 'string' || !/^0x[0-9a-f]*$/i.test(result)) {
-    throw new Error('html() returned malformed ABI data');
+// `{ html, htmlHash }` for an html() result, decoded and hashed off the main
+// thread. Only when the worker cannot run at all is it done here, as before.
+async function decodeHtmlInWorker(result) {
+  // O(1), before an oversized result is copied to the worker at all.
+  assertHtmlResultSize(result);
+  try {
+    return await htmlWorker.run('decode', { result });
+  } catch (error) {
+    if (!(error instanceof TaskWorkerUnavailable)) throw error;
+    return decodeHtmlDocument(result);
   }
-  const encodedBytes = (result.length - 2) / 2;
-  // ABI adds an offset, a length word, and up to 31 bytes of padding.
-  if (encodedBytes > MAX_HTML_BYTES + 95) {
-    const error = new Error('html() response exceeds Freedom\'s 8 MiB limit');
-    error.code = 'ONCHAIN_APP_TOO_LARGE';
-    throw error;
-  }
-
-  const [html] = HTML_RESULT_INTERFACE.decodeFunctionResult('html', result);
-  const byteLength = Buffer.byteLength(html, 'utf8');
-  if (byteLength > MAX_HTML_BYTES) {
-    const error = new Error('html() response exceeds Freedom\'s 8 MiB limit');
-    error.code = 'ONCHAIN_APP_TOO_LARGE';
-    throw error;
-  }
-  return html;
 }
 
 async function handleOnchainAppRequest(
@@ -390,6 +396,7 @@ async function handleOnchainAppRequest(
       return htmlResponse(
         approvedCandidate.html,
         approvedCandidate.app,
+        approvedCandidate.provenance,
         approvedCandidate.chainResult,
         method
       );
@@ -415,8 +422,8 @@ async function handleOnchainAppRequest(
       timeoutMs,
       request.signal
     );
-    const html = decodeHtmlResult(chainResult?.result);
-    const provenance = buildOnchainProvenance(html, app, chainResult || {});
+    const { html, htmlHash } = await decodeHtmlInWorker(chainResult?.result);
+    const provenance = buildOnchainProvenance(htmlHash, app, chainResult || {});
     const trustLevel = provenance.trust?.level;
     const trusted = trustLevel === 'verified' || trustLevel === 'user-configured';
     if (method === 'GET' && !trusted && !trustState.isApproved(app, provenance.htmlHash)) {
@@ -434,7 +441,7 @@ async function handleOnchainAppRequest(
         buildOnchainInterstitialUrl({ app, provenance, requestUrl: request.url, token })
       );
     }
-    return htmlResponse(html, app, chainResult || {}, method);
+    return htmlResponse(html, app, provenance, chainResult || {}, method);
   } catch (error) {
     const loggedUrl = redactUrlForLog(request.url);
     if (error?.code === 'ONCHAIN_APP_TOO_LARGE') {
@@ -626,8 +633,10 @@ module.exports = {
   buildOnchainInterstitialUrl,
   captureOnchainProvenance,
   decodeOnchainProvenance,
+  decodeHtmlInWorker,
   decodeHtmlResult,
   encodeOnchainProvenance,
+  htmlWorker,
   guardOnchainAppRequest,
   handleOnchainAppRequest,
   installOnchainProvenanceCapture,

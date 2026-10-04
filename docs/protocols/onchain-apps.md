@@ -19,7 +19,7 @@ The `.eip155-<chainId>` suffix is invisible browser plumbing, not an extra DNS o
 
 `web3` is registered as a privileged standard scheme in `src/main/index.js`, alongside `bzz`, `ipfs`, and `ipns`; the handler itself lives in `src/main/onchain/onchain-app-protocol.js`.
 
-The handler calls selector `0x33c34ac3` (`html()`) through the same capability-aware chain-data router the wallet uses (`src/main/networks/chain-data-router.js`): Myotis when available, then Colibri, RPC quorum, and direct RPC fallback according to network policy. It ABI-decodes the returned UTF-8 string and serves those bytes unchanged as `text/html`; paths, queries, and fragments remain available to the app as client-side routes. Reads have a 30-second browser deadline and an 8 MiB decoded-document limit.
+The handler calls selector `0x33c34ac3` (`html()`) through the same capability-aware chain-data router the wallet uses (`src/main/networks/chain-data-router.js`): Myotis when available, then Colibri, RPC quorum, and direct RPC fallback according to network policy. It ABI-decodes the returned UTF-8 string and serves those bytes unchanged as `text/html`; paths, queries, and fragments remain available to the app as client-side routes. Reads have a 30-second browser deadline and an 8 MiB decoded-document limit. The ABI decode and the Keccak-256 document hash run in a worker thread (`src/main/onchain/onchain-html-worker.js`), not in the protocol handler on Electron's main thread, where an 8 MiB document used to block every window for about a second; only if that worker cannot start at all does the handler decode on the main thread.
 
 ## Security model
 
