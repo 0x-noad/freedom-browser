@@ -510,10 +510,22 @@ async function startTor(opts = {}) {
   }
 
   if (managedProfileNode && opts.checkDefaultExternalCandidate === true) {
-    await promptForDefaultExternalCandidateProtocol(getActiveProfile(), 'tor', {
-      window: opts.promptWindow,
-      logger: log,
-    });
+    try {
+      // Saving the decision waits out an in-process async catalog write (a
+      // profile deletion). Anything else that fails here (another process
+      // holding the catalog) must still settle the state, not leave Tor in
+      // STARTING with nobody awaiting this start.
+      await promptForDefaultExternalCandidateProtocol(getActiveProfile(), 'tor', {
+        window: opts.promptWindow,
+        logger: log,
+      });
+    } catch (err) {
+      if (superseded()) return;
+      log.error('[Tor] Failed to save external Tor decision:', err.message);
+      updateState(STATUS.ERROR, 'Failed to save Tor node choice');
+      setStatusMessage('tor', 'Tor failed to start');
+      return;
+    }
     if (superseded()) return;
     profileConfig = getProfileTorConfig();
     managedProfileNode = isManagedTorConfig(profileConfig);

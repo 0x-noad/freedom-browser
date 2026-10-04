@@ -349,6 +349,66 @@ describe('profile resolver', () => {
     expect(result.metadata.nodes.tor.socksPort).toBe(9161);
   });
 
+  // #517 R2-M1: a default-port external-candidate decision (Tor's
+  // checkDefaultExternalCandidate prompt) can be answered while a profile
+  // delete holds the catalog lock; applying it must wait, not throw.
+  test('applyExternalCandidateDecisions waits out an async catalog holder', async () => {
+    const userDataDir = track(makeTempDir());
+    const app = createAppMock({ isPackaged: true, userDataDir });
+    const { initializeProfile } = require('./profile-resolver');
+    const { withCatalogWriteLockAsync } = require('./profile-catalog');
+    const {
+      EXTERNAL_CANDIDATE_PROMPT_KEY,
+      applyExternalCandidateDecisions,
+    } = require('./profile-external-candidates');
+    const profile = initializeProfile(app, {
+      argv: ['electron', '.', '--profile=work'],
+      env: {},
+      now: '2026-05-25T00:00:00.000Z',
+    });
+
+    let releaseHolder;
+    let holderStarted;
+    const started = new Promise((resolve) => {
+      holderStarted = resolve;
+    });
+    const holder = withCatalogWriteLockAsync(profile.appRoot, () => new Promise((resolve) => {
+      releaseHolder = resolve;
+      holderStarted();
+    }));
+    await started;
+
+    let settled = false;
+    const applying = applyExternalCandidateDecisions(
+      [{
+        protocol: 'tor',
+        endpoints: ['socks5://127.0.0.1:9150'],
+        externalConfig: { mode: 'external', externalSocks: '127.0.0.1:9150' },
+      }],
+      { tor: 'external' },
+      { logger: { info: jest.fn() }, now: '2026-05-26T00:00:00.000Z' }
+    ).finally(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(settled).toBe(false);
+    releaseHolder();
+    await holder;
+    const decisions = await applying;
+
+    expect(decisions).toEqual([
+      expect.objectContaining({ protocol: 'tor', choice: 'external' }),
+    ]);
+    const metadata = JSON.parse(
+      fs.readFileSync(path.join(profile.userDataDir, 'profile.json'), 'utf-8')
+    );
+    expect(metadata.nodes.tor).toMatchObject({
+      mode: 'external',
+      externalSocks: '127.0.0.1:9150',
+      [EXTERNAL_CANDIDATE_PROMPT_KEY]: { choice: 'external' },
+    });
+  });
+
   test('persists active profile node updates to metadata and catalog', () => {
     const userDataDir = track(makeTempDir());
     const app = createAppMock({ isPackaged: true, userDataDir });
