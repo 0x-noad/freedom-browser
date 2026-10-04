@@ -3,7 +3,11 @@ const mockReadFileSync = jest.fn();
 const mockWriteFileSync = jest.fn();
 const mockUnlinkSync = jest.fn();
 const mockRenameSync = jest.fn();
+const mockReaddirSync = jest.fn(() => []);
+const mockStatSync = jest.fn();
 jest.mock('node:fs', () => ({
+  readdirSync: (...args) => mockReaddirSync(...args),
+  statSync: (...args) => mockStatSync(...args),
   mkdirSync: (...args) => mockMkdirSync(...args),
   readFileSync: (...args) => mockReadFileSync(...args),
   writeFileSync: (...args) => mockWriteFileSync(...args),
@@ -11,7 +15,7 @@ jest.mock('node:fs', () => ({
   renameSync: (...args) => mockRenameSync(...args),
 }));
 
-const { createColibriService, serializeError } = require('./colibri-worker');
+const { createColibriService, serializeError, STALE_TMP_MS } = require('./colibri-worker');
 
 const STORAGE_DIR = '/tmp/freedom-test-userdata/colibri';
 const CONFIG = { chainId: 1, proverUrl: 'https://test-prover.example', zkProof: true };
@@ -52,7 +56,14 @@ function setup() {
   return { ...fake, posted, service };
 }
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  // Persistent implementations set by one test must not leak into the next.
+  mockRenameSync.mockReset();
+  mockStatSync.mockReset();
+  mockUnlinkSync.mockReset();
+  mockReaddirSync.mockReset().mockReturnValue([]);
+});
 
 describe('colibri worker service', () => {
   test('builds each client with the pinned verifier config on first use', async () => {
@@ -191,6 +202,70 @@ describe('disk storage adapter', () => {
     mockWriteFileSync.mockImplementationOnce(() => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }); });
     mockUnlinkSync.mockImplementationOnce(() => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); });
     expect(() => storage.set('states_1', Buffer.from([2]))).toThrow(/ENOSPC/);
+  });
+
+  // A worker terminated between the temp write and the rename leaves its
+  // uniquely-named temp behind for good (#500 R2-M1).
+  test('creating the storage sweeps stale temp files but keeps fresh ones and keys', async () => {
+    const now = Date.now();
+    mockReaddirSync.mockReturnValueOnce([
+      'states_1',
+      '.states_1.4242-3-7.tmp',
+      '.sync_1_42.4242-3-8.tmp',
+      '.states_1.999-1-1.tmp',
+      'notes.tmp',
+    ]);
+    mockStatSync.mockImplementation((file) => ({
+      mtimeMs: file.endsWith('-8.tmp') ? now - 1000 : now - STALE_TMP_MS - 1000,
+    }));
+    await captureStorage();
+    expect(mockReaddirSync).toHaveBeenCalledWith(STORAGE_DIR);
+    expect(mockUnlinkSync.mock.calls.map(([f]) => f).sort()).toEqual([
+      `${STORAGE_DIR}/.states_1.4242-3-7.tmp`,
+      `${STORAGE_DIR}/.states_1.999-1-1.tmp`,
+    ]);
+  });
+
+  test('a failing sweep never blocks storage creation', async () => {
+    mockReaddirSync.mockImplementationOnce(() => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); });
+    const storage = await captureStorage();
+    expect(typeof storage.set).toBe('function');
+
+    mockReaddirSync.mockReturnValueOnce(['.states_1.1-1-1.tmp']);
+    mockStatSync.mockImplementationOnce(() => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); });
+    await expect(captureStorage()).resolves.toBeDefined();
+  });
+
+  // Windows: AV/indexer handles make a rename over a fresh file fail
+  // transiently (#500 R2-M2).
+  test('set retries a rename that fails with EPERM/EACCES/EBUSY, then succeeds', async () => {
+    const storage = await captureStorage();
+    mockRenameSync
+      .mockImplementationOnce(() => { throw Object.assign(new Error('EPERM'), { code: 'EPERM' }); })
+      .mockImplementationOnce(() => { throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }); })
+      .mockImplementationOnce(() => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); });
+    expect(() => storage.set('states_1', Buffer.from([1]))).not.toThrow();
+    const tmp = mockWriteFileSync.mock.calls[0][0];
+    expect(mockRenameSync).toHaveBeenCalledTimes(4);
+    for (const call of mockRenameSync.mock.calls) expect(call).toEqual([tmp, `${STORAGE_DIR}/states_1`]);
+    expect(mockUnlinkSync).not.toHaveBeenCalled();
+  });
+
+  test('set gives up on a persistent EPERM after bounded retries and cleans up', async () => {
+    const storage = await captureStorage();
+    mockRenameSync.mockImplementation(() => { throw Object.assign(new Error('EPERM'), { code: 'EPERM' }); });
+    const started = Date.now();
+    expect(() => storage.set('states_1', Buffer.from([1]))).toThrow(/EPERM/);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(mockRenameSync).toHaveBeenCalledTimes(7);
+    expect(mockUnlinkSync).toHaveBeenCalledWith(mockWriteFileSync.mock.calls[0][0]);
+  });
+
+  test('set does not retry a rename failure that is not transient', async () => {
+    const storage = await captureStorage();
+    mockRenameSync.mockImplementationOnce(() => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }); });
+    expect(() => storage.set('states_1', Buffer.from([1]))).toThrow(/ENOSPC/);
+    expect(mockRenameSync).toHaveBeenCalledTimes(1);
   });
 
   test('get returns null when the underlying file is missing (warm-cache miss)', async () => {

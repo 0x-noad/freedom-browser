@@ -31,9 +31,57 @@ const MAX_ERROR_MESSAGE = 2000;
 // between would see an empty or partial file. `set` therefore writes a temp
 // file unique to this thread and renames it over the key: rename replaces the
 // target atomically, so a reader sees either the old bytes or the new ones.
+//
+// Two costs of temp+rename, handled here:
+// - A worker can die between the write and the rename — the stuck-worker
+//   watchdog's `worker.terminate()` is uncatchable, so no cleanup runs — and
+//   the temp name is unique, so nothing ever overwrites it. Creating the
+//   storage sweeps temp files older than STALE_TMP_MS: a write is one
+//   synchronous call, so a temp that old belongs to a dead thread, never to a
+//   write still in flight on a live one (same or other process).
+// - On Windows, replacing a file that another handle has open (Defender or
+//   the search indexer scanning the fresh temp, or the other thread reading
+//   the key) fails with EPERM/EACCES/EBUSY until that handle closes. The
+//   old in-place write never hit this, so the rename is retried briefly on
+//   those codes before giving up — the same thing graceful-fs does.
+const TMP_FILE = /^\..+\.\d+-\d+-\d+\.tmp$/;
+const STALE_TMP_MS = 60_000;
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_RETRY_DELAYS_MS = [5, 10, 20, 40, 80, 160];
 let tmpCounter = 0;
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function renameWithRetry(from, to) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (err) {
+      if (!RENAME_RETRY_CODES.has(err?.code) || attempt >= RENAME_RETRY_DELAYS_MS.length) throw err;
+      sleepSync(RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+function sweepStaleTempFiles(dir, now = Date.now()) {
+  let names;
+  try { names = fs.readdirSync(dir); }
+  catch { return; }
+  for (const name of names) {
+    if (!TMP_FILE.test(name)) continue;
+    const file = path.join(dir, name);
+    try {
+      if (now - fs.statSync(file).mtimeMs > STALE_TMP_MS) fs.unlinkSync(file);
+    } catch { /* gone already, or not ours to remove — try again next start */ }
+  }
+}
+
 function createDiskStorage(dir) {
   fs.mkdirSync(dir, { recursive: true });
+  sweepStaleTempFiles(dir);
   return {
     get: (key) => {
       try { return fs.readFileSync(path.join(dir, key)); }
@@ -45,7 +93,7 @@ function createDiskStorage(dir) {
       const tmp = path.join(dir, `.${key}.${process.pid}-${threadId}-${tmpCounter}.tmp`);
       try {
         fs.writeFileSync(tmp, value);
-        fs.renameSync(tmp, target);
+        renameWithRetry(tmp, target);
       } catch (err) {
         try { fs.unlinkSync(tmp); } catch { /* never created, or already renamed */ }
         throw err;
@@ -147,4 +195,4 @@ if (!isMainThread && parentPort) {
   }
 }
 
-module.exports = { createColibriService, createDiskStorage, serializeError };
+module.exports = { createColibriService, createDiskStorage, serializeError, STALE_TMP_MS };
