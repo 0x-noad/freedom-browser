@@ -32,7 +32,7 @@
 const { Topic, Identifier, Bytes, PrivateKey } = require('@ethersphere/bee-js');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
 const { noUsableBatchError } = require('./batch-errors');
-const { mineSigner } = require('./gsoc-miner');
+const { mineSigner, joinJob } = require('./gsoc-miner');
 const log = require('electron-log');
 
 // GSOC topic → address derivation (Freedom profile v1).
@@ -98,7 +98,10 @@ const gsocInFlight = new Map();
 // minute of worker time. What keeps that from delaying other pages' rooms
 // without bound is the miner's per-origin round-robin queue (gsoc-miner.js):
 // another origin's job waits for at most one job of each busy origin, not for
-// an origin's whole backlog. Only derivations that actually start mining count
+// an origin's whole backlog. That holds for an origin joining another origin's
+// in-flight derivation of the same topic too: the join adds it as an owner of
+// the queued job (joinJob), so the job runs at its turn, not only at the
+// mining origin's. Only derivations that actually start mining count
 // here, including ones that fail (a failure is not cached, so a retry mines and
 // counts again): cache hits and joins of an in-flight derivation are free.
 // 16 a minute is far beyond what a chat app joining its rooms needs.
@@ -140,12 +143,17 @@ function consumeNewTopicBudget(origin) {
   newTopicStarts.set(key, starts);
 }
 
+function miningJobKey(topic) {
+  return `gsoc-topic:${topic}`;
+}
+
 async function mineDerivation(topic, origin) {
   const bee = getBee();
   const identifier = new Identifier(keccakOfUtf8(topic));
   const targetOverlay = keccakOfUtf8(GSOC_TARGET_CONTEXT + topic);
   const signerHex = await mineSigner(targetOverlay, identifier.toUint8Array(), GSOC_PROXIMITY, {
     owner: origin,
+    key: miningJobKey(topic),
   });
   const signer = new PrivateKey(signerHex);
   const address = toHex(
@@ -169,7 +177,13 @@ async function deriveGsoc(topic, { origin } = {}) {
   const cached = gsocDerivationCache.get(topic);
   if (cached) return cached;
   const inFlight = gsocInFlight.get(topic);
-  if (inFlight) return inFlight;
+  if (inFlight) {
+    // The job may be queued under another origin with a backlog of its own:
+    // queue it under this origin too, so it runs at this origin's round-robin
+    // turn if that comes first.
+    joinJob(miningJobKey(topic), { owner: origin });
+    return inFlight;
+  }
 
   consumeNewTopicBudget(origin);
   const promise = mineDerivation(topic, origin).then(

@@ -1,4 +1,5 @@
 var mockMineSigner = jest.fn();
+var mockJoinJob = jest.fn();
 var mockGsocSend = jest.fn();
 var mockPssSend = jest.fn();
 var mockGetNodeAddresses = jest.fn();
@@ -72,6 +73,7 @@ jest.mock('@ethersphere/bee-js', () => ({
 
 jest.mock('./gsoc-miner', () => ({
   mineSigner: mockMineSigner,
+  joinJob: mockJoinJob,
 }));
 
 jest.mock('./swarm-service', () => ({
@@ -151,7 +153,7 @@ describe('deriveGsoc', () => {
     expect(mockMineSigner).toHaveBeenCalledTimes(1);
     const [targetOverlay, identifier, proximity, options] = mockMineSigner.mock.calls[0];
     // The origin is passed through so the miner can queue fairly per origin.
-    expect(options).toEqual({ owner: 'https://a.example' });
+    expect(options).toEqual({ owner: 'https://a.example', key: 'gsoc-topic:room:doc-42' });
     // targetOverlay derives from the namespaced context string, identifier from the raw topic
     expect(Buffer.from(targetOverlay).toString('utf-8')).toContain('freedom-gsoc-v1:room:doc-42');
     expect(Buffer.from(identifier).toString('hex')).toBe(Buffer.from('keccak:room:doc-42').toString('hex'));
@@ -183,6 +185,14 @@ describe('deriveGsoc', () => {
     const second = deriveGsoc('room:a', { origin: 'https://b.example' });
     await Promise.resolve();
     expect(mockMineSigner).toHaveBeenCalledTimes(1);
+    // The job is keyed by topic, and the joining origin is added as an owner of
+    // it, so it runs at B's round-robin turn too — not only behind A's backlog.
+    expect(mockMineSigner.mock.calls[0][3]).toEqual({
+      owner: 'https://a.example',
+      key: 'gsoc-topic:room:a',
+    });
+    expect(mockJoinJob).toHaveBeenCalledTimes(1);
+    expect(mockJoinJob).toHaveBeenCalledWith('gsoc-topic:room:a', { owner: 'https://b.example' });
     release(MINED_KEY);
 
     const [a, b] = await Promise.all([first, second]);

@@ -127,6 +127,59 @@ test('queued jobs are served round-robin across owners, not FIFO', async () => {
   expect(order).toEqual(['a1:0', 'b1:1', 'a2:2', 'none1:3', 'b2:4', 'a3:5']);
 });
 
+test('a joined job runs at the joiner’s turn, once, and leaves both queues', async () => {
+  // A has a backlog ending in a shared topic T; B joins T. B has no job of its
+  // own, so without the join B would wait out A's whole backlog.
+  const order = [];
+  const settle = (label) => (signer) => order.push(`${label}:${signer}`);
+  const keyed = (owner, key) => {
+    const p = miner.mineSigner(OVERLAY, IDENTIFIER, 12, { owner, key });
+    p.catch(() => {});
+    return p;
+  };
+  keyed('https://a.example', 'a1').then(settle('a1'));
+  keyed('https://a.example', 'a2').then(settle('a2'));
+  keyed('https://a.example', 'a3').then(settle('a3'));
+  const shared = keyed('https://a.example', 'T');
+  shared.then(settle('T'));
+  expect(miner.joinJob('T', { owner: 'https://b.example' })).toBe(true);
+  // Joining twice, or as an owner it already has, queues nothing extra.
+  expect(miner.joinJob('T', { owner: 'https://b.example' })).toBe(true);
+  expect(miner.joinJob('T', { owner: 'https://a.example' })).toBe(true);
+  expect(miner.joinJob('nope', { owner: 'https://b.example' })).toBe(false);
+
+  const worker = lastWorker();
+  for (let i = 0; i < 4; i += 1) {
+    const all = jobs(worker);
+    expect(all).toHaveLength(i + 1);
+    worker.emit('message', { type: 'result', id: all[i].id, ok: true, signer: String(i) });
+    await flush();
+  }
+  // a1 was running; B's turn comes next and runs T. T is not run a second time
+  // at A's turn.
+  expect(order).toEqual(['a1:0', 'T:1', 'a2:2', 'a3:3']);
+  expect(jobs(worker)).toHaveLength(4);
+  // A settled job's key is forgotten.
+  expect(miner.joinJob('T', { owner: 'https://c.example' })).toBe(false);
+});
+
+test('joining a job that is already running queues nothing', async () => {
+  const running = miner.mineSigner(OVERLAY, IDENTIFIER, 12, { owner: 'https://a.example', key: 'T' });
+  const worker = lastWorker();
+  expect(miner.joinJob('T', { owner: 'https://b.example' })).toBe(true);
+  worker.emit('message', { type: 'result', id: jobs(worker)[0].id, ok: true, signer: '01' });
+  await expect(running).resolves.toBe('01');
+  await flush();
+  expect(jobs(worker)).toHaveLength(1);
+  // A failed keyed job is forgotten too.
+  const failing = miner.mineSigner(OVERLAY, IDENTIFIER, 12, { owner: 'https://a.example', key: 'F' });
+  failing.catch(() => {});
+  await flush();
+  worker.emit('message', { type: 'result', id: jobs(worker)[1].id, ok: false, error: 'boom' });
+  await expect(failing).rejects.toMatchObject({ reason: 'gsoc_mining_failed' });
+  expect(miner.joinJob('F', { owner: 'https://b.example' })).toBe(false);
+});
+
 test('a runaway job is terminated at the hard timeout and the next job gets a fresh worker', async () => {
   const runaway = start();
   const next = start();

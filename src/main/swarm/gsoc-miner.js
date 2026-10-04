@@ -14,6 +14,13 @@
 // queued job waits for at most one job from each other owner with work queued
 // (plus the one running), never for one owner's whole backlog.
 //
+// A job can have several owners: a caller that wants a result some other
+// owner's queued job will produce (messaging-service joins an in-flight
+// derivation of the same topic) calls `joinJob` with that job's key, and the
+// job is queued under its own owner too. It runs at whichever owner's turn
+// comes first and leaves every owner's queue when it does, so a joiner gets a
+// turn of its own instead of waiting out the other owner's backlog.
+//
 // A job still running after MINE_TIMEOUT_MS is a runaway — bee-js caps its
 // search at 0xffff keys, which takes ~5 s on Electron's Node — so the worker
 // is terminated, that job fails, and the next job spawns a fresh worker.
@@ -43,8 +50,11 @@ let mineTimeoutMs = MINE_TIMEOUT_MS;
 let entry = null; // { worker, terminated }
 let current = null; // { id, job, resolve, reject, timer, entry }
 // owner → FIFO of jobs. Map iteration order is the round-robin order: the
-// owner served is moved to the back if it still has jobs queued.
+// owner served is moved to the back if it still has jobs queued. A job with
+// several owners sits in each of their queues until it is dispatched.
 const queues = new Map();
+// key → job, for keyed jobs not yet settled (queued or running).
+const jobsByKey = new Map();
 let nextJobId = 1;
 
 function terminate(target) {
@@ -120,9 +130,22 @@ function nextJob() {
     owner = lastOwner;
   }
   const ownerQueue = queues.get(owner);
-  const job = ownerQueue.shift();
-  queues.delete(owner);
-  if (ownerQueue.length > 0) queues.set(owner, ownerQueue);
+  const job = ownerQueue[0];
+  // Take the job out of every owner's queue it sits in; co-owners keep their
+  // place in the rotation.
+  for (const o of job.owners) {
+    const q = queues.get(o);
+    if (!q) continue;
+    const i = q.indexOf(job);
+    if (i >= 0) q.splice(i, 1);
+    if (q.length === 0) queues.delete(o);
+  }
+  // The owner served goes to the back.
+  if (queues.has(owner)) {
+    queues.delete(owner);
+    queues.set(owner, ownerQueue);
+  }
+  job.dispatched = true;
   lastOwner = owner;
   return job;
 }
@@ -159,35 +182,75 @@ function pump() {
   }
 }
 
+function enqueue(ownerKey, job) {
+  if (!queues.has(ownerKey)) queues.set(ownerKey, []);
+  queues.get(ownerKey).push(job);
+}
+
 /**
  * Mine a GSOC signer off the main thread.
  * @param {Uint8Array} targetOverlay
  * @param {Uint8Array} identifier
  * @param {number} proximity
- * @param {{ owner?: string }} [options] - who the job is for (the requesting
- *   origin); queued jobs are served round-robin across owners.
+ * @param {{ owner?: string, key?: string }} [options] - `owner`: who the job
+ *   is for (the requesting origin); queued jobs are served round-robin across
+ *   owners. `key`: names the job for `joinJob` until it settles.
  * @returns {Promise<string>} the signer's private key, hex
  */
-function mineSigner(targetOverlay, identifier, proximity, { owner } = {}) {
-  const key = String(owner || '');
+function mineSigner(targetOverlay, identifier, proximity, { owner, key } = {}) {
+  const ownerKey = String(owner || '');
   return new Promise((resolve, reject) => {
-    if (!queues.has(key)) queues.set(key, []);
-    queues.get(key).push({
+    const job = {
       id: nextJobId++,
       targetOverlay: Uint8Array.from(targetOverlay),
       identifier: Uint8Array.from(identifier),
       proximity,
+      owners: new Set([ownerKey]),
+      dispatched: false,
       resolve,
       reject,
-    });
+    };
+    if (key !== undefined) {
+      const forget = () => {
+        if (jobsByKey.get(key) === job) jobsByKey.delete(key);
+      };
+      job.resolve = (value) => {
+        forget();
+        resolve(value);
+      };
+      job.reject = (err) => {
+        forget();
+        reject(err);
+      };
+      jobsByKey.set(key, job);
+    }
+    enqueue(ownerKey, job);
     pump();
   });
 }
 
+/**
+ * Add `owner` as an owner of the unsettled job named `key`, so the job also
+ * runs at that owner's round-robin turn rather than only at its first owner's.
+ * The caller awaits the promise the original `mineSigner` call returned.
+ * @returns {boolean} whether such a job exists (queued or running)
+ */
+function joinJob(key, { owner } = {}) {
+  const job = jobsByKey.get(key);
+  if (!job) return false;
+  const ownerKey = String(owner || '');
+  if (!job.dispatched && !job.owners.has(ownerKey)) {
+    job.owners.add(ownerKey);
+    enqueue(ownerKey, job);
+  }
+  return true;
+}
+
 function resetForTest({ timeoutMs = MINE_TIMEOUT_MS } = {}) {
   mineTimeoutMs = timeoutMs;
-  const pending = [...queues.values()].flat();
+  const pending = new Set([...queues.values()].flat());
   queues.clear();
+  jobsByKey.clear();
   lastOwner = null;
   for (const job of pending) job.reject(new GsocMiningError('reset', 'gsoc_mining_failed'));
   if (entry) lose(entry, 'test reset');
@@ -196,6 +259,7 @@ function resetForTest({ timeoutMs = MINE_TIMEOUT_MS } = {}) {
 
 module.exports = {
   mineSigner,
+  joinJob,
   GsocMiningError,
   MINE_TIMEOUT_MS,
   resetForTest,
