@@ -197,6 +197,24 @@ describe('raw reads (#514)', () => {
       await expect(embedded.readmeAtRaw('rad:zAbc', 'r')).resolves.toBe('{"path":"README.md"}');
     }));
 
+  test('readmeAtRaw without a revision reads the head, as readmeAt does', () =>
+    withFakeAddon(
+      'tree: async () => JSON.stringify({ entries: [{ name: "README.md", kind: "blob" }] }),' +
+        'treeAt: async () => { throw new Error("treeAt needs a revision"); },' +
+        `blob: async () => ${JSON.stringify(BLOB)},` +
+        'blobAt: async () => { throw new Error("blobAt needs a revision"); },',
+      async (embedded) => {
+        const raw = await embedded.readmeAtRaw('rad:zAbc');
+        expect(JSON.parse(raw)).toEqual(await embedded.readmeAt('rad:zAbc'));
+        expect(JSON.parse(raw)).toEqual({
+          binary: false,
+          name: 'README.md',
+          content: BIG,
+          path: 'README.md',
+        });
+      }
+    ));
+
   test('readmeAtRaw is null when the root has no readme', () =>
     withFakeAddon(
       'treeAt: async () => JSON.stringify({ entries: [{ name: "a.md", kind: "blob" }] }),',

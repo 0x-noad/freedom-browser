@@ -199,6 +199,7 @@ const commitsRaw = (rid, parent, page = 0, perPage = 30) =>
   callRaw('commits', rid, parent, page, perPage);
 const commitRaw = (rid, revision) => callRaw('commit', rid, revision);
 const treeAtRaw = (rid, revision, treePath = '') => callRaw('treeAt', rid, revision, treePath);
+const blobRaw = (rid, blobPath) => callRaw('blob', rid, blobPath);
 const blobAtRaw = (rid, revision, blobPath) => callRaw('blobAt', rid, revision, blobPath);
 const remotes = (rid) => call('remotes', rid);
 const repoStats = (rid, revision) => call('repoStats', rid, revision);
@@ -277,7 +278,9 @@ async function readmeAt(rid, revision) {
 async function readmeAtRaw(rid, revision) {
   const candidate = await findReadme(rid, revision);
   if (!candidate) return null;
-  const raw = await blobAtRaw(rid, revision, candidate);
+  const raw = revision
+    ? await blobAtRaw(rid, revision, candidate)
+    : await blobRaw(rid, candidate);
   const end = raw.lastIndexOf('}');
   if (!/^\s*\{\s*"/.test(raw) || end === -1 || raw.slice(end + 1).trim() !== '') {
     // Not the non-empty object a blob always is; take the slow, exact path.
@@ -322,6 +325,7 @@ module.exports = {
   commitsRaw,
   commitRaw,
   treeAtRaw,
+  blobRaw,
   blobAtRaw,
   remotes,
   repoStats,
