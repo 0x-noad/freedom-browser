@@ -64,9 +64,9 @@ function asyncFileOf(fileTransport) {
  *
  * A batch still in flight is out of reach (electron-log keeps no copy of it)
  * and is left to finish on its own. It lands only if the event loop keeps
- * running long enough — after it the newer queued lines written here, so out
- * of order. If the process ends first (`app.exit()`, the watchdog's quit), it
- * is lost.
+ * running long enough, and then *after* the newer queued lines this call
+ * writes, so main.log shows those two groups out of order. If the process
+ * ends first (`app.exit()`, the watchdog's quit), that batch is lost.
  */
 function flushLogFileSync(fileTransport, { fsImpl = fs } = {}) {
   const file = asyncFileOf(fileTransport);
