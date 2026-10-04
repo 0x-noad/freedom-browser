@@ -66,7 +66,7 @@ source, `SOURCE_CAPABILITIES`, and consults it before trying a source
   Colibri verifies proofs in a worker thread with a bounded number in flight.
 - **Cut-short log answers.** For a source marked as possibly cutting a log
   answer short, the router checks each `eth_getLogs` answer over a numeric
-  block range at least 20,000 blocks wide whose logs all fall in the last
+  block range at least 2,000 blocks wide whose logs all fall in the last
   1,000 blocks of the range: the shape #496 measured on 2026-10-04, where
   `rpc.gnosischain.com` and `gateway.fm` both answered a query matching more
   than ~50k logs with only the latest ~474 blocks' logs and no error. A
@@ -79,7 +79,11 @@ source, `SOURCE_CAPABILITIES`, and consults it before trying a source
   Ant ranks that as a range limit and halves its window until the answer is
   complete. An empty or failed check accepts the answer as before. A range
   ending at a tag (`latest`) is not checked: its end is unknown without
-  another request.
+  another request. The cut depends on how many logs match, not on the span, so
+  a window Ant halved after one such error is checked the same way; only a
+  range under 2,000 blocks goes unchecked, since all its logs fall in the last
+  1,000 blocks whether or not it was cut. A failed check is not counted
+  against the endpoints: it neither cools them down nor bounds their span.
 
 ### Log scans: the RPC quorum only, within each endpoint's range cap
 

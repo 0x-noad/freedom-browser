@@ -736,6 +736,40 @@ describe('silent truncation (#496)', () => {
     }
   });
 
+  // The cut depends on how many logs match, not on the span: a window Ant
+  // narrowed (or a page asked) below the old 20k-block floor can still match
+  // too many and come back cut the same way.
+  test('a narrower window that still matches too many logs is checked too', async () => {
+    const denser = (span, { toBlock }) => {
+      const to = Number(toBlock);
+      return span > 10_000
+        ? { kind: 'logs', logs: [log(to - 473), log(to - 2)] }
+        : { kind: 'logs', logs: [log(to - span + 1), log(to)] };
+    };
+    const got = await scan({ a: denser, b: denser, c: denser }, logsOver(15_000));
+    expect(got).toMatchObject({ code: -32005, shrinks: true });
+    expect(got.message).toMatch(/too many logs: .* of the 15000-block range/);
+  });
+
+  // The check is the router's own query: when it fails, the answer is
+  // accepted and nothing is learned, so Ant's next window of the same span is
+  // asked normally rather than refused or cut to fewer endpoints.
+  test.each([
+    ['its upstream times out', 'timeoutReply'],
+    ['it hangs past the quorum budget', 'hang'],
+  ])('a check that fails because %s leaves no cooldown behind', async (_name, failure) => {
+    const SPAN = 30_000;
+    const recentOrFail = (_span, { toBlock }) =>
+      Number(toBlock) === HEAD ? { kind: 'logs', logs: [log(HEAD - 120)] } : failure;
+    const got = await scan({ a: recentOrFail, b: recentOrFail, c: recentOrFail }, logsOver(SPAN));
+    expect(got).toMatchObject({ result: [log(HEAD - 120)], source: 'quorum' });
+
+    const next = await scanOnce(logsOver(SPAN));
+    expect(next).toMatchObject({ result: [log(HEAD - 120)], source: 'quorum' });
+    // All three endpoints asked again for the full window, then the check.
+    expect(next.fetches.slice(0, 3).map((f) => f.split('@')[0]).sort()).toEqual(['a', 'b', 'c']);
+  });
+
   test('a sparse filter whose only log is recent is accepted (a new wallet)', async () => {
     const recent = (_span, { toBlock }) =>
       Number(toBlock) === HEAD ? { kind: 'logs', logs: [log(HEAD - 120)] } : { kind: 'logs', logs: [] };

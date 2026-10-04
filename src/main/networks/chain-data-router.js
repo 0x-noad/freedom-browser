@@ -416,8 +416,14 @@ function logQuerySpan(method, params) {
 // prove the first answer incomplete and the request fails; none (or a failed
 // check) accepts it as it is. Only a numeric range is checked: a range ending
 // at a tag (`latest`) has no known end without another request.
+// The cut depends on how many logs a query matches, not on its span: a window
+// halved after one -32005 can still match too many and be cut the same way.
+// So the minimum span is only what leaves the tail shape meaningful (at least
+// a tail's worth of blocks before it to check), not a size below which
+// truncation is assumed away. A range narrower than that is not checked; the
+// shape cannot tell a cut answer from a complete one there.
 const LOG_TRUNCATION_TAIL_BLOCKS = 1000;
-const LOG_TRUNCATION_MIN_SPAN = 20 * LOG_TRUNCATION_TAIL_BLOCKS;
+const LOG_TRUNCATION_MIN_SPAN = 2 * LOG_TRUNCATION_TAIL_BLOCKS;
 
 class TruncatedLogsError extends Error {
   constructor({ count, oldestBlock, toBlock, span }) {
@@ -499,7 +505,11 @@ function noteLogRangeAnswer(chainId, url, span) {
 // lagging node) cools it down instead. Anything else (a reply that may be a
 // throttle, or a result-count cap, which depends on the filter rather than
 // the endpoint's range) is not learned from.
-function noteLogRangeFailure(chainId, url, span, error, { capOf, rank }, now) {
+function noteLogRangeFailure(chainId, url, span, error, { capOf, rank, learn = true }, now) {
+  // A truncation check (checkLogTruncation) is the router's own query, not
+  // the caller's: its failure is swallowed, and must not cool endpoints down
+  // or bound them for the caller's next window either.
+  if (!learn) return;
   const key = logRangeKey(chainId, url);
   const entry = logRangeState.get(key) || {
     refusedFrom: null,
@@ -1440,7 +1450,9 @@ async function requestSource(
 // Throws TruncatedLogsError when `source` answered `params` with a suspect
 // eth_getLogs result (logTruncationProbe) and the same source finds logs in
 // the blocks before the answer's oldest one. The check is best effort: when it
-// fails, the answer is accepted as before.
+// fails, the answer is accepted as before, and nothing is learned from the
+// failure (a check that timed out must not cool the endpoints down for the
+// caller's next window).
 async function checkLogTruncation(source, chainId, method, params, result, options) {
   const probe = logTruncationProbe(method, params, result);
   if (!probe) return;
@@ -1450,7 +1462,7 @@ async function checkLogTruncation(source, chainId, method, params, result, optio
     earlier = await requestSource(source, chainId, method, probe.params, {
       ...rest,
       logRange: logRange && SOURCE_CAPABILITIES[source]?.logSpan === 'learned-per-endpoint'
-        ? { ...logRange, span: probe.span }
+        ? { ...logRange, span: probe.span, learn: false }
         : null,
     });
   } catch (err) {
