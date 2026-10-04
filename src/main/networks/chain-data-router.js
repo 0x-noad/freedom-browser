@@ -1304,6 +1304,20 @@ function directResponse(chainId, url, result, includeTrust, evidence = null) {
   };
 }
 
+function configuredDirectTimeoutMs(chainId) {
+  const network = registry.getNetwork(chainId) || {};
+  return Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
+}
+
+// A background caller (Ant's log scans) may widen the per-URL budget; it is
+// never narrowed below the configured timeout.
+function directUrlTimeoutMs(chainId, requestedTimeoutMs) {
+  const configuredTimeoutMs = configuredDirectTimeoutMs(chainId);
+  return Number.isFinite(requestedTimeoutMs)
+    ? Math.max(configuredTimeoutMs, requestedTimeoutMs)
+    : configuredTimeoutMs;
+}
+
 async function requestDirect(
   chainId,
   method,
@@ -1316,19 +1330,18 @@ async function requestDirect(
     keeper = createErrorKeeper(null),
     signal,
     timeoutMs: requestedTimeoutMs = null,
+    // Optional sink: set to { url } of the endpoint whose answer is returned,
+    // so a follow-up query (checkLogTruncation) can go back to that endpoint.
+    answeredBy = null,
   } = {}
 ) {
-  const network = registry.getNetwork(chainId) || {};
-  const configuredTimeoutMs = Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
-  // A background caller (Ant's log scans) may widen the per-URL budget; it is
-  // never narrowed below the configured timeout.
-  const timeoutMs = Number.isFinite(requestedTimeoutMs)
-    ? Math.max(configuredTimeoutMs, requestedTimeoutMs)
-    : configuredTimeoutMs;
+  const configuredTimeoutMs = configuredDirectTimeoutMs(chainId);
+  const timeoutMs = directUrlTimeoutMs(chainId, requestedTimeoutMs);
   const urls = registry.getEndpoints(chainId, 'rpc');
   if (!urls.length) throw new SourceUnavailableError('No RPC endpoint configured');
   if (directFallback && urls.includes(directFallback.url) &&
       Object.prototype.hasOwnProperty.call(directFallback, 'result')) {
+    if (answeredBy) answeredBy.url = directFallback.url;
     return directResponse(
       chainId,
       directFallback.url,
@@ -1354,6 +1367,7 @@ async function requestDirect(
     signal?.throwIfAborted();
     try {
       const result = await requestRpcUrl(url, method, params, timeoutMs, { signal });
+      if (answeredBy) answeredBy.url = url;
       return directResponse(chainId, url, result, includeTrust);
     } catch (err) {
       signal?.throwIfAborted();
@@ -1410,6 +1424,7 @@ async function requestSource(
     directTimeoutMs = null,
     quorumTimeoutMs = null,
     logRange = null,
+    directAnsweredBy = null,
   } = {}
 ) {
   if (source === 'myotis') {
@@ -1442,6 +1457,7 @@ async function requestSource(
       keeper,
       signal,
       timeoutMs: directTimeoutMs,
+      answeredBy: directAnsweredBy,
     });
   }
   throw new SourceUnavailableError(`Unknown chain source: ${source}`);
@@ -1456,13 +1472,16 @@ async function requestSource(
 //
 // Myotis, Colibri and the quorum bound themselves by `deadlineMs`; Direct only
 // bounds each endpoint, and would try every configured URL in turn. So a
-// Direct check gets one endpoint attempt's worth of wall clock in all (the
-// source deadline, or the caller's wider per-URL budget): an answer already in
-// hand must not wait on N slow endpoints just to be double-checked.
+// Direct check asks only the endpoint that gave the answer (`directUrl`) — the
+// one whose cut is in question, and the only one known to be answering — and
+// gets one attempt's worth of wall clock (the source deadline, or the caller's
+// wider per-URL budget): an answer already in hand must not wait on N slow
+// endpoints just to be double-checked, and a hung endpoint ahead of the
+// answering one in the registry must not use up the check's one attempt.
 async function checkLogTruncation(source, chainId, method, params, result, options) {
   const probe = logTruncationProbe(method, params, result);
   if (!probe) return;
-  const { logRange, ...rest } = options;
+  const { logRange, directUrl, ...rest } = options;
   let checkSignal = options.signal;
   let releaseBound = () => {};
   if (source === 'direct') {
@@ -1483,13 +1502,21 @@ async function checkLogTruncation(source, chainId, method, params, result, optio
   }
   let earlier;
   try {
-    earlier = await requestSource(source, chainId, method, probe.params, {
-      ...rest,
-      signal: checkSignal,
-      logRange: logRange && SOURCE_CAPABILITIES[source]?.logSpan === 'learned-per-endpoint'
-        ? { ...logRange, span: probe.span, learn: false }
-        : null,
-    });
+    earlier = source === 'direct' && directUrl
+      ? await requestRpcUrl(
+        directUrl,
+        method,
+        probe.params,
+        directUrlTimeoutMs(chainId, options.directTimeoutMs),
+        { signal: checkSignal }
+      )
+      : await requestSource(source, chainId, method, probe.params, {
+        ...rest,
+        signal: checkSignal,
+        logRange: logRange && SOURCE_CAPABILITIES[source]?.logSpan === 'learned-per-endpoint'
+          ? { ...logRange, span: probe.span, learn: false }
+          : null,
+      });
   } catch (err) {
     options.signal?.throwIfAborted();
     log.verbose(
@@ -1580,8 +1607,10 @@ async function request(
       failures.push(`${source}: temporarily bypassed for this app workload`);
       continue;
     }
+    const directAnsweredBy = {};
     try {
       const sourceResult = await requestSource(source, Number(chainId), method, params, {
+        directAnsweredBy: source === 'direct' ? directAnsweredBy : null,
         signal,
         background,
         directTimeoutMs,
@@ -1608,6 +1637,7 @@ async function request(
           directTimeoutMs,
           quorumTimeoutMs,
           logRange,
+          directUrl: directAnsweredBy.url || null,
           deadlineMs: sourceDeadlineMs(Number(chainId), {
             interactive,
             hasFallbackSource: sourceIndex + 1 < order.length,

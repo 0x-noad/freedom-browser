@@ -1657,6 +1657,37 @@ describe('Ant bridge cancellation', () => {
       ]);
     });
 
+    test('a Direct check asks the endpoint that answered, not a hung earlier one', async () => {
+      jest.useFakeTimers({ now: 1_000_000 });
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['direct'] },
+        quorum: { timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockReturnValue(['https://a.example', 'https://c.example']);
+      // a hangs on everything; c cuts the full range to its tail and finds
+      // logs before it.
+      global.fetch = jest.fn((url, options) => {
+        if (new URL(url).hostname === 'a.example') {
+          return new Promise((_resolve, reject) => {
+            options.signal.addEventListener('abort', () => reject(new Error('aborted')));
+          });
+        }
+        const { toBlock } = JSON.parse(options.body).params[0];
+        const result = toBlock === FULL[0].toBlock ? TAIL : [log(Number(toBlock) - 5)];
+        return Promise.resolve({ ok: true, json: async () => ({ result }) });
+      });
+      const pending = request(100, 'eth_getLogs', FULL).catch((err) => err);
+      await jest.advanceTimersByTimeAsync(5000);
+      // The hung a must not use up the check's one attempt: the truncated
+      // answer from c is caught by asking c.
+      await expect(pending).resolves.toMatchObject({ name: 'TruncatedLogsError' });
+      expect(asked()).toEqual([
+        `a.example ${FULL[0].fromBlock}-${FULL[0].toBlock}`,
+        `c.example ${FULL[0].fromBlock}-${FULL[0].toBlock}`,
+        `c.example ${FULL[0].fromBlock}-${hex(HEAD - 474)}`,
+      ]);
+    });
+
     test.each([
       ['an empty answer', FULL, []],
       ['logs spread past the tail', FULL, [log(HEAD - LOG_TRUNCATION_TAIL_BLOCKS), log(HEAD)]],
