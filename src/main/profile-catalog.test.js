@@ -12,6 +12,7 @@ const {
   validateProfileDeletion,
   withCatalogWriteLock,
   withCatalogWriteLockAsync,
+  waitForCatalogWriteLockIdle,
 } = require('./profile-catalog');
 const lockfile = require('proper-lockfile');
 const fsOffload = require('./fs-offload');
@@ -213,6 +214,52 @@ describe('profile catalog', () => {
       gate.resolve();
       await running;
       expect(withCatalogWriteLock(appRoot, () => 'after')).toBe('after');
+    });
+
+    // #517 R1-M1: short sync writers that must not fail on a transient busy
+    // catalog (Ant/Tor persisting a fallback port) wait for the async holder
+    // and its queue to drain, then their sync call goes straight through.
+    test('waitForCatalogWriteLockIdle resolves once async holders have drained', async () => {
+      const appRoot = track(makeTempDir());
+      expect(await waitForCatalogWriteLockIdle(appRoot)).toBeUndefined();
+
+      const gate1 = deferred();
+      const gate2 = deferred();
+      const firstStarted = deferred();
+      const first = withCatalogWriteLockAsync(appRoot, () => {
+        firstStarted.resolve();
+        return gate1.promise;
+      }, { retries: 0 });
+      const second = withCatalogWriteLockAsync(appRoot, () => gate2.promise, { retries: 0 });
+      await firstStarted.promise;
+
+      let idle = false;
+      const waiting = waitForCatalogWriteLockIdle(appRoot).then(() => {
+        idle = true;
+        // Same tick as the wait resolving: no fast-fail.
+        return withCatalogWriteLock(appRoot, () => 'written');
+      });
+      gate1.resolve();
+      await first;
+      await new Promise((r) => setTimeout(r, 20));
+      // Still queued behind the second holder.
+      expect(idle).toBe(false);
+      gate2.resolve();
+      await second;
+      await expect(waiting).resolves.toBe('written');
+
+      // A holder that is queued but has not acquired the lock yet counts too.
+      const gate3 = deferred();
+      const third = withCatalogWriteLockAsync(appRoot, () => gate3.promise, { retries: 0 });
+      let idleBeforeAcquire = false;
+      const waitingEarly = waitForCatalogWriteLockIdle(appRoot).then(() => {
+        idleBeforeAcquire = true;
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(idleBeforeAcquire).toBe(false);
+      gate3.resolve();
+      await third;
+      await waitingEarly;
     });
 
     test('waits (without blocking) for a concurrent cross-process writer', async () => {
@@ -522,10 +569,21 @@ describe('profile catalog', () => {
     fs.mkdirSync(radicleDir, { recursive: true });
     fs.writeFileSync(path.join(radicleDir, 'node.db'), 'radicle');
 
+    // #517 R1-M2: a staging copy an interrupted Radicle carry-over left next
+    // to this slot's home goes with it; a different slot's is untouched.
+    const staging = `${radicleDir}.migrating-4242-1700000000000`;
+    const otherSlotStaging = `${radicleDir}1.migrating-4242-1700000000000`;
+    for (const dir of [staging, otherSlotStaging]) {
+      fs.mkdirSync(path.join(dir, 'storage'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'storage', 'blob'), 'x');
+    }
+
     await deleteProfile(appRoot, 'work', 'Work', {
       checkoutHash: 'abcdef12',
       dev: true,
     });
+    expect(fs.existsSync(staging)).toBe(false);
+    expect(fs.existsSync(otherSlotStaging)).toBe(true);
 
     expect(fs.existsSync(record.dir)).toBe(false);
     expect(fs.existsSync(radicleDir)).toBe(false);

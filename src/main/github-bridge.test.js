@@ -35,6 +35,7 @@ jest.mock('./profile-paths', () => ({
   createProfileTempDir: jest.fn(() =>
     require('fs').mkdtempSync(require('path').join(mockTempRoot, 'run-'))
   ),
+  prepareRadicleDataDir: jest.fn(async () => mockDataDir),
 }));
 jest.mock('https', () => ({
   request: jest.fn((_url, _opts, callback) => {

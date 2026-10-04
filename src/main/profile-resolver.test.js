@@ -308,6 +308,47 @@ describe('profile resolver', () => {
     }
   });
 
+  // #517 R1-M1: Ant/Tor persist a fallback port mid-start; an in-process
+  // async catalog write (a profile deletion) must make them wait, not fail.
+  test('updateActiveProfileNodeConfigWhenIdle waits out an async catalog holder', async () => {
+    const userDataDir = track(makeTempDir());
+    const app = createAppMock({ isPackaged: true, userDataDir });
+    const {
+      initializeProfile,
+      updateActiveProfileNodeConfig,
+      updateActiveProfileNodeConfigWhenIdle,
+    } = require('./profile-resolver');
+    const { withCatalogWriteLockAsync } = require('./profile-catalog');
+    const profile = initializeProfile(app, {
+      argv: ['electron', '.', '--profile=work'],
+      env: {},
+      now: '2026-05-25T00:00:00.000Z',
+    });
+
+    let releaseHolder;
+    let holderStarted;
+    const started = new Promise((resolve) => {
+      holderStarted = resolve;
+    });
+    const holder = withCatalogWriteLockAsync(profile.appRoot, () => new Promise((resolve) => {
+      releaseHolder = resolve;
+      holderStarted();
+    }));
+    await started;
+
+    // The plain sync call fails fast while the holder is active...
+    expect(() => updateActiveProfileNodeConfig('tor', { socksPort: 9161 })).toThrow(
+      /profile catalog is busy/
+    );
+    // ...the idle-waiting one completes once it is done.
+    const waiting = updateActiveProfileNodeConfigWhenIdle('tor', { socksPort: 9161 });
+    await new Promise((r) => setTimeout(r, 20));
+    releaseHolder();
+    await holder;
+    const result = await waiting;
+    expect(result.metadata.nodes.tor.socksPort).toBe(9161);
+  });
+
   test('persists active profile node updates to metadata and catalog', () => {
     const userDataDir = track(makeTempDir());
     const app = createAppMock({ isPackaged: true, userDataDir });

@@ -448,6 +448,19 @@ async function withCatalogWriteLockAsync(appRoot, fn, options = {}) {
   }
 }
 
+// Resolve once no in-process withCatalogWriteLockAsync holder (or queued async
+// caller) is left for this catalog. A sync withCatalogWriteLock call made right
+// after this resolves — in the same tick, with no await in between — cannot hit
+// the in-process fast-fail above. Used by short sync writers that would rather
+// wait out a long async section (a profile deletion) than fail, e.g. Ant/Tor
+// persisting a fallback port mid-start.
+async function waitForCatalogWriteLockIdle(appRoot) {
+  const { lockDir } = getCatalogLockPaths(appRoot);
+  while (asyncCatalogLockHolders.has(lockDir) || asyncCatalogLockQueues.has(lockDir)) {
+    await asyncCatalogLockQueues.get(lockDir);
+  }
+}
+
 function loadCatalog(appRoot) {
   const catalogPath = getCatalogPath(appRoot);
   if (!fs.existsSync(catalogPath)) {
@@ -816,6 +829,26 @@ function validateProfileDeletion(appRoot, profileId, expectedDisplayName) {
   assertDisplayNameConfirmation(expectedDisplayName, displayName);
 }
 
+// Must match profile-paths.js's RADICLE_STAGING_INFIX (not imported: that
+// module pulls in electron).
+const RADICLE_STAGING_INFIX = '.migrating-';
+
+async function removeRadicleStagingSiblings(radicleDir, radicleRoot) {
+  const parent = path.dirname(radicleDir);
+  const prefix = `${path.basename(radicleDir)}${RADICLE_STAGING_INFIX}`;
+  let names;
+  try {
+    names = await fs.promises.readdir(parent);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const target = assertPathInside(radicleRoot, path.join(parent, name), 'Radicle data');
+    await fsOffload.removePath(target, { recursive: true, force: true });
+  }
+}
+
 // Async: a profile's node data can be several GB, so the recursive deletes run
 // off the main thread (fs-offload) while it keeps serving. Ordering is
 // unchanged — catalog entry removed and saved first, then the profile dir, then
@@ -865,6 +898,10 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
         : path.join(appRoot, RADICLE_SHORT_HOME_DIR);
       const resolvedRadicleDir = assertPathInside(radicleRoot, radicleDir, 'Radicle data');
       await fsOffload.removePath(resolvedRadicleDir, { recursive: true, force: true });
+      // Also any staging copy an interrupted legacy `radicle-data/` carry-over
+      // left next to it (profile-paths.js, `<slot>.migrating-<pid>-<ts>`) —
+      // otherwise its GBs outlive the profile.
+      await removeRadicleStagingSiblings(resolvedRadicleDir, radicleRoot);
     }
 
     return {
@@ -1127,4 +1164,5 @@ module.exports = {
   writeProfileMetadata,
   withCatalogWriteLock,
   withCatalogWriteLockAsync,
+  waitForCatalogWriteLockIdle,
 };

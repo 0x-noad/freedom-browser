@@ -172,8 +172,9 @@ describe('profile paths', () => {
         const radicleDir = paths.getRadicleDataDir();
 
         expect(radicleDir).toBe(path.join(root, 'R', '1'));
-        // Returned before the async copy could land: empty, never torn.
-        expect(fs.readdirSync(radicleDir)).toEqual([]);
+        // Returned before the async copy could land: absent (not even created
+        // empty while the migration is in flight), never torn.
+        expect(fs.existsSync(radicleDir)).toBe(false);
 
         await expect(paths.prepareRadicleDataDir()).resolves.toBe(radicleDir);
         expect(fs.readFileSync(path.join(radicleDir, 'keys', 'radicle.pub'), 'utf-8')).toBe(
@@ -218,6 +219,77 @@ describe('profile paths', () => {
       expect(fs.readdirSync(radicleDir)).toEqual(['written-meanwhile']);
       expect(fs.readdirSync(path.join(root, 'R'))).toEqual(['1']);
     });
+  });
+
+  // #517 R1-M3: on Windows, rename() onto an existing directory fails, so a
+  // sync getRadicleDataDir() landing between the migration's rmdir and rename
+  // must not recreate the destination.
+  test('a read during the final rename does not recreate the short home', async () => {
+    const appRoot = track(createTempUserDataDir());
+    const userDataDir = path.join(appRoot, 'Profiles', 'work');
+    fs.mkdirSync(path.join(userDataDir, 'radicle-data', 'keys'), { recursive: true });
+    fs.writeFileSync(path.join(userDataDir, 'radicle-data', 'keys', 'radicle.pub'), 'pk');
+    const activeProfile = { source: 'catalog', appRoot, isDev: false, metadata: { slot: 1 } };
+    const radicleDir = path.join(appRoot, 'R', '1');
+    const paths = loadPaths(userDataDir, { activeProfile });
+
+    const realRename = fs.promises.rename;
+    const renameSpy = jest.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (to === radicleDir) {
+        expect(paths.getRadicleDataDir()).toBe(radicleDir);
+        // Emulate Windows: renaming onto an existing directory fails.
+        if (fs.existsSync(to)) {
+          throw Object.assign(new Error('EPERM: rename onto existing dir'), { code: 'EPERM' });
+        }
+      }
+      return realRename.call(fs.promises, from, to);
+    });
+    try {
+      await expect(paths.prepareRadicleDataDir()).resolves.toBe(radicleDir);
+      expect(fs.readFileSync(path.join(radicleDir, 'keys', 'radicle.pub'), 'utf-8')).toBe('pk');
+      // Once settled, the sync path creates the home again as before.
+      expect(fs.existsSync(paths.getRadicleDataDir())).toBe(true);
+    } finally {
+      renameSpy.mockRestore();
+    }
+  });
+
+  test('prepare creates the short home when there is nothing to migrate', async () => {
+    const appRoot = track(createTempUserDataDir());
+    const userDataDir = path.join(appRoot, 'Profiles', 'work');
+    const activeProfile = { source: 'catalog', appRoot, isDev: false, metadata: { slot: 3 } };
+    const paths = loadPaths(userDataDir, { activeProfile });
+
+    const radicleDir = await paths.prepareRadicleDataDir();
+    expect(radicleDir).toBe(path.join(appRoot, 'R', '3'));
+    expect(fs.statSync(radicleDir).isDirectory()).toBe(true);
+  });
+
+  // #517 R1-M2: an interrupted carry-over (quit/crash mid-copy) leaves a
+  // `<slot>.migrating-<pid>-<ts>` staging dir behind; the next attempt sweeps
+  // those of dead processes but leaves a live process's copy alone.
+  test('sweeps staging dirs orphaned by a dead process before migrating', async () => {
+    const appRoot = track(createTempUserDataDir());
+    const userDataDir = path.join(appRoot, 'Profiles', 'work');
+    fs.mkdirSync(path.join(userDataDir, 'radicle-data', 'keys'), { recursive: true });
+    fs.writeFileSync(path.join(userDataDir, 'radicle-data', 'keys', 'radicle.pub'), 'pk');
+    const activeProfile = { source: 'catalog', appRoot, isDev: false, metadata: { slot: 1 } };
+    const rRoot = path.join(appRoot, 'R');
+    // pid 2^22+ is above Linux's pid_max ceiling, so it cannot be alive.
+    const dead = path.join(rRoot, `1.migrating-${2 ** 22 + 7}-1700000000000`);
+    const live = path.join(rRoot, `1.migrating-${process.ppid}-1700000000000`);
+    const otherSlot = path.join(rRoot, `11.migrating-${2 ** 22 + 7}-1700000000000`);
+    for (const dir of [dead, live, otherSlot]) {
+      fs.mkdirSync(path.join(dir, 'storage'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'storage', 'blob'), 'x');
+    }
+
+    const paths = loadPaths(userDataDir, { activeProfile });
+    await paths.prepareRadicleDataDir();
+
+    expect(fs.readdirSync(rRoot).sort()).toEqual(
+      ['1', path.basename(live), path.basename(otherSlot)].sort()
+    );
   });
 
   test('uses a short Radicle home under the packaged app root', () => {
