@@ -21,6 +21,21 @@
  *   still runs, then turns the transport synchronous so the lines the
  *   remaining quit handlers log land at once, in order.
  *
+ * What this does not cover (the price of async, accepted in #511):
+ *
+ * - A batch already mid-`fs.writeFile` is not retained anywhere electron-log
+ *   exposes (`nextAsyncWrite` moves the text into the call), so nothing here
+ *   can rewrite it. If the process ends before the loop runs that chain to
+ *   completion — `app.exit()` on a second signal, or the shutdown watchdog's
+ *   `app.quit()` — that batch is lost, while the newer queued lines are
+ *   written. Only the graceful path (`drainLogFile()`) waits it out.
+ * - Nothing flushes at all when the main thread wedges (a hung native call)
+ *   and the user force-quits, or the process dies on SIGKILL/SIGSEGV: no
+ *   handler runs, so every line still queued or in flight is gone. With
+ *   electron-log's sync default those last lines were on disk before the
+ *   call that hung. When chasing a hang or a native crash (cf. #345, #292),
+ *   set `FREEDOM_LOG_SYNC=1` to restore the sync transport.
+ *
  * These reach into the File object electron-log returns from
  * `transport.getFile()` (`asyncWriteQueue`, `hasActiveAsyncWriting`,
  * `writeAsync`). log-file-flush.test.js drives the installed electron-log's
@@ -47,8 +62,11 @@ function asyncFileOf(fileTransport) {
  * Writes every queued line synchronously and makes later lines synchronous.
  * Safe to call any number of times; never throws.
  *
- * If a batch is still in flight it is left to finish on its own: the queued
- * lines are newer than it and may land first, but they are not lost.
+ * A batch still in flight is out of reach (electron-log keeps no copy of it)
+ * and is left to finish on its own. It lands only if the event loop keeps
+ * running long enough — after it the newer queued lines written here, so out
+ * of order. If the process ends first (`app.exit()`, the watchdog's quit), it
+ * is lost.
  */
 function flushLogFileSync(fileTransport, { fsImpl = fs } = {}) {
   const file = asyncFileOf(fileTransport);
@@ -68,6 +86,14 @@ function flushLogFileSync(fileTransport, { fsImpl = fs } = {}) {
 }
 
 /**
+ * Whether main.log should be written synchronously: only when
+ * `FREEDOM_LOG_SYNC` is `1` (trimmed). Async is the default (#511).
+ */
+function wantsSyncLogFile(env = process.env) {
+  return String(env?.FREEDOM_LOG_SYNC ?? '').trim() === '1';
+}
+
+/**
  * Waits (bounded) for the in-flight batch to land, then `flushLogFileSync()`.
  * Never rejects.
  */
@@ -83,4 +109,4 @@ async function drainLogFile(
   flushLogFileSync(fileTransport, { fsImpl });
 }
 
-module.exports = { drainLogFile, flushLogFileSync };
+module.exports = { drainLogFile, flushLogFileSync, wantsSyncLogFile };

@@ -1,6 +1,6 @@
 const log = require('electron-log');
 const path = require('path');
-const { flushLogFileSync } = require('./log-file-flush');
+const { flushLogFileSync, wantsSyncLogFile } = require('./log-file-flush');
 
 // Detect environment safely (app.isPackaged is unavailable in test runners)
 let isPackaged = false;
@@ -35,7 +35,13 @@ if (isTestEnv) {
   // which is when electron-log creates the File with this mode. Async mode has
   // no flush of its own: this covers process exit, and index.js drains it at
   // the end of the quit wind-down and flushes it before a forced exit.
-  log.transports.file.sync = false;
+  //
+  // Trade-off: the last lines before a main-thread hang or a native crash
+  // (SIGKILL/SIGSEGV run no handler) are still queued and never reach
+  // main.log, and a forced exit drops a batch already mid-write; see
+  // log-file-flush.js. FREEDOM_LOG_SYNC=1 restores sync writes for chasing
+  // exactly those cases.
+  log.transports.file.sync = wantsSyncLogFile();
   process.on('exit', () => flushLogFileSync(log.transports.file));
 
   // Console transport: production shows only warnings+errors, dev shows all

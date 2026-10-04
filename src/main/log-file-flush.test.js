@@ -110,3 +110,29 @@ test.each([
   expect(() => flushLogFileSync(t)).not.toThrow();
   await expect(drainLogFile(t)).resolves.toBeUndefined();
 });
+
+test('wantsSyncLogFile is on only for FREEDOM_LOG_SYNC=1', () => {
+  const { wantsSyncLogFile } = require('./log-file-flush');
+  expect(wantsSyncLogFile({})).toBe(false);
+  expect(wantsSyncLogFile({ FREEDOM_LOG_SYNC: '' })).toBe(false);
+  expect(wantsSyncLogFile({ FREEDOM_LOG_SYNC: '0' })).toBe(false);
+  expect(wantsSyncLogFile({ FREEDOM_LOG_SYNC: 'true' })).toBe(false);
+  expect(wantsSyncLogFile({ FREEDOM_LOG_SYNC: '1' })).toBe(true);
+  // A Windows `set X=1 && …` keeps the trailing space.
+  expect(wantsSyncLogFile({ FREEDOM_LOG_SYNC: '1 ' })).toBe(true);
+});
+
+test('flushLogFileSync cannot rescue a batch already mid-write', async () => {
+  // Documents the limit the module header states: electron-log moves the
+  // in-flight text into fs.writeFile and keeps no copy, so a flush followed by
+  // an exit before the loop turns again writes only the newer queued lines.
+  const writes = [];
+  const fsImpl = { writeFileSync: (p, text) => writes.push(text) };
+  file.writeLine('in-flight');
+  file.writeLine('queued');
+  expect(file.hasActiveAsyncWriting).toBe(true);
+  flushLogFileSync(transport, { fsImpl });
+  expect(writes.join('')).toContain('queued');
+  expect(writes.join('')).not.toContain('in-flight');
+  await waitIdle();
+});
