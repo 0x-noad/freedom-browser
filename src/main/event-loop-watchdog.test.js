@@ -103,6 +103,55 @@ describe('event-loop watchdog', () => {
     expect(log.warn).not.toHaveBeenCalled();
   });
 
+  test('suspend(): the sleep gap is not reported even when the overdue tick beats resume', () => {
+    const { log, fireAfter, watchdog } = harness();
+    fireAfter(500);
+    watchdog.suspend();
+    fireAfter(500); // on time, before the machine actually sleeps
+    fireAfter(500 + 3 * 3600_000); // Windows: QPC counted the sleep; resume not yet seen
+    watchdog.reset(); // 'resume' lands afterwards
+    fireAfter(500);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  test('suspend(): only the wake gap is absorbed; a later stall is reported', () => {
+    const { log, fireAfter, watchdog } = harness();
+    watchdog.suspend();
+    fireAfter(500 + 60_000); // the sleep
+    fireAfter(500 + 2000); // a real stall, resume never arrived
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalledWith('[main] event loop blocked 2000 ms');
+  });
+
+  test('suspend() with no sleep and no resume expires after the grace period', () => {
+    const { log, fireAfter, watchdog } = harness({ suspendGraceMs: 10_000 });
+    watchdog.suspend();
+    for (let k = 0; k < 20; k += 1) fireAfter(500); // vetoed sleep: ticks stay on time
+    fireAfter(500 + 2000);
+    expect(log.warn).toHaveBeenCalledWith('[main] event loop blocked 2000 ms');
+  });
+
+  test('stop() flushes stalls still folded into the pending summary', () => {
+    const { log, fireAfter, watchdog } = harness({ describeActivity: () => 'x' });
+    fireAfter(500 + 1500); // t=0 stall, logged
+    fireAfter(500 + 10_000); // folded
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    watchdog.stop(); // quit inside the 30 s window
+    expect(log.warn).toHaveBeenCalledTimes(2);
+    expect(log.warn.mock.calls[1][0]).toMatch(
+      /^\[main\] event loop blocked 1 more time >= 1000 ms .*\(worst 10000 ms, total 10000 ms; worst during x\)$/
+    );
+    watchdog.stop();
+    expect(log.warn).toHaveBeenCalledTimes(2);
+  });
+
+  test('stop() with nothing folded writes nothing', () => {
+    const { log, fireAfter, watchdog } = harness();
+    fireAfter(500 + 1500);
+    watchdog.stop();
+    expect(log.warn).toHaveBeenCalledTimes(1);
+  });
+
   test('stop() clears the interval', () => {
     const clearIntervalFn = jest.fn();
     const { watchdog, timer } = harness({ clearIntervalFn });

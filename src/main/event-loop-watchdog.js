@@ -23,8 +23,14 @@
  *
  * Log volume: the first stall is logged at once; further stalls within
  * `minReportGapMs` are folded into one summary line (count, worst, total,
- * and the worst one's activity) written once that window has passed. A host
- * that stalls every second for an hour writes ~120 lines, not ~3600.
+ * and the worst one's activity) written once that window has passed, or on
+ * `stop()` (quit). A host that stalls every second for an hour writes ~120
+ * lines, not ~3600.
+ *
+ * System sleep: `suspend()` (powerMonitor 'suspend') mutes the watchdog until
+ * the sleep gap shows up as one late tick or `reset()` (resume) arrives,
+ * whichever is first, so the sleep is never reported as a stall regardless of
+ * event order on wake.
  */
 
 const { performance } = require('perf_hooks');
@@ -32,6 +38,11 @@ const { performance } = require('perf_hooks');
 const DEFAULT_INTERVAL_MS = 500;
 const DEFAULT_THRESHOLD_MS = 1000;
 const DEFAULT_MIN_REPORT_GAP_MS = 30_000;
+// How long a `suspend()` mutes the watchdog when neither a late tick (the
+// sleep gap itself) nor `reset()` (resume) arrives to end it — e.g. a sleep
+// that was vetoed, or a missed resume event. Bounds how long a lost power
+// event can blind the watchdog.
+const DEFAULT_SUSPEND_GRACE_MS = 5 * 60_000;
 
 function formatLine(blockedMs, activity) {
   return (
@@ -45,6 +56,7 @@ function startEventLoopWatchdog({
   intervalMs = DEFAULT_INTERVAL_MS,
   thresholdMs = DEFAULT_THRESHOLD_MS,
   minReportGapMs = DEFAULT_MIN_REPORT_GAP_MS,
+  suspendGraceMs = DEFAULT_SUSPEND_GRACE_MS,
   now = () => performance.now(),
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
@@ -54,6 +66,7 @@ function startEventLoopWatchdog({
   let lastTick = now();
   let lastReportAt = -Infinity;
   let suppressed = null; // { count, worstMs, totalMs, worstActivity }
+  let suspendedAt = null; // set by suspend(), cleared by reset() or the wake gap
 
   function safeDescribe(since) {
     try {
@@ -83,6 +96,17 @@ function startEventLoopWatchdog({
     const blockedMs = t - since - intervalMs;
     lastTick = t;
 
+    // Between powerMonitor 'suspend' and 'resume' a late tick is the machine
+    // asleep, not the loop blocked. Nothing orders the first post-wake timer
+    // tick after 'resume' (on Windows the QPC clock behind performance.now()
+    // keeps counting through sleep and the overdue interval can fire before
+    // WM_POWERBROADCAST is dispatched), so the gap is absorbed here instead
+    // of relying on reset() arriving first. The first late tick is the wake.
+    if (suspendedAt !== null) {
+      if (blockedMs >= thresholdMs || t - suspendedAt >= suspendGraceMs) suspendedAt = null;
+      return;
+    }
+
     if (blockedMs < thresholdMs) {
       if (suppressed && t - lastReportAt >= minReportGapMs) flushSuppressed(t);
       return;
@@ -110,13 +134,23 @@ function startEventLoopWatchdog({
   timer?.unref?.();
 
   return {
+    // The system is about to sleep (powerMonitor 'suspend'): don't report the
+    // gap the sleep will leave, whichever of 'resume' or the overdue tick
+    // reaches us first after wake.
+    suspend() {
+      suspendedAt = now();
+    },
     // Forget the time since the last tick, e.g. on resume from system sleep,
     // where the gap is the machine being suspended, not the loop blocked.
     reset() {
+      suspendedAt = null;
       lastTick = now();
     },
+    // Stop ticking, writing out any stalls still folded into the pending
+    // summary — on quit they would otherwise never reach the log.
     stop() {
       clearIntervalFn(timer);
+      flushSuppressed(now());
     },
     // Exposed for tests.
     tick,
@@ -129,4 +163,5 @@ module.exports = {
   DEFAULT_INTERVAL_MS,
   DEFAULT_THRESHOLD_MS,
   DEFAULT_MIN_REPORT_GAP_MS,
+  DEFAULT_SUSPEND_GRACE_MS,
 };

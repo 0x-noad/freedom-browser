@@ -73,6 +73,9 @@ jobs:
       - name: Run startup responsiveness smoke (headless)
         run: xvfb-run -a npm run test:e2e:startup-smoke
         env:
+          # The npm script sets FREEDOM_STARTUP_SMOKE=1 too; set here as well so
+          # the opt-in doesn't hinge on the script's POSIX env-prefix syntax.
+          FREEDOM_STARTUP_SMOKE: '1'
           # `inputs.*` is empty on a schedule; the spec's defaults apply then.
           FREEDOM_STARTUP_SMOKE_SECONDS: ${{ inputs.seconds }}
           FREEDOM_STARTUP_SMOKE_MAX_RTT_MS: ${{ inputs.max_rtt_ms }}

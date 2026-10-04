@@ -17,6 +17,11 @@
 // (under `xvfb-run -a` on a headless Linux box), or let the nightly workflow
 // (.github/workflows/startup-smoke.yml) run it.
 //
+// Opt-in: the `live` project's testMatch picks up every file under live/, so
+// a plain `npm run test:e2e:live` would otherwise also spend 90 s+ on a
+// real-network check unrelated to most changes. The spec skips unless
+// FREEDOM_STARTUP_SMOKE=1, which the npm script and the workflow set.
+//
 // Knobs (all optional):
 //   FREEDOM_STARTUP_SMOKE_SECONDS     how long to poll (default 90)
 //   FREEDOM_STARTUP_SMOKE_MAX_RTT_MS  fail above this round trip (default 1000)
@@ -71,7 +76,13 @@ function percentile(sorted, p) {
   return sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
 }
 
+const OPTED_IN = (process.env.FREEDOM_STARTUP_SMOKE || '').trim() === '1';
+
 test.describe('startup responsiveness (real nodes)', () => {
+  test.skip(
+    !OPTED_IN,
+    'opt-in: run `npm run test:e2e:startup-smoke` (or set FREEDOM_STARTUP_SMOKE=1)'
+  );
   test.skip(
     !HAS_ANT_BINARY && !process.env.CI,
     `antd not found at ${ANT_BINARY_PATH} — run \`npm run ant:download\` first`

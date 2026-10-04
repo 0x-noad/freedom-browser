@@ -343,6 +343,8 @@ log.info('[profile] Active profile:', {
 });
 warnAboutLegacyDevData(activeProfile, { logger: log });
 app.on('will-quit', () => {
+  // Writes out any stalls still folded into the watchdog's pending summary.
+  eventLoopWatchdog.stop();
   unregisterShutdownSignalHandlers();
   profileFocusWatcher.stop();
   if (activeProfileLock) {
@@ -353,7 +355,11 @@ app.on('will-quit', () => {
 
 async function bootstrap() {
   // A suspended machine is not a blocked loop: don't report the sleep.
-  require('electron').powerMonitor.on('resume', () => eventLoopWatchdog.reset());
+  // 'suspend' arms the exemption before the machine sleeps, so it holds even
+  // when the overdue timer tick beats 'resume' on wake (Windows).
+  const { powerMonitor } = require('electron');
+  powerMonitor.on('suspend', () => eventLoopWatchdog.suspend());
+  powerMonitor.on('resume', () => eventLoopWatchdog.reset());
 
   // Carry the injected Swarm identity from the Bee-era bee-data/ into
   // ant-data/. Must run before the Ant node is started below, or antd

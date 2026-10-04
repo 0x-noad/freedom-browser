@@ -82,4 +82,54 @@ describe('chain-data activity', () => {
     for (let i = 0; i < 10; i += 1) activity.track(1, `m${i}`)('direct');
     expect(activity.describe().match(/via direct/g)).toHaveLength(3);
   });
+
+  test('also attributes getFeeQuote and broadcastRawTransaction (Myotis native calls)', async () => {
+    const { activity, at } = setup();
+    let resolveFee;
+    let resolveTx;
+    const getFeeQuote = jest.fn(() => new Promise((r) => (resolveFee = r)));
+    const broadcastRawTransaction = jest.fn(() => new Promise((r) => (resolveTx = r)));
+    const router = { request: jest.fn(), getFeeQuote, broadcastRawTransaction };
+    activity.instrumentChainDataRouter(router);
+    at(0);
+    const fee = router.getFeeQuote(1);
+    const tx = router.broadcastRawTransaction(100, '0xraw', { signal: null });
+    at(1500);
+    expect(activity.describe()).toBe(
+      'chain-data: 1 fee quote in flight, 1500 ms; 100 eth_sendRawTransaction in flight, 1500 ms'
+    );
+    expect(broadcastRawTransaction).toHaveBeenCalledWith(100, '0xraw', { signal: null });
+    at(4000);
+    resolveFee({ type: 'legacy', source: 'myotis', verified: true });
+    await expect(fee).resolves.toEqual({ type: 'legacy', source: 'myotis', verified: true });
+    at(5000);
+    resolveTx({ result: '0xhash', source: 'direct' });
+    await expect(tx).resolves.toEqual({ result: '0xhash', source: 'direct' });
+    expect(activity.describe({ since: 3000 })).toBe(
+      'chain-data: 100 eth_sendRawTransaction via direct, 5000 ms; 1 fee quote via myotis, 4000 ms'
+    );
+    // Wrapping again is a no-op for every export.
+    const wrappedFee = router.getFeeQuote;
+    expect(activity.instrumentChainDataRouter(router)).toBe(false);
+    expect(router.getFeeQuote).toBe(wrappedFee);
+  });
+
+  test('the real router exports are all wrapped', () => {
+    const activity = createChainDataActivity();
+    const router = {
+      request: jest.fn(),
+      getFeeQuote: jest.fn(),
+      broadcastRawTransaction: jest.fn(),
+    };
+    activity.instrumentChainDataRouter(router);
+    for (const name of ['request', 'getFeeQuote', 'broadcastRawTransaction']) {
+      expect(router[name].name).toBe(name);
+      expect(jest.isMockFunction(router[name])).toBe(false);
+    }
+    // The real module exports the functions being wrapped.
+    const real = jest.requireActual('./chain-data-router');
+    for (const name of ['request', 'getFeeQuote', 'broadcastRawTransaction']) {
+      expect(typeof real[name]).toBe('function');
+    }
+  });
 });
