@@ -1,8 +1,9 @@
 const { startEventLoopWatchdog } = require('./event-loop-watchdog');
 
 function harness(opts = {}) {
-  let t = 0;
-  const log = { warn: jest.fn() };
+  let t = 0; // monotonic clock (performance.now())
+  let w = 1_700_000_000_000; // wall clock (Date.now())
+  const log = { warn: jest.fn(), info: jest.fn() };
   let handle = null;
   const timer = { unref: jest.fn() };
   const watchdog = startEventLoopWatchdog({
@@ -11,6 +12,7 @@ function harness(opts = {}) {
     thresholdMs: 1000,
     minReportGapMs: 30_000,
     now: () => t,
+    wallNow: () => w,
     setIntervalFn: (fn) => {
       handle = fn;
       return timer;
@@ -21,9 +23,20 @@ function harness(opts = {}) {
   // Advance the clock by `ms` and fire the (late) timer once.
   const fireAfter = (ms) => {
     t += ms;
+    w += ms;
     handle();
   };
-  return { log, watchdog, fireAfter, timer, advance: (ms) => (t += ms) };
+  // The machine sleeps for `ms`. The wall clock always counts it; the
+  // monotonic clock does on Windows (QPC) but not on Linux/macOS.
+  const sleep = (ms, { monotonicCounts }) => {
+    w += ms;
+    if (monotonicCounts) t += ms;
+  };
+  const advance = (ms) => {
+    t += ms;
+    w += ms;
+  };
+  return { log, watchdog, fireAfter, timer, advance, sleep };
 }
 
 describe('event-loop watchdog', () => {
@@ -103,24 +116,86 @@ describe('event-loop watchdog', () => {
     expect(log.warn).not.toHaveBeenCalled();
   });
 
-  test('suspend(): the sleep gap is not reported even when the overdue tick beats resume', () => {
-    const { log, fireAfter, watchdog } = harness();
+  const HOURS_3 = 3 * 3600_000;
+
+  test('suspend() on Windows: the sleep gap is not reported even when the overdue tick beats resume', () => {
+    const { log, fireAfter, watchdog, sleep } = harness();
     fireAfter(500);
     watchdog.suspend();
     fireAfter(500); // on time, before the machine actually sleeps
-    fireAfter(500 + 3 * 3600_000); // Windows: QPC counted the sleep; resume not yet seen
+    sleep(HOURS_3, { monotonicCounts: true });
+    fireAfter(500); // QPC counted the sleep; resume not yet seen
     watchdog.reset(); // 'resume' lands afterwards
     fireAfter(500);
     expect(log.warn).not.toHaveBeenCalled();
+    // ...but it isn't silent either: one info line names what was set aside.
+    expect(log.info).toHaveBeenCalledTimes(1);
+    expect(log.info.mock.calls[0][0]).toMatch(
+      /^\[main\] event loop: 1 late tick \(\d+ ms\) across system sleep, not reported as a stall$/
+    );
   });
 
-  test('suspend(): only the wake gap is absorbed; a later stall is reported', () => {
-    const { log, fireAfter, watchdog } = harness();
+  test('suspend() on Windows: a real stall before the sleep does not end the window early', () => {
+    const { log, fireAfter, watchdog, sleep } = harness();
     watchdog.suspend();
-    fireAfter(500 + 60_000); // the sleep
-    fireAfter(500 + 2000); // a real stall, resume never arrived
+    fireAfter(500 + 2000); // a stall between 'suspend' and the actual sleep
+    sleep(HOURS_3, { monotonicCounts: true });
+    fireAfter(500); // the sleep gap, before 'resume'
+    watchdog.reset();
+    fireAfter(500);
+    // Never an hours-long stall line.
+    expect(log.warn).not.toHaveBeenCalled();
+    expect(log.info).toHaveBeenCalledTimes(1);
+    expect(log.info.mock.calls[0][0]).toMatch(/^\[main\] event loop: 2 late ticks/);
+  });
+
+  test('suspend() on Linux/macOS: a stall during wake-up, before resume, is reported', () => {
+    const { log, fireAfter, watchdog, sleep } = harness();
+    fireAfter(500);
+    watchdog.suspend();
+    fireAfter(500);
+    sleep(HOURS_3, { monotonicCounts: false }); // CLOCK_MONOTONIC stops
+    fireAfter(500 + 4000); // wake-up work blocks 4 s; 'resume' not yet dispatched
+    expect(log.warn).toHaveBeenCalledWith('[main] event loop blocked 4000 ms');
+    watchdog.reset();
+    fireAfter(500 + 2000); // the window is closed: later stalls count as usual
+    expect(log.warn).toHaveBeenCalledTimes(1); // folded into the summary
+    watchdog.stop();
+    expect(log.warn).toHaveBeenCalledTimes(2);
+    expect(log.info).not.toHaveBeenCalled();
+  });
+
+  test('suspend() on Linux/macOS: a wake-up stall is reported even when resume beats the tick', () => {
+    const { log, fireAfter, watchdog, sleep, advance } = harness();
+    fireAfter(500);
+    watchdog.suspend();
+    sleep(HOURS_3, { monotonicCounts: false });
+    advance(3000); // blocked 3 s after wake; 'resume' is dispatched first
+    watchdog.reset();
+    expect(log.warn).toHaveBeenCalledWith('[main] event loop blocked 2500 ms');
+    fireAfter(500);
     expect(log.warn).toHaveBeenCalledTimes(1);
+  });
+
+  test('suspend() on Linux/macOS: a stall before the sleep is reported once the sleep shows', () => {
+    const { log, fireAfter, watchdog, sleep } = harness();
+    watchdog.suspend();
+    fireAfter(500 + 2000); // ambiguous on its own: held
+    expect(log.warn).not.toHaveBeenCalled();
+    sleep(HOURS_3, { monotonicCounts: false });
+    fireAfter(500); // spans the sleep; the monotonic clock paused → held tick was a stall
     expect(log.warn).toHaveBeenCalledWith('[main] event loop blocked 2000 ms');
+    expect(log.info).not.toHaveBeenCalled();
+  });
+
+  test('reset() on Windows with no late tick yet absorbs the sleep gap', () => {
+    const { log, fireAfter, watchdog, sleep } = harness();
+    fireAfter(500);
+    watchdog.suspend();
+    sleep(HOURS_3, { monotonicCounts: true });
+    watchdog.reset(); // 'resume' beats the overdue tick
+    fireAfter(500);
+    expect(log.warn).not.toHaveBeenCalled();
   });
 
   test('suspend() with no sleep and no resume expires after the grace period', () => {

@@ -355,8 +355,9 @@ app.on('will-quit', () => {
 
 async function bootstrap() {
   // A suspended machine is not a blocked loop: don't report the sleep.
-  // 'suspend' arms the exemption before the machine sleeps, so it holds even
-  // when the overdue timer tick beats 'resume' on wake (Windows).
+  // 'suspend' opens the window before the machine sleeps, so the sleep gap is
+  // recognised even when the overdue tick beats 'resume' on wake (Windows),
+  // while a real stall around the sleep is still reported (see the watchdog).
   const { powerMonitor } = require('electron');
   powerMonitor.on('suspend', () => eventLoopWatchdog.suspend());
   powerMonitor.on('resume', () => eventLoopWatchdog.reset());
