@@ -106,7 +106,7 @@ function rpcReply(body) {
 // One fetch behaviour. `{ kind, after }` delays it by `after` ms; a function
 // of the requested block span returns the behaviour for that span.
 function behave(step, signal) {
-  const { kind, after = 0 } = typeof step === 'string' ? { kind: step } : step;
+  const { kind, after = 0, logs } = typeof step === 'string' ? { kind: step } : step;
   const now = () => {
     switch (kind) {
       case 'range':
@@ -137,6 +137,8 @@ function behave(step, signal) {
         return Promise.reject(new TypeError('fetch failed'));
       case 'success':
         return rpcReply({ result: LOGS });
+      case 'logs':
+        return rpcReply({ result: logs });
       case 'hang':
         return new Promise(() => {});
       default:
@@ -190,8 +192,9 @@ function useEndpoints(rpcs) {
     fetches.push(`${name}@${Date.now() - start}`);
     const script = [].concat(rpcs[name]);
     const step = script[Math.min(n, script.length - 1)];
+    const { params } = JSON.parse(body);
     return behave(
-      typeof step === 'function' ? step(spanOf(JSON.parse(body).params)) : step,
+      typeof step === 'function' ? step(spanOf(params), params[0]) : step,
       signal
     );
   });
@@ -699,5 +702,45 @@ describe('range caps (#484)', () => {
     expect(again).toMatchObject({ shrinks: false, at: 0 });
     expect(again.fetches).toEqual([]);
     expect(again.message).toContain('No RPC quorum available');
+  });
+});
+
+// Measured for #496 (2026-10-04): rpc.gnosischain.com and gateway.fm answer a
+// filter matching more than ~50k logs (BZZ Transfer over 500k+ blocks) with
+// only the logs of its latest ~474 blocks, and no error.
+describe('silent truncation (#496)', () => {
+  const hex = (n) => `0x${n.toString(16)}`;
+  const log = (block) => ({ blockNumber: hex(block) });
+  // Dense: ~0.115 matching logs per block, as BZZ Transfer. A span over
+  // 400k blocks matches over ~46k logs and is truncated.
+  const dense = (span, { toBlock }) => {
+    const to = Number(toBlock);
+    return span > 400_000
+      ? { kind: 'logs', logs: [log(to - 473), log(to - 2)] }
+      : { kind: 'logs', logs: [log(to - span + 1), log(to)] };
+  };
+
+  test('Ant halves a truncated full-history scan until the answer is complete', async () => {
+    const steps = await antScan({ a: dense, b: dense, c: dense });
+    const last = steps.pop();
+    expect(last).toMatchObject({ source: 'quorum' });
+    expect(last.span).toBeLessThanOrEqual(400_000);
+    expect(last.result).toEqual([log(HEAD - last.span + 1), log(HEAD)]);
+    expect(steps.length).toBeGreaterThan(0);
+    for (const step of steps) {
+      expect(step.span).toBeGreaterThan(400_000);
+      expect(step).toMatchObject({ code: -32005, shrinks: true });
+      expect(step.message).toMatch(/^Chain request failed: query matched too many logs/);
+      // One quorum round, then one check of the blocks before the oldest log.
+      expect(step.fetches).toHaveLength(6);
+    }
+  });
+
+  test('a sparse filter whose only log is recent is accepted (a new wallet)', async () => {
+    const recent = (_span, { toBlock }) =>
+      Number(toBlock) === HEAD ? { kind: 'logs', logs: [log(HEAD - 120)] } : { kind: 'logs', logs: [] };
+    const got = await scan({ a: recent, b: recent, c: recent }, logsOver(FULL_HISTORY));
+    expect(got).toMatchObject({ result: [log(HEAD - 120)], source: 'quorum' });
+    expect(got.fetches).toHaveLength(6);
   });
 });
