@@ -12,11 +12,11 @@ describe('createRediscoveryTracker', () => {
   test('a started node is running until it logs the finished line', () => {
     const tracker = createRediscoveryTracker();
     const run = tracker.begin();
-    expect(tracker.get()).toEqual({ run, state: 'running', failed: false });
+    expect(tracker.get()).toMatchObject({ run, state: 'running', failed: false });
     tracker.noteLine(run, 'INFO antd: chain ready');
     expect(tracker.get().state).toBe('running');
     tracker.noteLine(run, finished);
-    expect(tracker.get()).toEqual({ run, state: 'finished', failed: false });
+    expect(tracker.get()).toMatchObject({ run, state: 'finished', failed: false });
   });
 
   test('remembers a failed scan across the finished line that follows it', () => {
@@ -33,7 +33,7 @@ describe('createRediscoveryTracker', () => {
     const first = tracker.begin();
     const second = tracker.begin();
     tracker.noteLine(first, finished);
-    expect(tracker.get()).toEqual({ run: second, state: 'running', failed: false });
+    expect(tracker.get()).toMatchObject({ run: second, state: 'running', failed: false });
     // An earlier process exiting late does not clear the current one.
     tracker.end(first);
     expect(tracker.get()).not.toBeNull();
@@ -63,5 +63,15 @@ describe('createRediscoveryTracker', () => {
     off();
     tracker.begin();
     expect(seen).toHaveLength(3);
+  });
+
+  test('stamps each run with its spawn time, which bounds the hold (#510)', () => {
+    let t = 1000;
+    const tracker = createRediscoveryTracker({ now: () => t });
+    tracker.begin();
+    t = 5000;
+    expect(tracker.get().startedAt).toBe(1000);
+    tracker.begin();
+    expect(tracker.get().startedAt).toBe(5000);
   });
 });

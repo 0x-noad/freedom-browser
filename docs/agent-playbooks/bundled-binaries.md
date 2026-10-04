@@ -97,7 +97,7 @@ stdout/stderr for that line and for `postage batch rediscovery scan failed`
 service holds its "Checking…" state instead of offering a plan until the
 first one arrives — unless the node wallet has never sent a transaction (its
 `eth_getTransactionCount` is 0, so there is nothing to rediscover), and for at
-most `REDISCOVERY_MAX_WAIT_MS` (30 min). Reused and external nodes are not
+most `REDISCOVERY_MAX_WAIT_MS` (30 min) after Freedom spawned the node. Reused and external nodes are not
 held: Freedom does not see their output. On every pin bump, grep the new
 release's `crates/antd/src/main.rs` for both strings; if either changed, update
 `ant-rediscovery.js`. The proper replacement is the `/health.walletScan` field

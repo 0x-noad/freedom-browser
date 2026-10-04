@@ -546,6 +546,91 @@ describe('publish setup while Ant rediscovers batches (#510)', () => {
     held.dispose();
   });
 
+  test('a probe that read /stamps before the scan finished does not lift the hold (R1-M1)', async () => {
+    const { service, api, tracker, run, published } = rediscoverySetup({ txCount: 5 });
+    await service.refresh();
+    await settle();
+    expect(service.getState().readiness.key).toBe('checking');
+
+    // A probe is mid-flight: /stamps already answered empty, /node has not.
+    let releaseNode;
+    api.getNode.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseNode = () => resolve(ok({ beeMode: 'light' }));
+        })
+    );
+    const inflight = service.refresh();
+    await settle();
+    // The scan finishes and /stamps now lists what it found.
+    api.getStamps.mockResolvedValue(ok({ stamps: [{ batchID: BATCH_A, usable: true }] }));
+    published.length = 0;
+    tracker.noteLine(run, FINISHED_LINE);
+    expect(service.getState().readiness.key).toBe('checking');
+    releaseNode();
+    await inflight;
+    await settle();
+    expect(service.getState().readiness.key).toBe('ready');
+    // The stale empty list never showed as "pick a plan" on the way.
+    expect(published.map((st) => st.readiness.key)).not.toContain('needs-storage');
+  });
+
+  test('the bound runs from the spawn, not from when the service first saw the node (R1-M2)', async () => {
+    const tracker = createRediscoveryTracker();
+    tracker.begin();
+    // The service is created 25 minutes into the scan.
+    jest.setSystemTime(Date.now() + 25 * 60_000);
+    const getWalletTxCount = jest.fn(async () => 5);
+    const { service } = setup({ getRediscovery: tracker.get, getWalletTxCount });
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+    jest.setSystemTime(Date.now() + REDISCOVERY_MAX_WAIT_MS - 25 * 60_000 + 1);
+    expect(service.getState().readiness.key).toBe('needs-storage');
+    service.dispose();
+  });
+
+  test('the pre-flight does not wait for the wallet history read (R1-M3)', async () => {
+    const tracker = createRediscoveryTracker();
+    tracker.begin();
+    let answer;
+    const getWalletTxCount = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+    );
+    const { service, published } = setup({ getRediscovery: tracker.get, getWalletTxCount });
+    // Resolves while the RPC read is still out, holding meanwhile.
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+      ok: false,
+      reason: 'node-not-ready',
+    });
+    expect(getWalletTxCount).toHaveBeenCalledTimes(1);
+    // The answer lands later and is broadcast on its own.
+    answer(0);
+    await settle();
+    expect(service.getState().readiness.key).toBe('needs-storage');
+    expect(published.at(-1).readiness.key).toBe('needs-storage');
+    service.dispose();
+  });
+
+  test('tags the hold so the node card can still open setup (R1-F2)', async () => {
+    const { service, tracker, run } = rediscoverySetup({ txCount: 5 });
+    await service.refresh();
+    expect(service.getState().readiness).toMatchObject({
+      key: 'checking',
+      rediscovery: 'running',
+      slow: false,
+    });
+    tracker.noteLine(run, FAILED_LINE);
+    await settle();
+    expect(service.getState().readiness).toMatchObject({
+      key: 'checking',
+      rediscovery: 'failed',
+      slow: true,
+    });
+  });
+
   test('a node Freedom cannot see the scan of is not held', async () => {
     const getWalletTxCount = jest.fn();
     const { service } = setup({ getRediscovery: () => null, getWalletTxCount });

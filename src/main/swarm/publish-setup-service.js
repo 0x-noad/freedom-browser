@@ -92,7 +92,7 @@ const MAX_EXTEND_DAYS = 3650;
 // Ant's background batch rediscovery (#510, ant-rediscovery.js): while it
 // runs, an empty `/stamps` does not mean the wallet owns no storage. Hold
 // "needs storage" back until the node logs that it finished, for at most
-// this long after the node came up. Before #484, the first scan of a wallet
+// this long after Freedom spawned the node. Before #484, the first scan of a wallet
 // with history took 15-25 minutes behind a range-capped RPC; past this the
 // hold assumes the log line is not coming (a renamed message, a quieter
 // `RUST_LOG`) rather than keep the user from buying for good.
@@ -335,7 +335,7 @@ function classifyReadiness({
         'checking',
         'node-not-ready',
         'The Swarm node could not check Gnosis Chain for storage this wallet already owns. Restart the node to check again before you buy more.',
-        { slow: true }
+        { slow: true, rediscovery: 'failed' }
       );
     }
     return result(
@@ -343,7 +343,9 @@ function classifyReadiness({
       'node-not-ready',
       rediscovery.slow
         ? 'Still checking Gnosis Chain for storage this wallet already owns. The first check of a wallet on this device can take several minutes.'
-        : 'Checking Gnosis Chain for storage this wallet already owns…'
+        : 'Checking Gnosis Chain for storage this wallet already owns…',
+      // Not `slow`: that offers a restart, and a long first scan is expected.
+      { rediscovery: 'running' }
     );
   }
   if (probe.stamps.usable === 0) {
@@ -476,6 +478,12 @@ function createPublishSetupService({
   // wallet that never sent one owns nothing for it to find.
   let walletHistory = { run: null, hasHistory: null };
   let historyInflight = null;
+  // Probes are numbered as they start. When the node logs that rediscovery
+  // finished, a probe numbered below `rediscoveryFreshFrom` read `/stamps`
+  // before that and cannot show what the scan found, so it does not lift the
+  // hold (handleRediscovery starts a fresh one).
+  let probeSeq = 0;
+  let rediscoveryFreshFrom = 0;
 
   function readNode() {
     const { status = 'stopped', error = null } = getNodeStatus?.() || {};
@@ -533,9 +541,16 @@ function createPublishSetupService({
   function rediscoveryHold() {
     const r = getRediscovery?.();
     if (!r || runningSince === null) return null;
-    if (r.state !== 'running' && !r.failed) return null;
+    const unsettled = r.state === 'running' || r.failed;
+    // Finished, but the storage list on hand predates it: wait for a fresh one.
+    const stale = !unsettled && probe !== null && (probe.seq ?? 0) < rediscoveryFreshFrom;
+    if (!unsettled && !stale) return null;
     if (walletHistory.run === r.run && walletHistory.hasHistory === false) return null;
-    const waited = now() - runningSince;
+    // Bounded from the spawn (the tracker's own clock), not from when this
+    // service first saw the node running: a service created late in a scan
+    // must not extend the hold.
+    const since = Number.isFinite(r.startedAt) ? r.startedAt : runningSince;
+    const waited = now() - since;
     if (waited > REDISCOVERY_MAX_WAIT_MS) return null;
     return { failed: r.failed === true, slow: waited > REDISCOVERY_SLOW_MS };
   }
@@ -562,6 +577,9 @@ function createPublishSetupService({
     // while the read was in flight leaves it answering for that run only.
     if (Number.isSafeInteger(count) && count >= 0) {
       walletHistory = { run: r.run, hasHistory: count > 0 };
+      // Probes do not wait for this read (it is an RPC round-trip), so a
+      // wallet with no history lifts the hold here.
+      if (!disposed) emit();
     }
   }
 
@@ -637,10 +655,12 @@ function createPublishSetupService({
       return;
     }
     const at = now();
+    const seq = ++probeSeq;
     const health = await api.getHealth({ timeoutMs: PROBE_TIMEOUT_MS });
     if (!health.ok) {
       probe = {
         at,
+        seq,
         unreachable: true,
         chainReady: null,
         nodeMode: null,
@@ -655,6 +675,7 @@ function createPublishSetupService({
     if (!chainReady) {
       probe = {
         at,
+        seq,
         unreachable: false,
         chainReady,
         nodeMode: null,
@@ -672,6 +693,7 @@ function createPublishSetupService({
       stampsRes.ok && Array.isArray(stampsRes.data?.stamps) ? stampsRes.data.stamps : null;
     probe = {
       at,
+      seq,
       unreachable: false,
       chainReady,
       nodeMode: nodeRes.ok ? normalizeSwarmMode(nodeRes.data?.beeMode) : null,
@@ -689,7 +711,10 @@ function createPublishSetupService({
     };
     const s = probe.stamps;
     if (s.known && s.usable === 0 && s.pending === 0 && s.propagating === 0) {
-      await walletHistoryOnce();
+      // Not awaited: readiness (and the swarm provider's pre-flight) must not
+      // wait on an RPC round-trip. Until it answers the hold applies, and the
+      // read emits when it lands.
+      void walletHistoryOnce();
     }
   }
 
@@ -864,9 +889,17 @@ function createPublishSetupService({
 
   // The bundled node logged rediscovery progress: its `/stamps` may have grown.
   function handleRediscovery() {
+    // Any probe already running may have read `/stamps` before this change.
+    rediscoveryFreshFrom = probeSeq + 1;
     emit();
     if (disposed || node.status !== 'running' || !probe) return;
-    void refresh().then(scheduleWatch);
+    const stale = probeInflight;
+    void (async () => {
+      if (stale) await stale;
+      // Joins a probe only if one started after the change.
+      await refresh();
+      scheduleWatch();
+    })();
   }
 
   // ---------------------------------------------------------------------------

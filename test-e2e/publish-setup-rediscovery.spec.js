@@ -148,6 +148,31 @@ async function openSetup(window) {
   await expect(window.locator('#sidebar-publish-setup')).toBeVisible();
 }
 
+// The Nodes tab's Swarm card, whose publishing button is the usual way in.
+async function openNodesTab(window) {
+  await expect
+    .poll(() =>
+      window.evaluate(async () => {
+        const sidebar = await import('./lib/sidebar.js');
+        sidebar.open();
+        return sidebar.isVisible();
+      })
+    )
+    .toBe(true);
+  await window.evaluate(async () => {
+    const { walletState } = await import('./lib/wallet/wallet-state.js');
+    walletState.viewMode = 'identity';
+    walletState.identityView = document.getElementById('sidebar-identity');
+    // The harness profile has no identity, so the setup CTA is up; the real
+    // app shows the identity view here.
+    document.getElementById('sidebar-setup-cta')?.classList.add('hidden');
+    document.getElementById('sidebar-identity')?.classList.remove('hidden');
+    document.querySelector('.sidebar-tabs')?.classList.remove('hidden');
+  });
+  await window.click('.sidebar-tab[data-tab="nodes"]');
+  await expect(window.locator('#node-card-swarm')).toBeVisible();
+}
+
 async function shoot(window, label) {
   const dir = process.env.PUBLISH_SHOTS_DIR;
   if (!dir) return;
@@ -230,6 +255,36 @@ test.describe('Publish setup during Ant batch rediscovery (#510)', () => {
     await expect(window.locator('#publish-setup-node-action')).toHaveText('Restart Node');
     await expect(planList(window)).toBeHidden();
     await shoot(window, 'failed');
+  });
+
+  test('the node card opens setup while checking, so a failed scan can be restarted', async ({
+    electronApp,
+    window,
+  }) => {
+    await startFakeAnt(electronApp);
+    await wireRealService(electronApp, { txCount: 7 });
+    await openNodesTab(window);
+
+    // Not a disabled "Checking Node Status…": the check can take minutes.
+    const button = window.locator('#swarm-setup-btn');
+    await expect(window.locator('#swarm-setup-hint')).toHaveText(
+      'Checking for storage this wallet already owns…'
+    );
+    await expect(button).toBeEnabled();
+
+    await logLine(
+      electronApp,
+      'WARN antd: postage batch rediscovery scan failed: rpc timeout; continuing without it'
+    );
+    await expect(window.locator('#swarm-setup-hint')).toHaveText(
+      'Restart the node before buying storage'
+    );
+    await expect(button).toBeEnabled();
+    await shoot(window, 'card-failed');
+    await button.click();
+    await expect(window.locator('#sidebar-publish-setup')).toBeVisible();
+    await expect(nodeText(window)).toHaveText(/Restart the node to check again/);
+    await expect(window.locator('#publish-setup-node-action')).toHaveText('Restart Node');
   });
 
   test('a wallet that never sent a transaction gets the plans at once', async ({

@@ -34,7 +34,7 @@
 const FINISHED_LINE = 'background batch rediscovery finished';
 const FAILED_LINE = 'postage batch rediscovery scan failed';
 
-function createRediscoveryTracker() {
+function createRediscoveryTracker({ now = () => Date.now() } = {}) {
   let current = null;
   let runs = 0;
   const listeners = new Set();
@@ -54,9 +54,12 @@ function createRediscoveryTracker() {
     return current ? { ...current } : null;
   }
 
-  /** A bundled node is being spawned: its rediscovery has not finished. */
+  /**
+   * A bundled node is being spawned: its rediscovery has not finished.
+   * `startedAt` is the spawn time, which callers bound the hold from.
+   */
   function begin() {
-    current = { run: ++runs, state: 'running', failed: false };
+    current = { run: ++runs, state: 'running', failed: false, startedAt: now() };
     notify();
     return current.run;
   }
