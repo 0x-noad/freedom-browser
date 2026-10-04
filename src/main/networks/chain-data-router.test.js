@@ -119,7 +119,7 @@ describe('chain-data-router', () => {
     expect(mockRequestViaColibri).toHaveBeenCalledWith(100, 'eth_getTransactionCount', [
       '0xabc',
       'pending',
-    ]);
+    ], { deadlineMs: expect.any(Number) });
   });
 
   test('sends historical balance reads to a source that honours the block tag', async () => {
@@ -249,7 +249,27 @@ describe('chain-data-router', () => {
     expect(mockRequestViaColibri).toHaveBeenCalledWith(100, 'eth_getCode', [
       '0xabc',
       'latest',
-    ]);
+    ], { deadlineMs: expect.any(Number) });
+  });
+
+  // The worker host terminates a Colibri worker still verifying past this
+  // deadline (#495), so it must be the same budget the caller waits for.
+  test('hands Colibri the same deadline the caller waits on', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['colibri', 'direct'] },
+      quorum: { timeoutMs: 7000 },
+    });
+    mockRequestViaColibri.mockResolvedValue('0x1');
+    await request(100, 'eth_call', [{ to: '0xabc', data: '0x' }, 'latest']);
+    expect(mockRequestViaColibri).toHaveBeenLastCalledWith(
+      100, 'eth_call', expect.any(Array), { deadlineMs: 7000 }
+    );
+    await request(100, 'eth_call', [{ to: '0xabc', data: '0x01' }, 'latest'], {
+      routingContext: { origin: 'https://app.example' },
+    });
+    expect(mockRequestViaColibri).toHaveBeenLastCalledWith(
+      100, 'eth_call', expect.any(Array), { deadlineMs: 2000 }
+    );
   });
 
   test('does not fall through to another broadcaster after an uncertain Myotis outcome', async () => {
@@ -594,7 +614,7 @@ describe('chain-data-router', () => {
     });
   });
 
-  // Colibri verifies on the main thread and truncates wide ranges, so no
+  // Colibri truncates wide ranges (#496), so no
   // caller's eth_getLogs reaches it, including a page's window.ethereum read
   // (wallet:chain-request passes only a routingContext).
   test('never routes eth_getLogs to Colibri, even for a page-driven read', async () => {
