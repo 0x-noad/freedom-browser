@@ -2,11 +2,13 @@ const mockMkdirSync = jest.fn();
 const mockReadFileSync = jest.fn();
 const mockWriteFileSync = jest.fn();
 const mockUnlinkSync = jest.fn();
+const mockRenameSync = jest.fn();
 jest.mock('node:fs', () => ({
   mkdirSync: (...args) => mockMkdirSync(...args),
   readFileSync: (...args) => mockReadFileSync(...args),
   writeFileSync: (...args) => mockWriteFileSync(...args),
   unlinkSync: (...args) => mockUnlinkSync(...args),
+  renameSync: (...args) => mockRenameSync(...args),
 }));
 
 const { createColibriService, serializeError } = require('./colibri-worker');
@@ -146,13 +148,49 @@ describe('disk storage adapter', () => {
     expect(mockReadFileSync).toHaveBeenCalledWith(`${STORAGE_DIR}/states_1`);
 
     storage.set('sync_1_42', new Uint8Array([9, 9]));
-    expect(mockWriteFileSync).toHaveBeenCalledWith(
-      `${STORAGE_DIR}/sync_1_42`,
-      new Uint8Array([9, 9]),
-    );
+    expect(mockWriteFileSync).toHaveBeenCalledTimes(1);
+    const [tmp, bytes] = mockWriteFileSync.mock.calls[0];
+    expect(bytes).toEqual(new Uint8Array([9, 9]));
+    expect(mockRenameSync).toHaveBeenCalledWith(tmp, `${STORAGE_DIR}/sync_1_42`);
 
     storage.del('states_1');
     expect(mockUnlinkSync).toHaveBeenCalledWith(`${STORAGE_DIR}/states_1`);
+  });
+
+  // A retiring worker and its same-chain replacement share these keys (#500
+  // R1-M1): the key file itself must never be truncated in place, or the
+  // other thread can read it half-written.
+  test('set writes a unique temp file in the same directory, then renames it over the key', async () => {
+    const storage = await captureStorage();
+    storage.set('states_1', Buffer.from([1]));
+    storage.set('states_1', Buffer.from([2]));
+
+    const targets = mockWriteFileSync.mock.calls.map(([file]) => file);
+    expect(targets).not.toContain(`${STORAGE_DIR}/states_1`);
+    expect(new Set(targets).size).toBe(2);
+    for (const file of targets) {
+      expect(file.startsWith(`${STORAGE_DIR}/.states_1.`)).toBe(true);
+      expect(file.endsWith('.tmp')).toBe(true);
+    }
+    expect(mockRenameSync.mock.calls).toEqual([
+      [targets[0], `${STORAGE_DIR}/states_1`],
+      [targets[1], `${STORAGE_DIR}/states_1`],
+    ]);
+    // Write before rename, every time.
+    expect(mockWriteFileSync.mock.invocationCallOrder[1])
+      .toBeLessThan(mockRenameSync.mock.invocationCallOrder[1]);
+  });
+
+  test('set removes its temp file and rethrows when the write or rename fails', async () => {
+    const storage = await captureStorage();
+    mockRenameSync.mockImplementationOnce(() => { throw Object.assign(new Error('EXDEV'), { code: 'EXDEV' }); });
+    expect(() => storage.set('states_1', Buffer.from([1]))).toThrow(/EXDEV/);
+    const tmp = mockWriteFileSync.mock.calls[0][0];
+    expect(mockUnlinkSync).toHaveBeenCalledWith(tmp);
+
+    mockWriteFileSync.mockImplementationOnce(() => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }); });
+    mockUnlinkSync.mockImplementationOnce(() => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); });
+    expect(() => storage.set('states_1', Buffer.from([2]))).toThrow(/ENOSPC/);
   });
 
   test('get returns null when the underlying file is missing (warm-cache miss)', async () => {

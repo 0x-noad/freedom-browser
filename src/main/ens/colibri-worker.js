@@ -7,7 +7,7 @@
 // can then be stopped with `worker.terminate()` instead of running to the end.
 const fs = require('node:fs');
 const path = require('node:path');
-const { isMainThread, parentPort, workerData } = require('node:worker_threads');
+const { isMainThread, parentPort, threadId, workerData } = require('node:worker_threads');
 
 // privacy_mode 'basic' is a strict improvement (call params never sent
 // to the prover); pinning rather than exposing as a toggle keeps the
@@ -21,8 +21,17 @@ const MAX_ERROR_MESSAGE = 2000;
 // The bundled default writes these to process.cwd(), which means launching
 // the browser from a different directory loses the warm-cache state and
 // scatters files across the filesystem. The host passes a stable per-app dir
-// (`<userData>/colibri`); keys are chain-scoped, so per-chain workers sharing
-// the directory never write the same file.
+// (`<userData>/colibri`); keys are chain-scoped, so workers for *different*
+// chains never write the same file. Two workers for the *same* chain can,
+// though: when a WASM trap retires a worker that still has requests in
+// flight, it keeps draining (with a fresh instance on the same storage) while
+// its replacement already serves new requests, and both read and write the
+// same `states_<chain>` / `sync_<chain>_*` keys. A plain writeFileSync
+// truncates the target before writing, so a read from the other thread in
+// between would see an empty or partial file. `set` therefore writes a temp
+// file unique to this thread and renames it over the key: rename replaces the
+// target atomically, so a reader sees either the old bytes or the new ones.
+let tmpCounter = 0;
 function createDiskStorage(dir) {
   fs.mkdirSync(dir, { recursive: true });
   return {
@@ -30,7 +39,18 @@ function createDiskStorage(dir) {
       try { return fs.readFileSync(path.join(dir, key)); }
       catch { return null; }
     },
-    set: (key, value) => { fs.writeFileSync(path.join(dir, key), value); },
+    set: (key, value) => {
+      const target = path.join(dir, key);
+      tmpCounter += 1;
+      const tmp = path.join(dir, `.${key}.${process.pid}-${threadId}-${tmpCounter}.tmp`);
+      try {
+        fs.writeFileSync(tmp, value);
+        fs.renameSync(tmp, target);
+      } catch (err) {
+        try { fs.unlinkSync(tmp); } catch { /* never created, or already renamed */ }
+        throw err;
+      }
+    },
     del: (key) => {
       try { fs.unlinkSync(path.join(dir, key)); }
       catch (err) { if (err.code !== 'ENOENT') throw err; }
