@@ -1,9 +1,9 @@
 // Main-process side of the chainlist catalog (#503 item 12): the add-chain
 // search's IPC handlers call these, and the work runs in
 // `chain-catalog-worker.js` — one lazily spawned worker that keeps the parsed
-// catalog in memory across searches. Only when that worker cannot run at all
-// (see task-worker-host.js) is the catalog loaded on the main thread, as it
-// was before.
+// catalog in memory across searches. Only when that worker cannot start, or
+// crashes while serving a request (see task-worker-host.js), is the catalog
+// loaded on the main thread for that request, as it was before.
 const path = require('node:path');
 const { app } = require('electron');
 const { createTaskWorkerHost, TaskWorkerUnavailable } = require('../task-worker-host');

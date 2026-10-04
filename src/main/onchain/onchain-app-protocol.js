@@ -354,15 +354,36 @@ async function withDeadline(promise, timeoutMs, signal) {
 }
 
 // `{ html, htmlHash }` for an html() result, decoded and hashed off the main
-// thread. Only when the worker cannot run at all is it done here, as before.
-async function decodeHtmlInWorker(result) {
+// thread. Done here instead only when the worker cannot start, or crashes
+// while on this very document (see task-worker-host.js) — then this one
+// document costs the main thread its ~1 s, as it did before the worker.
+async function decodeHtmlInWorker(result, signal) {
   // O(1), before an oversized result is copied to the worker at all.
   assertHtmlResultSize(result);
   try {
-    return await htmlWorker.run('decode', { result });
+    return await htmlWorker.run('decode', { result }, { signal });
   } catch (error) {
     if (!(error instanceof TaskWorkerUnavailable)) throw error;
+    if (signal?.aborted) throw abortError('onchain app request aborted');
     return decodeHtmlDocument(result);
+  }
+}
+
+// The decode shares the request's deadline and cancellation with the chain
+// read: a navigation that was aborted, or has used up its budget, stops
+// holding (or waiting for) the single decode worker.
+async function decodeWithinDeadline(result, remainingMs, signal) {
+  const controller = new AbortController();
+  try {
+    return await withDeadline(
+      decodeHtmlInWorker(result, controller.signal),
+      Math.max(0, remainingMs),
+      signal
+    );
+  } finally {
+    // A no-op once the decode has settled; otherwise drops it from the queue
+    // or stops the worker that is on it.
+    controller.abort();
   }
 }
 
@@ -403,6 +424,7 @@ async function handleOnchainAppRequest(
     }
   }
 
+  const startedAt = Date.now();
   try {
     const chainResult = await withDeadline(
       Promise.resolve(
@@ -422,7 +444,11 @@ async function handleOnchainAppRequest(
       timeoutMs,
       request.signal
     );
-    const { html, htmlHash } = await decodeHtmlInWorker(chainResult?.result);
+    const { html, htmlHash } = await decodeWithinDeadline(
+      chainResult?.result,
+      timeoutMs - (Date.now() - startedAt),
+      request.signal
+    );
     const provenance = buildOnchainProvenance(htmlHash, app, chainResult || {});
     const trustLevel = provenance.trust?.level;
     const trusted = trustLevel === 'verified' || trustLevel === 'user-configured';
@@ -579,11 +605,7 @@ function installOnchainProvenanceCapture() {
   registerWebRequestHandler('onBeforeRequest', 'onchain-app-guard', guardOnchainAppRequest, {
     failClosed: true,
   });
-  registerWebRequestHandler(
-    'onHeadersReceived',
-    'onchain-provenance',
-    captureOnchainProvenance
-  );
+  registerWebRequestHandler('onHeadersReceived', 'onchain-provenance', captureOnchainProvenance);
 }
 
 function registerOnchainProvenanceIpc() {
@@ -609,9 +631,7 @@ function registerOnchainAppProtocol(targetSession, { privatePartition = null } =
   const trustState = createOnchainAppTrustState();
   try {
     targetSession.protocol.handle('web3', (request) =>
-      runWithPrivateLogContext(isPrivate, () =>
-        handleOnchainAppRequest(request, { trustState })
-      )
+      runWithPrivateLogContext(isPrivate, () => handleOnchainAppRequest(request, { trustState }))
     );
     log.info('[onchain-app] web3: handler registered');
   } catch (error) {

@@ -573,7 +573,11 @@ describe('html() decoding off the main thread (#503 item 9)', () => {
 
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe(html);
-    expect(run).toHaveBeenCalledWith('decode', { result: encodedHtml(html) });
+    expect(run).toHaveBeenCalledWith(
+      'decode',
+      { result: encodedHtml(html) },
+      { signal: expect.any(AbortSignal) }
+    );
     // The worker has its own copy of ethers; this one was never asked.
     expect(decodeOnMain).not.toHaveBeenCalled();
     const provenance = decodeOnchainProvenance(response.headers.get(PROVENANCE_HEADER));
@@ -627,5 +631,45 @@ describe('html() decoding off the main thread (#503 item 9)', () => {
     expect(response.status).toBe(502);
     await expect(run.mock.results[0].value).rejects.toBeInstanceOf(TaskWorkerTimeout);
     expect(decodeOnMain).not.toHaveBeenCalled();
+  });
+
+  function hangingWorker() {
+    const hanging = path.join(dir, 'hanging-worker.js');
+    fs.writeFileSync(hanging, "require('node:worker_threads').parentPort.on('message', () => {});");
+    return hanging;
+  }
+
+  test('the request deadline covers the decode, not just the chain read', async () => {
+    // The worker's own limit is far away; the request's 150 ms must still hold.
+    htmlWorker.resetForTest({ path: hangingWorker(), timeoutMs: 60_000 });
+    const run = jest.spyOn(htmlWorker, 'run');
+    const decodeOnMain = jest.spyOn(ethers.Interface.prototype, 'decodeFunctionResult');
+    const started = Date.now();
+    const response = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest: jest.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return trustedResult('<h1>never</h1>');
+      }),
+      timeoutMs: 150,
+    });
+    expect(response.status).toBe(504);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // The abandoned decode is withdrawn from the worker, not left running.
+    await expect(run.mock.results[0].value).rejects.toMatchObject({ name: 'AbortError' });
+    expect(decodeOnMain).not.toHaveBeenCalled();
+  });
+
+  test('a cancelled navigation frees the decode worker for the next load', async () => {
+    htmlWorker.resetForTest({ path: hangingWorker(), timeoutMs: 60_000 });
+    const run = jest.spyOn(htmlWorker, 'run');
+    const controller = new AbortController();
+    const pending = handleOnchainAppRequest(request(appUrl(), 'GET', controller.signal), {
+      chainRequest: jest.fn(async () => trustedResult('<h1>never</h1>')),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    controller.abort();
+    const response = await pending;
+    expect(response.status).toBe(504);
+    await expect(run.mock.results[0].value).rejects.toMatchObject({ name: 'AbortError' });
   });
 });
