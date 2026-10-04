@@ -55,11 +55,6 @@
     "keyed": false,
     "coverage": { "100": "https://rpc.gnosischain.com" }
   },
-  "gno-gatewayfm": {
-    "role": "rpc",
-    "keyed": false,
-    "coverage": { "100": "https://rpc.gnosis.gateway.fm" }
-  },
   "gno-publicnode": {
     "role": "rpc",
     "keyed": false,
