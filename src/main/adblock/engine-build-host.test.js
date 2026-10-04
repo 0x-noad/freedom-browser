@@ -6,7 +6,12 @@ const { FiltersEngine, Request } = require('@ghostery/adblocker');
 const mockLog = { warn: jest.fn(), info: jest.fn(), error: jest.fn() };
 jest.mock('../logger', () => mockLog);
 
-const { buildEngine, _setWorkerPathForTests } = require('./engine-build-host');
+const {
+  buildEngine,
+  EngineBuildTimeout,
+  _setWorkerPathForTests,
+  _setBuildDeadlineForTests,
+} = require('./engine-build-host');
 const engineBuild = require('./engine-build');
 
 const CONFIG = { loadCosmeticFilters: true, loadExtendedSelectors: false };
@@ -20,6 +25,7 @@ beforeAll(() => {
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 afterEach(() => {
   _setWorkerPathForTests();
+  _setBuildDeadlineForTests();
   jest.restoreAllMocks();
   mockLog.warn.mockClear();
 });
@@ -73,6 +79,23 @@ test('a build that fails in the worker rejects instead of retrying on main', asy
   await expect(
     buildEngine({ ...job(['ads']), resources: { text: 'not json', checksum: 'x' } })
   ).rejects.toThrow();
+  expect(inProcess).not.toHaveBeenCalled();
+  expect(mockLog.warn).not.toHaveBeenCalled();
+});
+
+test('a wedged worker is terminated at the deadline and the build rejects, not retried on main', async () => {
+  // A worker spinning forever posts nothing and never exits on its own.
+  const wedged = path.join(dir, 'wedged-worker.js');
+  fs.writeFileSync(
+    wedged,
+    "require('node:worker_threads').parentPort.once('message', () => { for (;;) {} });"
+  );
+  _setWorkerPathForTests(wedged);
+  _setBuildDeadlineForTests(300);
+  const inProcess = jest.spyOn(engineBuild, 'buildSerializedEngine');
+  const started = Date.now();
+  await expect(buildEngine(job(['ads']))).rejects.toBeInstanceOf(EngineBuildTimeout);
+  expect(Date.now() - started).toBeLessThan(5000);
   expect(inProcess).not.toHaveBeenCalled();
   expect(mockLog.warn).not.toHaveBeenCalled();
 });

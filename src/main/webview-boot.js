@@ -77,7 +77,7 @@ function getEthereumProviderInfoStatic() {
   return ethereumProviderInfoStatic;
 }
 
-// Escape '<' as < so a future field value containing '</script>' can't
+// Escape '<' as \u003c so a future field value containing '</script>' can't
 // break out of the injected <script> tag (defense in depth; today's fields
 // all come from brand.json).
 function serializeProviderInfo(info) {

@@ -14,6 +14,14 @@
  * — is not a reason to stop blocking: that build runs on the main thread
  * instead, exactly as every build did before this module. A build that
  * *fails* (the parse threw) rejects either way, as before.
+ *
+ * A build that does not answer within BUILD_DEADLINE_MS is terminated and
+ * rejects with EngineBuildTimeout. Nothing else would ever settle it — a
+ * worker stuck in a parse loop fires no message, error or exit — and every
+ * later rebuild (category toggle, allowlist change, list update) queues
+ * behind it in service.js's refreshChain. It does *not* fall back to the main
+ * thread: whatever wedged the worker would wedge the whole app there. The
+ * previous engine keeps serving, and the next rebuild tries again.
  */
 
 const path = require('node:path');
@@ -25,6 +33,12 @@ const engineBuild = require('./engine-build');
 const WORKER_PATH = path.join(__dirname, 'engine-build-worker.js');
 let workerPath = WORKER_PATH;
 
+// A normal build takes well under a second (~240 ms median, #512); this is
+// generous enough for a slow machine under load and short enough that a
+// wedged build releases the rebuild queue within the session.
+const BUILD_DEADLINE_MS = 60_000;
+let buildDeadlineMs = BUILD_DEADLINE_MS;
+
 class EngineWorkerUnavailable extends Error {
   constructor(message) {
     super(message);
@@ -32,13 +46,22 @@ class EngineWorkerUnavailable extends Error {
   }
 }
 
+class EngineBuildTimeout extends Error {
+  constructor(ms) {
+    super(`engine build did not finish within ${ms} ms; worker terminated`);
+    this.name = 'EngineBuildTimeout';
+  }
+}
+
 function buildInWorker(job) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let worker;
+    let deadline = null;
     const finish = (fn, value) => {
       if (settled) return;
       settled = true;
+      if (deadline) clearTimeout(deadline);
       try {
         Promise.resolve(worker?.terminate()).catch(() => {});
       } catch {
@@ -69,6 +92,11 @@ function buildInWorker(job) {
     );
     // A build still running at quit must not keep the process alive.
     worker.unref?.();
+    deadline = setTimeout(
+      () => finish(reject, new EngineBuildTimeout(buildDeadlineMs)),
+      buildDeadlineMs
+    );
+    deadline.unref?.();
     try {
       worker.postMessage(job);
     } catch (err) {
@@ -98,4 +126,15 @@ function _setWorkerPathForTests(testPath = WORKER_PATH) {
   workerPath = testPath;
 }
 
-module.exports = { buildEngine, WORKER_PATH, _setWorkerPathForTests };
+function _setBuildDeadlineForTests(ms = BUILD_DEADLINE_MS) {
+  buildDeadlineMs = ms;
+}
+
+module.exports = {
+  buildEngine,
+  EngineBuildTimeout,
+  WORKER_PATH,
+  BUILD_DEADLINE_MS,
+  _setWorkerPathForTests,
+  _setBuildDeadlineForTests,
+};

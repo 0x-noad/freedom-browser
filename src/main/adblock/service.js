@@ -97,6 +97,17 @@ let artifactsDirOverride = null;
 let installed = false;
 let cacheDir = null;
 let engine = null;
+// Set while a build runs in the worker with no engine loaded at all (a
+// no-cache first launch, e.g. after an update bumps ADBLOCKER_VERSION).
+// When the parse ran on the main thread, requests and scriptlet lookups
+// arriving meanwhile simply queued behind it and then met the fresh engine;
+// with the build in a worker they would run against no engine and go
+// unblocked. So they wait on this instead — bounded by FIRST_ENGINE_HOLD_MS,
+// after which they pass through as they would with adblock off. An engine
+// that is merely being *replaced* never sets it: the old one keeps serving.
+let engineWait = null;
+const FIRST_ENGINE_HOLD_MS = 5000;
+let firstEngineHoldMs = FIRST_ENGINE_HOLD_MS;
 let lastArtifacts = null;
 // False until the first engine build has looked for lists on disk. Until
 // then `lastArtifacts === null` means "not checked yet", not "no lists", and
@@ -413,24 +424,53 @@ async function rebuildEngineOnce() {
     }
   }
 
-  const { bytes, warnings, inWorker } = await engineBuildHost.buildEngine({
-    lists: enabledListJobs(settings, resolved),
-    trustedNames: resources ? [...resources.trustedNames] : [],
-    resources: resources ? { text: resources.text, checksum: resources.checksum } : null,
-    config: ENGINE_CONFIG,
-  });
-  for (const warning of warnings) log.warn(`[adblock] ${warning}`);
-  if (!bytes) {
-    engine = null;
-    return;
+  const releaseHold = engine ? null : holdUntilEngine();
+  let bytes, warnings, inWorker;
+  try {
+    ({ bytes, warnings, inWorker } = await engineBuildHost.buildEngine({
+      lists: enabledListJobs(settings, resolved),
+      trustedNames: resources ? [...resources.trustedNames] : [],
+      resources: resources ? { text: resources.text, checksum: resources.checksum } : null,
+      config: ENGINE_CONFIG,
+    }));
+    for (const warning of warnings) log.warn(`[adblock] ${warning}`);
+    engine = bytes ? FiltersEngine.deserialize(bytes) : null;
+  } finally {
+    // Released after `engine` is set, so held requests see the new engine.
+    releaseHold?.();
   }
-  engine = FiltersEngine.deserialize(bytes);
+  if (!engine) return;
   log.info(
     `[adblock] filter engine ready (${resolved.version}, categories: ${categoriesKey}, ` +
       `scriptlets: ${resources ? resources.entry.version || 'yes' : 'none'}` +
       `${inWorker ? '' : ', built on the main thread'})`
   );
   if (cacheFile) await writeEngineCache(cacheFile, bytes);
+}
+
+/** Start holding engine consumers (see `engineWait`); returns the release. */
+function holdUntilEngine() {
+  let resolveWait;
+  const wait = new Promise((resolve) => (resolveWait = resolve));
+  const release = () => {
+    clearTimeout(timer);
+    if (engineWait === wait) engineWait = null;
+    resolveWait();
+  };
+  const timer = setTimeout(release, firstEngineHoldMs);
+  timer.unref?.();
+  engineWait = wait;
+  return release;
+}
+
+/**
+ * A promise to wait on before answering from the engine, or null to answer
+ * now: only while the first engine is being built and blocking is enabled.
+ */
+function pendingFirstEngine() {
+  if (engine || !engineWait) return null;
+  if (loadSettings().adblockEnabled === false) return null;
+  return engineWait;
 }
 
 /**
@@ -452,7 +492,8 @@ function adblockRequestForDispatch(details) {
     return null;
   }
 
-  if (!engine || loadSettings().adblockEnabled === false) return null;
+  if (!engine && !engineWait) return null;
+  if (loadSettings().adblockEnabled === false) return null;
   if (!isInterceptableUrl(url)) return null;
   // The app's own dials — ENS CCIP-Read gateways, the external IPFS gateway —
   // share this session's webRequest chain (`ipfs/gateway-transport.js`), but
@@ -464,6 +505,12 @@ function adblockRequestForDispatch(details) {
   // engine so it skips its own URL parse.
   const hostname = hostnameFromUrl(url);
   if (!hostname || isLoopbackHost(hostname)) return null;
+
+  if (!engine) {
+    // First engine still building (see `engineWait`); the only async path.
+    const wait = pendingFirstEngine();
+    return wait ? wait.then(() => (engine ? adblockRequestForDispatch(details) : null)) : null;
+  }
 
   const sourceUrl = topLevelUrls.get(webContentsId) || details.referrer || '';
   const sourceHostname = hostnameFromUrl(sourceUrl) || '';
@@ -642,19 +689,29 @@ function registerAdblockIpc() {
   ipcMain.handle(IPC.ADBLOCK_REMOVE_ALLOWLIST_HOST, (_event, host) => removeAllowlistedHost(host));
   // Requested per-frame by the webview preload; sender id scopes the
   // allowlist to the tab's top-level host.
-  ipcMain.handle(IPC.ADBLOCK_COSMETIC, (event, args) =>
-    getCosmeticFilters({ ...args, sourceId: event.sender?.id })
-  );
+  ipcMain.handle(IPC.ADBLOCK_COSMETIC, async (event, args) => {
+    await pendingFirstEngine();
+    return getCosmeticFilters({ ...args, sourceId: event.sender?.id });
+  });
   // Synchronous: the preload must have the scriptlets before the page's first
   // script runs. Sub-frames send it too; their sender is the tab's guest
   // webContents, so the allowlist still keys on the tab's top-level host.
+  // While the first engine builds, the reply is set once it lands (bounded by
+  // FIRST_ENGINE_HOLD_MS): a sync IPC reply may be set asynchronously, and the
+  // asking frame stays blocked until it is — as it was when the parse held
+  // the main thread — while the main thread itself stays free.
   ipcMain.on(IPC.ADBLOCK_SCRIPTLETS, (event, args) => {
-    try {
-      event.returnValue = getScriptlets({ url: args?.url, sourceId: event.sender?.id });
-    } catch (err) {
-      log.warn(`[adblock] scriptlet lookup failed: ${err.message}`);
-      event.returnValue = { script: '' };
-    }
+    const reply = () => {
+      try {
+        event.returnValue = getScriptlets({ url: args?.url, sourceId: event.sender?.id });
+      } catch (err) {
+        log.warn(`[adblock] scriptlet lookup failed: ${err.message}`);
+        event.returnValue = { script: '' };
+      }
+    };
+    const wait = pendingFirstEngine();
+    if (wait) wait.then(reply);
+    else reply();
   });
 }
 
@@ -681,6 +738,8 @@ function _resetAdblockForTests() {
   installed = false;
   cacheDir = null;
   engine = null;
+  engineWait = null;
+  firstEngineHoldMs = FIRST_ENGINE_HOLD_MS;
   lastArtifacts = null;
   artifactsResolved = false;
   allowlistedHosts = [];
@@ -704,4 +763,7 @@ module.exports = {
   getEnabledCategories,
   getEnabledFeedCategories,
   _resetAdblockForTests,
+  _setFirstEngineHoldForTests: (ms) => {
+    firstEngineHoldMs = ms;
+  },
 };
