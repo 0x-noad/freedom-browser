@@ -90,12 +90,18 @@ const gsocDerivationCache = new Map();
 const gsocInFlight = new Map();
 
 // New-topic budget per origin. Mining runs off the main thread now, but it
-// still costs ~0.1-0.5 s of a CPU core per topic, and every origin shares the
-// one mining worker — a page cycling through fresh topics (the cache only
-// holds 128) would otherwise keep that core busy and delay every other page's
-// rooms. Only derivations that actually start mining count: cache hits and
-// joins of an in-flight derivation are free. 16 a minute is far beyond what a
-// chat app joining its rooms needs.
+// still costs a CPU core for ~0.02-1 s per topic (up to ~5 s for a topic whose
+// search runs to bee-js's 0xffff-key cap), and every origin shares the one
+// mining worker. The budget bounds how many topics an origin can start — a page
+// cycling through fresh topics (the cache only holds 128) — but it counts
+// topics, not mining time: 16 deliberately slow topics can still exceed a
+// minute of worker time. What keeps that from delaying other pages' rooms
+// without bound is the miner's per-origin round-robin queue (gsoc-miner.js):
+// another origin's job waits for at most one job of each busy origin, not for
+// an origin's whole backlog. Only derivations that actually start mining count
+// here, including ones that fail (a failure is not cached, so a retry mines and
+// counts again): cache hits and joins of an in-flight derivation are free.
+// 16 a minute is far beyond what a chat app joining its rooms needs.
 const NEW_TOPIC_WINDOW_MS = 60_000;
 const NEW_TOPICS_PER_WINDOW = 16;
 const newTopicStarts = new Map(); // origin → start timestamps within the window
@@ -134,11 +140,13 @@ function consumeNewTopicBudget(origin) {
   newTopicStarts.set(key, starts);
 }
 
-async function mineDerivation(topic) {
+async function mineDerivation(topic, origin) {
   const bee = getBee();
   const identifier = new Identifier(keccakOfUtf8(topic));
   const targetOverlay = keccakOfUtf8(GSOC_TARGET_CONTEXT + topic);
-  const signerHex = await mineSigner(targetOverlay, identifier.toUint8Array(), GSOC_PROXIMITY);
+  const signerHex = await mineSigner(targetOverlay, identifier.toUint8Array(), GSOC_PROXIMITY, {
+    owner: origin,
+  });
   const signer = new PrivateKey(signerHex);
   const address = toHex(
     bee.calculateSingleOwnerChunkAddress(identifier, signer.publicKey().address())
@@ -164,7 +172,7 @@ async function deriveGsoc(topic, { origin } = {}) {
   if (inFlight) return inFlight;
 
   consumeNewTopicBudget(origin);
-  const promise = mineDerivation(topic).then(
+  const promise = mineDerivation(topic, origin).then(
     (derivation) => {
       gsocInFlight.delete(topic);
       if (gsocDerivationCache.size >= GSOC_CACHE_MAX) {

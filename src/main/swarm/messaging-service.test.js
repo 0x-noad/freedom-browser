@@ -149,7 +149,9 @@ describe('deriveGsoc', () => {
     const result = await deriveGsoc('room:doc-42', { origin: 'https://a.example' });
 
     expect(mockMineSigner).toHaveBeenCalledTimes(1);
-    const [targetOverlay, identifier, proximity] = mockMineSigner.mock.calls[0];
+    const [targetOverlay, identifier, proximity, options] = mockMineSigner.mock.calls[0];
+    // The origin is passed through so the miner can queue fairly per origin.
+    expect(options).toEqual({ owner: 'https://a.example' });
     // targetOverlay derives from the namespaced context string, identifier from the raw topic
     expect(Buffer.from(targetOverlay).toString('utf-8')).toContain('freedom-gsoc-v1:room:doc-42');
     expect(Buffer.from(identifier).toString('hex')).toBe(Buffer.from('keccak:room:doc-42').toString('hex'));

@@ -24,8 +24,8 @@ async function flush() {
   await jest.advanceTimersByTimeAsync(0);
 }
 
-function start() {
-  const promise = miner.mineSigner(OVERLAY, IDENTIFIER, 12);
+function start(owner) {
+  const promise = miner.mineSigner(OVERLAY, IDENTIFIER, 12, owner === undefined ? undefined : { owner });
   promise.catch(() => {});
   return promise;
 }
@@ -102,6 +102,29 @@ test('a queued job’s clock starts only when it is dispatched', async () => {
   expect(worker.terminate).not.toHaveBeenCalled();
   worker.emit('message', { type: 'result', id: jobs(worker)[1].id, ok: true, signer: '02' });
   await expect(second).resolves.toBe('02');
+});
+
+test('queued jobs are served round-robin across owners, not FIFO', async () => {
+  // Origin A queues a backlog first; B's job must not wait behind all of it.
+  const order = [];
+  const settle = (label) => (signer) => order.push(`${label}:${signer}`);
+  start('https://a.example').then(settle('a1'));
+  start('https://a.example').then(settle('a2'));
+  start('https://a.example').then(settle('a3'));
+  start('https://b.example').then(settle('b1'));
+  start('https://b.example').then(settle('b2'));
+  start().then(settle('none1'));
+  const worker = lastWorker();
+  for (let i = 0; i < 6; i += 1) {
+    const all = jobs(worker);
+    expect(all).toHaveLength(i + 1);
+    worker.emit('message', { type: 'result', id: all[i].id, ok: true, signer: String(i) });
+    await flush();
+  }
+  // a1 was already running; A never gets two turns in a row, and no owner
+  // waits for more than one job of each other owner: none1 (queued last, behind
+  // A's and B's whole backlogs) is third, not sixth.
+  expect(order).toEqual(['a1:0', 'b1:1', 'a2:2', 'none1:3', 'b2:4', 'a3:5']);
 });
 
 test('a runaway job is terminated at the hard timeout and the next job gets a fresh worker', async () => {

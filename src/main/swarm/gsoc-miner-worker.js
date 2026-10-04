@@ -1,7 +1,8 @@
 // Worker-thread side of GSOC signer mining (#503). bee-js's gsocMine is a
-// synchronous loop of pure-JS secp256k1 key derivations — 230-470 ms for a
-// proximity-12 topic, measured on Electron's main thread, where it froze every
-// window. The main process sends one job at a time (`gsoc-miner.js`) and can
+// synchronous loop of pure-JS secp256k1 key derivations — 16-930 ms per
+// proximity-12 topic across 12 topics measured on Electron's main thread
+// (#504), where it froze every window; a topic whose search runs to bee-js's
+// 0xffff-key cap takes ~5 s before it gives up. The main process sends one job at a time (`gsoc-miner.js`) and can
 // stop a runaway one with `worker.terminate()`.
 //
 // The mining itself is bee-js's own `messaging.gsocMine`, called with exactly

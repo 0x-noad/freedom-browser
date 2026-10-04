@@ -6,6 +6,14 @@
 // mining loop never yields, so a job's clock has to start when the worker
 // actually begins it, or queued jobs would time out behind a slow one.
 //
+// The queue is fair across owners (the requesting origin): one FIFO per owner,
+// served round-robin, one job per turn. The per-origin new-topic budget in
+// messaging-service.js caps how many topics an origin can start, not how long
+// they mine — a topic can take up to ~5 s (or the full timeout), so 16 slow
+// topics a minute can exceed a minute of worker time. With round-robin, a newly
+// queued job waits for at most one job from each other owner with work queued
+// (plus the one running), never for one owner's whole backlog.
+//
 // A job still running after MINE_TIMEOUT_MS is a runaway — bee-js caps its
 // search at 0xffff keys, which takes ~5 s on Electron's Node — so the worker
 // is terminated, that job fails, and the next job spawns a fresh worker.
@@ -34,7 +42,9 @@ class GsocMiningError extends Error {
 let mineTimeoutMs = MINE_TIMEOUT_MS;
 let entry = null; // { worker, terminated }
 let current = null; // { id, job, resolve, reject, timer, entry }
-const queue = [];
+// owner → FIFO of jobs. Map iteration order is the round-robin order: the
+// owner served is moved to the back if it still has jobs queued.
+const queues = new Map();
 let nextJobId = 1;
 
 function terminate(target) {
@@ -92,9 +102,35 @@ function spawn() {
   return target;
 }
 
+// The owner whose job was dispatched last. It goes after every other owner with
+// work queued — including one that queued its first job while it was running
+// and so sits behind it in `queues`.
+let lastOwner = null;
+
+function nextJob() {
+  let owner = null;
+  for (const key of queues.keys()) {
+    if (key !== lastOwner) {
+      owner = key;
+      break;
+    }
+  }
+  if (owner === null) {
+    if (!queues.has(lastOwner)) return null;
+    owner = lastOwner;
+  }
+  const ownerQueue = queues.get(owner);
+  const job = ownerQueue.shift();
+  queues.delete(owner);
+  if (ownerQueue.length > 0) queues.set(owner, ownerQueue);
+  lastOwner = owner;
+  return job;
+}
+
 function pump() {
-  if (current || queue.length === 0) return;
-  const job = queue.shift();
+  if (current) return;
+  const job = nextJob();
+  if (!job) return;
   try {
     if (!entry || entry.terminated) entry = spawn();
   } catch (err) {
@@ -128,11 +164,15 @@ function pump() {
  * @param {Uint8Array} targetOverlay
  * @param {Uint8Array} identifier
  * @param {number} proximity
+ * @param {{ owner?: string }} [options] - who the job is for (the requesting
+ *   origin); queued jobs are served round-robin across owners.
  * @returns {Promise<string>} the signer's private key, hex
  */
-function mineSigner(targetOverlay, identifier, proximity) {
+function mineSigner(targetOverlay, identifier, proximity, { owner } = {}) {
+  const key = String(owner || '');
   return new Promise((resolve, reject) => {
-    queue.push({
+    if (!queues.has(key)) queues.set(key, []);
+    queues.get(key).push({
       id: nextJobId++,
       targetOverlay: Uint8Array.from(targetOverlay),
       identifier: Uint8Array.from(identifier),
@@ -146,7 +186,9 @@ function mineSigner(targetOverlay, identifier, proximity) {
 
 function resetForTest({ timeoutMs = MINE_TIMEOUT_MS } = {}) {
   mineTimeoutMs = timeoutMs;
-  const pending = queue.splice(0);
+  const pending = [...queues.values()].flat();
+  queues.clear();
+  lastOwner = null;
   for (const job of pending) job.reject(new GsocMiningError('reset', 'gsoc_mining_failed'));
   if (entry) lose(entry, 'test reset');
   if (current) finishCurrent((job) => job.reject(new GsocMiningError('reset', 'gsoc_mining_failed')));
