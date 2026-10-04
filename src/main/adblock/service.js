@@ -474,9 +474,12 @@ function pendingFirstEngine() {
 }
 
 /**
- * Pure dispatcher handler — returns `{cancel}` / `{redirectURL}` or
- * `null` to pass through. Runs on the request hot path: no I/O, no
- * awaits.
+ * Dispatcher handler — returns `{cancel}` / `{redirectURL}` or `null` to
+ * pass through. Runs on the request hot path: no I/O, and synchronous in
+ * every case but one — while the first engine is still being built with no
+ * cache to load (see `pendingFirstEngine`), it returns a *Promise* of that
+ * same result instead, so callers must accept either (the
+ * webrequest-dispatcher awaits it).
  */
 function adblockRequestForDispatch(details) {
   const { url, resourceType, webContentsId } = details;
