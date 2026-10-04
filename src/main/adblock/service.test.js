@@ -34,6 +34,7 @@ const dispatcherMock = require('../webrequest-dispatcher');
 const { netGatewayFetch } = require('../ipfs/gateway-transport');
 const { FakeClientRequest } = require('../../../test/helpers/fake-electron-net');
 const { loadSettings } = require('../settings-store');
+const engineBuildHost = require('./engine-build-host');
 const {
   installAdblockInterception,
   adblockRequestForDispatch,
@@ -425,22 +426,21 @@ describe('refreshEngine', () => {
   test('a slower earlier build cannot overwrite a newer one (settings race)', async () => {
     // Settings changes fire refreshEngine() without awaiting each other.
     // Build #1 sees cookies enabled and is made artificially slow (its
-    // cookies-list read blocks on a gate); build #2 sees them disabled
-    // again. However the two interleave, the engine must end up
-    // reflecting the newest settings: cookies not blocked. Caching is off
-    // so both builds really parse list text.
+    // worker build is held on a gate until it would otherwise be stale);
+    // build #2 sees them disabled again. However the two interleave, the
+    // engine must end up reflecting the newest settings: cookies not
+    // blocked. Caching is off so both builds really parse list text.
     _resetAdblockForTests();
     installAdblockInterception({ artifactsDir, cacheDir: null });
 
-    const realReadFile = fs.promises.readFile;
-    let releaseCookiesRead;
-    const gate = new Promise((resolve) => (releaseCookiesRead = resolve));
-    const readFileSpy = jest
-      .spyOn(fs.promises, 'readFile')
-      .mockImplementation(async (file, ...args) => {
-        if (String(file).includes('easylist-cookies')) await gate;
-        return realReadFile(file, ...args);
-      });
+    const realBuild = engineBuildHost.buildEngine;
+    let releaseCookiesBuild;
+    const gate = new Promise((resolve) => (releaseCookiesBuild = resolve));
+    const buildSpy = jest.spyOn(engineBuildHost, 'buildEngine').mockImplementation(async (job) => {
+      const result = await realBuild(job);
+      if (job.lists.some((list) => list.category === 'cookies')) await gate;
+      return result;
+    });
 
     try {
       loadSettings.mockReturnValue({ ...DEFAULT_TEST_SETTINGS, adblockCookies: true });
@@ -451,10 +451,10 @@ describe('refreshEngine', () => {
 
       // Give any ungated build time to finish, then unblock the slow one.
       await new Promise((resolve) => setTimeout(resolve, 50));
-      releaseCookiesRead();
+      releaseCookiesBuild();
       await Promise.all([first, second]);
     } finally {
-      readFileSpy.mockRestore();
+      buildSpy.mockRestore();
     }
 
     navigateTab(7, 'https://news.example/story');

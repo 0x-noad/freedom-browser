@@ -35,6 +35,8 @@ const path = require('path');
 const crypto = require('crypto');
 const log = require('../logger');
 const { FiltersEngine, Request, Resources, ENGINE_VERSION } = require('@ghostery/adblocker');
+const engineBuildHost = require('./engine-build-host');
+const { stripTrustedScriptlets } = require('./engine-build');
 const ADBLOCKER_VERSION = require('@ghostery/adblocker/package.json').version;
 const { registerWebRequestHandler } = require('../webrequest-dispatcher');
 const { isGatewayTransportRequest } = require('../ipfs/gateway-transport');
@@ -277,40 +279,21 @@ function trustedScriptletNames(resources) {
   return names;
 }
 
-// A `+js(...)` injection rule (not an `#@#` exception), capturing the
-// scriptlet name.
-const SCRIPTLET_RULE_RE = /^[^\n]*?#[$?]?#\+js\(\s*([^,)\s]+)[^\n]*$/gm;
-
-/**
- * Drop the rules of `text` that invoke a trust-requiring scriptlet. Anything
- * named `trusted-*` counts even if the resources file doesn't list it, so a
- * newer list can't slip one past an older resources file.
- */
-function stripTrustedScriptlets(text, trustedNames) {
-  if (!text.includes('+js(')) return text;
-  return text.replace(SCRIPTLET_RULE_RE, (line, name) =>
-    name.startsWith('trusted-') || trustedNames.has(name) ? '' : line
-  );
-}
-
-async function readEnabledListsText(settings, resolved, trustedNames = new Set()) {
-  const texts = [];
+// The enabled lists in build order, for engine-build.js: per category, the
+// file of the layer serving it, and whether it may keep `trusted-*`
+// scriptlet rules.
+function enabledListJobs(settings, resolved) {
+  const lists = [];
   for (const [category, settingKey] of CATEGORY_SETTINGS) {
     const entry = resolved.categories[category];
     if (!entry || settings[settingKey] !== true) continue;
-    try {
-      const text = await fs.promises.readFile(path.join(entry.dir, entry.file), 'utf-8');
-      texts.push(
-        TRUSTED_SCRIPTLET_CATEGORIES.has(category)
-          ? text
-          : stripTrustedScriptlets(text, trustedNames)
-      );
-    } catch (err) {
-      // A bad list disables that category, never the whole feature.
-      log.warn(`[adblock] skipping unreadable list '${category}': ${err.message}`);
-    }
+    lists.push({
+      category,
+      path: path.join(entry.dir, entry.file),
+      trusted: TRUSTED_SCRIPTLET_CATEGORIES.has(category),
+    });
   }
-  return texts.length > 0 ? texts.join('\n') : null;
+  return lists;
 }
 
 // Identity of the exact bytes an engine build compiles in: per enabled
@@ -352,7 +335,7 @@ async function readEngineCache(cacheFile) {
   }
 }
 
-async function writeEngineCache(cacheFile, builtEngine) {
+async function writeEngineCache(cacheFile, bytes) {
   try {
     await fs.promises.mkdir(cacheDir, { recursive: true });
     // Prune caches from other engine/list/category combinations.
@@ -362,7 +345,7 @@ async function writeEngineCache(cacheFile, builtEngine) {
       }
     }
     const tmpFile = `${cacheFile}.tmp`;
-    await fs.promises.writeFile(tmpFile, builtEngine.serialize());
+    await fs.promises.writeFile(tmpFile, bytes);
     await fs.promises.rename(tmpFile, cacheFile);
   } catch (err) {
     log.warn(`[adblock] failed to write engine cache: ${err.message}`);
@@ -374,7 +357,10 @@ async function writeEngineCache(cacheFile, builtEngine) {
  * settings, then swap it in. Called at install, by settings-store when
  * an adblock setting changes, and after a list update lands (WP5 Swarm
  * channel). Prefers a serialized-engine cache (milliseconds) over
- * parsing raw list text (hundreds of milliseconds of main-thread CPU).
+ * parsing raw list text (hundreds of milliseconds of CPU), and does that
+ * parsing in a worker thread (engine-build-host.js, #512): the main thread
+ * only deserializes the result, as it does for a cache hit, and the previous
+ * engine keeps blocking until the new one is swapped in.
  *
  * Builds are serialized: settings changes fire refreshes without awaiting
  * each other, and if builds overlapped, a slower earlier build (say, with a
@@ -427,19 +413,24 @@ async function rebuildEngineOnce() {
     }
   }
 
-  const text = await readEnabledListsText(settings, resolved, resources?.trustedNames);
-  if (text === null) {
+  const { bytes, warnings, inWorker } = await engineBuildHost.buildEngine({
+    lists: enabledListJobs(settings, resolved),
+    trustedNames: resources ? [...resources.trustedNames] : [],
+    resources: resources ? { text: resources.text, checksum: resources.checksum } : null,
+    config: ENGINE_CONFIG,
+  });
+  for (const warning of warnings) log.warn(`[adblock] ${warning}`);
+  if (!bytes) {
     engine = null;
     return;
   }
-  const built = FiltersEngine.parse(text, ENGINE_CONFIG);
-  if (resources) built.updateResources(resources.text, resources.checksum);
-  engine = built;
+  engine = FiltersEngine.deserialize(bytes);
   log.info(
     `[adblock] filter engine ready (${resolved.version}, categories: ${categoriesKey}, ` +
-      `scriptlets: ${resources ? resources.entry.version || 'yes' : 'none'})`
+      `scriptlets: ${resources ? resources.entry.version || 'yes' : 'none'}` +
+      `${inWorker ? '' : ', built on the main thread'})`
   );
-  if (cacheFile) await writeEngineCache(cacheFile, engine);
+  if (cacheFile) await writeEngineCache(cacheFile, bytes);
 }
 
 /**
