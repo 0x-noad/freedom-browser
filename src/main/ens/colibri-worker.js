@@ -1,0 +1,130 @@
+// Worker-thread side of Colibri (#495). Proof verification is synchronous WASM:
+// on Electron's main thread a large proof froze the whole browser until it
+// returned (21-26 s for an eth_getLogs scan, #494). Each chain gets one
+// long-lived worker running this file; it owns that chain's Colibri clients
+// and the verifier's disk storage, and the main process talks to it over
+// messages (`colibri-worker-host.js`). A verification that outlives its caller
+// can then be stopped with `worker.terminate()` instead of running to the end.
+const fs = require('node:fs');
+const path = require('node:path');
+const { isMainThread, parentPort, workerData } = require('node:worker_threads');
+
+// privacy_mode 'basic' is a strict improvement (call params never sent
+// to the prover); pinning rather than exposing as a toggle keeps the
+// threat model legible.
+const PRIVACY_MODE = 'basic';
+const MAX_LATEST_AGE_SECONDS = 60;
+const MAX_ERROR_MESSAGE = 2000;
+
+// Disk-backed storage adapter for Colibri's verifier state (sync committee
+// pubkeys, current head witness, etc — keys like "states_1" / "sync_1_<slot>").
+// The bundled default writes these to process.cwd(), which means launching
+// the browser from a different directory loses the warm-cache state and
+// scatters files across the filesystem. The host passes a stable per-app dir
+// (`<userData>/colibri`); keys are chain-scoped, so per-chain workers sharing
+// the directory never write the same file.
+function createDiskStorage(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  return {
+    get: (key) => {
+      try { return fs.readFileSync(path.join(dir, key)); }
+      catch { return null; }
+    },
+    set: (key, value) => { fs.writeFileSync(path.join(dir, key), value); },
+    del: (key) => {
+      try { fs.unlinkSync(path.join(dir, key)); }
+      catch (err) { if (err.code !== 'ENOENT') throw err; }
+    },
+  };
+}
+
+// Only plain, cloneable fields cross back to the main process. The router and
+// ethers' BrowserProvider read `code`, `data` (EVM revert bytes) and `message`.
+function serializeError(err) {
+  const out = {
+    name: typeof err?.name === 'string' ? err.name : 'Error',
+    message: String(err?.message ?? err ?? 'unknown error').slice(0, MAX_ERROR_MESSAGE),
+  };
+  if (typeof err?.code === 'number' || typeof err?.code === 'string') out.code = err.code;
+  if (typeof err?.data === 'string') out.data = err.data;
+  return out;
+}
+
+function createColibriService({ runtime, storageDir, post }) {
+  const { Colibri, Strategy } = runtime;
+  const clients = new Map();
+
+  function clientFor(clientId, config) {
+    let client = clients.get(clientId);
+    if (!client) {
+      client = new Colibri({
+        chainId: config.chainId,
+        prover: [config.proverUrl],
+        zk_proof: config.zkProof,
+        privacy_mode: PRIVACY_MODE,
+        proofStrategy: Strategy.VerifiedOnly,
+        max_latest_age_seconds: MAX_LATEST_AGE_SECONDS,
+      });
+      clients.set(clientId, client);
+    }
+    return client;
+  }
+
+  function destroy(clientId) {
+    const client = clients.get(clientId);
+    clients.delete(clientId);
+    try { client?.destroy?.(); } catch { /* the host already dropped it */ }
+  }
+
+  async function init() {
+    // A WASM trap leaves this worker's instance unusable; colibri-runtime swaps
+    // in a fresh one, but the host replaces the whole worker anyway.
+    runtime.setRuntimeResetListener?.((err) => {
+      post({ type: 'trap', message: serializeError(err).message });
+    });
+    await Colibri.register_storage(createDiskStorage(storageDir));
+  }
+
+  async function handle(message) {
+    if (message?.type === 'ping') {
+      post({ type: 'pong', id: message.id });
+      return;
+    }
+    if (message?.type === 'destroy') {
+      destroy(message.clientId);
+      return;
+    }
+    if (message?.type !== 'request') return;
+    const { id, clientId, config, method, params } = message;
+    try {
+      const result = await clientFor(clientId, config).request({ method, params });
+      post({ type: 'result', id, ok: true, result });
+    } catch (err) {
+      post({ type: 'result', id, ok: false, error: serializeError(err) });
+    }
+  }
+
+  return { init, handle, clients };
+}
+
+if (!isMainThread && parentPort) {
+  const post = (message) => parentPort.postMessage(message);
+  try {
+    // Never require the package directly — colibri-runtime pins the WASM
+    // runtime and the bounds-check flag (see the comments there).
+    const service = createColibriService({
+      runtime: require('./colibri-runtime'),
+      storageDir: workerData.storageDir,
+      post,
+    });
+    parentPort.on('message', (message) => { service.handle(message); });
+    service.init().then(
+      () => post({ type: 'ready' }),
+      (err) => post({ type: 'init-error', error: serializeError(err) })
+    );
+  } catch (err) {
+    post({ type: 'init-error', error: serializeError(err) });
+  }
+}
+
+module.exports = { createColibriService, createDiskStorage, serializeError };
