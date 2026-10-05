@@ -33,7 +33,7 @@ Inside Freedom, `bzz://`, `ipfs://`, `ipns://`, `web3://`, `rad://`, and `.onion
 
 ENS, WNS, and GNS domains are resolved against Ethereum mainnet. ENS uses the ENS Universal Resolver; WNS reads the Wei Name Service contract directly; GNS reads the Gwei Name Service contract directly.
 
-Under **Settings → Name Resolution**, enable and order the available methods:
+Under **Settings → Networks → Name Resolution**, enable and order the available methods:
 
 - **Myotis**: Reads finalized Ethereum or Gnosis state through the embedded P2P light client.
 - **Colibri**: Cryptographically verifies answers against the chain's sync committee through a configured prover.
@@ -42,7 +42,7 @@ Under **Settings → Name Resolution**, enable and order the available methods:
 
 Freedom continues through the ordered methods when an earlier source is unavailable or cannot verify a request. An unverified answer can be held provisionally while later methods try to produce a verified result.
 
-Manage per-chain public and custom endpoints under **Settings → Chains**. API keys for supported commercial providers live under **Settings → RPC Providers** and remain profile-local. For development, `ETH_RPC` prepends an endpoint to the effective Ethereum mainnet pool:
+Manage per-chain public and custom endpoints under **Settings → Networks → Chains**. API keys for supported commercial providers live under **Settings → Networks → RPC Providers** and remain profile-local. For development, `ETH_RPC` prepends an endpoint to the effective Ethereum mainnet pool:
 
 ```bash
 export ETH_RPC="http://127.0.0.1:8545"

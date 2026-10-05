@@ -94,7 +94,7 @@ test('Radicle is first-class, profile-visible, and opt-in at startup', async ({
   await expect(radicleNodeRow).toHaveCount(1);
   await expect(radicleNodeRow).toBeVisible();
   // The Tor rows follow the bundled Arti binary, not the platform (#337):
-  // the Experimental rows are up on any build that bundles one, and the Nodes
+  // the Advanced rows are up on any build that bundles one, and the Nodes
   // row appears once the integration is enabled — on every platform.
   const [torBundled, torEnabled] = await settingsPage.evaluate(async () => {
     const [binary, settings] = await Promise.all([
@@ -106,10 +106,12 @@ test('Radicle is first-class, profile-visible, and opt-in at startup', async ({
   await expect(settingsPage.locator('.profile-node[data-protocol="tor"]')).toHaveCount(
     torEnabled ? 1 : 0
   );
+  // The pre-#268 name for Advanced, which still lands there.
   await settingsPage.evaluate(() => {
     location.hash = '#experimental';
   });
-  const torExperimentalRow = settingsPage.locator('[data-tor]').first();
+  await expect.poll(() => settingsPage.evaluate(() => location.hash)).toBe('#advanced');
+  const torExperimentalRow = settingsPage.locator('#experimental [data-tor]').first();
   if (torBundled) {
     await expect(torExperimentalRow).toBeVisible();
   } else {
@@ -260,8 +262,8 @@ test('Ethereum and Gnosis expose verified chain sources and independent Myotis s
 }) => {
   await window.evaluate(() => document.getElementById('settings-btn')?.click());
   await expect
-    .poll(() => settingsEval(window, `location.hash = 'chains/100'; location.hash`))
-    .toBe('#chains/100');
+    .poll(() => settingsEval(window, `location.hash = 'networks/100'; location.hash`))
+    .toBe('#networks/100');
 
   await expect
     .poll(() =>
@@ -335,7 +337,9 @@ test('Ethereum and Gnosis expose verified chain sources and independent Myotis s
     .toEqual(['direct', 'myotis', 'colibri', 'quorum']);
 });
 
-test('custom-chain access order can be reordered from its rendered defaults', async ({ window }) => {
+test('custom-chain access order can be reordered from its rendered defaults', async ({
+  window,
+}) => {
   await window.evaluate(() => document.getElementById('settings-btn')?.click());
   await expect
     .poll(() => settingsEval(window, `typeof window.freedomAPI?.addChain`))
@@ -350,8 +354,8 @@ test('custom-chain access order can be reordered from its rendered defaults', as
   );
   expect(added).toMatchObject({ success: true });
   await expect
-    .poll(() => settingsEval(window, `location.hash = 'chains/777'; location.hash`))
-    .toBe('#chains/777');
+    .poll(() => settingsEval(window, `location.hash = 'networks/777'; location.hash`))
+    .toBe('#networks/777');
   await expect
     .poll(() =>
       settingsEval(
@@ -393,7 +397,7 @@ const openSettings = async (window, expect) => {
     .poll(() => settingsEval(window, `document.querySelectorAll('.nav-item').length`), {
       timeout: 15_000,
     })
-    .toBe(14);
+    .toBe(10);
 };
 
 // ---------------------------------------------------------------------------
@@ -405,6 +409,8 @@ const openSettings = async (window, expect) => {
 // ---------------------------------------------------------------------------
 
 // #276: clicking a nav item has to land you on a page with that item's name.
+// #268: and however many panels that entry owns, exactly one page heading —
+// each panel under it carries a panel heading instead.
 test('every nav item opens a section titled with its own label', async ({ window }) => {
   await openSettings(window, expect);
   const items = await settingsEval(
@@ -414,8 +420,27 @@ test('every nav item opens a section titled with its own label', async ({ window
       label: item.textContent.trim()
     }))`
   );
-  expect(items.length).toBe(14);
+  expect(items.map((item) => item.label)).toEqual([
+    'Profile',
+    'Appearance',
+    'Search',
+    'Downloads',
+    'Shortcuts',
+    'Privacy and security',
+    'Networks',
+    'Nodes',
+    'Advanced',
+    'About Freedom',
+  ]);
 
+  const panelTitles = {
+    privacy: ['Ad Blocking', 'Site Permissions'],
+    // Chains and RPC Providers render theirs from a view template, so only
+    // the running page sees them.
+    networks: ['Chains', 'RPC Providers', 'Name Resolution'],
+    nodes: ['Startup'],
+    about: ['Updates'],
+  };
   for (const { target, label } of items) {
     await settingsEval(window, `location.hash = '${target}'`);
     await expect
@@ -423,17 +448,22 @@ test('every nav item opens a section titled with its own label', async ({ window
         settingsEval(
           window,
           `(() => {
-            const section = document.getElementById('${target}');
-            if (!section || section.classList.contains('hidden')) return null;
-            const heading = section.querySelector('h2.section-title');
-            return heading ? heading.textContent.trim() : null;
+            const shown = [...document.querySelectorAll('main.content > .section')].filter(
+              (section) => section.getClientRects().length > 0
+            );
+            const text = (selector) =>
+              shown.flatMap((section) =>
+                [...section.querySelectorAll(selector)].map((el) => el.textContent.trim())
+              );
+            return {
+              active: document.querySelector('.nav-item.active')?.dataset.target,
+              headings: text('h2.section-title'),
+              panels: text('h3.panel-title'),
+            };
           })()`
         )
       )
-      // Startup used to open "Automatic Startup" and Name Resolution
-      // "Ethereum Name Resolution"; Chains and RPC Providers render their
-      // heading from a view template, so only this pass sees them.
-      .toBe(label);
+      .toEqual({ active: target, headings: [label], panels: panelTitles[target] || [] });
   }
 });
 
@@ -503,9 +533,9 @@ test('no rendered control bakes a glyph into its label, and removals follow the 
     await settingsEval(window, `location.hash = '${target}'`);
     await expect
       .poll(() =>
-        settingsEval(window, `!document.getElementById('${target}').classList.contains('hidden')`)
+        settingsEval(window, `document.querySelector('.nav-item.active')?.dataset.target`)
       )
-      .toBe(true);
+      .toBe(target);
     glyphs.push(
       ...(await settingsEval(
         window,
@@ -541,8 +571,8 @@ test('no rendered control bakes a glyph into its label, and removals follow the 
     })`
   );
   await expect
-    .poll(() => settingsEval(window, `location.hash = 'chains/424242'; location.hash`))
-    .toBe('#chains/424242');
+    .poll(() => settingsEval(window, `location.hash = 'networks/424242'; location.hash`))
+    .toBe('#networks/424242');
 
   await expect
     .poll(() =>
@@ -565,7 +595,7 @@ test('no rendered control bakes a glyph into its label, and removals follow the 
     );
 
   // The chevron is decorative, so a chain row announces as the chain.
-  await settingsEval(window, `location.hash = 'chains'`);
+  await settingsEval(window, `location.hash = 'networks'`);
   await expect
     .poll(() =>
       settingsEval(
@@ -585,8 +615,8 @@ test('no rendered control bakes a glyph into its label, and removals follow the 
 // #281: Settings had exactly one search field and it searched one section
 // (the Shortcuts list), so a user who found it reasonably concluded Settings
 // has no search. The page-wide field has to find a control by a word in its
-// label wherever it lives — Tor's startup toggle is under Experimental, not
-// Startup — say which section that is, take you there, and get out of the way
+// label wherever it lives — Tor's startup toggle sits under Nodes › Startup
+// since #275 — say which section that is, take you there, and get out of the way
 // on Escape. The matcher itself is unit-tested in
 // `src/renderer/pages/settings-search.test.js`; this is the live DOM, which
 // is the only place the sections rendered from IPC state exist.
@@ -616,9 +646,8 @@ test.describe('Search settings (#281)', () => {
     const field = page.locator('#settings-search');
     // The house style for a search placeholder, ellipsis included (#257).
     await expect(field).toHaveAttribute('placeholder', 'Search settings…');
-    // The page opens on Appearance; the Shortcuts field is untouched and
-    // still the only search inside a section.
-    await expect(page.locator('#appearance')).toBeVisible();
+    // The page opens on Profile, the first nav entry since #268.
+    await expect(page.locator('#profile')).toBeVisible();
     await expect(page.locator('#settings-search-results')).toBeHidden();
     await expect(page.locator('#start-tor-row')).toBeAttached();
 
@@ -627,21 +656,23 @@ test.describe('Search settings (#281)', () => {
 
     // The results replace whichever section was open, the way Chrome's do.
     await expect(page.locator('#settings-search-results')).toBeVisible();
-    await expect(page.locator('#appearance')).toBeHidden();
+    await expect(page.locator('#profile')).toBeHidden();
 
     const results = page.locator('#settings-search-list .settings-search-result');
     await expect(results.first()).toBeVisible();
     const startTor = results.filter({ hasText: 'Start Tor when Freedom opens' });
     await expect(startTor).toHaveCount(1);
-    // Which is the whole point: the result says where the setting lives.
-    await expect(startTor.locator('.settings-search-section')).toHaveText('Experimental');
+    // Which is the whole point: the result says where the setting lives —
+    // the nav entry to click and the heading under it.
+    await expect(startTor.locator('.settings-search-section')).toHaveText('Nodes › Startup');
     await expect(page.locator('#settings-search-summary')).toContainText('match “tor”');
 
     await startTor.click();
 
-    // Clicking it opens Experimental — the section the row is really in —
-    // and flashes the row itself, not just the section.
-    await expect(page.locator('#experimental')).toBeVisible();
+    // Clicking it opens Nodes — the entry the row is really in — and
+    // flashes the row itself, not just the section.
+    await expect(page.locator('#startup')).toBeVisible();
+    await expect(page.locator('.nav-item.active')).toHaveAttribute('data-target', 'nodes');
     await expect(page.locator('#settings-search-results')).toBeHidden();
     await expect
       .poll(() =>
@@ -652,7 +683,7 @@ test.describe('Search settings (#281)', () => {
         )
       )
       .toBe(true);
-    expect(await page.evaluate(() => location.hash)).toBe('#experimental');
+    expect(await page.evaluate(() => location.hash)).toBe('#nodes');
     // The row is on screen (its checkbox is the visually-hidden input behind
     // the slider, so the row is what "revealed" means here).
     await expect(page.locator('#start-tor-row')).toBeVisible();
@@ -664,7 +695,7 @@ test.describe('Search settings (#281)', () => {
     await field.press('Escape');
     await expect(field).toHaveValue('');
     await expect(page.locator('#settings-search-results')).toBeHidden();
-    await expect(page.locator('#experimental')).toBeVisible();
+    await expect(page.locator('#startup')).toBeVisible();
     expect(
       await page.evaluate(() => document.querySelectorAll('.settings-search-hit').length)
     ).toBe(0);
@@ -783,7 +814,9 @@ test.describe('Search settings (#281)', () => {
     await field.pressSequentially('colibri');
     const results = page.locator('#settings-search-list .settings-search-result');
     const colibri = results.filter({ hasText: 'Colibri' }).first();
-    await expect(colibri.locator('.settings-search-section')).toHaveText('Name Resolution');
+    await expect(colibri.locator('.settings-search-section')).toHaveText(
+      'Networks › Name Resolution'
+    );
 
     await colibri.click();
     await expect(page.locator('#ens')).toBeVisible();
@@ -836,7 +869,9 @@ test.describe('Search settings (#281)', () => {
     await field.pressSequentially('agreement');
     const threshold = results.filter({ hasText: 'Agreement threshold' });
     await expect(threshold).toHaveCount(1);
-    await expect(threshold.locator('.settings-search-section')).toHaveText('Name Resolution');
+    await expect(threshold.locator('.settings-search-section')).toHaveText(
+      'Networks › Name Resolution'
+    );
     // The one-result summary agrees with its own count.
     await expect(page.locator('#settings-search-summary')).toHaveText(
       '1 setting matches “agreement”.'
@@ -901,7 +936,7 @@ test.describe('Search settings (#281)', () => {
     await field.pressSequentially('start ethereum node');
     const ethereumNode = results.filter({ hasText: 'Start Ethereum node' });
     await expect(ethereumNode).toHaveCount(1);
-    await expect(ethereumNode.locator('.settings-search-section')).toHaveText('Startup');
+    await expect(ethereumNode.locator('.settings-search-section')).toHaveText('Nodes › Startup');
   });
 
   // A label alone does not identify a row: a chain's detail page lists
@@ -924,7 +959,7 @@ test.describe('Search settings (#281)', () => {
       .toBe(true);
 
     await page.evaluate(() => {
-      location.hash = 'chains/1';
+      location.hash = 'networks/1';
     });
     await expect
       .poll(() => page.locator('#chains-view [data-access-kind="broadcast"]').count())
@@ -1006,8 +1041,8 @@ test.describe('Search settings (#281)', () => {
         );
       }, query);
     const control = { chains: await search('chains'), direct: await search('direct rpc') };
-    expect(control.chains).toContainEqual(['Chains', 'Chains']);
-    expect(control.direct).toEqual([['Direct RPC', 'Name Resolution']]);
+    expect(control.chains).toContainEqual(['Chains', 'Networks › Chains']);
+    expect(control.direct).toEqual([['Direct RPC', 'Networks › Name Resolution']]);
     await page.evaluate(() => {
       const field = document.getElementById('settings-search');
       field.value = '';
@@ -1016,7 +1051,7 @@ test.describe('Search settings (#281)', () => {
 
     // Open Ethereum's detail, wait for it to paint, then leave.
     await page.evaluate(() => {
-      location.hash = 'chains/1';
+      location.hash = 'networks/1';
     });
     await expect
       .poll(() => page.locator('#chains-view [data-access-kind="broadcast"]').count())
@@ -1027,9 +1062,7 @@ test.describe('Search settings (#281)', () => {
     await expect(page.locator('#appearance')).toBeVisible();
 
     // The hidden section is back to the list it would show if you opened it.
-    await expect
-      .poll(() => page.locator('#chains-view .section-title').textContent())
-      .toBe('Chains');
+    await expect.poll(() => page.locator('#chains-view .panel-title').textContent()).toBe('Chains');
     expect(await page.locator('#chains-view [data-access-kind]').count()).toBe(0);
 
     // …so the search reads exactly as it did before the detour: no stale
@@ -1043,7 +1076,7 @@ test.describe('Search settings (#281)', () => {
       const field = document.getElementById('settings-search');
       field.value = '';
       field.dispatchEvent(new Event('input', { bubbles: true }));
-      location.hash = 'chains/1';
+      location.hash = 'networks/1';
     });
     await expect
       .poll(() => page.locator('#chains-view [data-access-kind="broadcast"]').count())
@@ -1052,7 +1085,7 @@ test.describe('Search settings (#281)', () => {
     // The sibling: an abandoned "Add key" edit does not stay open in the
     // hidden RPC Providers section with whatever was typed into it.
     await page.evaluate(() => {
-      location.hash = 'rpc';
+      location.hash = 'networks/rpc';
     });
     await expect
       .poll(() => page.locator('#rpc-view [data-action="edit-key"]').count())
@@ -1280,7 +1313,7 @@ test.describe('Search settings (#281)', () => {
     await expect(panel).toBeVisible();
     await page.evaluate(() => history.back());
     await expect(panel).toBeHidden();
-    await expect(page.locator('#appearance')).toBeVisible();
+    await expect(page.locator('#profile')).toBeVisible();
     await expect(field).toHaveValue('');
     expect(
       await page.evaluate(() => document.querySelectorAll('.settings-search-hit').length)
@@ -1374,7 +1407,7 @@ test.describe('Search settings (#281)', () => {
     // the index reads each section's live markup, so this is also the search
     // asking a section the user is not on.
     await page.evaluate(() => {
-      location.hash = 'chains';
+      location.hash = 'networks';
     });
     await expect
       .poll(() =>
@@ -1390,16 +1423,16 @@ test.describe('Search settings (#281)', () => {
     });
     await expect(page.locator('#appearance')).toBeVisible();
 
-    expect(await search('searchnet')).toEqual([['Searchnet', 'Chains']]);
+    expect(await search('searchnet')).toEqual([['Searchnet', 'Networks › Chains']]);
     // …and by its chain id, which is the sub-line under the name.
-    expect(await search('chain 424243')).toEqual([['Searchnet', 'Chains']]);
+    expect(await search('chain 424243')).toEqual([['Searchnet', 'Networks › Chains']]);
     // A built-in chain answers the same way — this is the list, not the one
     // chain that happens to be custom.
-    expect(await search('gnosis')).toContainEqual(['Gnosis Chain', 'Chains']);
+    expect(await search('gnosis')).toContainEqual(['Gnosis Chain', 'Networks › Chains']);
 
     // Clicking it opens Chains and marks that chain's own row, with the wash
     // as well as the edge (a `.net-row` declares its own background).
-    expect(await search('searchnet')).toEqual([['Searchnet', 'Chains']]);
+    expect(await search('searchnet')).toEqual([['Searchnet', 'Networks › Chains']]);
     await page.locator('#settings-search-list .settings-search-result').first().click();
     await expect(page.locator('#chains')).toBeVisible();
     await expect
@@ -1430,7 +1463,7 @@ test.describe('Search settings (#281)', () => {
     // as a row. It is a sentence, not a control: offered as a result it jumps
     // to and accent-marks a status message.
     await page.evaluate(() => {
-      location.hash = 'permissions';
+      location.hash = 'privacy/permissions';
     });
     await expect.poll(() => page.locator('#permissions-view .row').count()).toBe(1);
     await expect(page.locator('#permissions-view .row-label')).toHaveText('No saved permissions');
@@ -1439,23 +1472,28 @@ test.describe('Search settings (#281)', () => {
     // The section itself is still findable — only the message is not.
     expect(await search('site permissions')).toContainEqual([
       'Site Permissions',
-      'Site Permissions',
+      'Privacy and security › Site Permissions',
     ]);
     await clear();
 
-    // 3. The add-a-chain flow, opened in place on #chains — no hash change,
+    // 3. The add-a-chain flow, opened in place on #networks — no hash change,
     // so nothing else on the page knows it is up.
     await page.evaluate(() => {
-      location.hash = 'chains';
+      location.hash = 'networks';
     });
     await expect.poll(() => page.locator('#chains-view .net-row').count()).toBeGreaterThan(0);
     await page.locator('#chains-view button[data-action="add-chain"]').click();
     await expect(page.locator('#chains-view .section-title')).toHaveText('Add a chain');
-    expect(await page.evaluate(() => location.hash)).toBe('#chains');
+    expect(await page.evaluate(() => location.hash)).toBe('#networks');
+    // The form is the whole of Networks while it is open: the page heading,
+    // RPC Providers and Name Resolution step aside rather than stack under it.
+    await expect(page.locator('#networks')).toBeHidden();
+    await expect(page.locator('#rpc')).toBeHidden();
+    await expect(page.locator('#ens')).toBeHidden();
 
-    // The Chains section still answers to its own name, from the nav label
+    // The Chains section still answers to its own name, from the `data-title`
     // the builder falls back to…
-    expect(await search('chains')).toContainEqual(['Chains', 'Chains']);
+    expect(await search('chains')).toContainEqual(['Chains', 'Networks › Chains']);
     // …and the form is not offered as somewhere to go.
     expect(await search('add a chain')).toEqual([]);
     expect(await search('public chain catalogue')).toEqual([]);
@@ -1468,26 +1506,28 @@ test.describe('Search settings (#281)', () => {
       location.hash = 'appearance';
     });
     await expect(page.locator('#appearance')).toBeVisible();
-    await expect(page.locator('#chains-view .section-title')).toHaveText('Chains');
+    await expect(page.locator('#chains-view .panel-title')).toHaveText('Chains');
 
     // 4. The scope of all of that, which docs/features.md now states and
     // `settings-search.test.js` pins the wording of: a chain is named on this
     // page only in the master list, so while Chains has a single chain's own
     // page up instead, no chain answers from there — and leaving puts the
     // list, and the rows, back.
-    expect(await search('searchnet')).toEqual([['Searchnet', 'Chains']]);
+    expect(await search('searchnet')).toEqual([['Searchnet', 'Networks › Chains']]);
     await clear();
     await page.evaluate(() => {
-      location.hash = 'chains/1';
+      location.hash = 'networks/1';
     });
     await expect.poll(() => page.locator('#chains-view .net-row').count()).toBe(0);
-    expect((await search('searchnet')).filter(([, section]) => section === 'Chains')).toEqual([]);
+    expect(
+      (await search('searchnet')).filter(([, section]) => section === 'Networks › Chains')
+    ).toEqual([]);
     await clear();
     await page.evaluate(() => {
       location.hash = 'appearance';
     });
     await expect(page.locator('#appearance')).toBeVisible();
-    expect(await search('searchnet')).toEqual([['Searchnet', 'Chains']]);
+    expect(await search('searchnet')).toEqual([['Searchnet', 'Networks › Chains']]);
     await clear();
 
     // Leave the shared fixture as it was found.
@@ -1516,15 +1556,22 @@ test.describe('Search settings (#281)', () => {
 
     const headingTop = () =>
       page.evaluate(() =>
-        Math.round(document.querySelector('#ens .section-title').getBoundingClientRect().top)
+        Math.round(document.querySelector('#ens .panel-title').getBoundingClientRect().top)
       );
 
-    // Where clicking the nav item puts that heading — the answer the jump has
-    // to match, since both are "take me to Name Resolution".
-    await page.locator('.nav-item[data-target="ens"]').click();
+    // Where the route that names the panel puts that heading — the answer the
+    // jump has to match, since both are "take me to Name Resolution". It is
+    // the old `#ens` link, rewritten since #268 to the Networks panel.
+    await page.evaluate(() => {
+      location.hash = 'ens';
+    });
     await expect(page.locator('#ens')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#networks/ens');
+    // The panel is re-aligned while the panels above it paint; let it settle.
+    await page.waitForTimeout(1_200);
     const byNavClick = await headingTop();
     expect(byNavClick).toBeGreaterThan(0);
+    expect(byNavClick).toBeLessThan(100);
     await page.locator('.nav-item[data-target="appearance"]').click();
     await expect(page.locator('#appearance')).toBeVisible();
 
@@ -1535,7 +1582,7 @@ test.describe('Search settings (#281)', () => {
     await expect(results.first().locator('.row-label')).toHaveText('Name Resolution');
     await field.press('Enter');
     await expect(page.locator('#ens')).toBeVisible();
-    expect(await page.evaluate(() => location.hash)).toBe('#ens');
+    expect(await page.evaluate(() => location.hash)).toBe('#networks');
 
     // The precondition this leg exists for: if the section ever fits, the
     // assertions below pass for a reason that has nothing to do with the fix.
@@ -1555,9 +1602,9 @@ test.describe('Search settings (#281)', () => {
         )
       )
       .toBe(true);
-    expect(await headingTop()).toBe(byNavClick);
-    await expect(page.locator('#ens .section-title')).toBeInViewport();
-    await expect(page.locator('#ens .section-title')).toHaveText('Name Resolution');
+    await expect.poll(headingTop).toBe(byNavClick);
+    await expect(page.locator('#ens .panel-title')).toBeInViewport();
+    await expect(page.locator('#ens .panel-title')).toHaveText('Name Resolution');
 
     // A row reveal still centres: the answer wants its neighbours around it,
     // and a row always fits. Measured against what the page itself would do
@@ -1599,7 +1646,7 @@ test.describe('Search settings (#281)', () => {
 // renders as `freedom://settings/<section>`, so a hash the page does not
 // honour is an address bar lying about what is on screen. It used to be
 // normalized exactly once, on first load, and an unknown chain id was
-// swallowed silently — `freedom://settings/privacy` over Appearance, or
+// swallowed silently — `freedom://settings/nonsense` over Appearance, or
 // `#chains/9999` over the chain list with an empty status line. The routing
 // helpers themselves are unit-tested in
 // `src/renderer/pages/settings-hash-routing.test.js`; this is the running
@@ -1636,11 +1683,11 @@ test.describe('settings deep links name the view they open (#280)', () => {
     expect(await page.evaluate(() => location.hash)).toBe('#shortcuts');
 
     await page.evaluate(() => {
-      location.hash = 'privacy';
+      location.hash = 'nonsense';
     });
 
-    await expect(page.locator('#appearance')).toBeVisible();
-    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#appearance');
+    await expect(page.locator('#profile')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#profile');
     expect(
       await page.evaluate(() => ({
         shown: [...document.querySelectorAll('.section')]
@@ -1650,10 +1697,10 @@ test.describe('settings deep links name the view they open (#280)', () => {
           (item) => item.dataset.target
         ),
       }))
-    ).toEqual({ shown: ['appearance'], active: ['appearance'] });
+    ).toEqual({ shown: ['profile'], active: ['profile'] });
     // The point of the fix: the chrome reads the rewritten hash back.
     await expect(window.locator('[data-test="address-input"]')).toHaveValue(
-      'freedom://settings/appearance'
+      'freedom://settings/profile'
     );
   });
 
@@ -1665,18 +1712,19 @@ test.describe('settings deep links name the view they open (#280)', () => {
     const targets = await page.evaluate(() =>
       [...document.querySelectorAll('.nav-item')].map((item) => item.dataset.target)
     );
-    expect(targets.length).toBe(14);
+    expect(targets.length).toBe(10);
 
     for (const target of targets) {
       // Leave and re-enter, so each section arrives through `hashchange` —
       // the handler the fix touched — rather than only on load.
       await page.evaluate(() => {
-        location.hash = 'about';
+        location.hash = 'nonsense';
       });
       await page.evaluate((section) => {
         location.hash = section;
       }, target);
-      await expect(page.locator(`#${target}`)).toBeVisible();
+      await expect(page.locator(`main.content > [data-nav="${target}"]`).first()).toBeVisible();
+      await expect(page.locator('.nav-item.active')).toHaveAttribute('data-target', target);
       expect(await page.evaluate(() => location.hash)).toBe(`#${target}`);
     }
   });
@@ -1690,26 +1738,26 @@ test.describe('settings deep links name the view they open (#280)', () => {
     // A configured chain first: the detail view renders and the deep link
     // survives untouched, which is what must not regress.
     await page.evaluate(() => {
-      location.hash = 'chains/1';
+      location.hash = 'networks/1';
     });
     await expect(page.locator('#chains-view h2.section-title')).toHaveText('Ethereum');
-    expect(await page.evaluate(() => location.hash)).toBe('#chains/1');
+    expect(await page.evaluate(() => location.hash)).toBe('#networks/1');
     await expect(page.locator('#chains-status')).toHaveText('');
 
     // Now the chain that is not configured — removed here or in another
     // window, or a typo.
     await page.evaluate(() => {
-      location.hash = 'chains/9999';
+      location.hash = 'networks/9999';
     });
 
-    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#chains');
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#networks');
     await expect(page.locator('#chains-status')).toHaveText('That chain is no longer configured.');
-    await expect(page.locator('#chains-view h2.section-title')).toHaveText('Chains');
+    await expect(page.locator('#chains-view .panel-title')).toHaveText('Chains');
     await expect(window.locator('[data-test="address-input"]')).toHaveValue(
-      'freedom://settings/chains'
+      'freedom://settings/networks'
     );
 
-    // The add-chain form opens on the same `#chains` hash, so no
+    // The add-chain form opens on the same `#networks` hash, so no
     // `hashchange` fires for it: the notice has to be cleared by the render
     // that replaces the view, or it sits under "Add a chain" describing a
     // list that is no longer on screen.
@@ -1719,28 +1767,109 @@ test.describe('settings deep links name the view they open (#280)', () => {
 
     // Back to the list — also on the same hash — and the notice stays gone.
     await page.locator('#chains-view [data-action="cancel-add"]').click();
-    await expect(page.locator('#chains-view h2.section-title')).toHaveText('Chains');
+    await expect(page.locator('#chains-view .panel-title')).toHaveText('Chains');
     await expect(page.locator('#chains-status')).toHaveText('');
 
     // The notice explains the hash that was rewritten; navigating on is not
     // that hash any more, so it does not follow the user into a real chain.
     await page.evaluate(() => {
-      location.hash = 'chains/9999';
+      location.hash = 'networks/9999';
     });
     await expect
       .poll(() => page.evaluate(() => document.getElementById('chains-status').textContent))
       .toBe('That chain is no longer configured.');
     await page.evaluate(() => {
-      location.hash = 'chains/1';
+      location.hash = 'networks/1';
     });
     await expect(page.locator('#chains-view h2.section-title')).toHaveText('Ethereum');
-    expect(await page.evaluate(() => location.hash)).toBe('#chains/1');
+    expect(await page.evaluate(() => location.hash)).toBe('#networks/1');
     await expect(page.locator('#chains-status')).toHaveText('');
+  });
+
+  // #268 regrouped the nav, so every address the old 14-entry page answered
+  // to — bookmarks, history, and the app's own `freedom://settings/rpc` and
+  // `/profile` deep links — has to keep arriving where it pointed: on the
+  // entry that now holds that section, with that section brought up on
+  // screen rather than left below the fold of a longer page, and with the
+  // address bar rewritten to the name it has now. Typed into the real address
+  // bar, so the chrome's own parser and the page's router are both on the path.
+  test('every pre-#268 address lands on its new entry and brings its section up', async ({
+    window,
+    electronApp,
+  }) => {
+    test.setTimeout(120_000);
+    const page = await settingsPageOf(window, electronApp);
+    const input = window.locator('[data-test="address-input"]');
+    // [old address, new address, the nav entry, the panel brought up]
+    const LEGACY = [
+      ['rpc', 'networks/rpc', 'networks', 'rpc'],
+      ['ens', 'networks/ens', 'networks', 'ens'],
+      ['chains', 'networks', 'networks', 'chains'],
+      ['startup', 'nodes/startup', 'nodes', 'startup'],
+      ['adblock', 'privacy', 'privacy', 'adblock'],
+      ['permissions', 'privacy/permissions', 'privacy', 'permissions'],
+      ['experimental', 'advanced', 'advanced', 'experimental'],
+      ['updates', 'about/updates', 'about', 'updates'],
+      ['profile', 'profile', 'profile', 'profile'],
+      ['appearance', 'appearance', 'appearance', 'appearance'],
+      ['nodes', 'nodes', 'nodes', 'nodes'],
+    ];
+    for (const [old, now, entry, panel] of LEGACY) {
+      // Start each from the top of a different entry, so the arrival is a
+      // real hash change and a stale scroll offset cannot fake the reveal.
+      await page.evaluate(() => {
+        location.hash = 'search';
+        window.scrollTo(0, 0);
+      });
+      await input.click();
+      await input.fill(`freedom://settings/${old}`);
+      await input.press('Enter');
+
+      await expect.poll(() => page.evaluate(() => location.hash)).toBe(`#${now}`);
+      await expect(input).toHaveValue(`freedom://settings/${now}`);
+      await expect(page.locator('.nav-item.active')).toHaveAttribute('data-target', entry);
+      await expect(page.locator(`#${panel}`)).toBeVisible();
+      if (!now.includes('/')) {
+        // A section that heads its entry is opened at the top of the page,
+        // the entry's own heading included.
+        await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+        continue;
+      }
+      // A panel further down is brought up: once the panels above it have
+      // painted, its top sits at the top of the view — or, on a page too
+      // short to scroll it that far, the page is scrolled as far as it goes
+      // with the panel's top on screen. Not merely somewhere below the fold.
+      await expect
+        .poll(
+          () =>
+            page.evaluate((id) => {
+              const top = document.getElementById(id).getBoundingClientRect().top;
+              const atBottom =
+                window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 1;
+              return top >= 0 && top < window.innerHeight - 40 && (top <= 60 || atBottom);
+            }, panel),
+          { message: `${old} → ${now} leaves #${panel} out of view` }
+        )
+        .toBe(true);
+    }
+  });
+
+  // What #268 put on About Freedom besides Updates: the version, read from
+  // the app rather than hard-coded into the page.
+  test('About Freedom shows the running version over Updates', async ({ window, electronApp }) => {
+    const page = await settingsPageOf(window, electronApp);
+    await page.evaluate(() => {
+      location.hash = 'about';
+    });
+    const expected = await electronApp.evaluate(({ app }) => app.getVersion());
+    await expect(page.locator('#about-version')).toHaveText(expected);
+    await expect(page.locator('#updates')).toBeVisible();
+    await expect(page.locator('#auto-update')).toBeAttached();
   });
 
   // The other half of the same promise: a deep link only *is* one if it can
   // arrive through the chrome. The address bar shows a chain detail as
-  // `freedom://settings/chains/1`, so typing that back — or opening the
+  // `freedom://settings/networks/1` (`chains/1` before #268), so typing that back — or opening the
   // bookmark it makes — has to land there. The two parsers that read a
   // `freedom://` address back in — `navigation.js`'s `FREEDOM_PAGE_PATTERN`
   // and its sibling `tabs.js#freedomInternalPageTarget` — accepted a single
@@ -1757,29 +1886,39 @@ test.describe('settings deep links name the view they open (#280)', () => {
 
     // Settings already open on the chain list — the in-session case.
     await page.evaluate(() => {
-      location.hash = 'chains';
+      location.hash = 'networks';
     });
-    await expect(page.locator('#chains-view h2.section-title')).toHaveText('Chains');
-    await expect(input).toHaveValue('freedom://settings/chains');
+    await expect(page.locator('#chains-view .panel-title')).toHaveText('Chains');
+    await expect(input).toHaveValue('freedom://settings/networks');
 
     // The chrome's own chain-detail URL, committed through the address bar.
     await input.click();
-    await input.fill('freedom://settings/chains/1');
+    await input.fill('freedom://settings/networks/1');
     await input.press('Enter');
 
     await expect(page.locator('#chains-view h2.section-title')).toHaveText('Ethereum');
-    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#chains/1');
-    await expect(input).toHaveValue('freedom://settings/chains/1');
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#networks/1');
+    await expect(input).toHaveValue('freedom://settings/networks/1');
+
+    // The address this showed before #268, from a bookmark or history entry,
+    // still opens that chain — and is rewritten to the one shown now.
+    await input.click();
+    await input.fill('freedom://settings/chains/100');
+    await input.press('Enter');
+
+    await expect(page.locator('#chains-view h2.section-title')).toHaveText('Gnosis Chain');
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#networks/100');
+    await expect(input).toHaveValue('freedom://settings/networks/100');
 
     // And a chain that is not configured, which is what makes the rewrite
     // above reachable from a bookmark at all: it routes, then settles back on
     // the list with the notice.
     await input.click();
-    await input.fill('freedom://settings/chains/9999');
+    await input.fill('freedom://settings/networks/9999');
     await input.press('Enter');
 
-    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#chains');
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#networks');
     await expect(page.locator('#chains-status')).toHaveText('That chain is no longer configured.');
-    await expect(input).toHaveValue('freedom://settings/chains');
+    await expect(input).toHaveValue('freedom://settings/networks');
   });
 });

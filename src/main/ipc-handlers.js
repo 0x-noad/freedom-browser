@@ -843,6 +843,9 @@ function registerBaseIpcHandlers(callbacks = {}) {
     app.showAboutPanel();
   });
 
+  // Settings → About Freedom shows the version it is running (#268).
+  ipcMain.handle(IPC.APP_GET_VERSION, () => app.getVersion());
+
   ipcMain.handle(IPC.PROFILE_GET_ACTIVE, () => serializeActiveProfile());
   ipcMain.handle(IPC.PROFILE_LIST, () => listProfilesFromIpc());
   ipcMain.handle(IPC.PROFILE_CREATE, (event, payload = {}) =>

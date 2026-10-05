@@ -1108,6 +1108,8 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   // Tor rows only where there is one to drive (or where the integration is
   // already enabled). Same shape as checkRadicleBinary: `{ available }`.
   checkTorBinary: guardSettingsPage('checkTorBinary', () => ipcRenderer.invoke('tor:checkBinary')),
+  // The running version, for Settings → About Freedom.
+  getAppVersion: guardSettingsPage('getAppVersion', () => ipcRenderer.invoke('app:get-version')),
   onProfileUpdated: guardInternalSubscription('onProfileUpdated', 'profile:updated'),
   listProfiles: guardInternal('listProfiles', () => ipcRenderer.invoke('profile:list')),
   createProfile: guardProfileManagerPage('createProfile', (profile) =>

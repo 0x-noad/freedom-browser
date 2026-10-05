@@ -759,7 +759,7 @@ function registerTorIpc() {
   log.info('[Tor] Registering IPC handlers');
   const torDisabledResponse = {
     status: STATUS.STOPPED,
-    error: 'Tor integration is disabled. Enable it in Settings > Experimental',
+    error: 'Tor integration is disabled. Enable it in Settings > Advanced',
   };
   const isTorEnabled = () => loadSettings().enableTorIntegration === true;
 
@@ -797,7 +797,7 @@ function registerTorIpc() {
     if (!isTorEnabled()) {
       return failure(
         'TOR_DISABLED',
-        'Tor integration is disabled. Enable it in Settings > Experimental'
+        'Tor integration is disabled. Enable it in Settings > Advanced'
       );
     }
     return getArtiVersion();
