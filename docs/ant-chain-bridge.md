@@ -162,7 +162,10 @@ backend, so two of them agreeing would be no independent check, and the
 independent ones stop far short of it (publicnode at 50,000 blocks, dRPC's
 free plan at 10,000, measured 2026-10-05). Ant's first scan of a wallet, from the
 token's deploy block to the head (about 32 million blocks), used to be read
-window by window: about 3,200 quorum requests, roughly an hour.
+window by window. Measured in the real app on a fresh profile (2026-10-05,
+bundled antd v0.5.59): 49 minutes and 8,148 `eth_getLogs` requests from Ant
+(4,064 answered windows, each a quorum round, and as many refusals). With
+Blockscout: 2.4 seconds and 3 requests.
 
 Blockscout indexes the chain from its own archive node, so it and a Tenderly
 RPC agreeing are two independent providers agreeing, the rule the quorum
