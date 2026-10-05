@@ -114,7 +114,21 @@ job_list="$(printf '%s\n' "$failed_jobs" | paste -sd '|' -)"
 # the re-run below, so every call here is guarded. The reason preferred is the
 # failing test's title from Playwright's `github` reporter, then any runner
 # message other than the generic "Process completed with exit code N".
-REASON_JQ='[.[] | select(.annotation_level == "failure")] as $f
+# The reporter annotates a test that passed on a Playwright retry ("flaky")
+# exactly like one that failed; only the run summary notice tells them apart
+# ("  1 failed\n    <title> ───\n  1 flaky\n    <title> ───"), so titles it
+# lists under "flaky" are left out: they did not fail this job. Mirrors
+# summaryFlakyTitles() in scripts/ci/flake-report.js.
+REASON_JQ='[.[] | select(.annotation_level == "notice" and ((.title // "") | contains("Playwright Run Summary")))
+    | .message | split("\n")
+    | reduce .[] as $l ({s: null, t: []};
+        (($l | capture("^\\s*\\d+ (?<s>failed|interrupted|flaky|skipped|did not run|passed|errors? (was|were) not)\\b")) // null) as $h
+        | if $h then .s = $h.s
+          elif .s == "flaky" and ($l | test("\\S")) then .t += [$l | sub("[\\s─]+$"; "") | sub("^\\s+"; "")]
+          else . end)
+    | .t[]] as $flaky
+  | [.[] | select(.annotation_level == "failure")
+      | select((.title // "") as $t | any($flaky[]; . == $t) | not)] as $f
   | ([$f[] | select((.title // "") | contains("›")) | .title] | unique) as $tests
   | if ($tests | length) > 0 then ($tests | join(" ; "))
     else ([$f[] | select(.message | startswith("Process completed with exit code") | not) | .message]

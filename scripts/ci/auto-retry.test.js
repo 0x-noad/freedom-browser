@@ -158,6 +158,64 @@ maybe('auto-retry.sh', () => {
     expect(r.calls).toMatch(/^run rerun 999 --failed$/m);
   });
 
+  // R1-M3: the github reporter annotates a test that passed on a Playwright
+  // retry exactly like the one that failed the job; the run summary notice is
+  // what tells them apart (format verbatim from Playwright 1.63).
+  test('leaves a test that passed on a Playwright retry out of the reason', () => {
+    const real = '[harness] › test-e2e/onchain-apps.spec.js:460:3 › no visible webview';
+    const flaky = '[harness] › test-e2e/page-context-menu.spec.js:233:3 › search';
+    const r = setup({
+      annotations: {
+        ...ANNOTATIONS,
+        22: [
+          {
+            annotation_level: 'failure',
+            title: '',
+            message: 'Process completed with exit code 1.',
+          },
+          { annotation_level: 'failure', title: flaky, message: '1) ...\nError: y' },
+          { annotation_level: 'failure', title: real, message: '2) ...\nError: x' },
+          { annotation_level: 'failure', title: real, message: '2) ...\n    Retry #1' },
+          {
+            annotation_level: 'notice',
+            title: '🎭 Playwright Run Summary',
+            message:
+              `  1 failed\n    ${real} ${'─'.repeat(30)}\n` +
+              `  1 flaky\n    ${flaky} ${'─'.repeat(30)}\n  40 passed (2.1m)`,
+          },
+        ],
+      },
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain(`failed job: e2e-tabs — failure at step 'Run tabs E2E' — ${real}\n`);
+    expect(r.stdout).not.toContain('page-context-menu');
+  });
+
+  test('a job failed only by flaky tests is not blamed on them', () => {
+    const flaky = '[harness] › test-e2e/page-context-menu.spec.js:233:3 › search';
+    const r = setup({
+      annotations: {
+        ...ANNOTATIONS,
+        22: [
+          {
+            annotation_level: 'failure',
+            title: '',
+            message: 'Process completed with exit code 1.',
+          },
+          { annotation_level: 'failure', title: flaky, message: '1) ...\nError: y' },
+          {
+            annotation_level: 'notice',
+            title: '🎭 Playwright Run Summary',
+            message: `  1 flaky\n    ${flaky} ${'─'.repeat(30)}\n  1 error was not a part of any test, see above for details`,
+          },
+        ],
+      },
+    });
+    expect(r.stdout).toContain(
+      "failed job: e2e-tabs — failure at step 'Run tabs E2E' — Process completed with exit code 1.\n"
+    );
+  });
+
   // #535: a run its concurrency group cancelled for a newer one, which the
   // newest-run lookup missed (here: the listing still names run 999 itself).
   test('does not re-run a run its concurrency group cancelled for a newer one', () => {
