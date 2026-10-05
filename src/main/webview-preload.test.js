@@ -38,6 +38,7 @@ function loadWebviewPreloadModule(options = {}) {
     syncResponses: {
       [IPC.GET_INTERNAL_PAGES]: internalPages,
       [IPC.GET_ETHEREUM_INJECT_SOURCE]: '/* ethereum inject source stub */',
+      'internal:get-vault-inject-source': '/* vault inject source stub */',
       [IPC.PRIVATE_IS_PRIVATE]: options.isPrivateWindow === true,
       [IPC.GET_THEME]: options.theme ?? 'system',
       ...(options.syncResponses || {}),
@@ -270,7 +271,7 @@ describe('webview-preload', () => {
     }
 
     expect(consoleLogSpy).toHaveBeenCalledWith(
-      '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + radicle providers)'
+      '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + radicle + vault providers)'
     );
   });
 
@@ -1640,16 +1641,41 @@ describe('webview-preload private windows', () => {
     const messageListeners = global.window.addEventListener.mock.calls.filter(
       ([event]) => event === 'message'
     );
-    // ethereum, swarm and radicle page→host bridges.
-    expect(messageListeners).toHaveLength(3);
+    // ethereum, swarm and radicle page→host bridges, plus the vault's
+    // page→main one (the vault data plane bypasses the shell renderer).
+    expect(messageListeners).toHaveLength(4);
 
-    expect(contextBridge.executeInMainWorld).toHaveBeenCalledTimes(1);
+    // window.ethereum and window.vault both install on the early main-world path.
+    expect(contextBridge.executeInMainWorld).toHaveBeenCalledTimes(2);
     expect(contextBridge.executeInMainWorld).toHaveBeenCalledWith({
       func: expect.any(Function),
     });
     expect(document.addEventListener.mock.calls.map(([event]) => event)).not.toContain(
       'DOMContentLoaded'
     );
+  });
+
+  test('normal window: the vault provider installs on the same early path', () => {
+    const { contextBridge, documentHandlers } = loadWebviewPreloadModule({
+      location: { href: 'https://dapp.example/', protocol: 'https:', pathname: '/' },
+    });
+
+    const sources = contextBridge.executeInMainWorld.mock.calls.map(([{ func }]) => func.toString());
+    expect(sources.some((src) => src.includes('vault inject source stub'))).toBe(true);
+    // Nothing waits for DOMContentLoaded: a deferred `<script type="module">`
+    // runs before that event and would see window.vault undefined.
+    expect(documentHandlers.DOMContentLoaded).toBeUndefined();
+  });
+
+  test('private window: no vault provider, no vault bridge', () => {
+    const { contextBridge, ipcRenderer } = loadWebviewPreloadModule({
+      isPrivateWindow: true,
+      location: { href: 'https://dapp.example/', protocol: 'https:', pathname: '/' },
+    });
+
+    expect(contextBridge.executeInMainWorld).not.toHaveBeenCalled();
+    const onChannels = ipcRenderer.on.mock.calls.map(([channel]) => channel);
+    expect(onChannels).not.toContain('vault:provider-event');
   });
 
   test('normal window: falls back to DOM injection if early main-world execution fails', () => {
@@ -2083,8 +2109,9 @@ describe('webview-preload adblock scriptlets', () => {
       syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
     });
     expect(contextBridge.exposeInMainWorld).toHaveBeenCalledWith('freedomAPI', expect.any(Object));
-    // Scriptlets + the ethereum provider.
-    expect(contextBridge.executeInMainWorld).toHaveBeenCalledTimes(2);
+    // Scriptlets, the ethereum provider, and the vault provider — which uses
+    // the same early main-world path (see VAULT_INJECT_SOURCE below).
+    expect(contextBridge.executeInMainWorld).toHaveBeenCalledTimes(3);
   });
 });
 

@@ -71,6 +71,27 @@ const PUBLIC_CHANNELS = [
   // intercepted (#442). It only ever spends the asking guest's own gesture
   // and reports a blocked popup to that guest's own window.
   'popups:claim',
+  // Same bootstrap as internal:get-ethereum-inject-source above: the source
+  // the preload compiles for the page realm at document-start.
+  'internal:get-vault-inject-source',
+  // The site-facing VAULT provider. Meant for arbitrary web content: the vault
+  // derives the calling origin from `event.senderFrame.url` and can only ever
+  // reach that origin's own partition, so it never trusts anything the page
+  // says about who it is.
+  'vault:provider-request',
+  // The vault home page's owner-plane channels (freedom://dapps). These are
+  // NOT open reads — `home-tiles` enumerates every site holding vault data,
+  // which is the cross-origin history leak the vault exists to prevent. They
+  // sit at this tier because `window.vaultHome` is exposed from the same
+  // shared webview preload web content loads, so the tier cannot narrow them.
+  // The boundary is in the handler: DataVaultManager registers all four behind
+  // `homeOnly`, which matches `event.senderFrame.url` against the internal
+  // page's own file URL and refuses everything else — and declines to register
+  // them at all if the host supplies no such check.
+  'datavault:home-status',
+  'datavault:home-tiles',
+  'datavault:home-open',
+  'datavault:home-unlock',
 ];
 
 // freedomAPI methods wrapped in guardInternal (plus the internal-page theme
