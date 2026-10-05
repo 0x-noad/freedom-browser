@@ -117,16 +117,22 @@ job_list="$(printf '%s\n' "$failed_jobs" | paste -sd '|' -)"
 # The reporter annotates a test that passed on a Playwright retry ("flaky")
 # exactly like one that failed; only the run summary notice tells them apart
 # ("  1 failed\n    <title> ───\n  1 flaky\n    <title> ───"), so titles it
-# lists under "flaky" are left out: they did not fail this job. Mirrors
-# summaryFlakyTitles() in scripts/ci/flake-report.js.
+# lists under "flaky" are left out: they did not fail this job — unless some
+# summary in the same job (Playwright run twice, `--repeat-each`) also lists
+# the title as failed or interrupted. Mirrors summaryFlakyTitles() in
+# scripts/ci/flake-report.js.
 REASON_JQ='[.[] | select(.annotation_level == "notice" and ((.title // "") | contains("Playwright Run Summary")))
     | .message | split("\n")
     | reduce .[] as $l ({s: null, t: []};
         (($l | capture("^\\s*\\d+ (?<s>failed|interrupted|flaky|skipped|did not run|passed|errors? (was|were) not)\\b")) // null) as $h
         | if $h then .s = $h.s
-          elif .s == "flaky" and ($l | test("\\S")) then .t += [$l | sub("[\\s─]+$"; "") | sub("^\\s+"; "")]
+          elif (.s == "flaky" or .s == "failed" or .s == "interrupted") and ($l | test("\\S"))
+          then .t += [{s: (if .s == "flaky" then "flaky" else "failed" end),
+                       t: ($l | sub("[\\s─]+$"; "") | sub("^\\s+"; ""))}]
           else . end)
-    | .t[]] as $flaky
+    | .t[]] as $listed
+  | ([$listed[] | select(.s == "failed") | .t]) as $failedTitles
+  | [$listed[] | select(.s == "flaky") | .t | select(. as $t | any($failedTitles[]; . == $t) | not)] as $flaky
   | [.[] | select(.annotation_level == "failure")
       | select((.title // "") as $t | any($flaky[]; . == $t) | not)] as $f
   | ([$f[] | select((.title // "") | contains("›")) | .title] | unique) as $tests

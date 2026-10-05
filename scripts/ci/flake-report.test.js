@@ -168,6 +168,25 @@ describe('causeOf', () => {
     expect(cause).toEqual({ kind: 'unknown', label: 'Run tabs E2E' });
   });
 
+  // R2-M1: Playwright run twice over one spec in a job — flaky in one
+  // summary, really failed in the other — still names the test.
+  test('a test flaky in one summary but failed in another is still the cause', () => {
+    const other = {
+      ...SUMMARY,
+      message: `  1 failed\n    ${FLAKY} ${'─'.repeat(9)}\n  2 passed (1.1s)`,
+    };
+    const cause = causeOf({
+      step: 'Run harness E2E',
+      annotations: [
+        failure('Process completed with exit code 1.'),
+        failure('2) ... y', FLAKY),
+        SUMMARY,
+        other,
+      ],
+    });
+    expect(cause).toEqual({ kind: 'test', label: FLAKY });
+  });
+
   test('otherwise the step and the first non-generic message', () => {
     const cause = causeOf({
       step: 'Run unit tests',
@@ -187,6 +206,17 @@ describe('summaryFlakyTitles', () => {
       FLAKY,
       '[x] › b.spec.js:1:1 › b',
     ]);
+  });
+
+  test('a title another summary lists as failed or interrupted is not flaky', () => {
+    const failedHere = { ...SUMMARY, message: `  1 failed\n    ${FLAKY} ${'─'.repeat(9)}` };
+    const interrupted = {
+      ...SUMMARY,
+      message:
+        `  1 interrupted\n    [x] › b.spec.js:1:1 › b\n` +
+        `  1 flaky\n    [x] › b.spec.js:1:1 › b ${'─'.repeat(9)}`,
+    };
+    expect([...summaryFlakyTitles([SUMMARY, failedHere, interrupted])]).toEqual([]);
   });
 
   test('no summary, no flaky titles', () => {

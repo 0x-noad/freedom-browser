@@ -173,11 +173,16 @@ const AGGREGATE_JOBS = new Set(['ci-ok']);
 //
 //     "  1 failed\n    [harness] › a.spec.js:4:1 › x ───…\n  1 flaky\n    [harness] › …"
 //
-// A job can run Playwright more than once, so every summary counts.
+// A job can run Playwright more than once, so every summary counts — and the
+// same test can be flaky in one invocation and really fail in another (two
+// runs over one spec, `--repeat-each`). A title any summary lists as failed or
+// interrupted is not "only flaky", so it stays out of this set and its failure
+// annotation still names the cause.
 const SUMMARY_SECTION =
   /^\s*\d+ (failed|interrupted|flaky|skipped|did not run|passed|errors? (?:was|were) not)\b/;
 function summaryFlakyTitles(annotations) {
-  const titles = new Set();
+  const flaky = new Set();
+  const failed = new Set();
   for (const a of annotations) {
     if (a.annotation_level !== 'notice' || !(a.title || '').includes('Playwright Run Summary'))
       continue;
@@ -185,11 +190,17 @@ function summaryFlakyTitles(annotations) {
     for (const line of String(a.message || '').split('\n')) {
       const header = SUMMARY_SECTION.exec(line);
       if (header) section = header[1];
-      else if (section === 'flaky' && line.trim())
-        titles.add(line.replace(/[\s\u2500]+$/, '').trim());
+      else if (!line.trim()) continue;
+      else if (section === 'flaky') flaky.add(summaryTitle(line));
+      else if (section === 'failed' || section === 'interrupted') failed.add(summaryTitle(line));
     }
   }
-  return titles;
+  for (const title of failed) flaky.delete(title);
+  return flaky;
+}
+
+function summaryTitle(line) {
+  return line.replace(/[\s\u2500]+$/, '').trim();
 }
 
 // Short, stable cause for one failed job, from its failed step and its

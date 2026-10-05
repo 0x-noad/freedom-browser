@@ -216,6 +216,38 @@ maybe('auto-retry.sh', () => {
     );
   });
 
+  // R2-M1: one job ran Playwright twice; the test was flaky in one run and
+  // really failed in the other, so it is still the reason.
+  test('a test flaky in one summary but failed in another is still the reason', () => {
+    const test1 = '[harness] › test-e2e/page-context-menu.spec.js:233:3 › search';
+    const r = setup({
+      annotations: {
+        ...ANNOTATIONS,
+        22: [
+          {
+            annotation_level: 'failure',
+            title: '',
+            message: 'Process completed with exit code 1.',
+          },
+          { annotation_level: 'failure', title: test1, message: '1) ...\nError: y' },
+          {
+            annotation_level: 'notice',
+            title: '🎭 Playwright Run Summary',
+            message: `  1 flaky\n    ${test1} ${'─'.repeat(30)}\n  40 passed (2.1m)`,
+          },
+          {
+            annotation_level: 'notice',
+            title: '🎭 Playwright Run Summary',
+            message: `  1 failed\n    ${test1} ${'─'.repeat(30)}\n  40 passed (2.1m)`,
+          },
+        ],
+      },
+    });
+    expect(r.stdout).toContain(
+      `failed job: e2e-tabs — failure at step 'Run tabs E2E' — ${test1}\n`
+    );
+  });
+
   // #535: a run its concurrency group cancelled for a newer one, which the
   // newest-run lookup missed (here: the listing still names run 999 itself).
   test('does not re-run a run its concurrency group cancelled for a newer one', () => {
