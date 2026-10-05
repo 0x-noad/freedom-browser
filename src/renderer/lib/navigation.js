@@ -1234,8 +1234,9 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
 // The sub-path becomes the page's fragment, so it has to accept every depth
 // `page-urls.js#getInternalPageName` *emits* — that function is the inverse of
 // this one, and what it emits is what the address bar shows and what a user or
-// a bookmark hands back. A chain detail is `settings.html#chains/1`, shown as
-// `freedom://settings/chains/1`; while this stopped at a single segment the
+// a bookmark hands back. A chain detail is `settings.html#networks/1`, shown as
+// `freedom://settings/networks/1` (the older `chains/1` is a legacy alias the
+// page rewrites to it); while this stopped at a single segment the
 // chrome's own chain-detail URL was not a routable address at all — typing it
 // back navigated nowhere while the bar went on standing over the chain list,
 // the same "URL promises a view that isn't on screen" shape as #280 itself.

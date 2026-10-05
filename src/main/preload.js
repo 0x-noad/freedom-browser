@@ -704,8 +704,8 @@ contextBridge.exposeInMainWorld('sitePermissions', {
   // (a private window's partition tier, a normal window's session tier) plus
   // the shared stored one — never the other scope's (#366). Settings >
   // Privacy and security > Site Permissions goes through webview-preload.js
-  // without this marker and stays profile-wide. Main resolves WHICH window from the IPC sender, never from
-  // here.
+  // without this marker and stays profile-wide. Main resolves WHICH window
+  // from the IPC sender, never from here.
   revoke: (origin, permission) =>
     ipcRenderer.invoke('permissions:revoke', origin, permission, { scope: 'window' }),
   revokeOrigin: (origin) =>
