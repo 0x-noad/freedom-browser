@@ -286,12 +286,21 @@ test('Ethereum and Gnosis expose verified chain sources and independent Myotis s
       prover: document.querySelector('[data-chain-prover="100"]').value,
       broadcast: [...document.querySelectorAll('[data-access-kind="broadcast"]')]
         .map((row) => row.dataset.accessSource),
+      broadcastHelp: [...document.querySelectorAll('[data-access-kind="broadcast"]')]
+        .map((row) => row.querySelector(':scope > .row-body > .row-help')?.textContent || ''),
+      broadcastIntro: document.querySelector('.card:has([data-access-kind="broadcast"])')
+        .previousElementSibling.textContent,
       startupDisabled: document.getElementById('start-myotis-gnosis-at-launch').disabled
     })`
   );
   expect(gnosis).toEqual({
     prover: 'https://gnosis.colibri-proof.tech',
     broadcast: ['myotis', 'direct'],
+    // A broadcast has no answer to verify: the read rows' help line is not
+    // reused here (R2-M1).
+    broadcastHelp: ['', 'Hands the signed transaction to the first working server.'],
+    broadcastIntro:
+      'Signed transactions go out through the local node first, with a server as the fallback.',
     startupDisabled: false,
   });
 
@@ -363,6 +372,14 @@ test('custom-chain access order can be reordered from its rendered defaults', as
       )
     )
     .toEqual(['colibri', 'quorum', 'direct']);
+  // A custom chain has no local node, so the broadcast intro must not claim
+  // one goes first (R2-M1).
+  expect(
+    await settingsEval(
+      window,
+      `document.querySelector('.card:has([data-access-kind="broadcast"])').previousElementSibling.textContent`
+    )
+  ).toBe('Signed transactions go out through a server.');
 
   await settingsEval(
     window,

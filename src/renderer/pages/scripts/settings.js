@@ -127,11 +127,15 @@ const esc = (s) =>
 // must agree). `advanced` is the technical name and the mechanism, shown
 // collapsed under each row's Advanced disclosure — and still indexed by
 // the settings search, so "Myotis", "Colibri", "RPC quorum" and "Direct
-// RPC" keep finding the row they used to label.
+// RPC" keep finding the row they used to label. `broadcastHelp` replaces
+// `help` on a chain's Transaction broadcast rows: a broadcast hands a
+// signed transaction on and gets nothing back to verify, so the read
+// help ("nothing verifying the answer") does not describe it.
 const NETWORK_SOURCE_COPY = Object.freeze({
   myotis: Object.freeze({
     label: 'Local node',
     help: '',
+    broadcastHelp: '',
     advanced:
       'Myotis — a peer-to-peer Ethereum and Gnosis light client running inside Freedom. It checks answers against the chain itself, with no server involved. ENS lookups prefer finalized state; newer ENS record types and .wei/.gwei names (WNS, GNS) use a verified optimistic beacon head.',
   }),
@@ -150,15 +154,19 @@ const NETWORK_SOURCE_COPY = Object.freeze({
   direct: Object.freeze({
     label: 'One server, unchecked',
     help: 'Fastest, and the only option with nothing verifying the answer.',
+    broadcastHelp: 'Hands the signed transaction to the first working server.',
     advanced:
       'Direct RPC — the first working configured RPC endpoint answers and nothing verifies the response.',
   }),
 });
 
 // A source row's help line, omitted rather than left empty when the
-// table gives it none.
-const networkSourceHelp = (source) => {
-  const help = NETWORK_SOURCE_COPY[source]?.help;
+// table gives it none. Broadcast rows read `broadcastHelp` where the
+// table has one.
+const networkSourceHelp = (source, kind = 'read') => {
+  const meta = NETWORK_SOURCE_COPY[source];
+  const help =
+    kind === 'broadcast' && meta && 'broadcastHelp' in meta ? meta.broadcastHelp : meta?.help;
   return help ? `<p class="row-help">${esc(help)}</p>` : '';
 };
 
@@ -2323,12 +2331,22 @@ freedomAPI.onSettingsUpdated?.((settings) => {
                 <p class="row-label">${esc(meta.label)}</p>
                 <span class="resolver-badge">${esc(sourceStatus(source, cid))}</span>
               </div>
-              ${networkSourceHelp(source)}
+              ${networkSourceHelp(source, kind)}
               ${networkSourceAdvanced(source, { key, open: openAccessAdvanced.has(key) })}
             </div>
           </div>`;
       })
       .join('');
+
+  // The broadcast section's intro, said from the chain's actual order: a
+  // custom chain has no local node, and a user can drag the server first.
+  const BROADCAST_SOURCE_PHRASE = { myotis: 'the local node', direct: 'a server' };
+  const broadcastIntro = (order) => {
+    const named = order.map((source) => BROADCAST_SOURCE_PHRASE[source]).filter(Boolean);
+    if (!named.length) return 'Signed transactions go out through the sources below.';
+    if (named.length === 1) return `Signed transactions go out through ${named[0]}.`;
+    return `Signed transactions go out through ${named[0]} first, with ${named[1]} as the fallback.`;
+  };
 
   // --- detail: one chain's access policy + endpoints ------------
   // Verified/local sources are ordered first; RPC inventory remains
@@ -2395,7 +2413,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       ${proverConfig}
 
       <h3 class="subsection-title">Transaction broadcast</h3>
-      <p class="row-help" style="margin-bottom: 12px">Signed transactions go out through the local node first, with a server as the fallback.</p>
+      <p class="row-help" style="margin-bottom: 12px">${esc(broadcastIntro(broadcastOrder))}</p>
       <div class="card">${accessRows(cid, 'broadcast', broadcastOrder)}</div>
 
       ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet')}

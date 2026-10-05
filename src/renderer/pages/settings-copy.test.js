@@ -298,8 +298,21 @@ describe('settings.html names each network source once (#269)', () => {
     expect(methods[1]).not.toMatch(/\b(label|help|advanced):/);
     expect(SOURCE).toContain('...NETWORK_SOURCE_COPY[method.id]');
     // Both renderers go through the same help and disclosure helpers.
-    expect(SOURCE.match(/networkSourceHelp\((source|id)\)/g)).toHaveLength(2);
+    expect(SOURCE.match(/networkSourceHelp\((source, kind|id)\)/g)).toHaveLength(2);
     expect(SOURCE.match(/networkSourceAdvanced\((source|id),/g)).toHaveLength(2);
+  });
+
+  test('broadcast rows get broadcast help, not the read help (R2-M1)', () => {
+    const copy = networkSourceCopy();
+    // Both broadcast sources carry their own line; the read help talks about
+    // verifying an answer a broadcast does not have.
+    expect(copy.myotis.broadcastHelp).toBe('');
+    expect(copy.direct.broadcastHelp).toMatch(/\S/);
+    expect(copy.direct.broadcastHelp).not.toMatch(/answer|verif|fastest/i);
+    expect(SOURCE).toContain('${networkSourceHelp(source, kind)}');
+    // The broadcast intro is derived from the chain's order, not hard-coded.
+    expect(SOURCE).not.toContain('>Signed transactions go out through the local node first');
+    expect(SOURCE).toContain('${esc(broadcastIntro(broadcastOrder))}');
   });
 
   test('the help line is omitted where the badge already carries it', () => {
@@ -321,6 +334,9 @@ describe('settings.html keeps jargon out of the visible layer (#270)', () => {
     for (const [source, entry] of Object.entries(networkSourceCopy())) {
       expect([source, entry.label]).toEqual([source, expect.not.stringMatching(JARGON)]);
       expect([source, entry.help]).toEqual([source, expect.not.stringMatching(JARGON)]);
+      if ('broadcastHelp' in entry) {
+        expect([source, entry.broadcastHelp]).toEqual([source, expect.not.stringMatching(JARGON)]);
+      }
     }
   });
 
@@ -376,8 +392,10 @@ describe('settings.html keeps jargon out of the visible layer (#270)', () => {
     expect(SOURCE).toContain('<p class="row-label">Proof server</p>');
     expect(SOURCE).toContain('<p class="row-help">Leave empty to use the default.</p>');
     expect(SOURCE).toContain('How many servers must give the same answer.');
+    // The broadcast intro is assembled from the chain's order (R2-M1).
+    expect(SOURCE).toContain("myotis: 'the local node', direct: 'a server'");
     expect(SOURCE).toContain(
-      'Signed transactions go out through the local node first, with a server as the fallback.'
+      'Signed transactions go out through ${named[0]} first, with ${named[1]} as the fallback.'
     );
     expect(section('ens')).toContain('choose which servers Freedom');
   });
