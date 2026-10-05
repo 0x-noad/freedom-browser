@@ -420,7 +420,12 @@ describe('classifyReadiness while Ant rediscovers batches (#510, #484)', () => {
 
   test('a stalled scan shows the plans with a warning, only when there is no storage', () => {
     const stalled = classifyReadiness({ node: running, probe: empty, scanStalled: true });
-    expect(stalled).toMatchObject({ key: 'needs-storage', reason: 'no-usable-stamps' });
+    expect(stalled).toMatchObject({
+      key: 'needs-storage',
+      reason: 'no-usable-stamps',
+      scanStalled: true,
+    });
+    expect(classifyReadiness({ node: running, probe: empty })).not.toHaveProperty('scanStalled');
     expect(stalled.message).toMatch(/could not finish looking for storage/);
     expect(
       classifyReadiness({
@@ -561,7 +566,11 @@ describe('publish setup while Ant reports its wallet scan (/health.walletScan, #
     jest.setSystemTime(Date.now() + SCAN_STALL_MAX_MS / 2 + 1);
     await service.refresh();
     const released = service.getState().readiness;
-    expect(released).toMatchObject({ key: 'needs-storage', reason: 'no-usable-stamps' });
+    expect(released).toMatchObject({
+      key: 'needs-storage',
+      reason: 'no-usable-stamps',
+      scanStalled: true,
+    });
     expect(released.message).toMatch(/could not finish looking for storage/);
     expect(released.message).toMatch(/Gnosis RPC in Settings/);
 

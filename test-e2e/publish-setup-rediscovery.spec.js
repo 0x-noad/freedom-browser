@@ -92,6 +92,8 @@ async function wireRealService(electronApp, { txCount = 7 } = {}) {
       restartNode: async () => {},
       getTransactionStatus: async () => ({ status: 'pending' }),
       getWalletTxCount: async () => count,
+      // advanceClock() moves this, for the stalled-scan bound.
+      now: () => Date.now() + (globalThis.__clockOffset || 0),
       publish: (state) => {
         for (const win of BrowserWindow.getAllWindows()) {
           win.webContents.send('swarm:setup-state', state);
@@ -136,6 +138,13 @@ async function setNode(electronApp, { walletScan, version = 'antd/0.5.59', stamp
     },
     { walletScan, version, stamps }
   );
+}
+
+async function advanceClock(electronApp, ms) {
+  await electronApp.evaluate(async (_e, by) => {
+    globalThis.__clockOffset = (globalThis.__clockOffset || 0) + by;
+    await globalThis.__publishSetup?.refresh();
+  }, ms);
 }
 
 const FROM = 16514506;
@@ -213,6 +222,7 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
     await electronApp.evaluate(() => {
       globalThis.__publishSetup?.dispose();
       globalThis.__fakeAnt?.server.close();
+      globalThis.__clockOffset = 0;
     });
   });
 
@@ -293,6 +303,37 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
     await expect(window.locator('#publish-setup-node-action')).toBeHidden();
     await expect(planList(window)).toBeHidden();
     await shoot(window, 'retrying');
+  });
+
+  test('a scan that keeps failing without reading a block shows the plans after 30 minutes, with a warning', async ({
+    electronApp,
+    window,
+  }) => {
+    const retrying = {
+      state: 'retrying',
+      from: FROM,
+      scannedThrough: 24_000_000,
+      head: HEAD,
+      error: 'RPC quorum needs 2 endpoints',
+    };
+    await startFakeAnt(electronApp);
+    await setNode(electronApp, { walletScan: retrying });
+    await wireRealService(electronApp);
+    await openSetup(window);
+    await expect(nodeText(window)).toHaveText(/trying again/);
+    await expect(planList(window)).toBeHidden();
+
+    await advanceClock(electronApp, 29 * 60_000);
+    await expect(nodeText(window)).toHaveText(/trying again/);
+    await expect(planList(window)).toBeHidden();
+
+    await advanceClock(electronApp, 2 * 60_000);
+    await expect(planList(window)).toBeVisible();
+    await expect(window.locator('#publish-setup-plans-warning-text')).toHaveText(
+      /^The Swarm node could not finish looking for storage this wallet already owns/
+    );
+    await expect(window.locator('#publish-plan-list .stamp-preset-btn')).toHaveCount(3);
+    await shoot(window, 'retrying-stalled');
   });
 
   test('the node card shows the progress and opens setup', async ({ electronApp, window }) => {

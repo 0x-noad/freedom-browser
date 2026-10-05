@@ -387,7 +387,8 @@ function classifyReadiness({
           ? 'Your storage is full. Buy a storage plan to keep publishing.'
           : probe.stamps.total > 0
             ? 'None of your storage can be used anymore. Buy a storage plan to publish.'
-            : 'Publishing needs storage. Pick a storage plan to start.'
+            : 'Publishing needs storage. Pick a storage plan to start.',
+      scanStalled ? { scanStalled: true } : {}
     );
   }
   const count = probe.stamps.usable;
