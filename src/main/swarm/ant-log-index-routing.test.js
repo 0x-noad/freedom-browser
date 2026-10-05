@@ -11,7 +11,8 @@
 //
 // The endpoints replay what was measured for #484/#529: the full-history RPC
 // (rpc.gnosischain.com, Tenderly) answers any span; publicnode and dRPC's free
-// plan refuse more than 10,000 blocks. So without Blockscout no quorum of two
+// plan refuse wide ones (50,000 and 10,000 blocks on 2026-10-05; both are
+// modelled at 10,000 here). So without Blockscout no quorum of two
 // can verify a wide span, and Ant reads the history window by window.
 const mockRegistry = {
   getNetwork: jest.fn(),

@@ -7,7 +7,8 @@
 // Why Blockscout: the keyless RPCs that serve a wallet's whole xBZZ history in
 // one eth_getLogs (rpc.gnosischain.com, gateway.fm, swiftnodes) all run on the
 // same Tenderly backend, so two of them agreeing is no independent check, and
-// the independent ones (publicnode, dRPC's free plan) stop at 10,000 blocks.
+// the independent ones stop far short of it (measured 2026-10-05: publicnode
+// at 50,000 blocks, dRPC's free plan at 10,000).
 // Blockscout indexes the chain from its own archive node.
 //
 // API: Blockscout's Etherscan-compatible `module=logs&action=getLogs`, which

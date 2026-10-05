@@ -159,7 +159,8 @@ Behind the default endpoints no quorum can verify a wide span: the keyless
 RPCs that serve a wallet's whole xBZZ history in one request
 (`rpc.gnosischain.com`, `gateway.fm`, `swiftnodes`) all run on one Tenderly
 backend, so two of them agreeing would be no independent check, and the
-independent ones stop at 10,000 blocks. Ant's first scan of a wallet, from the
+independent ones stop far short of it (publicnode at 50,000 blocks, dRPC's
+free plan at 10,000, measured 2026-10-05). Ant's first scan of a wallet, from the
 token's deploy block to the head (about 32 million blocks), used to be read
 window by window: about 3,200 quorum requests, roughly an hour.
 
@@ -207,7 +208,7 @@ one scan budget (30 s); the newest blocks' quorum gets what is left of it, at
 least the configured quorum timeout.
 
 With the defaults a first scan is three requests from Ant: the first teaches
-the quorum the 10,000-block caps and is refused, and each half of the
+the quorum the endpoints' caps and is refused, and each half of the
 history Ant then asks for is one paired answer. A node whose Gnosis endpoints
 include two full-history RPCs never reaches Blockscout, since the quorum can
 verify the span itself, and neither does a routine scan of the newest blocks.
