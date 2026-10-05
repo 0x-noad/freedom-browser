@@ -205,6 +205,9 @@ const LOG_INDEX_TAIL_BLOCKS = 1000;
 // with the RPC's. Its other failures name their own cooldown (a rate limit's
 // reset, at least a minute).
 const LOG_INDEX_DISAGREEMENT_COOLDOWN_MS = 5 * 60_000;
+// How long it is left alone after the caller gave up while it was still
+// reading (as long as a failure that names no cooldown of its own).
+const LOG_INDEX_ABORT_COOLDOWN_MS = 60_000;
 // chainId -> time until which the blockscout source is not asked.
 const logIndexCoolUntil = new Map();
 
@@ -1384,14 +1387,18 @@ async function requestLogIndex(chainId, method, params, options = {}) {
     throw new SourceUnavailableError('no RPC endpoint serves this span to compare Blockscout with');
   }
   const pairParams = [{ ...params[0], toBlock: blockHex(pairTo) }];
-  // One budget (the caller's widened quorum budget) covers the pair; the
-  // newest blocks' quorum gets what is left of it, at least the configured
-  // quorum timeout. So the source costs at most about one quorum budget before
-  // the quorum after it is asked, inside the bridge's own deadline.
-  const budgetMs = Math.max(configuredSourceTimeoutMs(chainId), Number(quorumTimeoutMs) || 0);
+  // One budget (the caller's widened quorum budget) covers the whole source:
+  // the pair (the RPC, then every Blockscout page) runs inside it less the
+  // configured quorum timeout, which is held back for the newest blocks'
+  // quorum (requestQuorum never runs one shorter than that). So the source
+  // costs at most one quorum budget before the quorum after it is asked,
+  // inside the bridge's own deadline.
+  const configuredMs = configuredSourceTimeoutMs(chainId);
+  const budgetMs = Math.max(configuredMs, Number(quorumTimeoutMs) || 0);
   const startedAt = Date.now();
+  const leftMs = () => budgetMs - (Date.now() - startedAt);
   const remainingMs = () => {
-    const left = budgetMs - (Date.now() - startedAt);
+    const left = leftMs() - configuredMs;
     if (left < 1000) throw new SourceUnavailableError('Blockscout pairing ran out of time');
     return left;
   };
@@ -1430,6 +1437,11 @@ async function requestLogIndex(chainId, method, params, options = {}) {
       timeoutMs: remainingMs(),
     });
   } catch (err) {
+    // The caller gave up while Blockscout was still reading: it was too slow
+    // for this scan, so the next window does not wait on it again.
+    if (signal?.aborted) {
+      logIndexCoolUntil.set(chainId, Date.now() + LOG_INDEX_ABORT_COOLDOWN_MS);
+    }
     signal?.throwIfAborted();
     if (err instanceof SourceUnavailableError) throw err;
     const coolMs = Number(err?.coolMs);
@@ -1450,7 +1462,7 @@ async function requestLogIndex(chainId, method, params, options = {}) {
       method,
       [{ ...params[0], fromBlock: blockHex(pairTo + 1) }],
       {
-        quorumTimeoutMs: Math.max(0, budgetMs - (Date.now() - startedAt)),
+        quorumTimeoutMs: Math.max(configuredMs, leftMs()),
         keeper: createErrorKeeper(logRange.rank),
         logRange: { ...logRange, span: tail },
       }

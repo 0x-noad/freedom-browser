@@ -112,7 +112,19 @@ function useProviders(endpoints, blockscoutBehaviour = 'chain') {
       const from = Number(query.fromBlock);
       const to = Number(query.toBlock);
       let rows;
-      if (typeof blockscoutBehaviour === 'function') rows = blockscoutBehaviour(from, to);
+      if (blockscoutBehaviour?.delayMs) {
+        // A slow-but-answering Blockscout: each page after delayMs.
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, blockscoutBehaviour.delayMs);
+          init.signal.addEventListener('abort', () => {
+            clearTimeout(timer);
+            reject(new Error('aborted'));
+          });
+        });
+        rows = blockscoutBehaviour.rows
+          ? blockscoutBehaviour.rows(from, to)
+          : inRange(CHAIN, from, to).map(blockscoutRow);
+      } else if (typeof blockscoutBehaviour === 'function') rows = blockscoutBehaviour(from, to);
       else if (blockscoutBehaviour === 'down') throw new TypeError('fetch failed');
       else if (blockscoutBehaviour === 'hang') {
         return new Promise((_resolve, reject) =>
@@ -154,6 +166,7 @@ function useProviders(endpoints, blockscoutBehaviour = 'chain') {
     const json = (body) => ({ ok: true, status: 200, json: async () => body });
     if (behaviour === CAPPED && to - from + 1 > 10_000) return json({ error: PUBLICNODE_CAP });
     const result = typeof behaviour === 'function' ? behaviour(from, to) : inRange(CHAIN, from, to);
+    if (result?.rpcError) return json({ error: result.rpcError });
     if (result instanceof Promise) {
       // A hung endpoint: nothing until the client gives up.
       await new Promise((_resolve, reject) =>
@@ -176,12 +189,13 @@ const params = (from, to) => [
 ];
 
 // One eth_getLogs the way the bridge routes it; what Ant receives.
-async function bridgeGetLogs(from, to) {
+async function bridgeGetLogs(from, to, { signal } = {}) {
   let outcome;
   router
     .request(100, 'eth_getLogs', params(from, to), {
       background: true,
       ...LOG_SCAN_ROUTER_OPTIONS,
+      ...(signal ? { signal } : {}),
     })
     .then(
       (answer) => {
@@ -189,7 +203,7 @@ async function bridgeGetLogs(from, to) {
       },
       (error) => {
         const { message } = antErrorReply('eth_getLogs', error);
-        outcome = { error: message, shrinks: antShrinksLogScanOn(message) };
+        outcome = { error: message, shrinks: antShrinksLogScanOn(message), cause: error };
       }
     );
   for (let waited = 0; !outcome && waited <= 120_000; waited += 100) {
@@ -346,6 +360,81 @@ describe('Blockscout is a shortcut: anything wrong falls back to the quorum path
     const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
     expect(got).toMatchObject({ shrinks: true });
     expect(Date.now() - started).toBeLessThanOrEqual(LOG_SCAN_ROUTER_OPTIONS.quorumTimeoutMs + 100);
+  });
+
+  // A wallet with more than 1,000 transfers: Blockscout pages, slowly. The
+  // scan budget bounds every page together, not each one.
+  test('a slow multi-page Blockscout stays inside the scan budget, then is left alone', async () => {
+    let page = 0;
+    useProviders(DEFAULTS, {
+      delayMs: 12_000,
+      rows: (from) => {
+        page += 1;
+        return Array.from({ length: 1000 }, (_, i) => blockscoutRow(entry(from + i, page)));
+      },
+    });
+    await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    const started = Date.now();
+    const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    // The quorum's own range refusal, not a timeout Ant would misread.
+    expect(got).toMatchObject({
+      error: 'Chain request failed: query exceeds max block range 10000',
+      shrinks: true,
+    });
+    expect(Date.now() - started).toBeLessThanOrEqual(LOG_SCAN_ROUTER_OPTIONS.quorumTimeoutMs + 100);
+    const asked = blockscout.calls.length;
+    expect(asked).toBeLessThanOrEqual(3);
+    // Left alone: the next window does not wait on it again.
+    await bridgeGetLogs(DEPLOY_BLOCK, HEAD - 1);
+    expect(blockscout.calls).toHaveLength(asked);
+  });
+
+  test("Blockscout answering late leaves the newest blocks' quorum only what is left", async () => {
+    let tailHangs = false;
+    // Every endpoint answers wide spans as before, but hangs on the newest
+    // blocks once the caps are learned.
+    const hangingTail =
+      (capped = false) =>
+      (from, to) => {
+        if (capped && to - from + 1 > 10_000) return { rpcError: PUBLICNODE_CAP };
+        if (tailHangs && to - from + 1 <= 1000) return new Promise(() => {});
+        return inRange(CHAIN, from, to);
+      };
+    useProviders(
+      { gnosischain: hangingTail(), publicnode: hangingTail(true), drpc: hangingTail(true) },
+      { delayMs: 24_000 }
+    );
+    await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    tailHangs = true;
+    const started = Date.now();
+    const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    expect(got.result).toBeUndefined();
+    expect(blockscout.calls).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThanOrEqual(LOG_SCAN_ROUTER_OPTIONS.quorumTimeoutMs + 100);
+  });
+
+  test('a Blockscout slower than the whole budget is cut off before the newest-block quorum', async () => {
+    useProviders(DEFAULTS, { delayMs: 28_000 });
+    await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    const started = Date.now();
+    const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    expect(got).toMatchObject({ shrinks: true });
+    expect(got.error).not.toContain('timeout');
+    expect(Date.now() - started).toBeLessThanOrEqual(LOG_SCAN_ROUTER_OPTIONS.quorumTimeoutMs + 100);
+  });
+
+  test('the caller giving up while Blockscout reads leaves Blockscout alone for a while', async () => {
+    useProviders(DEFAULTS, 'hang');
+    await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 3000);
+    await bridgeGetLogs(DEPLOY_BLOCK, HEAD, { signal: controller.signal });
+    expect(blockscout.calls).toHaveLength(1);
+    await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    expect(blockscout.calls).toHaveLength(1);
+    jest.setSystemTime(Date.now() + 61_000);
+    useProviders(DEFAULTS);
+    expect((await bridgeGetLogs(DEPLOY_BLOCK, HEAD)).source).toBe('blockscout');
   });
 
   test('a hung full-history RPC: the pair gives up within the scan budget, Blockscout unasked', async () => {

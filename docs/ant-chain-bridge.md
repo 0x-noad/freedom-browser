@@ -206,9 +206,12 @@ covers the span, or that endpoint failing (learned from like a quorum
 member's failure); the quorum failing the newest blocks. The request goes on
 to the quorum, which refuses the span with the widest one it can verify, and
 Ant halves its window as it did. These failures are not ranked for Ant: they
-say nothing about its query. The pairing, RPC and Blockscout together, gets
-one scan budget (30 s); the newest blocks' quorum gets what is left of it, at
-least the configured quorum timeout.
+say nothing about its query. The whole source gets one scan budget (30 s):
+the pairing, the RPC and every Blockscout page together, runs inside it less
+the configured quorum timeout, which is held back for the newest blocks'
+quorum, so the quorum after it still fits the bridge's 120 s deadline. A
+Blockscout too slow for that budget, or still reading when the caller gives
+up, is left alone for a minute.
 
 With the defaults a first scan is three requests from Ant: the first teaches
 the quorum the endpoints' caps and is refused, and each half of the
@@ -224,7 +227,8 @@ other address, no API key, no cookies or referrer. It is asked only for a scan
 the quorum cannot verify, at most a few times per first scan, and never for
 pages' `window.ethereum` requests, which do not opt in. The request goes to
 `gnosis.blockscout.com`, which redirects to `gnosisscan.io` (also Blockscout,
-as of 2026-10-05); a redirect off https is refused. Freedom does not pass
+as of 2026-10-05). Redirects are followed by hand, and a hop off https is
+refused before it is dialled, so the address never goes out in clear. Freedom does not pass
 ant#143's `--gnosis-unverified-logs-rpc-url`: every log Ant receives is still
 one two independent providers agreed on.
 

@@ -190,7 +190,18 @@ function cooldownFrom(headers) {
   return Math.min(MAX_COOLDOWN_MS, Math.max(MIN_COOLDOWN_MS, named));
 }
 
-async function fetchPage(url, { signal, timeoutMs, fetchImpl = fetch }) {
+// Redirects are followed by hand (redirect: 'manual'), each hop checked
+// before it is dialled: an automatic follow would already have sent the
+// wallet address in the query over cleartext by the time a final http: URL
+// could be refused. gnosis.blockscout.com answers with one https redirect.
+const MAX_REDIRECTS = 3;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+// One page, within `deadline` (a Date.now() instant shared by every page and
+// redirect hop of a read, so the read as a whole stays inside `timeoutMs`).
+async function fetchPage(url, { signal, deadline, timeoutMs, fetchImpl = fetch }) {
+  const leftMs = deadline - Date.now();
+  if (!(leftMs > 0)) throw new BlockscoutError(`no answer within ${timeoutMs}ms`);
   const controller = new AbortController();
   const abort = () => controller.abort();
   if (signal?.aborted) controller.abort();
@@ -199,21 +210,42 @@ async function fetchPage(url, { signal, timeoutMs, fetchImpl = fetch }) {
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, timeoutMs);
+  }, leftMs);
   try {
     let response;
-    try {
-      response = await fetchImpl(url, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-        credentials: 'omit',
-        referrerPolicy: 'no-referrer',
-        redirect: 'follow',
-        signal: controller.signal,
-      });
-    } catch {
-      signal?.throwIfAborted?.();
-      throw new BlockscoutError(timedOut ? `no answer within ${timeoutMs}ms` : 'unreachable');
+    let current = url;
+    for (let hop = 0; ; hop += 1) {
+      try {
+        response = await fetchImpl(current, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          credentials: 'omit',
+          referrerPolicy: 'no-referrer',
+          redirect: 'manual',
+          signal: controller.signal,
+        });
+      } catch {
+        signal?.throwIfAborted?.();
+        throw new BlockscoutError(timedOut ? `no answer within ${timeoutMs}ms` : 'unreachable');
+      }
+      // A browser-style fetch hides a manual redirect's target; refuse it.
+      if (response.type === 'opaqueredirect') {
+        throw new BlockscoutError('redirected to a hidden location');
+      }
+      if (!REDIRECT_STATUSES.has(response.status)) break;
+      response.body?.cancel?.().catch?.(() => {});
+      const location = response.headers?.get?.('location');
+      if (!location) throw new BlockscoutError('redirected with no location');
+      let next;
+      try {
+        next = new URL(location, current);
+      } catch {
+        throw new BlockscoutError('redirected to a malformed location');
+      }
+      // A redirect must stay on https; checked before the hop is dialled.
+      if (next.protocol !== 'https:') throw new BlockscoutError('redirected off https');
+      if (hop + 1 > MAX_REDIRECTS) throw new BlockscoutError('redirected too often');
+      current = next.toString();
     }
     if (response.status === 429) {
       response.body?.cancel?.().catch?.(() => {});
@@ -222,11 +254,6 @@ async function fetchPage(url, { signal, timeoutMs, fetchImpl = fetch }) {
     if (!response.ok) {
       response.body?.cancel?.().catch?.(() => {});
       throw new BlockscoutError(`HTTP ${response.status}`);
-    }
-    // A redirect must stay on https.
-    if (typeof response.url === 'string' && response.url && !response.url.startsWith('https:')) {
-      response.body?.cancel?.().catch?.(() => {});
-      throw new BlockscoutError('redirected off https');
     }
     const length = Number(response.headers?.get?.('content-length'));
     if (Number.isFinite(length) && length > MAX_RESPONSE_BYTES) {
@@ -282,13 +309,20 @@ function pageUrl(filter, fromBlock, toBlock) {
 // read from that block on. A page whose logs are all in one block, more pages
 // than BLOCKSCOUT_MAX_PAGES, a log outside the filter, out of order or
 // malformed, or any failure throws BlockscoutError; nothing partial is
-// returned.
+// returned. `timeoutMs` bounds the whole read, every page and redirect hop
+// together, not each page.
 async function fetchBlockscoutTransferLogs(filter, toBlock, { signal, timeoutMs, fetchImpl } = {}) {
   if (!LOG_INDEX_URLS[filter?.chainId]) throw new BlockscoutError('no log index for this chain');
+  const deadline = Date.now() + timeoutMs;
   const logs = [];
   let from = filter.fromBlock;
   for (let page = 0; page < BLOCKSCOUT_MAX_PAGES; page += 1) {
-    const body = await fetchPage(pageUrl(filter, from, toBlock), { signal, timeoutMs, fetchImpl });
+    const body = await fetchPage(pageUrl(filter, from, toBlock), {
+      signal,
+      deadline,
+      timeoutMs,
+      fetchImpl,
+    });
     const message = typeof body?.message === 'string' ? body.message : '';
     let rows;
     if (body?.status === '1' && Array.isArray(body.result)) rows = body.result;

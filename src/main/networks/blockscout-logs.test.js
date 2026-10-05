@@ -294,9 +294,10 @@ describe('fetchBlockscoutTransferLogs', () => {
     ],
     [
       'a redirect off https',
-      () => reply(NO_LOGS, { url: 'http://gnosisscan.io/api' }),
+      () => reply('', { status: 301, headers: { location: 'http://gnosisscan.io/api?x=1' } }),
       'off https',
     ],
+    ['a redirect with no location', () => reply('', { status: 302 }), 'no location'],
     ['a transport failure', () => Promise.reject(new TypeError('fetch failed')), 'unreachable'],
   ])('%s fails the read', async (_label, fetchImpl, message) => {
     await expect(read(fetchImpl)).rejects.toThrow(message);
@@ -312,6 +313,89 @@ describe('fetchBlockscoutTransferLogs', () => {
       const pending = read(hang).catch((err) => err);
       await jest.advanceTimersByTimeAsync(1000);
       expect((await pending).message).toBe('no answer within 1000ms');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('an https redirect is followed by hand, keeping the query', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockImplementationOnce((url) =>
+        reply('', {
+          status: 301,
+          headers: {
+            location: url.replace('https://gnosis.blockscout.com', 'https://gnosisscan.io'),
+          },
+        })
+      )
+      .mockImplementationOnce(() => ok([row(200)]));
+    const logs = await read(fetchImpl);
+    expect(logs).toHaveLength(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls.every(([, init]) => init.redirect === 'manual')).toBe(true);
+    const second = new URL(fetchImpl.mock.calls[1][0]);
+    expect(second.host).toBe('gnosisscan.io');
+    expect(queryOf(second.toString()).topic1).toBe(WALLET);
+  });
+
+  test('a redirect to http is refused before it is dialled: the address never goes out in clear', async () => {
+    const fetchImpl = jest.fn((url) =>
+      url.startsWith('https://gnosis.blockscout.com/')
+        ? reply('', { status: 307, headers: { location: url.replace('https:', 'http:') } })
+        : ok([])
+    );
+    await expect(read(fetchImpl)).rejects.toThrow('redirected off https');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls.some(([url]) => !url.startsWith('https:'))).toBe(false);
+  });
+
+  test('a relative redirect resolves against the hop, and a loop gives up', async () => {
+    const fetchImpl = jest.fn(() =>
+      reply('', { status: 302, headers: { location: '/api?again=1' } })
+    );
+    await expect(read(fetchImpl)).rejects.toThrow('redirected too often');
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(fetchImpl.mock.calls[1][0]).toBe('https://gnosis.blockscout.com/api?again=1');
+  });
+
+  test('a browser-style opaque redirect is refused', async () => {
+    const fetchImpl = () =>
+      Promise.resolve({
+        type: 'opaqueredirect',
+        status: 0,
+        ok: false,
+        headers: { get: () => null },
+      });
+    await expect(read(fetchImpl)).rejects.toThrow('hidden location');
+  });
+
+  test('the timeout bounds the whole read, not each page', async () => {
+    jest.useFakeTimers();
+    try {
+      let page = 0;
+      // Every page answers in 600ms, under the 1000ms timeout on its own.
+      const slowPages = jest.fn(
+        (_url, { signal }) =>
+          new Promise((resolve, reject) => {
+            page += 1;
+            const rows = Array.from({ length: 1000 }, (_, i) => row(page * 1000 + i));
+            const timer = setTimeout(() => resolve(ok(rows)), 600);
+            signal.addEventListener('abort', () => {
+              clearTimeout(timer);
+              reject(new Error('aborted'));
+            });
+          })
+      );
+      const started = Date.now();
+      const pending = read(slowPages).catch((err) => err);
+      await jest.advanceTimersByTimeAsync(5000);
+      const err = await pending;
+      expect(err).toBeInstanceOf(BlockscoutError);
+      expect(err.message).toBe('no answer within 1000ms');
+      expect(err.coolMs).toBeGreaterThan(0);
+      expect(slowPages).toHaveBeenCalledTimes(2);
+      expect(Date.now() - started).toBeLessThanOrEqual(5000);
     } finally {
       jest.useRealTimers();
     }
