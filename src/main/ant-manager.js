@@ -40,6 +40,8 @@ const STATUS = {
 let currentState = STATUS.STOPPED;
 let lastError = null;
 let antProcess = null;
+// When the current antProcess was spawned (ms), for getSpawnedAt.
+let antSpawnedAt = null;
 let healthCheckInterval = null;
 let pendingStart = false;
 let forceKillTimeout = null;
@@ -347,6 +349,16 @@ function updateState(newState, error = null) {
 function onStatusChange(listener) {
   statusListeners.add(listener);
   return () => statusListeners.delete(listener);
+}
+
+/**
+ * When the bundled node Freedom is running was spawned (ms since epoch), or
+ * null for a reused, external, disabled or stopped node. Publish setup
+ * measures its fallback rediscovery hold from this (#510), not from when it
+ * first happened to look.
+ */
+function getSpawnedAt() {
+  return antProcess && currentMode === MODE.BUNDLED ? antSpawnedAt : null;
 }
 
 /**
@@ -760,6 +772,7 @@ async function startAnt() {
 
   try {
     antProcess = spawn(binPath, args);
+    antSpawnedAt = Date.now();
     const child = antProcess;
 
     bridge.pipeLog(child.stdout, (line) => {
@@ -1038,6 +1051,7 @@ module.exports = {
   getActivePort,
   getStatus,
   onStatusChange,
+  getSpawnedAt,
   getAntDataPath,
   setUseInjectedIdentity,
   hasInjectedKeys,

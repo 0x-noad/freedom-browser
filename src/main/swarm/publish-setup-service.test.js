@@ -34,6 +34,7 @@ const {
   CHAIN_INIT_SLOW_MS,
   REDISCOVERY_MAX_WAIT_MS,
   REDISCOVERY_SLOW_MS,
+  SCAN_STALL_MAX_MS,
 } = require('./publish-setup-service');
 
 const WALLET = '0x1234567890abcdef1234567890abcdef12345678';
@@ -129,8 +130,9 @@ function setup({
   registryMode = 'bundled',
   api = createApi(),
   getWalletTxCount,
+  startedAt = null,
 } = {}) {
-  const node = { status, error, registryMode };
+  const node = { status, error, registryMode, startedAt };
   const published = [];
   const restartNode = jest.fn().mockResolvedValue();
   const getTransactionStatus = jest.fn().mockResolvedValue({ status: 'pending' });
@@ -141,6 +143,7 @@ function setup({
     restartNode,
     getTransactionStatus,
     getWalletTxCount,
+    getNodeStartedAt: () => node.startedAt,
     publish: (state) => published.push(state),
     now: () => Date.now(),
   });
@@ -415,6 +418,19 @@ describe('classifyReadiness while Ant rediscovers batches (#510, #484)', () => {
     expect(slow.message).toMatch(/can take several minutes/);
   });
 
+  test('a stalled scan shows the plans with a warning, only when there is no storage', () => {
+    const stalled = classifyReadiness({ node: running, probe: empty, scanStalled: true });
+    expect(stalled).toMatchObject({ key: 'needs-storage', reason: 'no-usable-stamps' });
+    expect(stalled.message).toMatch(/could not finish looking for storage/);
+    expect(
+      classifyReadiness({
+        node: running,
+        probe: withStamps({ usable: 1, total: 1 }),
+        scanStalled: true,
+      }).key
+    ).toBe('ready');
+  });
+
   test('storage the node already lists wins over the hold', () => {
     expect(
       classifyReadiness({
@@ -525,6 +541,67 @@ describe('publish setup while Ant reports its wallet scan (/health.walletScan, #
       rediscovery: 'retrying',
       slow: false,
     });
+  });
+
+  test('a scan that keeps failing without reading a block is released after the bound, with a warning', async () => {
+    const failing = (scannedThrough, state = 'retrying') =>
+      health(scan(state, { scannedThrough, error: 'RPC quorum needs 2 endpoints' }));
+    const { service, api } = scanSetup(scan('retrying', { scannedThrough: 20_000_000 }));
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+
+    // antd flips to `scanning` on each attempt; no block read, so the clock runs on.
+    jest.setSystemTime(Date.now() + SCAN_STALL_MAX_MS / 2);
+    api.getHealth.mockResolvedValue(failing(20_000_000, 'scanning'));
+    await service.refresh();
+    api.getHealth.mockResolvedValue(failing(20_000_000));
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+
+    jest.setSystemTime(Date.now() + SCAN_STALL_MAX_MS / 2 + 1);
+    await service.refresh();
+    const released = service.getState().readiness;
+    expect(released).toMatchObject({ key: 'needs-storage', reason: 'no-usable-stamps' });
+    expect(released.message).toMatch(/could not finish looking for storage/);
+    expect(released.message).toMatch(/Gnosis RPC in Settings/);
+
+    // Once it reads a block again it is held again, with a fresh clock.
+    api.getHealth.mockResolvedValue(failing(20_500_000, 'scanning'));
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+    api.getHealth.mockResolvedValue(failing(20_500_000));
+    await service.refresh();
+    jest.setSystemTime(Date.now() + SCAN_STALL_MAX_MS - 60_000);
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+  });
+
+  test('a retrying scan that still reads blocks is not released', async () => {
+    const { service, api } = scanSetup(scan('retrying', { scannedThrough: 20_000_000 }));
+    await service.refresh();
+    for (let i = 1; i <= 4; i += 1) {
+      jest.setSystemTime(Date.now() + SCAN_STALL_MAX_MS / 2);
+      api.getHealth.mockResolvedValue(
+        health(scan('retrying', { scannedThrough: 20_000_000 + i * 1_000_000 }))
+      );
+      await service.refresh();
+      expect(service.getState().readiness.key).toBe('checking');
+    }
+  });
+
+  test('a stalled scan restarts its clock on the next run of the node', async () => {
+    const { service, node } = scanSetup(scan('retrying', { scannedThrough: 20_000_000 }));
+    await service.refresh();
+    jest.setSystemTime(Date.now() + SCAN_STALL_MAX_MS + 1);
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('needs-storage');
+    node.status = 'stopped';
+    service.handleNodeStatus();
+    node.status = 'running';
+    service.handleNodeStatus();
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+    service.dispose();
   });
 
   test('a reported scan is not cut short by the fallback bound', async () => {
@@ -658,6 +735,36 @@ describe('publish setup fallback for a node that does not report its scan (#510)
     expect(unknown.service.getState().readiness.key).toBe('checking');
     jest.setSystemTime(Date.now() + REDISCOVERY_MAX_WAIT_MS + 1);
     expect(unknown.service.getState().readiness.key).toBe('needs-storage');
+  });
+
+  test('an external or reused antd v0.5.58 is not held: its start time is unknown here', async () => {
+    for (const registryMode of ['external', 'reused']) {
+      const api = createApi();
+      api.getHealth.mockResolvedValue(
+        ok({ status: 'ok', version: 'antd/0.5.58', chainReady: true })
+      );
+      const getWalletTxCount = jest.fn(async () => 5);
+      const { service } = setup({ api, registryMode, getWalletTxCount });
+      await service.refresh();
+      expect(service.getState().readiness.key).toBe('needs-storage');
+      expect(getWalletTxCount).not.toHaveBeenCalled();
+    }
+  });
+
+  test('the bound runs from when the node was spawned, not from when the service first looked', async () => {
+    const api = createApi();
+    api.getHealth.mockResolvedValue(ok({ status: 'ok', version: 'antd/0.5.58', chainReady: true }));
+    // Spawned 25 minutes before publish setup first looked at it.
+    const { service } = setup({
+      api,
+      getWalletTxCount: jest.fn(async () => 5),
+      startedAt: Date.now() - 25 * 60_000,
+    });
+    await service.refresh();
+    expect(service.getState().readiness).toMatchObject({ key: 'checking', rediscovery: 'running' });
+    expect(service.getState().readiness.message).toMatch(/several minutes/);
+    jest.setSystemTime(Date.now() + REDISCOVERY_MAX_WAIT_MS - 25 * 60_000 + 1);
+    expect(service.getState().readiness.key).toBe('needs-storage');
   });
 
   test('Bee and older Ant releases (which rediscover before chainReady) are not held', async () => {

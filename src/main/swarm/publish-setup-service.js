@@ -98,16 +98,25 @@ const MAX_EXTEND_DAYS = 3650;
 // Ant's background batch rediscovery (#510, ant-wallet-scan.js): while it
 // runs, an empty `/stamps` does not mean the wallet owns no storage. A node
 // that reports `/health.walletScan` (Ant v0.5.59+) is held until it says
-// `done` or `confirming`, however long that takes. A node that may be
+// `done` or `confirming`, however long a scan that moves takes (one that
+// stops moving is bounded by SCAN_STALL_MAX_MS). A node that may be
 // rediscovering without reporting it (Ant v0.5.58, or a `walletScan` state
-// this release does not know) is held for at most this long after Freedom
-// saw it running. Neither holds a wallet that never sent a transaction,
-// which owns nothing to rediscover. Before #484, the first scan of a wallet
+// this release does not know) is held for at most this long after the node
+// started, and only if Freedom spawned it: an external node's start time is
+// unknown here, and it may have finished long ago. Neither holds a wallet
+// that never sent a transaction, which owns nothing to rediscover. Before #484, the first scan of a wallet
 // with history took 15-25 minutes behind a range-capped RPC; past this the
 // fallback stops guessing rather than keep the user from buying for good.
 const REDISCOVERY_MAX_WAIT_MS = 30 * 60_000;
 // After this long the fallback's message says the first check can take a while.
 const REDISCOVERY_SLOW_MS = 2 * 60_000;
+// A reported scan that keeps failing (`retrying`, with no block read since)
+// for this long is not going to finish on its own: a Gnosis RPC set short of
+// a quorum, or a dead logs endpoint. antd's own retry backs off to 5
+// minutes, so this is several failed attempts. Past it the hold is released,
+// with a message saying the check did not finish, rather than keep the user
+// from storage plans for the whole session.
+const SCAN_STALL_MAX_MS = 30 * 60_000;
 
 const QUOTING_PHASES = new Set(['quoting', 'awaiting-funds']);
 // The surface name the chrome's setup screen watches under (publish-setup.js).
@@ -257,6 +266,7 @@ function classifyReadiness({
   probe,
   runningSince = null,
   rediscovery = null,
+  scanStalled = false,
   now = Date.now(),
 }) {
   const registryMode = node?.registryMode || 'none';
@@ -371,11 +381,13 @@ function classifyReadiness({
     return result(
       'needs-storage',
       'no-usable-stamps',
-      probe.stamps.full > 0
-        ? 'Your storage is full. Buy a storage plan to keep publishing.'
-        : probe.stamps.total > 0
-          ? 'None of your storage can be used anymore. Buy a storage plan to publish.'
-          : 'Publishing needs storage. Pick a storage plan to start.'
+      scanStalled
+        ? 'The Swarm node could not finish looking for storage this wallet already owns: Gnosis Chain keeps failing. Check the Gnosis RPC in Settings before buying, or you may pay for storage you already have.'
+        : probe.stamps.full > 0
+          ? 'Your storage is full. Buy a storage plan to keep publishing.'
+          : probe.stamps.total > 0
+            ? 'None of your storage can be used anymore. Buy a storage plan to publish.'
+            : 'Publishing needs storage. Pick a storage plan to start.'
     );
   }
   const count = probe.stamps.usable;
@@ -468,6 +480,9 @@ function createPublishSetupService({
   getTransactionStatus,
   // The node wallet's Gnosis Chain transaction count, or null if unknown.
   getWalletTxCount = null,
+  // When the node Freedom spawned started (ms), or null: what the fallback
+  // hold is measured from, so a service constructed late does not stretch it.
+  getNodeStartedAt = null,
   publish = () => {},
   now = () => Date.now(),
 } = {}) {
@@ -500,6 +515,11 @@ function createPublishSetupService({
   // 2026-10-05; #529 tracks a faster first scan).
   let walletHistory = { run: null, hasHistory: null };
   let historyInflight = null;
+  // Since when a reported scan has been failing without reading a block
+  // (SCAN_STALL_MAX_MS), per node run. `through` is the progress it stalled
+  // at: antd flips between `retrying` and `scanning` on each attempt, so only
+  // a block actually read counts as the scan moving again.
+  let scanStall = { run: null, since: null, through: null };
 
   function readNode() {
     const { status = 'stopped', error = null } = getNodeStatus?.() || {};
@@ -569,22 +589,68 @@ function createPublishSetupService({
     if (!kind || runningSince === null) return null;
     if (walletHistory.run === nodeRun && walletHistory.hasHistory === false) return null;
     if (kind === 'reported') {
+      if (isScanStalled()) return null;
       const scan = probe.walletScan;
       return { state: scan.state, percent: walletScanPercent(scan), slow: false };
     }
-    const waited = now() - runningSince;
+    const startedAt = nodeStartedAt();
+    if (startedAt === null) return null;
+    const waited = now() - startedAt;
     if (waited > REDISCOVERY_MAX_WAIT_MS) return null;
     return { state: 'unreported', percent: null, slow: waited > REDISCOVERY_SLOW_MS };
   }
 
   // 'reported' while the node reports an unfinished scan, 'fallback' while
-  // it may be rediscovering without saying so, else null.
+  // it may be rediscovering without saying so, else null. The fallback is
+  // for the node Freedom spawned only: for an external one Freedom cannot
+  // tell a scan that just started from one that finished days ago, and
+  // guessing would hold the plans for the bound on every launch.
   function holdKind() {
     if (!probe || probe.unreachable) return null;
     const scan = probe.walletScan;
     if (scan && scan.state !== 'unknown') return isWalletScanFinished(scan) ? null : 'reported';
+    if (node.registryMode !== 'bundled') return null;
     if (scan) return 'fallback';
     return mayRediscoverUnreported(probe.version) ? 'fallback' : null;
+  }
+
+  // When the node started: the bundled node's spawn time where known, else
+  // when Freedom first saw it running.
+  function nodeStartedAt() {
+    const spawned = getNodeStartedAt?.();
+    if (Number.isFinite(spawned) && spawned <= now()) return spawned;
+    return runningSince;
+  }
+
+  function noteWalletScan(scan, at) {
+    if (
+      scanStall.run !== nodeRun ||
+      !scan ||
+      scan.state === 'unknown' ||
+      isWalletScanFinished(scan)
+    ) {
+      scanStall = { run: nodeRun, since: null, through: null };
+      if (!scan || scan.state !== 'retrying') return;
+    }
+    const through = scan.scannedThrough;
+    if (
+      scanStall.since !== null &&
+      through !== null &&
+      (scanStall.through === null || through > scanStall.through)
+    ) {
+      scanStall = { run: nodeRun, since: null, through: null };
+    }
+    if (scan.state === 'retrying' && scanStall.since === null) {
+      scanStall = { run: nodeRun, since: at, through };
+    }
+  }
+
+  function isScanStalled() {
+    return (
+      scanStall.run === nodeRun &&
+      scanStall.since !== null &&
+      now() - scanStall.since > SCAN_STALL_MAX_MS
+    );
   }
 
   async function readWalletHistory() {
@@ -632,6 +698,11 @@ function createPublishSetupService({
       probe,
       runningSince,
       rediscovery: rediscoveryHold(),
+      // The stalled-scan warning is for a wallet that may own storage.
+      scanStalled:
+        holdKind() === 'reported' &&
+        isScanStalled() &&
+        !(walletHistory.run === nodeRun && walletHistory.hasHistory === false),
       now: now(),
     });
   }
@@ -704,6 +775,7 @@ function createPublishSetupService({
     const chainReady = health.data?.chainReady !== false;
     const version = typeof health.data?.version === 'string' ? health.data.version : null;
     const walletScan = parseWalletScan(health.data?.walletScan);
+    noteWalletScan(walletScan, at);
     if (!chainReady) {
       probe = {
         at,
@@ -1554,6 +1626,7 @@ function getPublishSetupService() {
     service = createPublishSetupService({
       getNodeStatus: antManager.getStatus,
       getRegistryMode: () => getRegistry().ant?.mode,
+      getNodeStartedAt: antManager.getSpawnedAt,
       restartNode: async () => {
         await antManager.stopAnt();
         await antManager.startAnt();
@@ -1649,6 +1722,7 @@ module.exports = {
   CHAIN_INIT_SLOW_MS,
   REDISCOVERY_MAX_WAIT_MS,
   REDISCOVERY_SLOW_MS,
+  SCAN_STALL_MAX_MS,
   MIN_DEPOSIT_AMOUNT_PLUR,
   MAX_DEPOSIT_AMOUNT_PLUR,
 };

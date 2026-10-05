@@ -96,8 +96,12 @@ URL-redacted `error`; antd retries on its own), then `done`, or `confirming`
 being confirmed; what it found is already registered). The publish setup
 service (`src/main/swarm/ant-wallet-scan.js` parses it) shows "Looking for your
 existing storage…" with the percentage instead of offering a plan until `done`
-or `confirming`, with no time limit and no Restart offered, since a restart
-starts the scan over. The probe reads `/health` before `/stamps`, so the list it
+or `confirming`, with no time limit while the scan moves and no Restart
+offered, since a restart starts the scan over. A scan that has read no block
+for `SCAN_STALL_MAX_MS` (30 min) of `retrying` (antd flips to `scanning` for
+each attempt, so only an advancing `scannedThrough` resets the clock) is
+released: the plans show, with a warning that the check did not finish and to
+check the Gnosis RPC (a set short of a quorum fails every `eth_getLogs`). The probe reads `/health` before `/stamps`, so the list it
 releases with already has what the scan found. A node wallet whose
 `eth_getTransactionCount` is 0 is never held: rediscovery only finds batches the
 wallet paid for itself, and a brand-new wallet would otherwise wait for a scan of
@@ -109,7 +113,10 @@ The bundled node always gets both. The only node that rediscovers in the
 background _without_ reporting it is antd v0.5.58 (or an antd whose
 `/health.version` can't be parsed, or a `walletScan.state` this release doesn't
 know). For those, a fallback holds for at most `REDISCOVERY_MAX_WAIT_MS`
-(30 min) after Freedom saw the node running. That covers external nodes too.
+(30 min) after the node was spawned (`ant-manager.getSpawnedAt()`, not when
+the lazily-built service first looked), for the bundled node only: an external
+or reused node's start time is unknown, and holding it would re-arm the 30
+minutes on every Freedom launch for a scan that may have finished long ago.
 Bee is not held. The log matching that #522 used is gone: v0.5.59 logs
 `postage batch rediscovery scan failed` on every retry, so it no longer means
 "gave up". On a pin bump, check `crates/ant-chain/src/discover.rs`'s
