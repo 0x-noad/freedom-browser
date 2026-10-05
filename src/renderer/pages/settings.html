@@ -271,6 +271,23 @@
         opacity: 0.55;
       }
 
+      /* The Updates section download bar (#87). Track and fill are the shared
+         border/accent tokens, so both themes come from theme.css. */
+      .update-progress {
+        height: 4px;
+        margin-top: 8px;
+        border-radius: 2px;
+        background: var(--border);
+        overflow: hidden;
+      }
+
+      .update-progress-bar {
+        width: 0;
+        height: 100%;
+        background: var(--accent);
+        transition: width 0.2s ease;
+      }
+
       /* The ad-blocking category rows carry a help line only once the engine
          reports a rule count; until then the empty paragraph would still add
          its top margin under the label. */
@@ -1682,6 +1699,33 @@
         <section class="section" id="updates">
           <h2 class="section-title">Updates</h2>
           <div class="card">
+            <div class="row" id="update-status-row" data-update-status="unsupported">
+              <div class="row-body">
+                <p class="row-label" id="update-current-version">Freedom</p>
+                <p class="row-help" id="update-status-message" role="status" aria-live="polite">
+                  Loading…
+                </p>
+                <div
+                  class="update-progress"
+                  id="update-progress"
+                  role="progressbar"
+                  aria-label="Update download"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  hidden
+                >
+                  <div class="update-progress-bar" id="update-progress-bar"></div>
+                </div>
+                <p class="row-help" id="update-status-detail" hidden></p>
+                <p class="row-help" id="update-last-checked" hidden></p>
+              </div>
+              <div class="row-control">
+                <button type="button" class="btn" id="update-check-now" disabled>Check now</button>
+                <button type="button" class="btn" id="update-restart" hidden>
+                  Restart to update
+                </button>
+              </div>
+            </div>
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Automatically check for updates</p>
@@ -1699,5 +1743,6 @@
     </div>
 
     <script src="scripts/settings.js"></script>
+    <script src="scripts/settings-updates.js"></script>
   </body>
 </html>
