@@ -58,7 +58,11 @@ module.exports = defineConfig({
   snapshotPathTemplate: 'test-e2e/__screenshots__/{arg}{ext}',
   use: {
     trace: 'retain-on-failure',
-    screenshot: 'only-on-failure',
+    // Failure screenshots are taken by test-e2e/close-app.js instead, of the
+    // chrome window only: 'only-on-failure' screenshots every page of the
+    // context on *every* close, including background-tab webviews that never
+    // paint, which added 5 s to each multi-tab test's teardown (#535).
+    screenshot: 'off',
     video: 'off',
   },
   projects: [
