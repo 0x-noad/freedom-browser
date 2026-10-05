@@ -1203,11 +1203,12 @@ function getDecisionsForOrigin(origin, privatePartition = null) {
 //
 //   profile-wide (the default; Settings > Privacy and security > Site
 //     Permissions, "Remove site", "Remove all") — the store, the
-//     normal-profile session tier and EVERY live private partition. The private sweep is deliberate: without it a
-//     camera grant made inside a still-open private window keeps granting
-//     after the user hit "Revoke all", because `getEffectiveDecision`
-//     (correctly) prefers the partition-scoped answer and a removal carries
-//     no decision that could override it.
+//     normal-profile session tier and EVERY live private partition. The
+//     private sweep is deliberate: without it a camera grant made inside a
+//     still-open private window keeps granting after the user hit "Revoke
+//     all", because `getEffectiveDecision` (correctly) prefers the
+//     partition-scoped answer and a removal carries no decision that could
+//     override it.
 //
 //   window-scoped (the address-bar popover's "Remove") — exactly the tiers
 //     the ASKING window reads: the store, plus its own run-scoped tier and

@@ -437,7 +437,8 @@ describe('site-permissions-ui popover revoke label', () => {
   });
 
   // #226: the popover said 'Reset' while Settings > Privacy and security >
-  // Site Permissions says 'Remove' / 'Remove site' / 'Remove all' for the same action.
+  // Site Permissions says 'Remove' / 'Remove site' / 'Remove all' for the
+  // same action.
   test("each row's revoke button says Remove, matching Settings", async () => {
     // Let the indicator refresh kicked off by init resolve.
     await Promise.resolve();
