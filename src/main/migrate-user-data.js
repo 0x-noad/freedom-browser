@@ -14,6 +14,7 @@
 const { app } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const fsOffload = require('./fs-offload');
 
 const OLD_APP_NAME = 'Freedom Browser';
 const MIGRATION_MARKER = '.migrated-from-freedom-browser';
@@ -240,7 +241,7 @@ async function purgeSetAsideBeeData(options = {}) {
   }
   const startedAt = Date.now();
   try {
-    await require('./fs-offload').removePath(setAside, { recursive: true, force: true });
+    await fsOffload.removePath(setAside, { recursive: true, force: true });
     log.info(`[Migration] Removed set-aside Bee-only data in ${Date.now() - startedAt} ms`);
     return true;
   } catch (err) {
