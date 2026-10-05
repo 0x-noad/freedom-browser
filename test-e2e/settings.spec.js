@@ -1729,6 +1729,39 @@ test.describe('settings deep links name the view they open (#280)', () => {
     }
   });
 
+  // Arriving on a lower Networks panel (`#networks/rpc` — the wallet's RPC
+  // button, the onchain-app interstitial) and then opening "Add a chain"
+  // must not leave the address bar naming RPC Providers over a form whose
+  // focus mode hides RPC Providers. The form belongs to the Chains list, so
+  // the URL goes back to `freedom://settings/networks` — without a
+  // `hashchange`, which would close the form it just opened.
+  test('Add a chain from #networks/rpc puts the address bar back on Networks', async ({
+    window,
+    electronApp,
+  }) => {
+    const page = await settingsPageOf(window, electronApp);
+    await page.evaluate(() => {
+      location.hash = 'networks/rpc';
+    });
+    await expect(window.locator('[data-test="address-input"]')).toHaveValue(
+      'freedom://settings/networks/rpc'
+    );
+    await page.locator('#chains-view [data-action="add-chain"]').click();
+    await expect(page.locator('#chains-view h2.section-title')).toHaveText('Add a chain');
+    await expect(page.locator('#rpc')).toBeHidden();
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#networks');
+    await expect(window.locator('[data-test="address-input"]')).toHaveValue(
+      'freedom://settings/networks'
+    );
+    // Still the form: the rewrite did not fire the hashchange that clears it.
+    await expect(page.locator('#chains-view h2.section-title')).toHaveText('Add a chain');
+
+    // Cancel lands on the list it says it belongs to.
+    await page.locator('#chains-view [data-action="cancel-add"]').click();
+    await expect(page.locator('#chains-view .panel-title')).toHaveText('Chains');
+    await expect(page.locator('#rpc')).toBeVisible();
+  });
+
   test('an unknown chain deep link returns to the list, says why, and leaves real ones alone', async ({
     window,
     electronApp,

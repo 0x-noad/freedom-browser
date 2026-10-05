@@ -336,7 +336,7 @@ const clearFaviconPairing = (tab) => {
   tab.reportedFavicon = null;
 };
 
-// Experimental opt-in (Settings → Advanced, default off). Mirrors the
+// Experimental opt-in (Settings → Appearance, default off). Mirrors the
 // `showIpfsProgressStatus` setting, seeded in initNavigation and kept live via
 // the `settings:updated` broadcast. While off, the IPFS progress poller never
 // starts, so the link bar stays a pure hover-URL surface.

@@ -2792,6 +2792,16 @@ freedomAPI.onSettingsUpdated?.((settings) => {
         setStatus(err?.message || 'Could not remove chain', 'error');
       }
     } else if (action === 'add-chain') {
+      // The form is part of the Chains list view, which `#networks` names.
+      // Arriving via `#networks/rpc` or `#networks/ens` (the wallet's RPC
+      // button, the onchain-app interstitial) leaves that hash in place,
+      // and the form's focus mode hides the very panel it names — so put
+      // the URL back on the list. replaceState fires no `hashchange`, which
+      // would clear `addState`, and keeps the swap out of back/forward.
+      if (resolveRoute(location.hash) !== 'networks') {
+        stopPanelScroll();
+        history.replaceState(null, '', '#networks');
+      }
       addState = { mode: 'search', results: null, picked: null };
       render();
       runChainSearch('');
