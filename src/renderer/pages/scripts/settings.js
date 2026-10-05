@@ -100,6 +100,11 @@ $('manage-profiles-link')?.addEventListener('click', () => {
   window.open('freedom://profiles', '_blank');
 });
 let activeProfileId = null;
+// Nodes: the last stored per-protocol config, uncommitted row edits
+// (protocol → { mode, values, invalid, error }), and the commit queue.
+let storedProfileNodes = {};
+const nodeDrafts = new Map();
+let nodeSave = Promise.resolve();
 // The committed profile name — the baseline an in-progress edit reverts
 // to (Esc, an empty/unchanged value, or a failed save).
 let savedProfileName = '';
@@ -958,10 +963,12 @@ const renderModeOptions = (protocol, mode) =>
     )
     .join('');
 
-const renderExternalEditor = (protocol, config, mode) => {
+const renderExternalEditor = (protocol, config, mode, draft) => {
   const definition = SERVICE_DEFINITIONS[protocol];
-  const fields = externalFields(definition, config).map(
-    (field) => `
+  const fields = externalFields(definition, config).map((field) => {
+    const value = draft?.values?.[field.key] ?? field.value ?? '';
+    const invalid = draft?.invalid?.includes(field.key);
+    return `
       <div class="profile-node-field">
         <label for="profile-${protocol}-${field.key}">${esc(field.label)}</label>
         <input
@@ -969,12 +976,12 @@ const renderExternalEditor = (protocol, config, mode) => {
           class="rpc-input"
           data-endpoint-field="${field.key}"
           type="text"
-          value="${esc(field.value || '')}"
+          value="${esc(value)}"
           placeholder="${esc(field.placeholder || '')}"
-          spellcheck="false"
+          spellcheck="false"${invalid ? ' aria-invalid="true"' : ''}
         />
-      </div>`
-  );
+      </div>`;
+  });
 
   const note = definition?.externalNote
     ? `<p class="profile-node-note">${esc(definition.externalNote)}</p>`
@@ -1005,11 +1012,17 @@ const setExternalEditorVisible = (row, mode) => {
 
 const renderProfileNodes = (profile, registry, settings) => {
   const nodes = profile?.nodes || {};
+  storedProfileNodes = nodes;
   const rows = visibleProfileServices(settings).map((definition) => {
     const protocol = definition.protocol;
     const config = nodes[protocol] || {};
     const service = registry?.[protocol] || {};
-    const mode = config.mode || 'managed';
+    // An uncommitted edit (an external switch still missing its endpoint,
+    // or one the main process refused) outlives the periodic re-render, so
+    // the row keeps showing what the user picked next to why it was not
+    // saved — the stored config underneath is untouched.
+    const draft = nodeDrafts.get(protocol);
+    const mode = draft?.mode || config.mode || 'managed';
     const lines = endpointLines(definition, config, service);
     const details = lines.length
       ? lines.map((line) => `<div class="profile-node-detail">${esc(line)}</div>`).join('')
@@ -1026,15 +1039,40 @@ const renderProfileNodes = (profile, registry, settings) => {
         <div class="profile-node-status">
           <div class="profile-node-status-line">${esc(statusLabel(service))}</div>
           ${details}
-          ${renderExternalEditor(protocol, config, mode)}
-          <div class="profile-node-actions">
-            <button type="button" class="btn" data-save-node="${protocol}">Save</button>
-          </div>
+          ${renderExternalEditor(protocol, config, mode, draft)}
+          <p class="profile-node-error" data-node-error role="alert"${draft?.error ? '' : ' hidden'}>${esc(draft?.error || '')}</p>
         </div>
       </div>`;
   });
 
+  // Committing one row re-renders the card (the profile-updated broadcast),
+  // usually just as focus moves on to the next control. Put focus — and
+  // anything already typed into a focused field — back where it was.
+  const active = document.activeElement;
+  const focused =
+    active && profileFields.nodesCard.contains(active)
+      ? {
+          protocol: active.closest('.profile-node')?.dataset.protocol,
+          field: active.dataset?.endpointField,
+          mode: active.matches?.('[data-node-mode]'),
+          value: active.value,
+        }
+      : null;
+
   profileFields.nodesCard.innerHTML = rows.join('');
+
+  if (focused?.protocol && (focused.field || focused.mode)) {
+    const row = profileFields.nodesCard.querySelector(
+      `.profile-node[data-protocol="${focused.protocol}"]`
+    );
+    const target = focused.field
+      ? row?.querySelector(`[data-endpoint-field="${focused.field}"]`)
+      : row?.querySelector('[data-node-mode]');
+    if (target) {
+      if (focused.field) target.value = focused.value;
+      target.focus();
+    }
+  }
 };
 
 const refreshProfileSection = async (force = false) => {
@@ -1054,7 +1092,9 @@ const refreshProfileSection = async (force = false) => {
       freedomAPI.getServiceRegistry().catch(() => null),
       freedomAPI.getSettings?.().catch(() => null),
     ]);
-    activeProfileId = profile?.id || null;
+    const profileId = profile?.id || null;
+    if (profileId !== activeProfileId) nodeDrafts.clear();
+    activeProfileId = profileId;
     const label = profile?.displayName || profile?.id || '';
     if (profileFields.nameInput && profileFields.nameInput !== document.activeElement) {
       profileFields.nameInput.value = label;
@@ -1132,54 +1172,166 @@ profileFields.nameInput?.addEventListener('keydown', (event) => {
   }
 });
 
+// Nodes commit the way every other Settings control does: the mode
+// <select> on change, the endpoint fields when they are left (focusout,
+// or Enter). There is no Save button. "Use external node" only commits
+// once its endpoint fields are filled; until then the row keeps the
+// selection as a draft, flags the empty fields and says the stored mode
+// is unchanged. The main process validates a patch as a whole and
+// refuses it as a whole, so a refused commit can't half-apply either.
+const nodeRowConfig = (row) => {
+  const protocol = row?.dataset.protocol;
+  const mode = row?.querySelector('[data-node-mode]')?.value;
+  const values = {};
+  for (const input of row?.querySelectorAll('[data-endpoint-field]') || []) {
+    values[input.dataset.endpointField] = input.value.trim();
+  }
+  return { protocol, mode, values };
+};
+
+// Paint a row's draft state onto whatever row is live now: a commit's
+// reply can land after a re-render replaced the row it started from.
+const setNodeDraft = (protocol, draft) => {
+  if (draft) nodeDrafts.set(protocol, draft);
+  else nodeDrafts.delete(protocol);
+  const row = profileFields.nodesCard?.querySelector(`.profile-node[data-protocol="${protocol}"]`);
+  if (!row) return;
+  for (const input of row.querySelectorAll('[data-endpoint-field]')) {
+    if (draft?.invalid?.includes(input.dataset.endpointField)) {
+      input.setAttribute('aria-invalid', 'true');
+    } else {
+      input.removeAttribute('aria-invalid');
+    }
+  }
+  const error = row.querySelector('[data-node-error]');
+  if (error) {
+    error.textContent = draft?.error || '';
+    error.hidden = !draft?.error;
+  }
+};
+
+// Why a row was not saved, ending with what the stored config still is.
+const nodeNotSavedMessage = (protocol, mode, reason) => {
+  const label = SERVICE_LABELS[protocol];
+  const storedMode = storedProfileNodes?.[protocol]?.mode || 'managed';
+  const kept =
+    mode === storedMode
+      ? `the saved ${label} endpoint is unchanged`
+      : `${label} is still set to ${NODE_MODE_LABELS[storedMode] || storedMode}`;
+  return `${reason} Not saved — ${kept}.`;
+};
+
+const commitNodeRow = (row) => {
+  const { protocol, mode, values } = nodeRowConfig(row);
+  if (!protocol || !mode) return Promise.resolve();
+  const label = SERVICE_LABELS[protocol];
+  const fieldKeys = Object.keys(values);
+
+  if (mode === 'external') {
+    const missing = fieldKeys.filter((key) => !values[key]);
+    if (missing.length) {
+      const names = (SERVICE_DEFINITIONS[protocol]?.externalFields || [])
+        .filter((field) => missing.includes(field.key))
+        .map((field) => field.label);
+      setNodesStatus('', null);
+      setNodeDraft(protocol, {
+        mode,
+        values,
+        invalid: missing,
+        error: nodeNotSavedMessage(
+          protocol,
+          mode,
+          `Enter the ${names.join(', ')} endpoint to use an external ${label} node.`
+        ),
+      });
+      return Promise.resolve();
+    }
+  }
+
+  // Only an external commit carries endpoints. Switching to managed or
+  // disabled leaves the stored endpoint as it is (the catalog merges), so a
+  // half-typed endpoint in a now-hidden field can't make that switch fail.
+  const config = mode === 'external' ? { mode, ...values } : { mode };
+
+  // Serialise commits so two quick edits land in the order they were made
+  // (IPC replies are not guaranteed to come back in dispatch order), and
+  // compare against the stored config only once the previous commit landed.
+  nodeSave = nodeSave
+    .catch(() => {})
+    .then(async () => {
+      const stored = storedProfileNodes?.[protocol] || {};
+      const unchanged =
+        mode === (stored.mode || 'managed') &&
+        (mode !== 'external' || fieldKeys.every((key) => values[key] === (stored[key] || '')));
+      if (unchanged) {
+        // Picking the stored mode again, or leaving a field as it was, is
+        // not an edit: nothing to save, and nothing to restart.
+        setNodeDraft(protocol, null);
+        return;
+      }
+      setNodesStatus(`Saving ${label} node settings…`, 'testing');
+      try {
+        const result = await freedomAPI.updateProfileNodeConfig?.(protocol, config);
+        if (!result?.success) {
+          const err = new Error(result?.error?.message || 'Profile node settings were not saved');
+          err.field = result?.error?.details?.field;
+          throw err;
+        }
+        setNodeDraft(protocol, null);
+        setNodesStatus(
+          `${label} saved. Restart the node to apply mode or endpoint changes.`,
+          'success'
+        );
+        await refreshProfileSection(true);
+        await refreshRadicleLaunchStatus();
+      } catch (err) {
+        setNodesStatus('', null);
+        setNodeDraft(protocol, {
+          mode,
+          values,
+          invalid: err?.field ? [err.field] : mode === 'external' ? fieldKeys : [],
+          error: nodeNotSavedMessage(
+            protocol,
+            mode,
+            `${err?.message || 'Profile node settings were not saved'}.`
+          ),
+        });
+      }
+    });
+  return nodeSave;
+};
+
 profileFields.nodesCard?.addEventListener('change', (event) => {
   const modeSelect = event.target?.closest?.('[data-node-mode]');
   if (!modeSelect) return;
-  setExternalEditorVisible(modeSelect.closest('.profile-node'), modeSelect.value);
+  const row = modeSelect.closest('.profile-node');
+  setExternalEditorVisible(row, modeSelect.value);
+  commitNodeRow(row);
 });
 
-profileFields.nodesCard?.addEventListener('click', async (event) => {
-  const saveButton = event.target?.closest?.('[data-save-node]');
-  if (!saveButton) return;
+profileFields.nodesCard?.addEventListener('input', (event) => {
+  const input = event.target?.closest?.('[data-endpoint-field]');
+  if (!input) return;
+  // Keep a pending draft's values current so a re-render (profile update,
+  // the 5s refresh once focus leaves the card) doesn't drop what was typed.
+  const row = input.closest('.profile-node');
+  const draft = nodeDrafts.get(row?.dataset.protocol);
+  if (draft) draft.values = nodeRowConfig(row).values;
+});
 
-  const row = saveButton.closest('.profile-node');
-  const protocol = saveButton.dataset.saveNode;
-  const mode = row?.querySelector('[data-node-mode]')?.value;
-  if (!protocol || !mode) return;
+profileFields.nodesCard?.addEventListener('focusout', (event) => {
+  const input = event.target?.closest?.('[data-endpoint-field]');
+  if (!input) return;
+  commitNodeRow(input.closest('.profile-node'));
+});
 
-  const config = { mode };
-  for (const input of row.querySelectorAll('[data-endpoint-field]')) {
-    config[input.dataset.endpointField] = input.value.trim();
-  }
-
-  if (mode === 'external') {
-    const missing = [...row.querySelectorAll('[data-endpoint-field]')]
-      .filter((input) => !input.value.trim())
-      .map((input) => input.previousElementSibling?.textContent || 'Endpoint');
-    if (missing.length) {
-      setNodesStatus(
-        `External ${SERVICE_LABELS[protocol]} requires: ${missing.join(', ')}`,
-        'error'
-      );
-      return;
-    }
-  }
-
-  saveButton.disabled = true;
-  setNodesStatus(`Saving ${SERVICE_LABELS[protocol]} node settings…`, 'testing');
-  try {
-    const result = await freedomAPI.updateProfileNodeConfig?.(protocol, config);
-    if (!result?.success) {
-      throw new Error(result?.error?.message || 'Profile node settings were not saved');
-    }
-    setNodesStatus('Saved. Restart the node to apply mode or endpoint changes.', 'success');
-    await refreshProfileSection(true);
-    await refreshRadicleLaunchStatus();
-  } catch (err) {
-    setNodesStatus(err?.message || 'Profile node settings were not saved', 'error');
-  } finally {
-    saveButton.disabled = false;
-  }
+profileFields.nodesCard?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  const input = event.target?.closest?.('[data-endpoint-field]');
+  if (!input) return;
+  event.preventDefault();
+  // Blur commits via the focusout handler, like the profile name field.
+  input.blur();
 });
 
 const currentFormState = () => ({

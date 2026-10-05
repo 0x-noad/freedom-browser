@@ -74,6 +74,110 @@ test('node config: Myotis is embedded per profile and can be disabled', async ({
   expect(updated.nodes.myotis).toEqual({ mode: 'disabled', backend: 'myotis-native' });
 });
 
+// Settings → Nodes commits on change like every other section (#271). Lives
+// here rather than in settings.spec.js because node config is only editable on
+// a catalog profile, which is what these fixtures launch. No
+// Save buttons; the mode select commits on change, the endpoint fields on
+// focusout/Enter; "Use external node" with an empty endpoint never reaches the
+// stored profile — the row flags the field and says nothing was saved.
+test('Nodes commit on change, and an external switch waits for its endpoint (#271)', async ({
+  window,
+  electronApp,
+}) => {
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill('freedom://settings/nodes');
+  await input.press('Enter');
+
+  let page;
+  await expect
+    .poll(() => {
+      page = electronApp.windows().find((p) => p.url().includes('/pages/settings.html'));
+      return Boolean(page);
+    })
+    .toBe(true);
+
+  const storedBee = () =>
+    page.evaluate(() => window.freedomAPI.getActiveProfile().then((p) => p?.nodes?.bee || {}));
+  const row = page.locator('.profile-node[data-protocol="bee"]');
+  const mode = row.locator('[data-node-mode]');
+  const api = row.locator('[data-endpoint-field="externalApi"]');
+  const error = row.locator('[data-node-error]');
+
+  await expect(row).toBeVisible();
+  await expect(page.locator('#profile-nodes-card button')).toHaveCount(0);
+  expect((await storedBee()).mode || 'managed').toBe('managed');
+
+  // Clear any stored endpoint so the external switch has nothing to fall back on.
+  if ((await storedBee()).externalApi) {
+    await page.evaluate(() =>
+      window.freedomAPI.updateProfileNodeConfig('bee', { mode: 'managed', externalApi: '' })
+    );
+  }
+  await page.evaluate(() => (location.hash = '#nodes'));
+  await expect(api).toHaveValue('');
+
+  // External with no endpoint: inline error, flagged field, nothing stored.
+  await mode.selectOption('external');
+  await expect(api).toBeVisible();
+  await expect(error).toBeVisible();
+  await expect(error).toHaveText(
+    /Enter the API endpoint .* Not saved — Swarm is still set to Managed by Freedom\./
+  );
+  await expect(api).toHaveAttribute('aria-invalid', 'true');
+  expect((await storedBee()).mode || 'managed').toBe('managed');
+
+  // The draft survives a forced re-render (the 5s refresh / profile broadcast).
+  await page.locator('#profile-nodes-status').click();
+  await page.evaluate(() => window.freedomAPI.updateProfileNodeConfig('ipfs', { mode: 'managed' }));
+  await expect(mode).toHaveValue('external');
+  await expect(error).toBeVisible();
+  expect((await storedBee()).mode || 'managed').toBe('managed');
+
+  // Filling the endpoint and leaving the field commits the switch.
+  await api.fill('http://127.0.0.1:1733');
+  await api.press('Tab');
+  await expect.poll(async () => (await storedBee()).mode).toBe('external');
+  expect((await storedBee()).externalApi).toBe('http://127.0.0.1:1733');
+  await expect(error).toBeHidden();
+  await expect(api).not.toHaveAttribute('aria-invalid', 'true');
+  await expect(page.locator('#profile-nodes-status')).toHaveText(/Swarm saved\. Restart the node/);
+
+  // Editing the endpoint commits on Enter.
+  await api.fill('http://127.0.0.1:1833');
+  await api.press('Enter');
+  await expect.poll(async () => (await storedBee()).externalApi).toBe('http://127.0.0.1:1833');
+
+  // A refused endpoint stays a draft: the stored config keeps the old one.
+  await api.fill('not a url');
+  await api.press('Tab');
+  await expect(error).toBeVisible();
+  await expect(error).toHaveText(
+    /Invalid profile node endpoint\. Not saved — the saved Swarm endpoint is unchanged\./
+  );
+  expect((await storedBee()).externalApi).toBe('http://127.0.0.1:1833');
+
+  // Switching back to managed commits immediately, without the endpoint.
+  await mode.selectOption('managed');
+  await expect.poll(async () => (await storedBee()).mode).toBe('managed');
+  await expect(api).toBeHidden();
+  await expect(error).toBeHidden();
+
+  // Two quick edits land in order: the second is compared with the stored
+  // config only after the first one lands, so it isn't skipped as a no-op.
+  // Both changes are dispatched in one task so neither reply can land between.
+  await page.evaluate(() => {
+    const select = document.querySelector('.profile-node[data-protocol="bee"] [data-node-mode]');
+    for (const value of ['disabled', 'managed']) {
+      select.value = value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  });
+  await page.evaluate('nodeSave');
+  expect((await storedBee()).mode).toBe('managed');
+  await expect(mode).toHaveValue('managed');
+});
+
 const settingsEval = (window, script) =>
   window.evaluate(async (s) => {
     const webview = [...document.querySelectorAll('webview')].find((candidate) => {
