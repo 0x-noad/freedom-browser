@@ -117,6 +117,66 @@ const esc = (s) =>
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]
   );
 
+// The four network sources, named and explained once (#269). Name
+// Resolution's method list and a chain's read/broadcast order both read
+// this table, so the same source can no longer reach the user under two
+// names with two explanations. `label` and `help` are the visible layer
+// and carry no term a user would have to look up (#270); a help line is
+// kept only where the row's badge does not already say it (`Ready` /
+// `Syncing` / `Off` for the local node, `2 of 3` for the servers that
+// must agree). `advanced` is the technical name and the mechanism, shown
+// collapsed under each row's Advanced disclosure — and still indexed by
+// the settings search, so "Myotis", "Colibri", "RPC quorum" and "Direct
+// RPC" keep finding the row they used to label.
+const NETWORK_SOURCE_COPY = Object.freeze({
+  myotis: Object.freeze({
+    label: 'Local node',
+    help: '',
+    advanced:
+      'Myotis — a peer-to-peer Ethereum and Gnosis light client running inside Freedom. It checks answers against the chain itself, with no server involved. ENS lookups use finalized state; newer record types use a verified optimistic beacon head.',
+  }),
+  colibri: Object.freeze({
+    label: 'Proof check',
+    help: 'A server answers; Freedom checks the proof itself.',
+    advanced:
+      "Colibri — a remote prover sends a cryptographic proof with each answer, and Freedom verifies that proof locally against the chain's consensus.",
+  }),
+  quorum: Object.freeze({
+    label: 'Several servers must agree',
+    help: '',
+    advanced:
+      'RPC quorum — several independently configured RPC endpoints are asked at one anchored block, and the answer counts only if enough of them return byte-identical results.',
+  }),
+  direct: Object.freeze({
+    label: 'One server, unchecked',
+    help: 'Fastest, and the only option with nothing verifying the answer.',
+    advanced:
+      'Direct RPC — the first working configured RPC endpoint answers and nothing verifies the response.',
+  }),
+});
+
+// A source row's help line, omitted rather than left empty when the
+// table gives it none.
+const networkSourceHelp = (source) => {
+  const help = NETWORK_SOURCE_COPY[source]?.help;
+  return help ? `<p class="row-help">${esc(help)}</p>` : '';
+};
+
+// A source row's collapsed Advanced disclosure (#270): the technical name
+// and mechanism, plus `extra` — the settings only someone who knows what
+// a prover or a quorum is needs to touch. `key` names the disclosure so a
+// controller that repaints its list can put it back the way the user left
+// it.
+const networkSourceAdvanced = (source, { key = source, open = false, extra = '' } = {}) => {
+  const advanced = NETWORK_SOURCE_COPY[source]?.advanced;
+  if (!advanced && !extra) return '';
+  return `<details class="row-advanced" data-advanced="${esc(key)}"${open ? ' open' : ''}>
+      <summary>Advanced</summary>
+      ${advanced ? `<p class="row-help">${esc(advanced)}</p>` : ''}
+      ${extra}
+    </details>`;
+};
+
 const DEFAULT_SEARCH_PROVIDER = 'duckduckgo';
 const SEARCH_TERMS_PLACEHOLDER = '{searchTerms}';
 const LOOPBACK_SEARCH_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -455,6 +515,10 @@ const settingsSearchFirst = (el, names) => settingsSearchCollect(el, names)[0] |
 // only place a chain — a custom one above all, which exists nowhere
 // else on the page — is named, so leaving them out makes a chain
 // unfindable by the name the user gave it.
+// Since #270 a method's `.resolver-config` panel sits inside the method
+// row's own Advanced disclosure — the one place on the page where a row
+// nests in another — so the walk below goes on into a row for the rows
+// inside it, and a row's own label and help stop at a nested row.
 const SETTINGS_SEARCH_ROWS = ['row', 'resolver-method', 'resolver-config', 'net-row'];
 
 // What names a row, and what describes it under that name. A `.net-row`
@@ -463,6 +527,14 @@ const SETTINGS_SEARCH_ROWS = ['row', 'resolver-method', 'resolver-config', 'net-
 // the page uses.
 const SETTINGS_SEARCH_LABELS = ['row-label', 'net-row-name'];
 const SETTINGS_SEARCH_HELP = ['row-help', 'net-row-sub'];
+
+// The elements carrying one of `names` that belong to `row` itself: a
+// row nested inside it is a barrier, so the proof server's label and
+// help answer for the proof server rather than for the method around it.
+const settingsSearchOwn = (row, names) =>
+  settingsSearchCollect(row, [...names, ...SETTINGS_SEARCH_ROWS]).filter((el) =>
+    names.some((name) => el.classList?.contains(name))
+  );
 
 // A row this build has switched off is not a setting the user has, and
 // offering it would jump to nothing: the `[data-tor]` rows on a build
@@ -478,12 +550,27 @@ const settingsSearchHidden = (row) => Boolean(row?.hidden) || row?.style?.displa
 // labelled X", which is the only thing that tells two same-labelled
 // rows apart (a chain lists "Direct RPC" in both its read order and its
 // broadcast order) once the view they came from has repainted.
+// Every row under `el` in document order, a row nested in another
+// included right after it. A row switched off takes the rows inside it
+// with it.
+const settingsSearchAllRows = (el, out = []) => {
+  for (const child of Array.from(el?.children || [])) {
+    if (child.classList?.contains(SETTINGS_SEARCH_SKIP)) continue;
+    const isRow = SETTINGS_SEARCH_ROWS.some((name) => child.classList?.contains(name));
+    if (isRow) {
+      if (settingsSearchHidden(child)) continue;
+      out.push(child);
+    }
+    settingsSearchAllRows(child, out);
+  }
+  return out;
+};
+
 const settingsSearchRows = (section) =>
-  settingsSearchCollect(section, SETTINGS_SEARCH_ROWS)
-    .filter((row) => !settingsSearchHidden(row))
+  settingsSearchAllRows(section)
     .map((row) => ({
       row,
-      label: settingsSearchText(settingsSearchFirst(row, SETTINGS_SEARCH_LABELS)),
+      label: settingsSearchText(settingsSearchOwn(row, SETTINGS_SEARCH_LABELS)[0]),
     }))
     .filter((entry) => entry.label);
 
@@ -529,7 +616,7 @@ const buildSettingsSearchIndex = (content, { sectionLabels = {}, skip = [] } = {
         section: sectionLabel,
         label,
         labelIndex,
-        help: settingsSearchCollect(row, SETTINGS_SEARCH_HELP).map(settingsSearchText).join(' '),
+        help: settingsSearchOwn(row, SETTINGS_SEARCH_HELP).map(settingsSearchText).join(' '),
         element: row,
       });
     }
@@ -699,6 +786,15 @@ const settingsSearchResets = [];
   // aligned to its top — see `settingsSearchScrollBlock` above.
   const applyHighlight = (row) => {
     clearHighlight();
+    // A row inside a collapsed Advanced disclosure (#270) has no box until
+    // the disclosure is open, so open every one around it first.
+    for (
+      let d = row.parentElement?.closest('details');
+      d;
+      d = d.parentElement?.closest('details')
+    ) {
+      d.open = true;
+    }
     row.scrollIntoView({ block: settingsSearchScrollBlock(row, window.innerHeight) });
     row.classList.add('settings-search-hit');
     highlighted = row;
@@ -1976,7 +2072,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       <h2 class="section-title">Chains</h2>
       <p class="row-help" style="margin-bottom: 16px">
         The chains Freedom resolves names and balances on. Select a
-        chain to manage its RPC and prover endpoints.
+        chain to choose how Freedom reads it and which servers it asks.
       </p>
       <div class="card">${rows}</div>
       ${cardButton('Add chain', 'add-chain')}`;
@@ -2161,24 +2257,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       </div>`;
   };
 
-  const accessMeta = {
-    myotis: {
-      label: 'Myotis P2P light client',
-      help: 'Verified locally against the chain; no RPC endpoint involved.',
-    },
-    colibri: {
-      label: 'Colibri cryptographic verification',
-      help: 'Verifies prover responses against the chain consensus.',
-    },
-    quorum: {
-      label: 'RPC quorum',
-      help: 'Requires matching responses from independently configured RPC endpoints.',
-    },
-    direct: {
-      label: 'Direct RPC',
-      help: 'Compatibility fallback using the first working configured endpoint.',
-    },
-  };
+  // Which source rows' Advanced disclosures are open, as `kind:source`.
+  // The detail repaints from scratch on every config change, and a
+  // disclosure the user opened should not snap shut under them.
+  const openAccessAdvanced = new Set();
 
   const sourceStatus = (source, cid) => {
     if (source === 'myotis') {
@@ -2204,7 +2286,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
         (entry) => entry.role === 'prover' && entry.coverage?.[cid] && !entry.removed
       )
         ? 'Available'
-        : 'No prover';
+        : 'No proof server';
     }
     const count = config.sources.filter(
       (entry) =>
@@ -2223,18 +2305,20 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   const accessRows = (cid, kind, order) =>
     order
       .map((source, index) => {
-        const meta = accessMeta[source];
+        const meta = NETWORK_SOURCE_COPY[source];
         if (!meta) return '';
+        const key = `${kind}:${source}`;
         return `<div class="resolver-method" draggable="true" tabindex="0"
               data-access-kind="${kind}" data-access-source="${source}">
             <span class="resolver-drag-handle" title="Drag to reorder" aria-hidden="true">⠿</span>
             <span class="resolver-rank">${index + 1}</span>
             <div class="row-body">
               <div class="resolver-title-line">
-                <p class="row-label">${meta.label}</p>
+                <p class="row-label">${esc(meta.label)}</p>
                 <span class="resolver-badge">${esc(sourceStatus(source, cid))}</span>
               </div>
-              <p class="row-help">${meta.help}</p>
+              ${networkSourceHelp(source)}
+              ${networkSourceAdvanced(source, { key, open: openAccessAdvanced.has(key) })}
             </div>
           </div>`;
       })
@@ -2267,7 +2351,8 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     const proverConfig = supportsVerifiedSources
       ? `<div class="card" style="margin-top: 12px">
           <div class="rpc-block" style="border-top: none">
-            <p class="row-label" style="margin-bottom: 8px">Colibri prover endpoint</p>
+            <p class="row-label">Proof server</p>
+            <p class="row-help" style="margin-bottom: 8px">Where ${esc(NETWORK_SOURCE_COPY.colibri.label)} gets its proofs.</p>
             <div class="rpc-row">
               <input class="rpc-input" data-chain-prover="${esc(cid)}"
                 data-source-id="${esc(proverSource?.id || 'colibri-corpus')}"
@@ -2304,7 +2389,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       ${proverConfig}
 
       <h3 class="subsection-title">Transaction broadcast</h3>
-      <p class="row-help" style="margin-bottom: 12px">Signed transactions use P2P first, with RPC as the compatibility fallback.</p>
+      <p class="row-help" style="margin-bottom: 12px">Signed transactions go out through the local node first, with a server as the fallback.</p>
       <div class="card">${accessRows(cid, 'broadcast', broadcastOrder)}</div>
 
       ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet')}
@@ -2547,9 +2632,24 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     section.querySelectorAll('.dragging').forEach((row) => row.classList.remove('dragging'));
   });
 
+  // `toggle` does not bubble, so it is caught on the way down.
+  section.addEventListener(
+    'toggle',
+    (e) => {
+      const key = e.target?.dataset?.advanced;
+      if (!key || !e.target.closest('[data-access-source]')) return;
+      if (e.target.open) openAccessAdvanced.add(key);
+      else openAccessAdvanced.delete(key);
+    },
+    true
+  );
+
   section.addEventListener('keydown', async (e) => {
     const row = e.target.closest('[data-access-source]');
     if (!row || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+    // The arrows reorder the focused row, not a row whose Advanced
+    // disclosure happens to have focus inside it.
+    if (e.target !== row) return;
     e.preventDefault();
     await reorderAccess(
       row.dataset.accessKind,
@@ -2814,34 +2914,14 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   const policyStatus = $('ens-policy-status');
   if (!list || !preferVerified) return;
 
+  // Names and explanations come from NETWORK_SOURCE_COPY, shared with a
+  // chain's detail page (#269); only the links are this list's own.
   const METHODS = [
-    {
-      id: 'myotis',
-      label: 'Myotis light client',
-      help: 'Local P2P resolution. ENS prefers finalized state; newer ENS records and WNS/GNS use a cryptographically verified optimistic beacon head.',
-      link: '#nodes',
-      linkLabel: 'Node settings',
-    },
-    {
-      id: 'colibri',
-      label: 'Colibri',
-      help: 'A remote prover produces the witness; Freedom verifies the cryptographic proof locally.',
-    },
-    {
-      id: 'quorum',
-      label: 'RPC quorum',
-      help: 'Multiple independent RPC endpoints must return byte-identical answers at one anchored block.',
-      link: '#chains/1',
-      linkLabel: 'Manage endpoints',
-    },
-    {
-      id: 'direct',
-      label: 'Direct RPC',
-      help: 'Uses one configured endpoint. This is not cryptographic verification and is disabled by default.',
-      link: '#chains/1',
-      linkLabel: 'Configure',
-    },
-  ];
+    { id: 'myotis', link: '#nodes', linkLabel: 'Node settings' },
+    { id: 'colibri' },
+    { id: 'quorum', link: '#chains/1', linkLabel: 'Manage servers' },
+    { id: 'direct', link: '#chains/1', linkLabel: 'Configure' },
+  ].map((method) => ({ ...method, ...NETWORK_SOURCE_COPY[method.id] }));
   const METHOD_IDS = new Set(METHODS.map((method) => method.id));
 
   let config = { networks: {}, sources: [] };
@@ -2856,6 +2936,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   let draggedMethod = null;
   let dropPlacement = null;
   let policyLoaded = false;
+  // Which methods' Advanced disclosures are open: every change here
+  // repaints the list, and the proof server and agreement threshold
+  // live inside the disclosure.
+  const openAdvanced = new Set();
 
   preferVerified.disabled = true;
 
@@ -2922,7 +3006,11 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     }
 
     const hasProver = activeSources('prover').length > 0;
-    setBadge('colibri', hasProver ? 'Verified' : 'No prover', hasProver ? 'verified' : 'warning');
+    setBadge(
+      'colibri',
+      hasProver ? 'Verified' : 'No proof server',
+      hasProver ? 'verified' : 'warning'
+    );
     setBadge(
       'quorum',
       `${currentQuorum.m} of ${currentQuorum.k}`,
@@ -2930,7 +3018,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     );
     setBadge(
       'direct',
-      customRpc ? 'User endpoint' : rpcSources.length ? 'Public endpoint' : 'No endpoint',
+      customRpc ? 'Your server' : rpcSources.length ? 'Public server' : 'No server',
       'warning'
     );
   };
@@ -2961,8 +3049,8 @@ freedomAPI.onSettingsUpdated?.((settings) => {
           configRow = `<div class="resolver-config" data-method-config="colibri">
                 <div class="resolver-config-line">
                   <div class="row-body">
-                    <p class="row-label">Prover endpoint</p>
-                    <p class="row-help">Leave empty to use the corpus.core default.</p>
+                    <p class="row-label">Proof server</p>
+                    <p class="row-help">Leave empty to use the default.</p>
                   </div>
                   <input type="text" id="ens-prover-url" class="rpc-input"
                     placeholder="https://mainnet1.colibri-proof.tech" spellcheck="false" />
@@ -2973,15 +3061,15 @@ freedomAPI.onSettingsUpdated?.((settings) => {
                 <div class="resolver-config-line">
                   <div class="row-body">
                     <p class="row-label">Agreement threshold</p>
-                    <p class="row-help">Require matching responses from independently configured RPC providers. ${activeSources('rpc').length} currently available.</p>
+                    <p class="row-help">How many servers must give the same answer. ${activeSources('rpc').length} currently available.</p>
                   </div>
                   <div class="resolver-quorum-fields">
                     Require
-                    <select data-quorum-field="m" aria-label="Required matching RPC answers">
+                    <select data-quorum-field="m" aria-label="Servers that must agree">
                       ${numberOptions(2, currentQuorum.k, currentQuorum.m)}
                     </select>
                     out of
-                    <select data-quorum-field="k" aria-label="RPC providers queried">
+                    <select data-quorum-field="k" aria-label="Servers asked">
                       ${numberOptions(3, 9, currentQuorum.k)}
                     </select>
                   </div>
@@ -2999,11 +3087,12 @@ freedomAPI.onSettingsUpdated?.((settings) => {
             <span class="resolver-rank">${enabled ? index + 1 : '–'}</span>
             <div class="row-body">
               <div class="resolver-title-line">
-                <p class="row-label">${method.label}</p>
+                <p class="row-label">${esc(method.label)}</p>
                 <span class="resolver-badge" data-method-status="${id}">Loading…</span>
               </div>
-              <p class="row-help">${method.help}</p>
+              ${networkSourceHelp(id)}
               ${link}
+              ${networkSourceAdvanced(id, { open: openAdvanced.has(id), extra: configRow })}
             </div>
             <div class="resolver-controls">
               <label class="toggle" aria-label="Enable ${method.label}">
@@ -3011,8 +3100,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
                 <span class="slider"></span>
               </label>
             </div>
-          </div>
-          ${configRow}`;
+          </div>`;
       })
       .join('');
 
@@ -3059,7 +3147,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
           ...(config.networks['1'].quorum || {}),
           ...quorum,
         };
-        setPolicyStatus('RPC quorum saved.', 'success');
+        setPolicyStatus('Agreement threshold saved.', 'success');
       });
     return quorumSave;
   };
@@ -3136,6 +3224,18 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     }
   };
 
+  // `toggle` does not bubble, so it is caught on the way down.
+  list.addEventListener(
+    'toggle',
+    (event) => {
+      const id = event.target?.dataset?.advanced;
+      if (!id || !METHOD_IDS.has(id)) return;
+      if (event.target.open) openAdvanced.add(id);
+      else openAdvanced.delete(id);
+    },
+    true
+  );
+
   list.addEventListener('keydown', (event) => {
     const handle = event.target.closest?.('[data-drag-handle]');
     if (!handle || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
@@ -3203,7 +3303,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       try {
         await persistQuorum();
       } catch (err) {
-        setPolicyStatus(err?.message || 'Failed to update the RPC quorum.', 'error');
+        setPolicyStatus(err?.message || 'Failed to update the agreement threshold.', 'error');
         refresh();
       }
       return;
@@ -3253,10 +3353,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
             },
           })
         : await freedomAPI.resetEndpointSourceCoverage(proverId, 1);
-      if (result?.success === false) throw new Error(result.error || 'Prover was not saved');
+      if (result?.success === false) throw new Error(result.error || 'Proof server was not saved');
       await refresh();
     } catch (err) {
-      setPolicyStatus(err?.message || 'Failed to update the Colibri prover.', 'error');
+      setPolicyStatus(err?.message || 'Failed to update the proof server.', 'error');
     }
   });
 
