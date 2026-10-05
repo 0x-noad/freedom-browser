@@ -105,9 +105,19 @@ let engine = null;
 // unblocked. So they wait on this instead — bounded by FIRST_ENGINE_HOLD_MS,
 // after which they pass through as they would with adblock off. An engine
 // that is merely being *replaced* never sets it: the old one keeps serving.
+//
+// FIRST_ENGINE_HOLD_MS is a budget for the whole session, not per build
+// (#524): a later build that starts with still no engine (the first one
+// failed, timed out in the worker or found no lists, and a settings change
+// or list update queued another) only holds for what is left of it, so
+// pages are never held for one full timeout after another.
 let engineWait = null;
 const FIRST_ENGINE_HOLD_MS = 5000;
 let firstEngineHoldMs = FIRST_ENGINE_HOLD_MS;
+// When the session's hold budget runs out; set by the first hold.
+let holdBudgetEndsAt = null;
+// Consumers that waited on the current hold, for its release log line.
+let heldConsumers = 0;
 let lastArtifacts = null;
 // False until the first engine build has looked for lists on disk. Until
 // then `lastArtifacts === null` means "not checked yet", not "no lists", and
@@ -425,6 +435,7 @@ async function rebuildEngineOnce() {
   }
 
   const releaseHold = engine ? null : holdUntilEngine();
+  const buildStartedAt = Date.now();
   let bytes, warnings, inWorker;
   try {
     ({ bytes, warnings, inWorker } = await engineBuildHost.buildEngine({
@@ -442,25 +453,56 @@ async function rebuildEngineOnce() {
   if (!engine) return;
   log.info(
     `[adblock] filter engine ready (${resolved.version}, categories: ${categoriesKey}, ` +
-      `scriptlets: ${resources ? resources.entry.version || 'yes' : 'none'}` +
-      `${inWorker ? '' : ', built on the main thread'})`
+      `scriptlets: ${resources ? resources.entry.version || 'yes' : 'none'}, ` +
+      `built in ${Date.now() - buildStartedAt} ms${inWorker ? '' : ' on the main thread'})`
   );
   if (cacheFile) await writeEngineCache(cacheFile, bytes);
 }
 
-/** Start holding engine consumers (see `engineWait`); returns the release. */
+/**
+ * Start holding engine consumers (see `engineWait`) for at most what is left
+ * of the session's hold budget; returns the release, or null when the budget
+ * is spent and consumers must not wait at all.
+ */
 function holdUntilEngine() {
+  const startedAt = Date.now();
+  if (holdBudgetEndsAt === null) holdBudgetEndsAt = startedAt + firstEngineHoldMs;
+  const budget = holdBudgetEndsAt - startedAt;
+  if (budget <= 0) {
+    log.info('[adblock] building the filter engine; hold budget spent, requests pass through');
+    return null;
+  }
   let resolveWait;
   const wait = new Promise((resolve) => (resolveWait = resolve));
-  const release = () => {
+  heldConsumers = 0;
+  let released = false;
+  const release = (timedOut = false) => {
+    if (released) return;
+    released = true;
     clearTimeout(timer);
     if (engineWait === wait) engineWait = null;
+    // What #524 asked to see: how long the first page load was held and why
+    // it was let go — the engine landing, or the budget running out.
+    const held = `${heldConsumers} request(s)/lookup(s) held`;
+    const after = `${Date.now() - startedAt} ms`;
+    if (timedOut) {
+      log.warn(
+        `[adblock] filter engine not ready after ${after}; ${held} released unfiltered, ` +
+          'and nothing waits for it again this session'
+      );
+    } else {
+      log.info(`[adblock] first-engine hold released after ${after} (${held})`);
+    }
     resolveWait();
   };
-  const timer = setTimeout(release, firstEngineHoldMs);
+  const timer = setTimeout(() => {
+    // The budget is gone: no later build may hold again.
+    holdBudgetEndsAt = 0;
+    release(true);
+  }, budget);
   timer.unref?.();
   engineWait = wait;
-  return release;
+  return () => release(false);
 }
 
 /**
@@ -470,6 +512,7 @@ function holdUntilEngine() {
 function pendingFirstEngine() {
   if (engine || !engineWait) return null;
   if (loadSettings().adblockEnabled === false) return null;
+  heldConsumers += 1;
   return engineWait;
 }
 
@@ -743,6 +786,8 @@ function _resetAdblockForTests() {
   engine = null;
   engineWait = null;
   firstEngineHoldMs = FIRST_ENGINE_HOLD_MS;
+  holdBudgetEndsAt = null;
+  heldConsumers = 0;
   lastArtifacts = null;
   artifactsResolved = false;
   allowlistedHosts = [];
