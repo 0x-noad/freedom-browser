@@ -1300,6 +1300,19 @@ const commitNodeRow = (row) => {
           err.invalid = invalidNodeFields(result?.error);
           throw err;
         }
+        // Take the stored config from the reply rather than from the forced
+        // refresh below: a newer refresh (the 5s timer, a profile-updated
+        // broadcast) can supersede that one, and it returns without
+        // rendering — the next queued commit's no-op check would then compare
+        // against the config from before this one landed.
+        const storedNodes = result.profile?.nodes;
+        if (
+          storedNodes &&
+          typeof storedNodes === 'object' &&
+          result.profile.id === activeProfileId
+        ) {
+          storedProfileNodes = storedNodes;
+        }
         setNodeDraft(protocol, null);
         if (result.success) {
           setNodesStatus(
@@ -1308,7 +1321,7 @@ const commitNodeRow = (row) => {
           );
         } else {
           setNodesStatus(
-            `${label} saved, but applying it failed: ${result.error.message}. Restart the node to apply mode or endpoint changes.`,
+            `${label} saved, but applying it failed: ${String(result.error.message || 'unknown error').replace(/[.\s]+$/, '')}. Restart the node to apply mode or endpoint changes.`,
             'error'
           );
         }
