@@ -52,7 +52,7 @@ a last resort; this is not the normal recovery path for new `leased` records.
 New supervisor starts also save `.freedom-myotis-boot`, binding the exact
 owner bytes to the local machine and OS boot. This file stays local and
 is never logged. Failure to obtain boot evidence does not break otherwise
-healthy startup; it disables automatic ownership recovery.
+healthy startup or lifetime-lock recovery; it disables only the legacy boot fallback.
 
 On an ownership failure, a bounded helper invocation takes the **same owner
 lock**, checks a local filesystem and regular files with one link, then compares
@@ -112,3 +112,12 @@ fresh-generation replacement on both chains, interrupted
 pointer publication, preservation of old snapshots, unchanged ownership while
 reboot is pending, distrust of helper success without a durable receipt,
 manager error routing and user-facing reboot guidance.
+
+At `ce1d4781`, the native regression passed in CI on Linux x64/arm64,
+macOS x64/arm64 and Windows x64 ([run](https://github.com/solardev-xyz/freedom-browser/actions/runs/37344361483)).
+Windows crash recovery plus replacement read took 238 ms; local POSIX runs
+took 2.2–2.4 s including the fixture's intentional two-second child pause.
+The macOS test also passed under the installed Electron runtime, followed by
+all nine cases in `qualify-myotis-supervisor.js` (blocked operations, forced
+stop, parent loss, group termination and clean reuse). These are benign-addon
+lifecycle checks, not live network-sync or physical reboot qualification.
