@@ -1,3 +1,7 @@
+// Before anything can queue libuv threadpool work: the pool is sized once,
+// on first use (uv-threadpool.js, #514).
+require('./uv-threadpool').applyThreadpoolSize();
+
 // Set app name early, before electron-log initializes (it uses app name for log path)
 const { app, dialog, ipcMain } = require('electron');
 
@@ -53,7 +57,11 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
 // on a scratch profile, i.e. the packaged E2E launcher
 // (docs/security-audit-electron.md, O-4/O-12); see test-mode.js.
 const TEST_MODE = require('./test-mode').isTestModeRequested();
-const { migrateBeeDataToAntData, migrateUserData } = require('./migrate-user-data');
+const {
+  migrateBeeDataToAntData,
+  migrateUserData,
+  purgeSetAsideBeeData,
+} = require('./migrate-user-data');
 if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
   migrateUserData({ logger: console });
 }
@@ -165,7 +173,12 @@ const eventLoopWatchdog = require('./event-loop-watchdog').startEventLoopWatchdo
 });
 
 const { registerShutdownSignalHandlers } = require('./shutdown-signals');
-const unregisterShutdownSignalHandlers = registerShutdownSignalHandlers({ app, logger: log });
+const { drainLogFile, flushLogFileSync } = require('./log-file-flush');
+const unregisterShutdownSignalHandlers = registerShutdownSignalHandlers({
+  app,
+  logger: log,
+  beforeForceExit: () => flushLogFileSync(log.transports.file),
+});
 const { BrowserWindow, protocol, session } = require('electron');
 const { registerBaseIpcHandlers, broadcastProfileUpdated } = require('./ipc-handlers');
 const { watchProfileRegistry } = require('./profile-registry-watcher');
@@ -364,7 +377,9 @@ async function bootstrap() {
 
   // Carry the injected Swarm identity from the Bee-era bee-data/ into
   // ant-data/. Must run before the Ant node is started below, or antd
-  // self-generates a throwaway identity on the empty directory.
+  // self-generates a throwaway identity on the empty directory. Its
+  // gigabytes of Bee-only state are only set aside here; they are deleted
+  // off the main thread once the first window has painted (below, #526).
   migrateBeeDataToAntData();
 
   const defaultSession = session.defaultSession;
@@ -559,6 +574,12 @@ async function bootstrap() {
   // manager) carries --open-settings; land its first tab on Profile settings.
   const coldStartUrl = process.argv.includes('--open-settings') ? PROFILE_SETTINGS_DEEPLINK : null;
   const mainWindow = createMainWindow(coldStartUrl);
+  // One-off big deletes wait until the window is up, so an upgrade never
+  // shows up as a slow launch (#526). Interrupted purges (quit before it
+  // finished) are picked up on the next launch.
+  mainWindow.once('ready-to-show', () => {
+    void purgeSetAsideBeeData({ logger: log });
+  });
 
   if (!TEST_MODE) {
     await promptForDefaultExternalCandidates(activeProfile, {
@@ -767,6 +788,7 @@ app.on('before-quit', async (event) => {
 
   const watchdog = setTimeout(() => {
     log.warn('[App] Shutdown watchdog fired; quitting with the wind-down unfinished');
+    flushLogFileSync(log.transports.file);
     shutdownSettled = true;
     app.quit();
   }, SHUTDOWN_WATCHDOG_MS);
@@ -777,6 +799,9 @@ app.on('before-quit', async (event) => {
     // A manager that rejects must not strand the app in a half-quit state.
     log.error('[App] Wind-down failed:', err);
   } finally {
+    // The log file is written asynchronously (#511): write everything still
+    // pending, in order, and make the quit handlers' lines land at once.
+    await drainLogFile(log.transports.file);
     clearTimeout(watchdog);
     shutdownSettled = true;
   }
