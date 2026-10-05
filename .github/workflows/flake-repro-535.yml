@@ -1,0 +1,44 @@
+# TEMPORARY (issue #535): loop the address-bar clipboard spec on macOS to look
+# for a real hang. Removed before merge.
+name: flake-repro-535
+on:
+  push:
+    branches: [alan/flaky-tests-535]
+    paths: ['.github/workflows/flake-repro-535.yml', 'test-e2e/**', 'playwright.config.js']
+permissions:
+  contents: read
+jobs:
+  loop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+        shard: [1, 2, 3, 4, 5, 6]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: ./.github/actions/install-node-deps
+      - name: Loop clipboard spec (5x per test)
+        shell: bash
+        run: |
+          ( sleep 1080; echo "=== WATCHDOG: still running after 18 min ==="; ps -axo pid,ppid,etime,stat,command | grep -v ' ps ' ; for p in $(pgrep -f 'Electron'); do sample "$p" 3 -file "$RUNNER_TEMP/sample-$p.txt" >/dev/null 2>&1; head -60 "$RUNNER_TEMP/sample-$p.txt"; done ) &
+          wd=$!
+          start=$(date +%s)
+          npm run test:e2e -- test-e2e/address-bar-clipboard.spec.js --repeat-each=5 --retries=0 --reporter=list
+          rc=$?
+          echo "elapsed $(( $(date +%s) - start ))s rc=$rc"
+          kill $wd 2>/dev/null || true
+          echo "--- leftover processes ---"; ps -axo pid,ppid,etime,command | grep -i -E 'electron|playwright' | grep -v grep || true
+          exit $rc
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: repro-${{ matrix.shard }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
