@@ -52,6 +52,46 @@ describe('causeOf', () => {
     expect(cause.label).toMatch(/^runner: The job was not acquired by Runner/);
   });
 
+  test('a job its concurrency group cancelled is superseded, even mid-test', () => {
+    const cause = causeOf({
+      step: 'Run tabs E2E',
+      annotations: [
+        failure(
+          'Canceling since a higher priority waiting request for ci-CI-refs/pull/523/merge exists'
+        ),
+      ],
+    });
+    expect(cause).toEqual({ kind: 'superseded', label: 'cancelled for a newer run' });
+  });
+
+  test('no steps and no runner message: cancelled while queued, not infra', () => {
+    expect(causeOf({ step: 'never started', annotations: [] })).toEqual({
+      kind: 'cancelled',
+      label: 'cancelled before it started',
+    });
+  });
+
+  test('a test step that merely mentions downloads is not an infra step', () => {
+    const cause = causeOf({
+      step: 'Run find + tab-mute + downloads E2E',
+      annotations: [failure('Process completed with exit code 1.')],
+    });
+    expect(cause.kind).toBe('unknown');
+  });
+
+  test("npm-ci-hardening's own test output is neither a hang nor the cause", () => {
+    const cause = causeOf({
+      step: 'Run test coverage',
+      annotations: [
+        failure(
+          '[npm-ci-hardening] npm ci failed after 3 attempts. ... A run of timeouts points at the registry'
+        ),
+        failure('Process completed with exit code 1.'),
+      ],
+    });
+    expect(cause).toEqual({ kind: 'unknown', label: 'Run test coverage' });
+  });
+
   test('a failed install step is infra', () => {
     const cause = causeOf({
       step: 'Install dependencies',
@@ -138,7 +178,7 @@ describe('render', () => {
 
 describe('parseArgs', () => {
   test('defaults and validation', () => {
-    expect(parseArgs(['--repo', 'o/r'])).toEqual({ days: 7, maxCalls: 700, repo: 'o/r' });
+    expect(parseArgs(['--repo', 'o/r'])).toEqual({ days: 7, maxCalls: 500, repo: 'o/r' });
     expect(() => parseArgs(['--repo', 'o/r', '--days', '0'])).toThrow(/--days/);
     expect(() => parseArgs(['--repo', 'o/r', '--max-calls', '-1'])).toThrow(/--max-calls/);
     expect(() => parseArgs(['--repo', 'nope'])).toThrow(/--repo/);

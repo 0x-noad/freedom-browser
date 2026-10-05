@@ -14,7 +14,7 @@
 //      carries such an annotation hid a flake that auto-retry never saw.
 //
 // Usage:
-//   node scripts/ci/flake-report.js [--days 7] [--repo owner/name]
+//   node scripts/ci/flake-report.js [--days 7] [--max-calls 500] [--repo owner/name]
 //
 // Needs `gh` authenticated with `actions: read` and `checks: read`.
 // `.github/workflows/flake-report.yml` runs it weekly into its step summary.
@@ -28,10 +28,11 @@ const PLAYWRIGHT_BASELINE_ANNOTATIONS = 1;
 // Jobs that run Playwright: every `e2e-*` job, `myotis-native-e2e`, and
 // release.yml's `smoke-*` legs. Only these are worth an annotations call.
 const PLAYWRIGHT_JOB = /e2e|smoke/i;
-// The workflow's GITHUB_TOKEN gets 1,000 REST calls an hour. Stop the
-// Playwright scan (the part that grows with the number of runs) well short of
-// that and say so, rather than failing the report half-way.
-const DEFAULT_MAX_CALLS = 700;
+// The workflow's GITHUB_TOKEN gets 1,000 REST calls an hour. The retry half
+// costs a few calls per re-run run (about 75 a week as of #535, ~300 calls);
+// the Playwright half grows with every run, so it alone is capped, newest
+// runs first, and the report says when it stopped short.
+const DEFAULT_MAX_CALLS = 500;
 
 function parseArgs(argv) {
   const opts = {
@@ -76,29 +77,41 @@ function failedStep(job) {
 }
 
 const FAILED = new Set(['failure', 'cancelled', 'timed_out']);
+// ci.yml's `ci-ok` only reports whether the others passed; it fails whenever
+// any of them did, so counting it would double every row.
+const AGGREGATE_JOBS = new Set(['ci-ok']);
 
 // Short, stable cause for one failed job, from its failed step and its
 // failure annotations. Playwright's github reporter titles its annotation with
 // the test ("[harness] › test-e2e/x.spec.js:12:3 › describe › title"); GitHub's
-// own runner annotations carry the message instead.
+// own runner annotations carry the message instead. Order matters: a job its
+// concurrency group cancelled says so even when it had started a test step.
 function causeOf({ step, annotations }) {
   const failures = annotations.filter((a) => a.annotation_level === 'failure');
+  const superseded = failures.find((a) => /higher priority waiting request/.test(a.message));
+  if (superseded) return { kind: 'superseded', label: 'cancelled for a newer run' };
   const tests = [...new Set(failures.map((a) => a.title).filter((t) => t && t.includes('›')))];
   if (tests.length) return { kind: 'test', label: tests.join(' ; ') };
   const runner = failures.find((a) =>
     /not acquired by Runner|lost communication|runner .* shutdown/i.test(a.message)
   );
-  if (step === 'never started' || runner) {
-    return {
-      kind: 'infra',
-      label: `runner: ${runner ? oneLine(runner.message) : 'job never started'}`,
-    };
-  }
-  if (/install|set up|checkout|download|cache/i.test(step))
+  if (runner) return { kind: 'infra', label: `runner: ${oneLine(runner.message)}` };
+  // No steps and no runner message: the run was cancelled while this job was
+  // still queued, which is not something the job did.
+  if (step === 'never started') return { kind: 'cancelled', label: 'cancelled before it started' };
+  // Anchored: "Run find + … + downloads E2E" is a test step, not a download.
+  if (/^(install|set up|check ?out|download|restore|cache)\b/i.test(step)) {
     return { kind: 'infra', label: `step: ${step}` };
-  const other = failures.find((a) => !/^Process completed with exit code/.test(a.message));
-  const exceeded = failures.find((a) => /maximum execution time|timeout/i.test(a.message));
+  }
+  const exceeded = failures.find((a) => /exceeded the maximum execution time/i.test(a.message));
   if (exceeded) return { kind: 'hang', label: `${step}: ${oneLine(exceeded.message)}` };
+  // The jest job prints `::error::[npm-ci-hardening] …` from that script's own
+  // unit tests; outside an install step those are output, not the cause.
+  const other = failures.find(
+    (a) =>
+      !/^Process completed with exit code/.test(a.message) &&
+      !/^\[npm-ci-hardening\]/.test(a.message)
+  );
   return { kind: 'unknown', label: `${step}${other ? `: ${oneLine(other.message)}` : ''}` };
 }
 
@@ -197,7 +210,9 @@ function main() {
       `${repo}/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`,
       '.jobs[] | tojson'
     );
-    for (const job of first.filter((j) => FAILED.has(j.conclusion))) {
+    for (const job of first.filter(
+      (j) => FAILED.has(j.conclusion) && !AGGREGATE_JOBS.has(j.name)
+    )) {
       const annotations = ghLines(
         `${repo}/check-runs/${job.id}/annotations?per_page=100`,
         '.[] | tojson'
@@ -218,8 +233,9 @@ function main() {
   const flaky = [];
   let flakyRunsScanned = 0;
   // Newest first, so a budget cut drops the oldest runs.
+  const scanStart = calls;
   for (const run of [...runs].sort((a, b) => b.id - a.id)) {
-    if (calls >= opts.maxCalls) break;
+    if (calls - scanStart >= opts.maxCalls) break;
     flakyRunsScanned++;
     const checks = ghLines(
       `${repo}/check-suites/${run.check_suite_id}/check-runs?per_page=100`,
