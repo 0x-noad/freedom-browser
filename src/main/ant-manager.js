@@ -13,7 +13,7 @@ const { getAntDataDir } = require('./profile-paths');
 const {
   getActiveProfile,
   getReservedProfilePorts,
-  updateActiveProfileNodeConfig,
+  updateActiveProfileNodeConfigWhenIdle,
 } = require('./profile-resolver');
 const {
   MODE,
@@ -26,6 +26,8 @@ const {
 } = require('./service-registry');
 const { noteAntApiUrl } = require('./swarm/ant-api-guard');
 const { antApiGet } = require('./swarm/ant-api-chrome');
+const { createRediscoveryTracker } = require('./swarm/ant-rediscovery');
+const { loadSettings } = require('./settings-store');
 
 // States
 const STATUS = {
@@ -45,6 +47,9 @@ let forceKillTimeout = null;
 let chainBridge = null;
 let startGeneration = 0;
 const statusListeners = new Set();
+// The bundled node's background batch rediscovery, read from its log
+// (ant-rediscovery.js, #510). Null for a node Freedom did not spawn.
+const rediscovery = createRediscoveryTracker();
 
 function closeChainBridge(bridge = chainBridge) {
   if (chainBridge === bridge) chainBridge = null;
@@ -170,8 +175,8 @@ function getHttpClient(rawUrl) {
   return rawUrl.startsWith('https:') ? https : http;
 }
 
-function persistManagedAntPorts(updates) {
-  const result = updateActiveProfileNodeConfig('bee', updates);
+async function persistManagedAntPorts(updates) {
+  const result = await updateActiveProfileNodeConfigWhenIdle('bee', updates);
   if (result) {
     log.info('[Ant] Persisted managed profile ports:', updates);
   }
@@ -200,23 +205,59 @@ function getPrimaryEthereumRpcUrl() {
 // entry, there for the chrome's `file:` origin, also let every `data:` frame
 // and sandboxed iframe read API responses (security audit O-1, #428).
 //
-// No `blockchain-rpc-endpoint` and no `swap-enable` either. The node reaches
-// Gnosis Chain only through the chain bridge, whose URL startAnt passes as
-// `--gnosis-rpc-url` (antd lets the flag win over the YAML key), so no RPC
-// URL, keyed or not, lands on disk. antd ignores `swap-enable`: settlement
-// follows from having a chequebook.
-function buildAntConfigContent({ dataDir, apiPort, p2pPort, password, resolverRpcEndpoint }) {
+// No `blockchain-rpc-endpoint` either. The node reaches Gnosis Chain only
+// through the chain bridge, whose URL startAnt passes as `--gnosis-rpc-url`
+// (antd lets the flag win over the YAML key), so no RPC URL, keyed or not,
+// lands on disk.
+//
+// `swap-enable` is bee's node-wide switch for paying peers with cheques from
+// the chequebook, downloads and uploads alike (#488; Ant's side is
+// freedom-hq/ant#126). It comes from the `antSwapEnable` setting, default on
+// as in bee and Ant. Ant releases from before the switch parse the key and
+// ignore it, so it is always written. Releases with the switch also flip it
+// live over `PUT /v0/settlement/swap`, which is not persisted: this key is
+// what makes the next start match (browsing-credit-service.js).
+function buildAntConfigContent({
+  dataDir,
+  apiPort,
+  p2pPort,
+  password,
+  resolverRpcEndpoint,
+  swapEnable = true,
+}) {
   return `# Ant node configuration (bee-compatible keys)
 api-addr: 127.0.0.1:${apiPort}
 p2p-addr: :${p2pPort}
 mainnet: true
 full-node: false
+swap-enable: ${swapEnable ? 'true' : 'false'}
 skip-postage-snapshot: true
 resolver-options: "${resolverRpcEndpoint}"
 storage-incentives-enable: false
 data-dir: ${dataDir}
 password: ${password}
 `;
+}
+
+function isSwapEnabledSetting() {
+  return loadSettings().antSwapEnable !== false;
+}
+
+/**
+ * Whether Freedom runs this node itself (its bundled antd, its generated
+ * config.yaml). A reused, external or disabled node is `false`: its own
+ * configuration decides whether it pays peers, so the Browsing Credit switch
+ * leaves it alone. Whether the running antd has the switch at all is read from
+ * the node itself (`GET /node`'s `settlement`, browsing-credit-service.js).
+ */
+function isManagedAntNode() {
+  return !(
+    currentMode === MODE.REUSED ||
+    currentMode === MODE.EXTERNAL ||
+    currentMode === MODE.DISABLED ||
+    isExternalAntConfig() ||
+    isDisabledAntConfig()
+  );
 }
 
 function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
@@ -264,6 +305,7 @@ function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
     p2pPort,
     password,
     resolverRpcEndpoint,
+    swapEnable: isSwapEnabledSetting(),
   });
 
   fs.writeFileSync(configPath, configContent);
@@ -309,6 +351,18 @@ function updateState(newState, error = null) {
 function onStatusChange(listener) {
   statusListeners.add(listener);
   return () => statusListeners.delete(listener);
+}
+
+/**
+ * `{ run, state: 'running' | 'finished', failed }` for the bundled node
+ * Freedom spawned, or null (reused, external, disabled or stopped node).
+ */
+function getRediscoveryState() {
+  return rediscovery.get();
+}
+
+function onRediscoveryChange(listener) {
+  return rediscovery.onChange(listener);
 }
 
 /**
@@ -482,6 +536,7 @@ async function startExternalAnt(config) {
   noteAntApiUrl(currentApiUrl);
   currentApiPort = getPortFromUrl(apiUrl);
   currentMode = MODE.EXTERNAL;
+  rediscovery.end();
 
   updateService('ant', {
     api: currentApiUrl,
@@ -499,6 +554,7 @@ function startDisabledAnt() {
   currentApiPort = null;
   currentApiUrl = null;
   currentMode = MODE.DISABLED;
+  rediscovery.end();
   updateService('ant', {
     api: null,
     gateway: null,
@@ -555,6 +611,7 @@ async function startAnt() {
     currentApiUrl = `http://127.0.0.1:${currentApiPort}`;
     noteAntApiUrl(currentApiUrl);
     currentMode = MODE.REUSED;
+    rediscovery.end();
 
     updateService('ant', {
       api: currentApiUrl,
@@ -650,8 +707,12 @@ async function startAnt() {
 
   if (managedProfileNode && (apiPort !== configuredApiPort || p2pPort !== configuredP2pPort)) {
     try {
-      persistManagedAntPorts({ apiPort, p2pPort });
+      // Waits out an in-process async catalog write (a profile deletion)
+      // rather than failing on it; the generation check below covers a stop
+      // that lands meanwhile.
+      await persistManagedAntPorts({ apiPort, p2pPort });
     } catch (err) {
+      if (generation !== startGeneration) return;
       log.error('[Ant] Failed to persist managed profile ports:', err.message);
       updateState(STATUS.ERROR, 'Failed to save Ant port assignment');
       setStatusMessage('ant', 'Node failed to start');
@@ -719,12 +780,20 @@ async function startAnt() {
   try {
     antProcess = spawn(binPath, args);
     const child = antProcess;
+    const run = rediscovery.begin();
 
-    bridge.pipeLog(child.stdout, (line) => log.info(`[Ant stdout]: ${line}`));
-    bridge.pipeLog(child.stderr, (line) => log.error(`[Ant stderr]: ${line}`));
+    bridge.pipeLog(child.stdout, (line) => {
+      log.info(`[Ant stdout]: ${line}`);
+      rediscovery.noteLine(run, line);
+    });
+    bridge.pipeLog(child.stderr, (line) => {
+      log.error(`[Ant stderr]: ${line}`);
+      rediscovery.noteLine(run, line);
+    });
 
     antProcess.on('close', (code) => {
       void closeChainBridge(bridge);
+      rediscovery.end(run);
       if (antProcess !== child) return;
       log.info(`[Ant] Process exited with code ${code}`);
       antProcess = null;
@@ -758,6 +827,7 @@ async function startAnt() {
 
     antProcess.on('error', (err) => {
       void closeChainBridge(bridge);
+      rediscovery.end(run);
       if (antProcess !== child) return;
       log.error('[Ant] Failed to start process:', err);
       updateState(STATUS.ERROR, err.message);
@@ -992,9 +1062,13 @@ module.exports = {
   getActivePort,
   getStatus,
   onStatusChange,
+  getRediscoveryState,
+  onRediscoveryChange,
   getAntDataPath,
   setUseInjectedIdentity,
   hasInjectedKeys,
   getPrimaryEthereumRpcUrl,
+  isManagedAntNode,
+  buildAntConfigContent,
   STATUS,
 };

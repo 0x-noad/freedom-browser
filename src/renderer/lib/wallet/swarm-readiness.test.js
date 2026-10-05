@@ -62,6 +62,12 @@ describe('swarm-readiness view helpers', () => {
         PLANS
       )
     ).toBe('Grow your storage to 5 GB');
+    expect(
+      mod.describeOperationTarget(
+        { request: { kind: 'deposit', amountPlur: '5000000000000000' } },
+        PLANS
+      )
+    ).toBe('Add 0.5 xBZZ to the chequebook deposit');
     expect(mod.describeOperationTarget({ request: { kind: 'deposit' } }, PLANS)).toBe(
       'Top up the chequebook deposit'
     );
@@ -72,6 +78,11 @@ describe('swarm-readiness view helpers', () => {
     expect(mod.describeOperationTitle({ request: { kind: 'extend' } })).toBe('Extend Storage');
     expect(mod.describeExecuting({ request: { kind: 'buy' } }).title).toBe(
       'Activating Your Storage'
+    );
+    expect(
+      mod.describeDone({ request: { kind: 'deposit', amountPlur: '1000000000000000' }, result: {} })
+    ).toBe(
+      'Added 0.1 xBZZ to the chequebook deposit. It pays for faster downloads and for uploads.'
     );
     expect(mod.describeDone({ request: { kind: 'deposit' }, result: { alreadyFull: true } })).toBe(
       'The chequebook deposit is already full.'
@@ -135,6 +146,25 @@ describe('swarm-readiness view helpers', () => {
       ).toMatchObject({ label: 'Manage Storage', target: 'storage' });
     });
 
+    test('warns on the ready CTA that uploads can stall while paying peers is off (#488)', () => {
+      const ready = stateWith({ readiness: { ok: true, key: 'ready' } });
+      expect(
+        mod.describePublishCta(ready, { support: 'supported', swapEnable: false })
+      ).toMatchObject({
+        label: 'Manage Storage',
+        target: 'storage',
+        hint: 'Paying peers is off, so large uploads can stall',
+      });
+      // On, or a node that does not honour the switch: the usual hint.
+      for (const credit of [
+        { support: 'supported', swapEnable: true },
+        { support: 'unsupported', swapEnable: false },
+        null,
+      ]) {
+        expect(mod.describePublishCta(ready, credit).hint).toBe('View and extend your storage');
+      }
+    });
+
     test('shows the payment it is waiting for, and a purchase in flight', () => {
       const awaiting = stateWith({
         operation: { phase: 'awaiting-funds', quote: { send: { display: '0.46' } } },
@@ -177,6 +207,31 @@ describe('swarm-readiness view helpers', () => {
       expect(
         mod.describePublishCta(stateWith({ readiness: { ok: false, key: 'checking' } }))
       ).toMatchObject({ disabled: true, target: 'setup' });
+    });
+
+    test('opens setup while Ant rediscovers the wallet storage, so its message and Restart are reachable (#510)', () => {
+      expect(
+        mod.describePublishCta(
+          stateWith({ readiness: { ok: false, key: 'checking', rediscovery: 'running' } })
+        )
+      ).toMatchObject({
+        visible: true,
+        disabled: false,
+        target: 'setup',
+        hint: 'Checking for storage this wallet already owns…',
+      });
+      expect(
+        mod.describePublishCta(
+          stateWith({
+            readiness: { ok: false, key: 'checking', rediscovery: 'failed', slow: true },
+          })
+        )
+      ).toMatchObject({
+        visible: true,
+        disabled: false,
+        target: 'setup',
+        hint: 'Restart the node before buying storage',
+      });
     });
   });
 });

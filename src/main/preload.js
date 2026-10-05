@@ -83,6 +83,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   invalidateTezosDomain: (name) => ipcRenderer.invoke('tezos-domains:invalidate', { name }),
   // History
   getHistory: (options) => ipcRenderer.invoke('history:get', options),
+  // Address-bar suggestion candidates for what the user typed (#503).
+  autocompleteHistory: (query) => ipcRenderer.invoke('history:autocomplete', { query }),
   addHistory: (entry) => ipcRenderer.invoke('history:add', entry),
   removeHistory: (id) => ipcRenderer.invoke('history:remove', id),
   clearHistory: () => ipcRenderer.invoke('history:clear'),
@@ -624,6 +626,13 @@ contextBridge.exposeInMainWorld('publishSetup', {
     ipcRenderer.on('swarm:setup-state', handler);
     return () => ipcRenderer.removeListener('swarm:setup-state', handler);
   },
+});
+
+// The node's chequebook as browsing credit and its swap-enable switch
+// (src/main/swarm/browsing-credit-service.js, #488). Chrome only.
+contextBridge.exposeInMainWorld('browsingCredit', {
+  getState: () => ipcRenderer.invoke('swarm:credit-get-state'),
+  setSwapEnable: (enabled) => ipcRenderer.invoke('swarm:credit-set-swap-enable', enabled),
 });
 
 contextBridge.exposeInMainWorld('networks', {

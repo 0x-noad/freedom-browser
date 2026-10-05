@@ -68,6 +68,42 @@ against the pins as described in `release-process.md` § Bundled binaries.
 sample** of that file (used by `npm run ant:init` / `npm run system-ant:start`),
 not the file the app runs from.
 
+The generated `config.yaml` always carries bee's `swap-enable` (#488), from the
+`antSwapEnable` setting the wallet sidebar's **Pay peers from the chequebook**
+switch writes. Releases from before Ant's switch
+([freedom-hq/ant#126](https://github.com/freedom-hq/ant/pull/126), first released in
+v0.5.57) parse the key and ignore it. Releases with it say so themselves:
+`GET /node` carries a `settlement` object (`supported`, `swapSwitch`,
+`swapEnabled`, `paying`, `chequebook`), and its absence on a node that answers
+`/node` means "no switch" (`browsing-credit-service.js`; there is no
+`antd --help` probe). On those releases the switch flips the running node with
+`PUT /v0/settlement/swap` `{"swapEnabled": bool}` — no restart — and the setting
+is still written to `config.yaml`, because antd does not persist the runtime
+change. **Top Up Credit** passes the chosen amount as
+`POST /v0/settlement/deposit?amount=<PLUR>`; an older node would ignore
+`amount` and top up to its target, so the publish setup service checks `/node`'s
+`settlement` before sending one. On the pin bump to a release with #126, check
+that the Nodes tab's switch stops saying "Not supported by this node version",
+flips without the node restarting, and that the deposit screen offers amounts.
+
+Publish setup also reads the bundled node's **log**, for one thing the API
+does not report (#510). Since v0.5.58, `/health.chainReady` no longer waits for
+the background batch rediscovery, so until antd logs `background batch
+rediscovery finished` an empty `GET /stamps` can just mean "not found yet" — on
+the first start of a wallet with history that was 15–25 min behind a
+range-capped RPC. `src/main/swarm/ant-rediscovery.js` watches the node's
+stdout/stderr for that line and for `postage batch rediscovery scan failed`
+(both copied from `crates/antd/src/main.rs` at v0.5.58), and the publish setup
+service holds its "Checking…" state instead of offering a plan until the
+first one arrives — unless the node wallet has never sent a transaction (its
+`eth_getTransactionCount` is 0, so there is nothing to rediscover), and for at
+most `REDISCOVERY_MAX_WAIT_MS` (30 min) after Freedom spawned the node. Reused and external nodes are not
+held: Freedom does not see their output. On every pin bump, grep the new
+release's `crates/antd/src/main.rs` for both strings; if either changed, update
+`ant-rediscovery.js`. The proper replacement is the `/health.walletScan` field
+planned upstream (#493) — once a pinned release has it, read that instead and
+delete the log matching (as of 2026-10-05, v0.5.58 has no such field).
+
 Ports matter when you are judging evidence:
 
 - A Freedom-managed profile gets its own port — base **11633** in packaged
