@@ -69,6 +69,9 @@ test('the first page of a fresh session waits for the engine build, not the hold
   expect(log).not.toContain('[adblock] filter engine ready (cache)');
   expect(log).not.toMatch(/filter engine not ready after/);
   const released = log.match(/first-engine hold released after (\d+) ms \((\d+) request/);
+  // The page really was held behind the build — otherwise the engine landed
+  // before Enter and this test proved nothing about the held-first-page path.
+  expect(Number(released[2]), 'the first page waited on the engine build').toBeGreaterThan(0);
   console.log(
     `[#524] first load ${loadMs} ms; engine built in ${ready[1]} ms; ` +
       `hold released after ${released[1]} ms with ${released[2]} waiting`
