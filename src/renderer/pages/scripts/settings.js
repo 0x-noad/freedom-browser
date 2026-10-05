@@ -133,7 +133,7 @@ const NETWORK_SOURCE_COPY = Object.freeze({
     label: 'Local node',
     help: '',
     advanced:
-      'Myotis — a peer-to-peer Ethereum and Gnosis light client running inside Freedom. It checks answers against the chain itself, with no server involved. ENS lookups use finalized state; newer record types use a verified optimistic beacon head.',
+      'Myotis — a peer-to-peer Ethereum and Gnosis light client running inside Freedom. It checks answers against the chain itself, with no server involved. ENS lookups prefer finalized state; newer ENS record types and .wei/.gwei names (WNS, GNS) use a verified optimistic beacon head.',
   }),
   colibri: Object.freeze({
     label: 'Proof check',
@@ -489,8 +489,10 @@ const settingsSearchText = (el) => (el?.textContent || '').replace(/\s+/g, ' ').
 const SETTINGS_SEARCH_SKIP = 'settings-search-skip';
 
 // Every element under `el` carrying one of `names` (a class, or a list
-// of them), not descending into a match: rows never nest, and a
-// `.row-help` belongs to the row it is under.
+// of them), not descending into a match. Stopping at a match is what
+// makes a nested row a barrier: `settingsSearchOwn` passes the row
+// classes in alongside the label/help ones, so a `.row-help` belongs to
+// the nearest row it is under, never to a row further out.
 const settingsSearchCollect = (el, names, out = []) => {
   const wanted = Array.isArray(names) ? names : [names];
   for (const child of Array.from(el?.children || [])) {
@@ -505,12 +507,13 @@ const settingsSearchFirst = (el, names) => settingsSearchCollect(el, names)[0] |
 
 // What counts as one setting: a card row, the drag-to-reorder rows of
 // Name Resolution's method list and a chain's read/broadcast order, and
-// the `.resolver-config` panel a method opens under itself (Colibri's
-// prover endpoint, the quorum agreement threshold) — all of which carry
+// the `.resolver-config` panel inside a method row's Advanced disclosure
+// (the proof server URL, the agreement threshold) — all of which carry
 // the same `.row-label` / `.row-help` pair without the `.row` class.
-// Those are where "Colibri", "RPC quorum", "Myotis" and the two
-// resolver settings are named, so leaving them out would make the whole
-// resolution policy unsearchable.
+// Those are where the four sources and the two resolver settings are
+// named (and, through the indexed Advanced text, where "Colibri", "RPC
+// quorum" and "Myotis" still are), so leaving them out would make the
+// whole resolution policy unsearchable.
 // The chain master list is the fourth: its `.net-row` buttons are the
 // only place a chain — a custom one above all, which exists nowhere
 // else on the page — is named, so leaving them out makes a chain
@@ -544,12 +547,6 @@ const settingsSearchOwn = (row, names) =>
 // attribute (`launchRow.hidden = !supported`). Both shapes read here.
 const settingsSearchHidden = (row) => Boolean(row?.hidden) || row?.style?.display === 'none';
 
-// The rows a section contributes to the index, in document order, each
-// with the label it is found by. Shared with the page's `locateRow` so
-// the two walk the same rows: a result is "the nth row in this section
-// labelled X", which is the only thing that tells two same-labelled
-// rows apart (a chain lists "Direct RPC" in both its read order and its
-// broadcast order) once the view they came from has repainted.
 // Every row under `el` in document order, a row nested in another
 // included right after it. A row switched off takes the rows inside it
 // with it.
@@ -566,6 +563,13 @@ const settingsSearchAllRows = (el, out = []) => {
   return out;
 };
 
+// The rows a section contributes to the index, in document order, each
+// with the label it is found by. Shared with the page's `locateRow` so
+// the two walk the same rows: a result is "the nth row in this section
+// labelled X", which is the only thing that tells two same-labelled
+// rows apart (a chain lists "One server, unchecked" in both its read
+// order and its broadcast order) once the view they came from has
+// repainted.
 const settingsSearchRows = (section) =>
   settingsSearchAllRows(section)
     .map((row) => ({
@@ -768,8 +772,8 @@ const settingsSearchResets = [];
   // Re-found rather than kept as a node: Chains, RPC Providers and Site
   // Permissions rebuild their view from IPC state on `hashchange`, so
   // the node the result was built from can be gone. A label alone does
-  // not identify it — a chain names "Direct RPC" once in its read order
-  // and again in its broadcast order — so the result's position among
+  // not identify it — a chain names "One server, unchecked" once in its
+  // read order and again in its broadcast order — so the result's position among
   // its section's same-labelled rows picks which one it was, walking
   // the same rows the index was built from. If the repaint left fewer
   // of them than there were, the first is still better than nothing.
@@ -2257,9 +2261,11 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       </div>`;
   };
 
-  // Which source rows' Advanced disclosures are open, as `kind:source`.
-  // The detail repaints from scratch on every config change, and a
-  // disclosure the user opened should not snap shut under them.
+  // Which source rows' Advanced disclosures are open, as
+  // `chainId:kind:source`. The detail repaints from scratch on every
+  // config change, and a disclosure the user opened should not snap shut
+  // under them; the chain id keeps one opened on one chain's detail from
+  // rendering open on every other chain's.
   const openAccessAdvanced = new Set();
 
   const sourceStatus = (source, cid) => {
@@ -2307,7 +2313,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       .map((source, index) => {
         const meta = NETWORK_SOURCE_COPY[source];
         if (!meta) return '';
-        const key = `${kind}:${source}`;
+        const key = `${cid}:${kind}:${source}`;
         return `<div class="resolver-method" draggable="true" tabindex="0"
               data-access-kind="${kind}" data-access-source="${source}">
             <span class="resolver-drag-handle" title="Drag to reorder" aria-hidden="true">⠿</span>

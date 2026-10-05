@@ -456,17 +456,27 @@ test('both screens name the network sources the same, with the jargon behind Adv
   await settingsEval(
     window,
     `(() => {
-      const summary = document.querySelector('[data-advanced="read:colibri"] > summary');
+      const summary = document.querySelector('[data-advanced="1:read:colibri"] > summary');
       summary.click();
       summary.focus();
       summary.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
     })()`
   );
+  // Open state is per chain: another chain's detail renders its own
+  // disclosure for the same source closed.
   await settingsEval(window, `location.hash = 'chains/100'`);
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `(() => { const d = document.querySelector('[data-advanced="100:read:colibri"]'); return d ? d.open : null; })()`
+      )
+    )
+    .toBe(false);
   await settingsEval(window, `location.hash = 'chains/1'`);
   await expect
     .poll(() =>
-      settingsEval(window, `document.querySelector('[data-advanced="read:colibri"]')?.open`)
+      settingsEval(window, `document.querySelector('[data-advanced="1:read:colibri"]')?.open`)
     )
     .toBe(true);
   expect(await readOrder()).toEqual(['myotis', 'colibri', 'quorum', 'direct']);
