@@ -325,7 +325,7 @@ describe('update state broadcast and IPC (#87)', () => {
     mod.checkForUpdates({ manual: true });
     autoUpdater.emit('error', new Error('net::ERR_NAME_NOT_RESOLVED'));
     expect(mod.getUpdateState().message).toBe(
-      "Couldn't reach the update server. Use Check now to try again."
+      "Couldn't reach the update server. Automatic checks are off, so Freedom won't retry on its own."
     );
 
     // Turning the switch on re-broadcasts the reworded line to open surfaces.

@@ -190,8 +190,15 @@ test('with automatic checks off the status line stops promising background check
   // A failed manual check with the switch off doesn't promise a retry.
   await dispatch(electronApp, { type: 'checking' });
   await dispatch(electronApp, { type: 'error', kind: 'network' });
-  await expect(message).toHaveText("Couldn't reach the update server. Use Check now to try again.");
+  await expect(message).toHaveText("Couldn't reach the update server. Automatic checks are off, so Freedom won't retry on its own.");
   await expect(settings.locator('#update-check-now')).toBeEnabled();
+  // The hamburger row shows the same sentence as its tooltip; its button is
+  // "Check for Updates…", not "Check now", so the sentence names neither.
+  const menuRow = window.locator('#check-updates-btn');
+  await expect(menuRow).toHaveAttribute(
+    'title',
+    "Couldn't reach the update server. Automatic checks are off, so Freedom won't retry on its own."
+  );
 
   await settings.locator('label.toggle:has(#auto-update)').click();
   await expect(message).toHaveText(

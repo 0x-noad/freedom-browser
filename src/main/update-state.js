@@ -57,10 +57,13 @@ const ERROR_MESSAGES = {
 };
 
 // What happens next depends on the "Automatically check for updates" switch:
-// with it off nothing retries in the background, so don't promise it.
+// with it off nothing retries in the background, so don't promise it. This
+// sentence is shared by Settings → Updates and the hamburger menu row's
+// tooltip, whose controls are labelled differently ("Check now" vs "Check for
+// Updates…"), so it names neither.
 const RETRY_NOTE = {
   auto: 'Freedom will try again later.',
-  manual: 'Use Check now to try again.',
+  manual: "Automatic checks are off, so Freedom won't retry on its own.",
 };
 
 const IDLE_MESSAGES = {

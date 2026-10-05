@@ -135,6 +135,28 @@ describe('update state machine (#87)', () => {
     expect(newer).toMatchObject({ status: STATUS.DOWNLOADING, version: '0.9.1', percent: 0 });
   });
 
+  test('status sentences never name a surface-specific control', () => {
+    // main's sentence is shown both in Settings → Updates ("Check now") and as
+    // the hamburger row's tooltip ("Check for Updates…"), so it must name
+    // neither button.
+    const states = [
+      run([]),
+      run([{ type: 'checking' }, { type: 'error', kind: 'network' }]),
+      run([{ type: 'checking' }, { type: 'error', kind: 'other' }]),
+      run([
+        { type: 'available', version: '0.9.0' },
+        { type: 'error', kind: 'other' },
+      ]),
+      run([{ type: 'not-available' }]),
+    ];
+    for (const state of states) {
+      for (const autoCheck of [true, false]) {
+        const message = describeUpdateState(state, { autoCheck });
+        expect(message).not.toMatch(/check now|check for updates/i);
+      }
+    }
+  });
+
   test('errors carry a fixed kind, never the raw message', () => {
     const network = run([{ type: 'checking' }, { type: 'error', kind: 'network' }]);
     expect(network).toMatchObject({ status: STATUS.ERROR, error: 'network' });
@@ -143,7 +165,7 @@ describe('update state machine (#87)', () => {
     );
     // With background checks off nothing retries on its own.
     expect(describeUpdateState(network, { autoCheck: false })).toBe(
-      "Couldn't reach the update server. Use Check now to try again."
+      "Couldn't reach the update server. Automatic checks are off, so Freedom won't retry on its own."
     );
     expect(canCheckForUpdates(network)).toBe(true);
 
