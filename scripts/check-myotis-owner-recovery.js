@@ -6,8 +6,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { randomUUID } = require('crypto');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const { supervisorPath, MyotisProcess } = require('../src/main/myotis/myotis-process');
+const { loadOrCreateState } = require('../src/main/myotis/checkpoint-store');
 
 async function check() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-owner-recovery-'));
@@ -51,6 +52,23 @@ async function check() {
   const linked = fixture(); fs.linkSync(path.join(linked, '.freedom-myotis-owner'), path.join(linked, 'other-link'));
   assert.equal(run(linked), 12, 'hard-linked owners remain blocked');
 
+  const missing = fixture();
+  fs.writeFileSync(path.join(missing, '.freedom-myotis-owner'), `v1 leased ${id}\n`);
+  assert.equal(run(missing), 12, 'a missing lifetime lease is not invented');
+
+  const failedLaunch = path.join(root, 'failed-launch'); fs.mkdirSync(failedLaunch);
+  await new Promise((resolve, reject) => {
+    const helper = spawn(supervisorPath(), [path.join(root, 'missing-node'), __filename, randomUUID(), failedLaunch], {
+      env: { ...require('../src/main/myotis/myotis-process').childEnvironment(), NODE_CHANNEL_FD: '3' },
+      stdio: ['pipe', 'pipe', 'ignore', 'pipe'],
+    });
+    const timeout = setTimeout(() => { helper.kill('SIGKILL'); reject(new Error('launch failure hung')); }, 6000);
+    helper.stdout.resume();
+    helper.once('error', reject);
+    helper.once('exit', () => { clearTimeout(timeout); resolve(); });
+  });
+  assert.equal(run(failedLaunch), 0, 'failed executable launch leaves confirmed retirement, not quarantine');
+
   const running = path.join(root, 'running'); fs.mkdirSync(running);
   fs.mkdirSync(path.join(running, 'data'));
   fs.copyFileSync(path.join(__dirname, 'fixtures/myotis-benign-addon.js'), path.join(running, 'addon.js'));
@@ -63,7 +81,66 @@ async function check() {
     assert(fs.existsSync(path.join(running, 'data', '.freedom-myotis-boot')), 'new starts record boot identity');
   } finally { assert.equal(await client.stop(), true, 'child and supervisor retire'); }
   assert.equal(run(path.join(running, 'data')), 0, 'ordinary clean retirement still works');
-  console.log(`PASS ${process.platform}-${process.arch}: real boot identity, legacy witness, same-boot refusal, simulated previous boot, owner mismatch, foreign host, hardlink, live lock, clean retirement`);
+
+  // Kill only our retained, directly spawned supervisor object. The benign
+  // child pauses for two seconds, then observes IPC loss and exits itself.
+  // Windows additionally kills it via the supervisor's existing Job Object.
+  // No process-name scan, guessed PID, native network or user data is involved.
+  const base = path.join(root, 'crash');
+  const original = await loadOrCreateState(base, 1);
+  const addonDir = path.dirname(original.dataDir);
+  // The fixture expects its data directory to be named 'data'. Point its
+  // validation at the actual generation without changing production paths.
+  const fixtureSource = fs.readFileSync(path.join(__dirname, 'fixtures/myotis-benign-addon.js'), 'utf8')
+    .replace("path.join(__dirname, 'data')", 'config.dataDir');
+  fs.writeFileSync(path.join(addonDir, 'addon.js'), fixtureSource);
+  fs.writeFileSync(path.join(addonDir, 'fixture.json'), JSON.stringify({ identity: 'freedom-myotis-benign-v1',
+    mode: 'orphan-window', dataDir: original.dataDir }));
+  const crashed = new MyotisProcess({ addonPath: path.join(addonDir, 'addon.js'), network: 'mainnet',
+    dataDir: original.dataDir, onStatus() {}, onUnavailable() {}, onExit() {} });
+  const until = async (predicate) => {
+    const deadline = Date.now() + 6000;
+    while (!predicate()) {
+      assert(Date.now() < deadline, 'bounded fixture wait');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+  const events = () => fs.readFileSync(path.join(addonDir, 'fixture-events.jsonl'), 'utf8');
+  try {
+    assert.equal(await crashed.startPromise, true);
+    assert.match(fs.readFileSync(path.join(original.dataDir, '.freedom-myotis-owner'), 'utf8'), /^v1 leased /);
+    const reading = crashed.request('call').catch(() => {});
+    await until(() => events().includes('lease-held'));
+    const killedAt = Date.now();
+    assert(crashed.child.kill('SIGKILL'), 'retained fixture supervisor terminated');
+    await until(() => Boolean(crashed.supervisorExit));
+    if (process.platform !== 'win32') {
+      assert.equal(run(original.dataDir), 12, 'orphan child keeps its lease after supervisor exit');
+      assert(!events().includes('lease-window-finished'), 'checked while child was still in its bounded wait');
+    }
+    await until(() => process.platform === 'win32' || events().includes('lease-window-finished'));
+    let stopped = false;
+    const deadline = Date.now() + 6000;
+    while (!stopped && Date.now() < deadline) {
+      stopped = await crashed.stop();
+      if (!stopped) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert(stopped, 'native lifetime proof clears a previous failed stop without reboot');
+    await reading;
+    const fresh = await loadOrCreateState(base, 1);
+    assert.notEqual(fresh.generation, original.generation, 'interrupted snapshots never resumed');
+    assert(fs.existsSync(original.dataDir), 'old generation preserved');
+    fs.writeFileSync(path.join(addonDir, 'fixture.json'), JSON.stringify({ identity: 'freedom-myotis-benign-v1',
+      mode: 'healthy', dataDir: fresh.dataDir }));
+    const replacement = new MyotisProcess({ addonPath: path.join(addonDir, 'addon.js'), network: 'mainnet',
+      dataDir: fresh.dataDir, onStatus() {}, onUnavailable() {}, onExit() {} });
+    try {
+      assert.equal(await replacement.startPromise, true, 'replacement starts in the same browser process');
+      assert.deepEqual(await replacement.request('call'), { resultHex: '0x1234' }, 'replacement serves a benign read');
+    } finally { assert.equal(await replacement.stop(), true); }
+    console.log(`Same-boot crash recovery: ${Date.now() - killedAt}ms (includes 2s POSIX fixture wait)`);
+  } finally { await crashed.stop(); }
+  console.log(`PASS ${process.platform}-${process.arch}: live child lifetime lock, same-boot crash recovery and fresh generation, retry after failed stop, legacy boot proof, missing lease, foreign host, hardlink, clean retirement`);
 }
 if (require.main === module) check().catch((error) => { console.error(error); process.exitCode = 1; });
 module.exports = { check };

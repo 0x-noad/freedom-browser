@@ -1,1 +1,1 @@
-- Recover Myotis sync after an interrupted shutdown and confirmed computer restart, preserving old sync data ([#418](https://github.com/solardev-xyz/freedom-browser/issues/418))
+- Recover Myotis sync after interrupted shutdowns without requiring a computer restart for new sessions; preserve old sync data and provide recovery guidance for older stuck sessions ([#418](https://github.com/solardev-xyz/freedom-browser/issues/418))

@@ -558,14 +558,15 @@ describe('checkpoint generation store on the real filesystem', () => {
       }
     );
 
-    test.each([1, 100])('chain %i replaces a rebooted generation and preserves interrupted snapshots', async (chainId) => {
+  test.each([[1, 'rebooted'], [100, 'rebooted'], [1, 'orphaned'], [100, 'orphaned']])(
+    'chain %i replaces a %s generation and preserves interrupted snapshots', async (chainId, receipt) => {
     const original = await replaceCheckpoint(baseDir, chainId, checkpoint(chainId));
     const owner = path.join(original.dataDir, ownerName);
     await fs.writeFile(owner, active);
     await fs.writeFile(path.join(original.dataDir, 'sync-state.snapshot'), 'interrupted');
     recoverOwner.mockImplementation(async (dir) => {
       expect(dir).toBe(original.dataDir);
-      await fs.writeFile(owner, retired.replace('retired', 'rebooted'));
+      await fs.writeFile(owner, retired.replace('retired', receipt));
     });
     const fresh = await loadOrCreateState(baseDir, chainId);
     expect(fresh.generation).not.toBe(original.generation);

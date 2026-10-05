@@ -1,9 +1,9 @@
-/* A reboot is evidence that a prior local child cannot still write. The
- * witness binds that evidence to this machine and the exact owner bytes.
- * Missing evidence is recorded for the NEXT reboot, never guessed from time,
- * a missing PID, or a free supervisor lock (an orphan child may still live).
+/* Exit proof for interrupted owners: a lease held by both supervisor and
+ * execution child, or a machine/boot witness for legacy records without that
+ * lease. A free supervisor lock alone never proves an orphaned child is gone.
  * All operations run under the original native ownership lock. */
 #define OWNER_WITNESS ".freedom-myotis-boot"
+#define OWNER_LIFETIME ".freedom-myotis-lifetime"
 #define OWNER_PROOF_SIZE 136
 #define OWNER_BYTES_MAX 96
 #ifdef _WIN32
@@ -62,7 +62,7 @@ static int owner_write(owner_file file, const char *bytes, size_t size) {
 
 /* Local filesystems only: a reboot of this host says nothing about writers
  * on another machine. No symlinks/reparse points, hardlinks or special files. */
-static owner_file owner_open(const owner_path_char *directory, const char *name, int create) {
+static owner_file owner_open_mode(const owner_path_char *directory, const char *name, int create, int readonly) {
 #ifdef _WIN32
   wchar_t volume[MAX_PATH], filename[32768];
   if (!GetVolumePathNameW(directory, volume, MAX_PATH)) return OWNER_BAD;
@@ -77,7 +77,7 @@ static owner_file owner_open(const owner_path_char *directory, const char *name,
     (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT);
   CloseHandle(dir);
   if (!safe || swprintf(filename, 32768, L"%ls\\%hs", directory, name) < 0) return OWNER_BAD;
-  HANDLE file = CreateFileW(filename, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
+  HANDLE file = CreateFileW(filename, readonly ? GENERIC_READ : GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
     NULL, create ? OPEN_ALWAYS : OPEN_EXISTING,
     FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH, NULL);
   if (file == INVALID_HANDLE_VALUE) return OWNER_BAD;
@@ -101,7 +101,7 @@ static owner_file owner_open(const owner_path_char *directory, const char *name,
     type == 0x01021994 || type == 0x794c7630 || type == 0xf2f52010 || type == 0x2fc12fc1);
 #endif
   if (!local) { close(dir); return OWNER_BAD; }
-  int file = openat(dir, name, O_RDWR | O_NOFOLLOW | O_NONBLOCK | (create ? O_CREAT : 0), 0600);
+  int file = openat(dir, name, (readonly ? O_RDONLY : O_RDWR) | O_NOFOLLOW | O_NONBLOCK | (create ? O_CREAT : 0), 0600);
   struct stat info;
   if (file < 0 || fstat(file, &info) < 0 || !S_ISREG(info.st_mode) || info.st_nlink != 1 ||
       info.st_uid != geteuid() || flock(file, LOCK_EX | LOCK_NB) < 0 || (create && fsync(dir) < 0)) {
@@ -111,6 +111,10 @@ static owner_file owner_open(const owner_path_char *directory, const char *name,
   close(dir);
   return file;
 #endif
+}
+
+static owner_file owner_open(const owner_path_char *directory, const char *name, int create) {
+  return owner_open_mode(directory, name, create, 0);
 }
 
 static int boot_identity(char host[64], char boot[64]) {
@@ -220,6 +224,19 @@ static int recover_owner(const owner_path_char *directory, const char *generatio
   if (size < 0 || size > OWNER_BYTES_MAX) goto done;
   if (owner_terminal(prior, size, "retired")) { result = 0; goto done; }
   if (owner_terminal(prior, size, "rebooted")) { result = 11; goto done; }
+  if (owner_terminal(prior, size, "orphaned")) { result = 11; goto done; }
+  if (owner_terminal(prior, size, "leased")) {
+    /* New supervisors acquire this lease BEFORE publishing 'leased' and
+     * creating a child. Both retain it until exit, including across exec.
+     * The child inherits only a read handle, never the owner receipt writer.
+     * Holding BOTH locks therefore proves no old process can still write.
+     * Do not create a missing lease, or turn a busy lease into reboot advice. */
+    owner_file lifetime = owner_open(directory, OWNER_LIFETIME, 0);
+    if (lifetime == OWNER_BAD) goto done;
+    if (record(owner, "orphaned", generation) == 0) result = 11;
+    owner_close(lifetime);
+    goto done;
+  }
   char host[64], boot[64];
   if (boot_identity(host, boot) < 0) goto done;
   char proof[OWNER_PROOF_SIZE + OWNER_BYTES_MAX + 1] = {0};

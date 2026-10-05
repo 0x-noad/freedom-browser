@@ -146,7 +146,7 @@ Native ownership quarantine is independent of checkpoint verification.
 Every load or replacement also checks the legacy base-directory ownership
 record: an active, malformed or unknown record blocks migration to a fresh
 state directory. An absent record or a validated native-retired record permits
-migration. A native reboot receipt also permits replacement after the recovery
+migration. A native lifetime-lock or reboot receipt also permits replacement after the recovery
 checks described below; it never permits resuming interrupted snapshots. A new
 directory is not a way around an unconfirmed old exit.
 
@@ -194,7 +194,8 @@ then atomically selects a new bundled generation. It checks the base and **all**
 generation ownership records, including orphans, again immediately before the
 pointer switch. Linked or unknown generation paths, an unsafe pointer, and any
 active/unknown ownership prevent repair unless the native helper establishes
-a prior boot and records a reboot receipt. JavaScript never edits these receipts.
+exit through a lifetime lock or prior boot and records a replacement receipt.
+JavaScript never edits these receipts.
 If the bundled anchor is stale, the normal quorum and Colibri checks are required.
 The confirmation is single-flight and invalidated by stop, profile change or
 navigation away from browser chrome. Wallets and settings are untouched.
@@ -216,11 +217,12 @@ is still unreaped, permanently retires signal authority, then performs the sole
 `waitpid`. No handler or second thread reaps it. The child waits behind a gate;
 control and ownership exist before executable release. EOF/error on the parent
 control pipe revokes the child. Supervisor loss itself does not promise POSIX
-child cleanup; it leaves durable quarantine. Before creating an active record,
+child cleanup; its inherited lifetime lock keeps recovery blocked until the
+child actually exits. Before creating an active record,
 the supervisor ignores SIGINT, SIGTERM and SIGHUP so terminal/session group
 signals cannot kill the sole wait owner; the execution child resets them to
 default. Parent-control EOF still revokes the child. SIGKILL and other actual
-supervisor-loss cases still require quarantine.
+supervisor-loss cases require separate native exit proof.
 
 Windows supervisor spawn uses `detached: true` to avoid libuv's parent-owned
 kill-on-close job, retaining every pipe and the observed process handle without
@@ -242,8 +244,9 @@ successfully in PR CI for head `09989259`. A later
 passed under Node 22.23.2; Electron transport, real-addon behavior and the
 remaining startup/supervisor-loss/packaging gates remain separate.
 
-The addon child receives only null stdio and its Node IPC endpoint. It does not
-inherit the native receipt writer, control endpoint, ownership lock or Windows
+The addon child receives null stdio, its Node IPC endpoint and a read-only
+lifetime lease (fd 4). It does not inherit the native receipt writer, control
+endpoint, owner-record lock or Windows
 job handle. No signing keys or provider/model credentials are passed. Main uses
 an environment allowlist and an explicit Electron executable, with
 `ELECTRON_RUN_AS_NODE=1`; no host-Node fallback or inherited `NODE_OPTIONS`.
@@ -251,8 +254,9 @@ an environment allowlist and an explicit Electron executable, with
 The native supervisor locks the stable per-chain `.freedom-myotis-owner` file
 (POSIX `flock`; Windows exclusive write/delete sharing). The record is bounded,
 versioned, validates the entire generation, and is never renamed/replaced while
-locked. Native code durably writes `active` before releasing a child, and writes
-`retired` only after the actual direct-child wait. POSIX flushes the containing
+locked. Native code durably writes `leased` before creating a child on supported
+local storage (`active` for the legacy fallback). It writes `retired` after the
+actual direct-child wait, or before any child exists. POSIX flushes the containing
 directory when establishing the record; Windows uses write-through and
 `FlushFileBuffers`. Windows lacks the POSIX directory-flush step: new record creation durability
 assumes the local filesystem's journaling/write-through guarantees (qualify on
@@ -268,14 +272,19 @@ can quarantine the chain across browser
 restarts. No age, PID absence, or process-name scan clears quarantine. Native
 parent-loss cleanup may persist a valid retired record even if main is gone.
 
-The ownership **Retry sync** action first rechecks the native guard. If a
-live supervisor still holds the owner lock, recovery remains blocked. For an
-interrupted supervisor, the native helper can now establish exit across a
-system restart using a machine-bound boot witness. A missing legacy witness
+The ownership **Retry sync** action first rechecks the native guard, including
+after an earlier stop attempt timed out. A live supervisor or node child
+holding its lifetime lease keeps recovery blocked. Once both are gone, the
+helper acquires both locks and writes an `orphaned` replacement receipt.
+This normal path recovers in the same boot, without a computer restart.
+
+For old `active` records without a child lifetime lease, the native helper
+can instead establish exit across a system restart using a machine-bound boot
+witness. A missing legacy witness
 is recorded without changing the owner; the UI then asks the user to restart
 the computer and reopen Freedom. Retrying within the same boot never clears
 it. A matching witness from a previous boot yields a distinct `rebooted`
-receipt, not a normal `retired` receipt. The store preserves that generation
+receipt, not a normal `retired` receipt. For either replacement receipt the store preserves that generation
 and creates a fresh one; it never resumes its potentially interrupted snapshot.
 See [ownership recovery](myotis-ownership-recovery.md) for platform evidence,
 filesystem restrictions, tests and limitations. No PID scan, age threshold,

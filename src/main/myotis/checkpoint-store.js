@@ -11,7 +11,7 @@ const GENERATIONS = 'verified-sync';
 const OWNER = '.freedom-myotis-owner';
 // Match both native supervisors, whose receipt generation permits every
 // lowercase UUID-shaped value, not just UUIDv4 storage generation identifiers.
-const TERMINAL_OWNER = /^v1 (retired|rebooted) [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\n$/;
+const TERMINAL_OWNER = /^v1 (retired|rebooted|orphaned) [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\n$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function classifyStorageError(error) {
@@ -42,7 +42,7 @@ function ownershipError() {
 // a new data directory. Native code writes retired only after waiting for its
 // direct child. This is a durable-record gate, not a PID probe or a substitute
 // for the browser profile lock and the supervisor's kernel ownership lock.
-// A native rebooted receipt permits replacement only, never snapshot reuse.
+// Native rebooted/orphaned receipts permit replacement only, never snapshot reuse.
 async function readTerminalOwner(dataDir) {
   const filename = path.join(dataDir, OWNER);
   let before;
@@ -77,7 +77,7 @@ async function readTerminalOwner(dataDir) {
     }
     const after = await handle.stat();
     if (after.size !== bytesRead || after.nlink !== 1) throw ownershipError();
-    return bytes.toString('utf8', 0, bytesRead).startsWith('v1 rebooted ');
+    return !bytes.toString('utf8', 0, bytesRead).startsWith('v1 retired ');
   } catch {
     throw ownershipError();
   } finally {
@@ -172,7 +172,7 @@ async function requireCurrentOwnerRetired(baseDir, chainId) {
 
 // Repair cannot trust the pointer to identify the previous native child.
 // Inspect every generation, including orphans. Unknown entries and any active
-// or quarantined owner refuse repair unless native reboot proof permits
+// or quarantined owner refuse repair unless native exit proof permits
 // replacement. JavaScript never rewrites an ownership receipt.
 async function requireAllOwnersRetired(baseDir) {
   await directory(baseDir);
@@ -276,7 +276,7 @@ async function loadOrCreateState(baseDir, chainId) {
     const dataDir = path.join(baseDir, GENERATIONS, pointer.generation);
     await directory(dataDir);
     if (await requireRetiredOwner(dataDir)) {
-      // A reboot proves exit, not a completed snapshot write. Preserve this
+      // Exit proof does not prove a completed snapshot write. Preserve this
       // generation and start from a fresh anchor, inheriting only peer hints.
       return await createState(baseDir, chainId);
     }
