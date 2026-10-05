@@ -22,7 +22,11 @@
 #     exists. `ci.yml` sets `cancel-in-progress` for every ref but `main`, so
 #     the most common way to see a *cancelled* run here is a second push
 #     superseding the first — resurrecting that run would re-test an
-#     already-obsolete commit.
+#     already-obsolete commit, and its attempt 2 would cancel the newer run
+#     through the same concurrency group. Two checks: the newest run listed
+#     for the branch, and — because that listing has lagged a newer run by a
+#     minute or two — any job GitHub annotated "Canceling since a higher
+#     priority waiting request … exists" (#535).
 #   - `main` is retried like any other branch: `main` went red from a hang on
 #     2026-09-16, which is precisely what this exists to absorb.
 #   - One log line either way, naming the run URL and the jobs re-run. No PR
@@ -34,6 +38,8 @@
 #     replaces attempt 1's log, but check-run annotations and this run's own
 #     log and step summary survive, so this is the one durable record of what
 #     flaked. `scripts/ci/flake-report.js` reads it back out across runs.
+#     Needs `jq` (preinstalled on GitHub's Ubuntu runners); without it the
+#     reasons and the annotation-based superseded check are simply skipped.
 #
 # Known limitation: a run a human cancelled on purpose looks identical to a
 # timed-out one in the event payload, so it will be re-run once. Cancelling the
@@ -103,36 +109,60 @@ fi
 
 job_count="$(printf '%s\n' "$failed_jobs" | wc -l | tr -d ' ')"
 job_list="$(printf '%s\n' "$failed_jobs" | paste -sd '|' -)"
-log "re-running $job_count job(s) from $WORKFLOW_NAME run $RUN_ID ($CONCLUSION on attempt 1, branch $HEAD_BRANCH, event $EVENT_NAME): $job_list"
-
-# Why each job failed. Best effort: a lookup that fails must never stop the
-# re-run below, so every call here is guarded. The annotation preferred is the
+# Why each job failed. Attempt 2 replaces attempt 1's log, so this is the one
+# record of it that survives. Best effort: a lookup that fails must never stop
+# the re-run below, so every call here is guarded. The reason preferred is the
 # failing test's title from Playwright's `github` reporter, then any runner
 # message other than the generic "Process completed with exit code N".
-if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  {
-    printf '### Re-ran %s job(s) of [%s run %s](%s)\n\n' "$job_count" "$WORKFLOW_NAME" "$RUN_ID" "$RUN_URL"
-    printf 'Branch `%s`, event `%s`, attempt 1 concluded `%s`.\n\n' "$HEAD_BRANCH" "$EVENT_NAME" "$CONCLUSION"
-    printf '| Job | Conclusion | Failed step | Annotation |\n|---|---|---|---|\n'
-  } >>"$GITHUB_STEP_SUMMARY" || true
-fi
+REASON_JQ='[.[] | select(.annotation_level == "failure")] as $f
+  | ([$f[] | select((.title // "") | contains("›")) | .title] | unique) as $tests
+  | if ($tests | length) > 0 then ($tests | join(" ; "))
+    else ([$f[] | select(.message | startswith("Process completed with exit code") | not) | .message]
+          + [$f[] | .message])[0] // "" end
+  | gsub("[\\r\\n|]+"; " ")'
+# GitHub's own note on a job its concurrency group cancelled for a newer run.
+SUPERSEDED_JQ='[.[] | select(.annotation_level == "failure") | .message
+  | select(test("higher priority waiting request"))][0] // ""'
+job_lines=""
+summary_rows=""
+superseded_note=""
 while IFS=$'\t' read -r job_id job_name job_conclusion job_step; do
   [ -n "$job_id" ] || continue
-  reason="$(
-    gh api "repos/$REPO/check-runs/$job_id/annotations" \
-      --jq '[.[] | select(.annotation_level == "failure")] as $f
-        | ([$f[] | select((.title // "") | contains("›")) | .title] | unique) as $tests
-        | if ($tests | length) > 0 then ($tests | join(" ; "))
-          else ([$f[] | select(.message | startswith("Process completed with exit code") | not) | .message]
-                + [$f[] | .message])[0] // "" end
-        | gsub("[\\r\\n|]+"; " ")' 2>/dev/null || true
-  )"
+  annotations="$(gh api "repos/$REPO/check-runs/$job_id/annotations?per_page=100" 2>/dev/null || true)"
+  reason="$(printf '%s' "${annotations:-[]}" | jq -r "$REASON_JQ" 2>/dev/null || true)"
   reason="${reason:0:300}"
-  log "failed job: $job_name — $job_conclusion at step '$job_step'${reason:+ — $reason}"
-  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    printf '| %s | %s | %s | %s |\n' "$job_name" "$job_conclusion" "$job_step" "${reason:-—}" >>"$GITHUB_STEP_SUMMARY" || true
+  if [ -z "$superseded_note" ]; then
+    superseded_note="$(printf '%s' "${annotations:-[]}" | jq -r "$SUPERSEDED_JQ" 2>/dev/null || true)"
   fi
+  job_lines+="failed job: $job_name — $job_conclusion at step '$job_step'${reason:+ — $reason}"$'\n'
+  summary_rows+="| $job_name | $job_conclusion | $job_step | ${reason:-—} |"$'\n'
 done <<<"$failed_rows"
+
+summary() {
+  [ -n "${GITHUB_STEP_SUMMARY:-}" ] || return 0
+  {
+    printf '### %s [%s run %s](%s)\n\n' "$1" "$WORKFLOW_NAME" "$RUN_ID" "$RUN_URL"
+    printf 'Branch `%s`, event `%s`, attempt 1 concluded `%s`.\n\n' "$HEAD_BRANCH" "$EVENT_NAME" "$CONCLUSION"
+    printf '| Job | Conclusion | Failed step | Annotation |\n|---|---|---|---|\n%s\n' "$summary_rows"
+  } >>"$GITHUB_STEP_SUMMARY" || true
+}
+
+# The newest-run lookup above can miss a run that already exists: the
+# filtered listing has been seen lagging a newer run by 1-2 minutes, and five
+# times between 2026-09-28 and 2026-10-05 this script re-ran a superseded run,
+# whose attempt 2 then cancelled the newer run through the same concurrency
+# group, which got re-run in turn (#535). A job cancelled for "a higher
+# priority waiting request" is GitHub saying outright that a newer run exists.
+if [ -n "$superseded_note" ]; then
+  log "$WORKFLOW_NAME run $RUN_ID was superseded: its concurrency group cancelled it (\"$superseded_note\") — not re-running an obsolete commit. $RUN_URL"
+  printf '%s' "$job_lines" | while IFS= read -r line; do log "$line"; done
+  summary "Not re-running, superseded:"
+  exit 0
+fi
+
+log "re-running $job_count job(s) from $WORKFLOW_NAME run $RUN_ID ($CONCLUSION on attempt 1, branch $HEAD_BRANCH, event $EVENT_NAME): $job_list"
+printf '%s' "$job_lines" | while IFS= read -r line; do log "$line"; done
+summary "Re-ran $job_count job(s) of"
 
 gh run rerun "$RUN_ID" --failed
 log "attempt 2 queued for $WORKFLOW_NAME run $RUN_ID — $RUN_URL"

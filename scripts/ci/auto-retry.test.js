@@ -64,12 +64,12 @@ const ANNOTATIONS = {
   ],
 };
 
-function setup({ failAnnotations = false } = {}) {
+function setup({ failAnnotations = false, annotations = ANNOTATIONS } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-retry-test-'));
   const bin = path.join(dir, 'bin');
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(dir, 'jobs.json'), JSON.stringify(JOBS));
-  for (const [id, list] of Object.entries(ANNOTATIONS)) {
+  for (const [id, list] of Object.entries(annotations)) {
     fs.writeFileSync(path.join(dir, `ann-${id}.json`), JSON.stringify(list));
   }
   fs.writeFileSync(path.join(dir, 'latest.json'), JSON.stringify({ workflow_runs: [{ id: 999 }] }));
@@ -93,11 +93,11 @@ done
 case "$target" in
   */workflows/*/runs) file="$D/latest.json" ;;
   */attempts/1/jobs*) file="$D/jobs.json" ;;
-  */check-runs/*/annotations)
+  */check-runs/*/annotations*)
     ${failAnnotations ? 'echo "HTTP 403" >&2; exit 1' : 'id="${target#*check-runs/}"; file="$D/ann-${id%%/*}.json"'} ;;
   *) echo "unexpected gh api $target" >&2; exit 2 ;;
 esac
-jq -r "$jq_expr" "$file"
+if [ -n "$jq_expr" ]; then jq -r "$jq_expr" "$file"; else cat "$file"; fi
 `,
     { mode: 0o755 }
   );
@@ -156,5 +156,31 @@ maybe('auto-retry.sh', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("failed job: e2e-tabs — failure at step 'Run tabs E2E'\n");
     expect(r.calls).toMatch(/^run rerun 999 --failed$/m);
+  });
+
+  // #535: a run its concurrency group cancelled for a newer one, which the
+  // newest-run lookup missed (here: the listing still names run 999 itself).
+  test('does not re-run a run its concurrency group cancelled for a newer one', () => {
+    const r = setup({
+      annotations: {
+        ...ANNOTATIONS,
+        33: [
+          {
+            annotation_level: 'failure',
+            title: '',
+            message:
+              'Canceling since a higher priority waiting request for ci-CI-refs/pull/420/merge exists',
+          },
+        ],
+      },
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain(
+      'CI run 999 was superseded: its concurrency group cancelled it ' +
+        '("Canceling since a higher priority waiting request for ci-CI-refs/pull/420/merge exists")'
+    );
+    expect(r.stdout).not.toContain('re-running 2 job(s)');
+    expect(r.summary).toContain('### Not re-running, superseded:');
+    expect(r.calls).not.toMatch(/^run rerun/m);
   });
 });
