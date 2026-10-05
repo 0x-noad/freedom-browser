@@ -783,9 +783,8 @@ app.on('before-quit', async (event) => {
     // A manager that rejects must not strand the app in a half-quit state.
     log.error('[App] Wind-down failed:', err);
   } finally {
-    // The log file is written asynchronously (#511): let the last batch land
-    // while the loop still runs, and write the quit handlers' lines at once.
-    // Bounded by its own timeout, and still inside the watchdog.
+    // The log file is written asynchronously (#511): write everything still
+    // pending, in order, and make the quit handlers' lines land at once.
     await drainLogFile(log.transports.file);
     clearTimeout(watchdog);
     shutdownSettled = true;
