@@ -172,7 +172,8 @@ async function requireCurrentOwnerRetired(baseDir, chainId) {
 
 // Repair cannot trust the pointer to identify the previous native child.
 // Inspect every generation, including orphans. Unknown entries and any active
-// or quarantined owner refuse repair; no ownership receipt is ever rewritten.
+// or quarantined owner refuse repair unless native reboot proof permits
+// replacement. JavaScript never rewrites an ownership receipt.
 async function requireAllOwnersRetired(baseDir) {
   await directory(baseDir);
   await requireRetiredOwner(baseDir);

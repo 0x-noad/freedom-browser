@@ -783,7 +783,7 @@ describe('myotis-manager', () => {
     const details = ctx.clipboard.writeText.mock.calls[0][0];
     expect(details).toContain('Failure: ownership');
     expect(details).not.toMatch(/secret|profile|\/Users/);
-    expect(ctx.dialog.showMessageBox.mock.calls[0][1].detail).toContain('cannot clear an unconfirmed ownership record');
+    expect(ctx.dialog.showMessageBox.mock.calls[0][1].detail).toContain('Freedom will tell you if a computer restart is needed');
     expect(ctx.store.repairState).not.toHaveBeenCalled();
   });
 

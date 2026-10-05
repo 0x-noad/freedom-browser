@@ -142,11 +142,13 @@ patched ABI 25 generations are preserved and replaced, not resumed under ABI 32.
 They cannot authorize a new recovery or be relabeled as quorum-verified. New
 recovery always requires v2 acquisition.
 Malformed records or unsafe state paths fail closed as storage failures.
-Native ownership quarantine is independent and is never cleared by this flow.
+Native ownership quarantine is independent of checkpoint verification.
 Every load or replacement also checks the legacy base-directory ownership
 record: an active, malformed or unknown record blocks migration to a fresh
-state directory. Only an absent record or a validated native-retired record
-permits migration. A new directory is not a way around an unconfirmed old exit.
+state directory. An absent record or a validated native-retired record permits
+migration. A native reboot receipt also permits replacement after the recovery
+checks described below; it never permits resuming interrupted snapshots. A new
+directory is not a way around an unconfirmed old exit.
 
 Service unavailability, a checkpoint changing during verification, and an
 outdated checkpoint retry after 15 seconds and 60 seconds, then every five minutes
@@ -191,7 +193,8 @@ Repair preserves every old generation and backs up the old pointer byte-for-byte
 then atomically selects a new bundled generation. It checks the base and **all**
 generation ownership records, including orphans, again immediately before the
 pointer switch. Linked or unknown generation paths, an unsafe pointer, and any
-active/unknown ownership prevent repair. No native ownership receipt is edited.
+active/unknown ownership prevent repair unless the native helper establishes
+a prior boot and records a reboot receipt. JavaScript never edits these receipts.
 If the bundled anchor is stale, the normal quorum and Colibri checks are required.
 The confirmation is single-flight and invalidated by stop, profile change or
 navigation away from browser chrome. Wallets and settings are untouched.

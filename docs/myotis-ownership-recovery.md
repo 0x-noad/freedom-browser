@@ -17,7 +17,7 @@ is never logged. Failure to obtain boot evidence does not break otherwise
 healthy startup; it disables automatic ownership recovery.
 
 On an ownership failure, a bounded helper invocation takes the **same owner
-lock**, checks a local filesystem and regular, unlinked files, then compares
+lock**, checks a local filesystem and regular files with one link, then compares
 that witness. A live owner, different machine, inaccessible file, unsupported
 filesystem or unavailable boot identity stays blocked. No process is signalled.
 
