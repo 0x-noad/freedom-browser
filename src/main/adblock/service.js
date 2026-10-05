@@ -439,12 +439,16 @@ async function rebuildEngineOnce() {
     }
   }
 
-  const releaseHold = engine ? null : holdUntilEngine();
+  const lists = enabledListJobs(settings, resolved);
+  // Every category unticked is a supported configuration, not a build that
+  // might still produce an engine: there is nothing to wait for, so nothing
+  // is held (and no "hold ended with no engine" warning is logged for it).
+  const releaseHold = engine || lists.length === 0 ? null : holdUntilEngine();
   const buildStartedAt = Date.now();
   let bytes, warnings, inWorker;
   try {
     ({ bytes, warnings, inWorker } = await engineBuildHost.buildEngine({
-      lists: enabledListJobs(settings, resolved),
+      lists,
       trustedNames: resources ? [...resources.trustedNames] : [],
       resources: resources ? { text: resources.text, checksum: resources.checksum } : null,
       config: ENGINE_CONFIG,

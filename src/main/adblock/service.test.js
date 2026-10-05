@@ -952,6 +952,56 @@ describe('scriptlets', () => {
     }
   });
 
+  // R2-M1: every category unticked is a supported configuration, not an
+  // engine still on its way — no hold is armed, nothing waits, and no
+  // "hold ended with no engine built" warning is logged for it.
+  test('no hold is armed when every category is unticked', async () => {
+    const realBuild = engineBuildHost.buildEngine;
+    let openGate;
+    const gate = new Promise((resolve) => (openGate = resolve));
+    let started;
+    const building = new Promise((resolve) => (started = resolve));
+    const spy = jest.spyOn(engineBuildHost, 'buildEngine').mockImplementation(async (job) => {
+      started(job);
+      await gate;
+      return realBuild(job);
+    });
+    const warn = jest.spyOn(log, 'warn').mockImplementation(() => {});
+    const info = jest.spyOn(log, 'info').mockImplementation(() => {});
+    try {
+      loadSettings.mockReturnValue({
+        ...DEFAULT_TEST_SETTINGS,
+        adblockAds: false,
+        adblockPrivacy: false,
+        adblockCookies: false,
+        adblockAnnoyances: false,
+      });
+      _resetAdblockForTests();
+      _setFirstEngineHoldForTests(200);
+      registerAdblockIpc();
+      installAdblockInterception({ artifactsDir: dir, cacheDir: null });
+      const job = await building;
+      expect(job.lists).toEqual([]);
+      // Mid-build, a request answers synchronously instead of being held.
+      expect(
+        adblockRequestForDispatch(
+          makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+        )
+      ).toBe(null);
+      openGate();
+      await refreshEngine();
+      const holdLines = [...warn.mock.calls, ...info.mock.calls].filter(([line]) =>
+        /hold/.test(line)
+      );
+      expect(holdLines).toEqual([]);
+    } finally {
+      openGate();
+      spy.mockRestore();
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
   // R1-M1: an engine landing refills the budget, so an engine-less rebuild
   // later in the session (every category unticked, then one re-ticked) holds
   // like the first one did, however long ago that was.
