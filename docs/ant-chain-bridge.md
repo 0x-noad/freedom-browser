@@ -20,20 +20,123 @@ The bridge fixes the chain to Gnosis (100), accepts the eight methods Ant's
 chain module issues, and forwards the original params and JSON-RPC id. Reads
 follow the network's configured policy (default Myotis → Colibri → RPC quorum
 → direct RPC), with one exception: `eth_getLogs` never reaches Colibri, for
-Ant or any other caller (the router's `COLIBRI_EXCLUDED_METHODS`; the bridge
-also passes `excludeSources: ['colibri']` for its log scans). Colibri answers
-a range its RPC refuses with only the latest blocks' logs, marked verified
-([#496](https://github.com/solardev-xyz/freedom-browser/issues/496)). (Its
-verification used to run on the main thread too, where a wide log range froze
-the whole browser for 20-30 s; since
+Ant or any other caller (Colibri's entry in the router's
+`SOURCE_CAPABILITIES`, below). Colibri proves that each log it returns is real,
+not that none is missing, and the public Gnosis RPCs behind it cut a large log
+answer short without an error, so a partial answer would come back marked
+verified ([#496](https://github.com/solardev-xyz/freedom-browser/issues/496)).
+(Its verification used to run on the main thread too, where a wide log range
+froze the whole browser for 20-30 s; since
 [#495](https://github.com/solardev-xyz/freedom-browser/issues/495) it runs in a
-worker thread.) Ant's log scans therefore
-go Myotis (which does not serve logs) → quorum → direct. A page's
-`eth_getLogs` therefore comes back `verified: true` when RPC quorum agrees and
-`verified: false` only when it falls through to direct RPC. Ant's reads
-are background work: they use Myotis only when its
-single in-flight slot is idle and never queue for it, so the node's polling
-cannot push interactive wallet/app reads into queue-full fallback.
+worker thread.) A page's `eth_getLogs` therefore comes back `verified: true`
+when RPC quorum agrees and `verified: false` only when it falls through to
+direct RPC. Ant's log scans go to the RPC quorum only (below). Ant's reads are
+background work: they use Myotis only when its single in-flight slot is idle
+and never queue for it, so the node's polling cannot push interactive
+wallet/app reads into queue-full fallback.
+
+### What each source can serve
+
+The router (`chain-data-router.js`) keeps one capability descriptor per read
+source, `SOURCE_CAPABILITIES`, and consults it before trying a source
+([#497](https://github.com/solardev-xyz/freedom-browser/issues/497)):
+
+| | Myotis | Colibri | RPC quorum | direct RPC |
+|---|---|---|---|---|
+| never serves | filters, `web3_*` | filters, `web3_*`, `eth_getLogs` | filters, `web3_*` | — |
+| `eth_getLogs` span | — | 10,000 (upstream; unused) | learned per endpoint | not tracked |
+| log answer may be cut short | — | yes | yes | yes |
+| cost | serialized | proof | fan-out | single |
+
+- **Methods.** A source that never serves a method is left out of that
+  request before routing starts, together with the caller's own
+  `excludeSources`; an error names both as `excluded for this request`.
+  `excludeSources` is caller policy (Ant's log scans ask the quorum only), the
+  descriptor is the source's capability. Filters (`eth_newFilter` and its
+  siblings) live on one node and `web3_*` answers describe one node, so only
+  direct RPC serves them. What depends on the request rather than the method
+  is still refused by the source's adapter and reported as that source's
+  failure: Myotis serves only the methods its addon version implements, at
+  `latest`, with the call fields it can honour.
+- **Limits.** The quorum asks a range-capped log scan only of endpoints whose
+  learned cap covers its span (below). Colibri's upstream cap is recorded but
+  not consulted while `eth_getLogs` stays off Colibri.
+- **Cost.** Myotis is serialized (one native read per chain at a time), so
+  background callers such as Ant take it only when idle and never queue.
+  Colibri verifies proofs in a worker thread with a bounded number in flight.
+- **Cut-short log answers.** For a source marked as possibly cutting a log
+  answer short, the router checks each `eth_getLogs` answer over a numeric
+  block range at least 2,000 blocks wide whose logs all fall in the last
+  1,000 blocks of the range: the shape #496 measured on 2026-10-04, where
+  `rpc.gnosischain.com` and `gateway.fm` both answered a query matching more
+  than ~50k logs with only the latest ~474 blocks' logs and no error. A
+  genuinely sparse answer looks the same (a wallet funded minutes ago, scanned
+  from the token's deployment), so the shape alone fails nothing: the same
+  source is asked once more for the blocks before the oldest returned log. Any
+  log there proves the first answer incomplete, and the request fails at once
+  with `-32005 query matched too many logs ...; narrow the block range`; no
+  later source is asked, since the RPCs behind it cut the answer the same way.
+  Ant ranks that as a range limit and halves its window until the answer is
+  complete. An empty or failed check accepts the answer as before. A range
+  ending at a tag (`latest`) is not checked: its end is unknown without
+  another request. The cut depends on how many logs match, not on the span, so
+  a window Ant halved after one such error is checked the same way; only a
+  range under 2,000 blocks goes unchecked, since all its logs fall in the last
+  1,000 blocks whether or not it was cut. A failed check is not counted
+  against the endpoints: it neither cools them down nor bounds their span.
+
+### Log scans: the RPC quorum only, within each endpoint's range cap
+
+Ant finds its batches and chequebook by scanning the wallet's xBZZ `Transfer`
+logs (`eth_getLogs`), and re-reads everything it finds (owner, balance,
+factory, issuer) with ordinary verified reads. A log it never receives is the
+one failure it cannot detect: a missing chequebook transfer would make it
+deploy a second chequebook. So only the RPC quorum answers these scans (the
+bridge passes `excludeSources: ['myotis', 'colibri', 'direct']`): no single
+endpoint's answer settles a range. Myotis serves no logs, and Colibri proves
+the logs it returns but not that none are missing (its completeness proofs did
+not answer on the Gnosis prover, #484). The quorum budget is widened to 30 s
+for them, since a full-history answer can take seconds.
+
+Public RPCs cap the block span of one `eth_getLogs` differently (measured for
+#484: `rpc.gnosischain.com`, Tenderly, serves the full history; the
+`gateway.fm` and `swiftnodes` hostnames are the same backend; publicnode and
+dRPC's free plan serve 10,000 blocks). The router learns each endpoint's cap
+from the number its refusal names (`logScanRangeCap` in the bridge; a range
+limit without one bounds the span it was asked), in memory only, for 30
+minutes, after which the endpoint is asked again. Two refusals are not read as
+block-range caps:
+
+- an upstream `query timeout` reply bounds the endpoint below the span it timed
+  out on for 30 s only: a busy server is no range limit to hold every later
+  scan window to for half an hour;
+- a cap on results, logs or response size (`query returned more than 10000
+  results`) is not learned at all. It depends on the filter, not on the
+  endpoint, so a sparse filter over the same range is still asked. Ant still
+  halves the window it was refused.
+
+A scan asks the first `k` endpoints whose cap covers its span. If that round
+fails, the endpoints it just learned about are taken out (capped, or cooling
+down for 30 s after a hang, refused connection, throttle or other endpoint
+failure) and, if another quorum can serve the same span, it is asked straight
+away. When none can, Ant is told the widest span a quorum can still verify, as
+`-32005 query exceeds max block range N`, without any endpoint being asked, and
+halves its window towards it. Only when no quorum can serve any span does Ant
+get an error it does not halve on, and it resumes the scan later from its
+saved progress.
+
+**A quorum is required.** Since no single endpoint's answer is accepted for a
+log scan, a node configured with fewer Gnosis RPC endpoints than the quorum
+size `m` (default 2 of `k` = 3), or with a read order that leaves out
+`quorum`, cannot complete Ant's log scans at all: every `eth_getLogs` fails
+(`RPC quorum needs m endpoints` / `No chain source left`), Ant ends the scan
+and retries it later, and its postage batches and chequebook are not found
+until the configuration changes. Ant's other reads and broadcasts are not
+affected. The bridge logs `eth_getLogs is answered by the RPC quorum only,
+and none is configured for Gnosis` once per node start when this happens. A
+user with a single custom Gnosis RPC must add a second, independent one (two
+hostnames of the same backend agree with each other by construction and are
+no independent check).
 
 ### Which error Ant sees: one ranking rule
 
@@ -77,36 +180,21 @@ executed block N (node is still syncing)` — they name a range but a synced
      recognised throttle, or a source/transport failure with no JSON-RPC
      code, whose text would match Ant's needles is replaced with `endpoint
 unavailable`, so Ant does not halve its window on a throttle.
-2. **Keep the most useful failure seen so far**, across every tier (Myotis,
-   each quorum member, each Direct attempt and retry; Colibri is never asked
-   for logs). A later
+2. **Keep the most useful failure seen so far**, across the quorum's members
+   and rounds (Ant's log scans ask no other source). A later
    failure replaces it only if it ranks strictly higher, so a range limit
    survives a later timeout or 429, a timeout survives a later `-32601`, and
    a possible range cap survives a later 429 or refused connection.
    The one exception is timeout by timeout: the later one replaces the
-   earlier, since it is the attempt that actually ended the request (Direct's
-   60 s widened retry after quorum's 5 s cut reports `after 60000ms`).
+   earlier, since it is the attempt that actually ended the request.
    When every source fails Ant gets the kept error object itself, with its
    original code and text (URLs redacted, see below). If nothing better than
    endpoint-dependent was seen, the router's usual error is reported and Ant
    gives up, as it would against a single failing RPC.
-3. **Only a range limit ends the request early.** As soon as one is seen (and
-   quorum can no longer agree on a result) the router stops: no later source,
-   untried endpoint or retry is asked, and Ant gets it within the time of that
-   answer. Every other failure falls through to the next source, endpoint or
-   retry exactly like an unavailable source, so a healthy later endpoint stays
-   reachable whatever the earlier ones answered.
-
-Wide scans get a 60 s per-URL budget on the direct tier (never less than the
-chain's configured timeout). With the default Gnosis policy the RPC quorum
-tier asks the first `k` (3) endpoints at the configured 5 s. The direct tier
-then tries, in registry order, the endpoints quorum never asked, and after
-those the quorum members that never answered, now with 60 s. An endpoint that
-answered quorum (with any error) is not asked again. Every attempt sits inside
-the bridge's 120 s per-request deadline, which fits only about two full 60 s
-attempts after quorum: with several endpoints hanging, the later ones are not
-reached and Ant gets the bridge's `query timeout`, halves and retries. Putting
-untried endpoints first means a healthy one is reached right after quorum.
+3. **Only a range limit ends the request early.** As soon as one is seen and
+   the quorum can no longer agree on a result, the router stops and Ant gets
+   it within the time of that answer. Any other failure leaves the quorum
+   waiting for its remaining members, up to its budget.
 
 Only `eth_getLogs` is ranked. Ant's other reads and all wallet/app reads and
 broadcasts pass no `rankError`, so for them nothing is kept or ends early: a
@@ -177,18 +265,20 @@ capacity and split-log redaction. Manager tests cover starting the daemon with
 its write-capable chain transport, close, bind/spawn failure and stop during
 startup. Router tests ensure cancellation
 prevents later fallback or a second direct broadcaster.
-`ant-log-scan-routing.test.js` pins the ranking rule as a matrix over the
-real router with the bridge's own options and error mapping, under fake
-timers: tier (Myotis, quorum with all or one of three members, Direct
-untried endpoint, Direct widened retry) × error class (range limit, timeout
-reply, endpoint-dependent, hang, success), plus arrival-order cases and a
-case asserting Colibri is never asked, whatever it would answer. Each case
-asserts what Ant receives, whether Ant's needles match it and the elapsed
-time. The review findings that led to the rule (PR #419 R1-F1 … R6-F1) are
-named cases there. `ant-chain-bridge.router.test.js` runs the real router
-behind the real bridge over loopback sockets with real timers for the same
-paths end to end (range limit with three endpoints, widened retry, healthy
-fourth endpoint before the bridge deadline, endpoint-dependent error).
+`ant-log-scan-routing.test.js` pins the log-scan routing over the real router
+with the bridge's own options and error mapping, under fake timers: that only
+the quorum is asked (Myotis and Colibri never, whatever they would answer), the ranking rule as a matrix of quorum members (all,
+two or one of three) × error class (range limit, timeout reply,
+endpoint-dependent, hang, success) plus arrival-order cases, the PR #419
+review findings that still apply, and the range caps, replaying the endpoint
+behaviour measured for #484 through Ant's halving. Each case asserts what Ant
+receives, whether Ant's needles match it, the elapsed time and which RPCs were
+asked. Its `silent truncation (#496)` cases replay the measured cut-short answer
+through Ant's halving down to a complete one, and a recent-only sparse
+answer being accepted. `ant-chain-bridge.router.test.js` runs the real router behind the real
+bridge over loopback sockets with real timers for the same paths end to end
+(range limit, slow members inside the scan budget, a lone answer not
+settling a scan, a fourth endpoint joining, an endpoint-dependent error).
 
 The live check uses a newly generated, unfunded temporary managed profile,
 real Electron, Ant v0.5.45 and checksum-verified Myotis v0.1.11 / ABI 29. No
