@@ -1,3 +1,7 @@
+// Before anything can queue libuv threadpool work: the pool is sized once,
+// on first use (uv-threadpool.js, #514).
+require('./uv-threadpool').applyThreadpoolSize();
+
 // Set app name early, before electron-log initializes (it uses app name for log path)
 const { app, dialog, ipcMain } = require('electron');
 

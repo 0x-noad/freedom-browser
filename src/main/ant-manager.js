@@ -13,7 +13,7 @@ const { getAntDataDir } = require('./profile-paths');
 const {
   getActiveProfile,
   getReservedProfilePorts,
-  updateActiveProfileNodeConfig,
+  updateActiveProfileNodeConfigWhenIdle,
 } = require('./profile-resolver');
 const {
   MODE,
@@ -175,8 +175,8 @@ function getHttpClient(rawUrl) {
   return rawUrl.startsWith('https:') ? https : http;
 }
 
-function persistManagedAntPorts(updates) {
-  const result = updateActiveProfileNodeConfig('bee', updates);
+async function persistManagedAntPorts(updates) {
+  const result = await updateActiveProfileNodeConfigWhenIdle('bee', updates);
   if (result) {
     log.info('[Ant] Persisted managed profile ports:', updates);
   }
@@ -707,8 +707,12 @@ async function startAnt() {
 
   if (managedProfileNode && (apiPort !== configuredApiPort || p2pPort !== configuredP2pPort)) {
     try {
-      persistManagedAntPorts({ apiPort, p2pPort });
+      // Waits out an in-process async catalog write (a profile deletion)
+      // rather than failing on it; the generation check below covers a stop
+      // that lands meanwhile.
+      await persistManagedAntPorts({ apiPort, p2pPort });
     } catch (err) {
+      if (generation !== startGeneration) return;
       log.error('[Ant] Failed to persist managed profile ports:', err.message);
       updateState(STATUS.ERROR, 'Failed to save Ant port assignment');
       setStatusMessage('ant', 'Node failed to start');
