@@ -81,6 +81,17 @@ describe('update state machine (#87)', () => {
     expect(describeUpdateState(ready)).toBe('Freedom 0.9.0 is ready to install.');
   });
 
+  test('the idle line follows the auto-update switch', () => {
+    const idle = { ...initialState(), status: STATUS.IDLE, reason: null };
+    expect(describeUpdateState(idle)).toBe('Freedom checks for updates automatically.');
+    expect(describeUpdateState(idle, { autoCheck: true })).toBe(
+      'Freedom checks for updates automatically.'
+    );
+    expect(describeUpdateState(idle, { autoCheck: false })).toBe(
+      'Automatic update checks are off.'
+    );
+  });
+
   test('progress is clamped and non-numeric fields are dropped', () => {
     const state = run([
       { type: 'available', version: '0.9.0' },
@@ -127,7 +138,13 @@ describe('update state machine (#87)', () => {
   test('errors carry a fixed kind, never the raw message', () => {
     const network = run([{ type: 'checking' }, { type: 'error', kind: 'network' }]);
     expect(network).toMatchObject({ status: STATUS.ERROR, error: 'network' });
-    expect(describeUpdateState(network)).toMatch(/Couldn't reach the update server/);
+    expect(describeUpdateState(network)).toBe(
+      "Couldn't reach the update server. Freedom will try again later."
+    );
+    // With background checks off nothing retries on its own.
+    expect(describeUpdateState(network, { autoCheck: false })).toBe(
+      "Couldn't reach the update server. Use Check now to try again."
+    );
     expect(canCheckForUpdates(network)).toBe(true);
 
     const download = run([

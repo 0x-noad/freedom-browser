@@ -2,7 +2,7 @@ const { autoUpdater } = require('electron-updater');
 const { app, dialog, ipcMain } = require('electron');
 const log = require('./logger');
 const path = require('path');
-const { loadSettings } = require('./settings-store');
+const { loadSettings, onSettingsChanged } = require('./settings-store');
 const { getActiveProfile } = require('./profile-resolver');
 const { DEFAULT_PROFILE_ID } = require('./profile-catalog');
 const {
@@ -100,7 +100,7 @@ function getUpdateState() {
   const mode = getInstallRelaunchMode();
   return {
     ...updateState,
-    message: describeUpdateState(updateState),
+    message: describeUpdateState(updateState, { autoCheck: isUpdateCheckEnabled() }),
     canCheck: canCheckForUpdates(updateState),
     installLabel: mode.autoRunAfterInstall ? 'Restart to update' : 'Install update and close',
     // Title case for the hamburger menu, like its other rows.
@@ -108,6 +108,13 @@ function getUpdateState() {
     installNote: mode.readyMessage,
   };
 }
+
+// The status line depends on the auto-update switch (idle/error wording), so
+// flipping it re-broadcasts the snapshot to every open surface.
+onSettingsChanged((merged, previous) => {
+  if ((merged?.autoUpdate !== false) === (previous?.autoUpdate !== false)) return;
+  broadcastToAllWebContents(UPDATE_STATE_CHANNEL, getUpdateState());
+});
 
 function dispatchUpdateEvent(event) {
   const next = reduceUpdateState(updateState, event);

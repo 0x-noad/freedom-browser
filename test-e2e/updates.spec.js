@@ -170,3 +170,31 @@ test('a failed check is shown and can be retried', async ({ window, electronApp 
   await expect(window.locator('#update-menu-status')).toHaveText('Failed');
   await expect(window.locator('#check-updates-btn')).toBeEnabled();
 });
+
+test('with automatic checks off the status line stops promising background checks', async ({
+  window,
+  electronApp,
+}) => {
+  await dispatch(electronApp, { type: 'supported' });
+  const settings = await openSettingsUpdates(window, electronApp);
+  const message = settings.locator('#update-status-message');
+  const toggle = settings.locator('#auto-update');
+  await expect(message).toHaveText('Freedom checks for updates automatically.');
+  await expect(toggle).toBeChecked();
+
+  // Flipping the real switch re-words the line without any updater event.
+  await settings.locator('label.toggle:has(#auto-update)').click();
+  await expect(toggle).not.toBeChecked();
+  await expect(message).toHaveText('Automatic update checks are off.');
+
+  // A failed manual check with the switch off doesn't promise a retry.
+  await dispatch(electronApp, { type: 'checking' });
+  await dispatch(electronApp, { type: 'error', kind: 'network' });
+  await expect(message).toHaveText("Couldn't reach the update server. Use Check now to try again.");
+  await expect(settings.locator('#update-check-now')).toBeEnabled();
+
+  await settings.locator('label.toggle:has(#auto-update)').click();
+  await expect(message).toHaveText(
+    "Couldn't reach the update server. Freedom will try again later."
+  );
+});

@@ -51,9 +51,21 @@ const UNSUPPORTED_MESSAGES = {
 };
 
 const ERROR_MESSAGES = {
-  network: "Couldn't reach the update server. Freedom will try again later.",
-  download: "The update couldn't be downloaded. Freedom will try again later.",
-  check: 'The update check failed. Freedom will try again later.',
+  network: "Couldn't reach the update server.",
+  download: "The update couldn't be downloaded.",
+  check: 'The update check failed.',
+};
+
+// What happens next depends on the "Automatically check for updates" switch:
+// with it off nothing retries in the background, so don't promise it.
+const RETRY_NOTE = {
+  auto: 'Freedom will try again later.',
+  manual: 'Use Check now to try again.',
+};
+
+const IDLE_MESSAGES = {
+  auto: 'Freedom checks for updates automatically.',
+  manual: 'Automatic update checks are off.',
 };
 
 function clampPercent(value) {
@@ -203,8 +215,13 @@ function reduceUpdateState(state, event, { now = Date.now } = {}) {
   }
 }
 
-/** Human status line for a state — the one copy both renderers show. */
-function describeUpdateState(state) {
+/**
+ * Human status line for a state — the one copy both renderers show.
+ * `autoCheck` is the "Automatically check for updates" setting; the idle and
+ * error lines only promise background checks when it is on.
+ */
+function describeUpdateState(state, { autoCheck = true } = {}) {
+  const mode = autoCheck ? 'auto' : 'manual';
   switch (state.status) {
     case STATUS.CHECKING:
       return 'Checking for updates…';
@@ -220,12 +237,12 @@ function describeUpdateState(state) {
     case STATUS.UP_TO_DATE:
       return 'Freedom is up to date.';
     case STATUS.ERROR:
-      return ERROR_MESSAGES[state.error] || ERROR_MESSAGES.check;
+      return `${ERROR_MESSAGES[state.error] || ERROR_MESSAGES.check} ${RETRY_NOTE[mode]}`;
     case STATUS.UNSUPPORTED:
       return UNSUPPORTED_MESSAGES[state.reason] || UNSUPPORTED_MESSAGES[UNSUPPORTED_REASON.BUILD];
     case STATUS.IDLE:
     default:
-      return 'Freedom checks for updates automatically.';
+      return IDLE_MESSAGES[mode];
   }
 }
 

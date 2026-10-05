@@ -30,6 +30,15 @@ function loadUpdaterModule(activeProfile, options = {}) {
     getAppPath: jest.fn(() => '/tmp/freedom-app'),
   };
 
+  const settings = { autoUpdate: options.autoUpdate ?? true };
+  const settingsListeners = [];
+  // Flip the auto-update switch the way a Settings save does.
+  const setAutoUpdate = (value) => {
+    const previous = { ...settings };
+    settings.autoUpdate = value;
+    for (const listener of settingsListeners) listener({ ...settings }, previous);
+  };
+
   const webContentsList = options.webContentsList || [{ send: jest.fn() }];
   const dialog = { showMessageBox: jest.fn(), showErrorBox: jest.fn() };
   const { mod, ipcMain } = loadMainModule(require.resolve('./updater'), {
@@ -40,7 +49,8 @@ function loadUpdaterModule(activeProfile, options = {}) {
       'electron-updater': () => ({ autoUpdater }),
       [require.resolve('./logger')]: () => logger,
       [require.resolve('./settings-store')]: () => ({
-        loadSettings: jest.fn(() => ({ autoUpdate: options.autoUpdate ?? true })),
+        loadSettings: jest.fn(() => ({ autoUpdate: settings.autoUpdate })),
+        onSettingsChanged: jest.fn((listener) => settingsListeners.push(listener)),
       }),
       [require.resolve('./profile-resolver')]: () => ({
         getActiveProfile: jest.fn(() => activeProfile),
@@ -52,7 +62,15 @@ function loadUpdaterModule(activeProfile, options = {}) {
     },
   });
 
-  return { mod, autoUpdater, ipcMain, tryAcquireUpdaterOwnerLock, webContentsList, dialog };
+  return {
+    mod,
+    autoUpdater,
+    ipcMain,
+    tryAcquireUpdaterOwnerLock,
+    webContentsList,
+    dialog,
+    setAutoUpdate,
+  };
 }
 
 const DEFAULT_PROFILE = { id: 'default', displayName: 'Default', source: 'catalog' };
@@ -290,6 +308,41 @@ describe('update state broadcast and IPC (#87)', () => {
     const state = mod.getUpdateState();
     expect(state).toMatchObject({ status: 'error', error: 'network', canCheck: true });
     expect(JSON.stringify(state)).not.toContain('freedom.baby/x');
+  });
+
+  test('idle and error lines only promise background checks while the auto-update switch is on', () => {
+    const { mod, autoUpdater, webContentsList, setAutoUpdate } = loadUpdaterModule(
+      DEFAULT_PROFILE,
+      { autoUpdate: false }
+    );
+    mod.initUpdater(null, null, { profile: DEFAULT_PROFILE });
+    expect(mod.getUpdateState()).toMatchObject({
+      status: 'idle',
+      message: 'Automatic update checks are off.',
+    });
+
+    // Check now still works with the switch off; a failure must not promise a retry.
+    mod.checkForUpdates({ manual: true });
+    autoUpdater.emit('error', new Error('net::ERR_NAME_NOT_RESOLVED'));
+    expect(mod.getUpdateState().message).toBe(
+      "Couldn't reach the update server. Use Check now to try again."
+    );
+
+    // Turning the switch on re-broadcasts the reworded line to open surfaces.
+    const wc = webContentsList[0];
+    const before = broadcasts(wc).length;
+    setAutoUpdate(true);
+    expect(broadcasts(wc).slice(before)).toEqual([
+      expect.objectContaining({
+        status: 'error',
+        message: "Couldn't reach the update server. Freedom will try again later.",
+      }),
+    ]);
+
+    // A save that leaves the switch alone doesn't re-broadcast.
+    const after = broadcasts(wc).length;
+    setAutoUpdate(true);
+    expect(broadcasts(wc).length).toBe(after);
   });
 
   test('a missing app-update.yml marks the build unsupported', () => {
