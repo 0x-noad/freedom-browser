@@ -105,6 +105,12 @@ let activeProfileId = null;
 let storedProfileNodes = {};
 const nodeDrafts = new Map();
 let nodeSave = Promise.resolve();
+// Bumped by every refresh that goes on to fetch. A refresh's reply is only
+// rendered if no later refresh started meanwhile: the 5s timer, a commit's
+// forced refresh and the profile-updated broadcast can overlap, and an older
+// fetch landing last would repaint the old mode and leave storedProfileNodes
+// (which the commit no-op check compares against) behind the catalog.
+let profileRefreshSeq = 0;
 // The committed profile name — the baseline an in-progress edit reverts
 // to (Esc, an empty/unchanged value, or a failed save).
 let savedProfileName = '';
@@ -1086,12 +1092,14 @@ const refreshProfileSection = async (force = false) => {
     return;
   }
 
+  const seq = ++profileRefreshSeq;
   try {
     const [profile, registry, settings] = await Promise.all([
       freedomAPI.getActiveProfile?.(),
       freedomAPI.getServiceRegistry().catch(() => null),
       freedomAPI.getSettings?.().catch(() => null),
     ]);
+    if (seq !== profileRefreshSeq) return;
     const profileId = profile?.id || null;
     if (profileId !== activeProfileId) nodeDrafts.clear();
     activeProfileId = profileId;
@@ -1102,6 +1110,7 @@ const refreshProfileSection = async (force = false) => {
     }
     renderProfileNodes(profile, registry, settings);
   } catch {
+    if (seq !== profileRefreshSeq) return;
     profileFields.nodesCard.innerHTML =
       '<div class="profile-node-empty">Profile data unavailable</div>';
   }
@@ -1221,6 +1230,16 @@ const nodeNotSavedMessage = (protocol, mode, reason) => {
   return `${reason} Not saved — ${kept}.`;
 };
 
+// Which endpoint fields a refused commit should flag. Only an endpoint
+// error names fields; any other refusal (profile not editable, catalog
+// write failed) says nothing about what was typed, so nothing is flagged.
+const invalidNodeFields = (error) => {
+  const details = error?.details || {};
+  if (typeof details.field === 'string') return [details.field];
+  if (Array.isArray(details.fields)) return details.fields;
+  return [];
+};
+
 const commitNodeRow = (row) => {
   const { protocol, mode, values } = nodeRowConfig(row);
   if (!protocol || !mode) return Promise.resolve();
@@ -1272,16 +1291,27 @@ const commitNodeRow = (row) => {
       setNodesStatus(`Saving ${label} node settings…`, 'testing');
       try {
         const result = await freedomAPI.updateProfileNodeConfig?.(protocol, config);
-        if (!result?.success) {
+        // `details.saved`: the catalog write landed and only applying it to
+        // the running node failed — the config is stored, so it is not a
+        // draft and must not be reported as "not saved".
+        const saved = result?.success || result?.error?.details?.saved === true;
+        if (!saved) {
           const err = new Error(result?.error?.message || 'Profile node settings were not saved');
-          err.field = result?.error?.details?.field;
+          err.invalid = invalidNodeFields(result?.error);
           throw err;
         }
         setNodeDraft(protocol, null);
-        setNodesStatus(
-          `${label} saved. Restart the node to apply mode or endpoint changes.`,
-          'success'
-        );
+        if (result.success) {
+          setNodesStatus(
+            `${label} saved. Restart the node to apply mode or endpoint changes.`,
+            'success'
+          );
+        } else {
+          setNodesStatus(
+            `${label} saved, but applying it failed: ${result.error.message}. Restart the node to apply mode or endpoint changes.`,
+            'error'
+          );
+        }
         await refreshProfileSection(true);
         await refreshRadicleLaunchStatus();
       } catch (err) {
@@ -1289,7 +1319,7 @@ const commitNodeRow = (row) => {
         setNodeDraft(protocol, {
           mode,
           values,
-          invalid: err?.field ? [err.field] : mode === 'external' ? fieldKeys : [],
+          invalid: err?.invalid || [],
           error: nodeNotSavedMessage(
             protocol,
             mode,
