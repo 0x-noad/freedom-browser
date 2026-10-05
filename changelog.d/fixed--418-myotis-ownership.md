@@ -1,0 +1,1 @@
+- Recover Myotis sync after an interrupted shutdown and confirmed computer restart, preserving old sync data ([#418](https://github.com/solardev-xyz/freedom-browser/issues/418))

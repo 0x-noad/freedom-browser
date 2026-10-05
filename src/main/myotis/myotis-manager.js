@@ -272,7 +272,7 @@ function startRecoveryNotice(instance, reset = false) {
 }
 
 function storageFailureReason(error) {
-  return ({ CHECKPOINT_OWNERSHIP: 'ownership', CHECKPOINT_STORAGE: 'storage',
+  return ({ CHECKPOINT_REBOOT_REQUIRED: 'reboot-required', CHECKPOINT_OWNERSHIP: 'ownership', CHECKPOINT_STORAGE: 'storage',
     CHECKPOINT_STORAGE_IO: 'storage-io' })[error.code] || 'startup';
 }
 
@@ -486,7 +486,7 @@ function recoverCheckpoint(instance, { resetAttempts = false } = {}) {
         CHECKPOINT_QUORUM_UNAVAILABLE: 'quorum-unavailable',
         CHECKPOINT_QUORUM_CONFLICT: 'quorum-conflict',
         CHECKPOINT_MISMATCH: 'mismatch', CHECKPOINT_CLOCK: 'clock',
-        CHECKPOINT_STORAGE: 'storage', CHECKPOINT_STORAGE_IO: 'storage-io', CHECKPOINT_OWNERSHIP: 'ownership', CHECKPOINT_STALE: 'stale',
+        CHECKPOINT_STORAGE: 'storage', CHECKPOINT_STORAGE_IO: 'storage-io', CHECKPOINT_REBOOT_REQUIRED: 'reboot-required', CHECKPOINT_OWNERSHIP: 'ownership', CHECKPOINT_STALE: 'stale',
         CHECKPOINT_INCOMPATIBLE: 'unsupported',
       };
       const retry = ['CHECKPOINT_UNAVAILABLE', 'CHECKPOINT_QUORUM_UNAVAILABLE', 'CHECKPOINT_RACE', 'CHECKPOINT_STALE'].includes(error.code);
@@ -823,7 +823,7 @@ function retryCheckpoint(event, chainId = 1) {
   if (!recoveryWindow(event)) throw new Error('Myotis recovery is only available from the browser Nodes menu');
   const instance = instanceFor(chainId);
   if (instance.wanted && instance.recovery?.canRetry && !instance.stopping) {
-    if (['startup', 'stalled', 'storage', 'storage-io', 'ownership'].includes(instance.recovery.reason))
+    if (['startup', 'stalled', 'storage', 'storage-io', 'ownership', 'reboot-required'].includes(instance.recovery.reason))
       restartOwnedState(instance);
     else recoverCheckpoint(instance, { resetAttempts: true });
   }
@@ -857,6 +857,7 @@ async function recoveryHelp(event, chainId = 1) {
   const status = publicStatus(chainId);
   const reason = status.recovery?.reason;
   const guidance = {
+    'reboot-required': 'Save your work, restart the computer, then reopen Freedom. Freedom has recorded the interrupted node state and will recover after it confirms a new system boot. Old sync data will be kept. Restarting Freedom alone is not enough.',
     ownership: 'Close other Freedom instances, then choose Retry sync in Nodes. If it still cannot confirm that the previous node stopped, contact Freedom support with the details below. Restarting the computer may stop a leftover process, but cannot clear an unconfirmed ownership record. Do not delete the sync folder or ownership files to force a restart.',
     storage: 'Choose Repair sync data in Nodes to start again while keeping the old data. If repair fails, contact Freedom support with the details below. Repair cannot bypass an unconfirmed node exit or unsafe filesystem entries.',
     'storage-io': 'Check free disk space and that Freedom can write to its data folder, then choose Retry sync in Nodes. If this keeps happening, contact Freedom support with the details below.',

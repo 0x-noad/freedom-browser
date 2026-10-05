@@ -55,7 +55,11 @@ static int valid_generation(const char *generation) {
   return 1;
 }
 
+#include "myotis-owner-recovery.h"
+
 int main(int argc, char **argv) {
+  if (argc == 4 && !strcmp(argv[1], "--recover-owner") && valid_generation(argv[3]))
+    return recover_owner(argv[2], argv[3]);
   if (argc != 5 || !valid_generation(argv[3]) || argv[1][0] != '/' || argv[2][0] != '/') return 64;
   const char *generation = argv[3];
   const char *node_mode = getenv("ELECTRON_RUN_AS_NODE");
@@ -98,6 +102,9 @@ int main(int argc, char **argv) {
   }
   if (record(owner, "active", generation) < 0 || fsync(directory) < 0) return 68;
   close(directory);
+  char active_record[96];
+  int active_size = snprintf(active_record, sizeof(active_record), "v1 active %s\n", generation);
+  (void)owner_stamp(argv[4], active_record, active_size);
   int gate[2];
   if (pipe(gate) < 0) return 68;
   if (revoked(0)) return 65; /* Active record conservatively remains quarantined. */

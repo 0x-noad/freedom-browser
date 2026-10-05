@@ -265,19 +265,18 @@ can quarantine the chain across browser
 restarts. No age, PID absence, or process-name scan clears quarantine. Native
 parent-loss cleanup may persist a valid retired record even if main is gone.
 
-The ownership **Retry sync** action rechecks the native ownership guard; it
-cannot establish a missing exit proof or clear permanent unknown quarantine.
-Closing another Freedom instance may allow that live owner to retire normally,
-but closing instances does not repair an active or corrupt record left after
-supervisor loss. The **Get help** dialog makes that limitation explicit and offers support details.
-**Repair sync data** cannot clear this quarantine either.
-An operator must first
-establish that the old child cannot still run, for example by a complete host
-reboot, then preserve the quarantined chain cache/record for investigation and
-explicitly provision a fresh chain cache. Merely restarting Freedom is not
-sufficient. Never remove or rewrite an active record to work around the guard
-while the old process's outcome is unknown. This conservative manual recovery
-requirement is a release limitation.
+The ownership **Retry sync** action first rechecks the native guard. If a
+live supervisor still holds the owner lock, recovery remains blocked. For an
+interrupted supervisor, the native helper can now establish exit across a
+system restart using a machine-bound boot witness. A missing legacy witness
+is recorded without changing the owner; the UI then asks the user to restart
+the computer and reopen Freedom. Retrying within the same boot never clears
+it. A matching witness from a previous boot yields a distinct `rebooted`
+receipt, not a normal `retired` receipt. The store preserves that generation
+and creates a fresh one; it never resumes its potentially interrupted snapshot.
+See [ownership recovery](myotis-ownership-recovery.md) for platform evidence,
+filesystem restrictions, tests and limitations. No PID scan, age threshold,
+wall-clock subtraction or renderer consent substitutes for exit evidence.
 
 ## Build and signing
 

@@ -36,7 +36,7 @@ static int record(HANDLE owner, const char *state, const char *generation) {
   int size = snprintf(data, sizeof(data), "v1 %s %s\n", state, generation);
   LARGE_INTEGER zero; zero.QuadPart = 0;
   return SetFilePointerEx(owner, zero, NULL, FILE_BEGIN) && SetEndOfFile(owner) &&
-    write_all(owner, data, (DWORD)size) && FlushFileBuffers(owner);
+    write_all(owner, data, (DWORD)size) && FlushFileBuffers(owner) ? 0 : -1;
 }
 
 static int revoked(HANDLE control) {
@@ -44,7 +44,14 @@ static int revoked(HANDLE control) {
   return !PeekNamedPipe(control, NULL, 0, NULL, &available, NULL) || available != 0;
 }
 
+#include "myotis-owner-recovery.h"
+
 int wmain(int argc, wchar_t **argv) {
+  if (argc == 4 && !wcscmp(argv[1], L"--recover-owner") && wcslen(argv[3]) == 36) {
+    char id[37];
+    for (int i = 0; i <= 36; i++) { if (argv[3][i] > 127) return 64; id[i] = (char)argv[3][i]; }
+    return valid_generation(id) ? recover_owner(argv[2], id) : 64;
+  }
   if (argc != 5 || wcslen(argv[3]) != 36 || wcslen(argv[1]) > 16000 ||
       wcslen(argv[2]) > 16000 || wcslen(argv[4]) > 32000) return 64;
   char generation[37];
@@ -87,7 +94,10 @@ int wmain(int argc, wchar_t **argv) {
     prior[47] = 0;
     if (!valid_generation(prior + 11)) return 67;
   }
-  if (!record(owner, "active", generation)) return 68;
+  if (record(owner, "active", generation) < 0) return 68;
+  char active_record[96];
+  int active_size = snprintf(active_record, sizeof(active_record), "v1 active %s\n", generation);
+  (void)owner_stamp(argv[4], active_record, active_size);
 
   HANDLE job = CreateJobObjectW(NULL, NULL);
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
@@ -171,7 +181,7 @@ int wmain(int argc, wchar_t **argv) {
   DWORD exit_code;
   if (!GetExitCodeProcess(child.hProcess, &exit_code)) return 72;
   CloseHandle(child.hProcess);
-  if (!record(owner, "retired", generation)) return 73;
+  if (record(owner, "retired", generation) < 0) return 73;
   length = snprintf(receipt, sizeof(receipt),
     "{\"type\":\"reaped\",\"generation\":\"%s\",\"exitCode\":%lu,\"signal\":0,\"forced\":%s}\n",
     generation, (unsigned long)exit_code, forced ? "true" : "false");

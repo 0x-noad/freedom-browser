@@ -333,6 +333,7 @@ describe('myotis-manager', () => {
     ['CHECKPOINT_MISMATCH', 'mismatch'], ['CHECKPOINT_QUORUM_CONFLICT', 'quorum-conflict'],
     ['CHECKPOINT_CLOCK', 'clock'], ['CHECKPOINT_STORAGE', 'storage'],
     ['CHECKPOINT_STORAGE_IO', 'storage-io'], ['CHECKPOINT_OWNERSHIP', 'ownership'],
+    ['CHECKPOINT_REBOOT_REQUIRED', 'reboot-required'],
     ['CHECKPOINT_INCOMPATIBLE', 'unsupported'],
   ])('failure %s stays blocked without automatic retries or a risk bypass', async (code, reason) => {
     const ctx = loadManager();
