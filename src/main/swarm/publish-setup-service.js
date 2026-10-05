@@ -115,7 +115,13 @@ const REDISCOVERY_SLOW_MS = 2 * 60_000;
 // a quorum, or a dead logs endpoint. antd's own retry backs off to 5
 // minutes, so this is several failed attempts. Past it the hold is released,
 // with a message saying the check did not finish, rather than keep the user
-// from storage plans for the whole session.
+// from storage plans for the whole session. The clock starts when Freedom
+// first sees the scan failing, not when antd started retrying: `/health`
+// carries no timestamp for that, and the service only probes while a
+// surface (publish setup, storage, the node card) is watching. A scan that failed
+// unwatched for hours therefore still holds for up to this long once a
+// surface opens; the bound is a ceiling on what Freedom has seen, not on
+// the scan's own age.
 const SCAN_STALL_MAX_MS = 30 * 60_000;
 
 const QUOTING_PHASES = new Set(['quoting', 'awaiting-funds']);
@@ -521,6 +527,14 @@ function createPublishSetupService({
   // at: antd flips between `retrying` and `scanning` on each attempt, so only
   // a block actually read counts as the scan moving again.
   let scanStall = { run: null, since: null, through: null };
+  // The earliest `from` seen for the scan in progress, for its percentage:
+  // antd resets `from` to its resume point on every retry and restart, so
+  // the progress shown would drop to ~0% after a failure (see
+  // walletScanPercent). Kept across a node restart for the same wallet;
+  // cleared when the scan finishes or the wallet changes. An app restart
+  // loses it (antd reports only the resume point), so a scan resumed then
+  // shows progress from where it resumed.
+  let scanOrigin = null;
 
   function readNode() {
     const { status = 'stopped', error = null } = getNodeStatus?.() || {};
@@ -592,7 +606,11 @@ function createPublishSetupService({
     if (kind === 'reported') {
       if (isScanStalled()) return null;
       const scan = probe.walletScan;
-      return { state: scan.state, percent: walletScanPercent(scan), slow: false };
+      return {
+        state: scan.state,
+        percent: walletScanPercent(scan, scanOriginFrom()),
+        slow: false,
+      };
     }
     const startedAt = nodeStartedAt();
     if (startedAt === null) return null;
@@ -644,6 +662,44 @@ function createPublishSetupService({
     if (scan.state === 'retrying' && scanStall.since === null) {
       scanStall = { run: nodeRun, since: at, through };
     }
+  }
+
+  function currentWallet() {
+    const address = account?.walletAddress;
+    return isAddress(address) ? address.toLowerCase() : null;
+  }
+
+  function noteScanOrigin(scan) {
+    if (!scan || scan.state === 'unknown' || isWalletScanFinished(scan)) {
+      scanOrigin = null;
+      return;
+    }
+    if (scan.from === null) return;
+    const wallet = currentWallet();
+    if (scanOrigin && scanOrigin.run !== nodeRun) {
+      // A restarted node: carry the origin over only once the wallet is
+      // known to be the same one (account is re-read after a restart).
+      if (!scanOrigin.wallet) scanOrigin = null;
+      else if (!wallet) return;
+      else if (wallet !== scanOrigin.wallet) scanOrigin = null;
+    }
+    if (scanOrigin && wallet && scanOrigin.wallet && wallet !== scanOrigin.wallet) {
+      scanOrigin = null;
+    }
+    scanOrigin = scanOrigin
+      ? {
+          run: nodeRun,
+          wallet: scanOrigin.wallet || wallet,
+          from: Math.min(scanOrigin.from, scan.from),
+        }
+      : { run: nodeRun, wallet, from: scan.from };
+  }
+
+  function scanOriginFrom() {
+    if (!scanOrigin) return null;
+    if (scanOrigin.run === nodeRun) return scanOrigin.from;
+    const wallet = currentWallet();
+    return wallet && wallet === scanOrigin.wallet ? scanOrigin.from : null;
   }
 
   function isScanStalled() {
@@ -777,6 +833,7 @@ function createPublishSetupService({
     const version = typeof health.data?.version === 'string' ? health.data.version : null;
     const walletScan = parseWalletScan(health.data?.walletScan);
     noteWalletScan(walletScan, at);
+    noteScanOrigin(walletScan);
     if (!chainReady) {
       probe = {
         at,

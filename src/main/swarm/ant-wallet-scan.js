@@ -56,14 +56,24 @@ function isWalletScanFinished(scan) {
 }
 
 /**
- * How far this run of the scan has got, as a whole percentage of the blocks
- * from `from` to `head`, or null before the first window is read. Capped at
+ * How far the scan has got, as a whole percentage of the blocks from where
+ * it started to `head`, or null before the first window is read. Capped at
  * 99 while it runs: only `done` says it is finished (antd can report `done`
  * a few blocks short of the head it started with).
+ *
+ * antd resets `from` to its resume point (the saved `scannedThrough` + 1) on
+ * every retry and on restart, so `from` alone measures only the current
+ * attempt: a scan 82% through would read 1% after one failure. `originFrom`
+ * is the earliest `from` the caller has seen for this scan; when given, and
+ * earlier than `from`, the percentage counts from there instead.
  */
-function walletScanPercent(scan) {
+function walletScanPercent(scan, originFrom = null) {
   if (!scan || !SCANNING_STATES.has(scan.state)) return null;
-  const { from, scannedThrough, head } = scan;
+  const { scannedThrough, head } = scan;
+  const from =
+    block(originFrom) !== null && scan.from !== null && originFrom < scan.from
+      ? originFrom
+      : scan.from;
   if (from === null || scannedThrough === null || head === null || head < from) return null;
   const total = head - from + 1;
   const done = Math.min(Math.max(scannedThrough - from + 1, 0), total);

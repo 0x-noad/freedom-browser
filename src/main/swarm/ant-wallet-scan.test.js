@@ -82,6 +82,21 @@ describe('walletScanPercent', () => {
   test('a finished scan has no progress to show', () => {
     expect(walletScanPercent(parseWalletScan(DONE))).toBeNull();
   });
+
+  test('counts from an earlier origin, as antd resets `from` to its resume point on a retry', () => {
+    const resumed = parseWalletScan({
+      state: 'scanning',
+      from: 150,
+      scannedThrough: 159,
+      head: 199,
+    });
+    expect(walletScanPercent(resumed)).toBe(20);
+    expect(walletScanPercent(resumed, 100)).toBe(60);
+    // A later or invalid origin is ignored.
+    expect(walletScanPercent(resumed, 170)).toBe(20);
+    expect(walletScanPercent(resumed, -1)).toBe(20);
+    expect(walletScanPercent(resumed, null)).toBe(20);
+  });
 });
 
 test('only antd v0.5.58 (or an antd of unknown version) may rediscover without reporting it', () => {

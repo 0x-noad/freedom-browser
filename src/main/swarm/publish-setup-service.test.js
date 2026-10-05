@@ -613,6 +613,62 @@ describe('publish setup while Ant reports its wallet scan (/health.walletScan, #
     service.dispose();
   });
 
+  test('progress counts from where the scan started, across a retry and a node restart', async () => {
+    const at = (state, from, scannedThrough) =>
+      health(scan(state, { from, scannedThrough, head: 48_600_000 }));
+    const { service, api, node } = scanSetup(scan('scanning', { scannedThrough: 43_000_000 }));
+    api.getHealth.mockResolvedValue(at('scanning', 16_514_506, 43_000_000));
+    await service.refresh({ withAccount: true });
+    expect(service.getState().readiness.progress).toBe(82);
+
+    // One failed attempt: antd resumes from its saved progress + 1.
+    api.getHealth.mockResolvedValue(at('retrying', 43_000_001, 43_000_000));
+    await service.refresh({ withAccount: true });
+    expect(service.getState().readiness.progress).toBe(82);
+    api.getHealth.mockResolvedValue(at('scanning', 43_000_001, 43_200_000));
+    await service.refresh({ withAccount: true });
+    expect(service.getState().readiness.progress).toBe(83);
+
+    // A node restart, same wallet: still counted from the original start.
+    node.status = 'stopped';
+    service.handleNodeStatus();
+    node.status = 'running';
+    service.handleNodeStatus();
+    api.getHealth.mockResolvedValue(at('scanning', 43_200_001, 43_300_000));
+    await service.refresh({ withAccount: true });
+    expect(service.getState().readiness.progress).toBe(83);
+
+    // Once a scan finishes, the next one counts from its own start.
+    api.getHealth.mockResolvedValue(at('done', 43_300_001, 48_600_000));
+    await service.refresh({ withAccount: true });
+    api.getHealth.mockResolvedValue(at('scanning', 48_000_000, 48_300_000));
+    await service.refresh({ withAccount: true });
+    expect(service.getState().readiness.progress).toBe(50);
+    service.dispose();
+  });
+
+  test('a node restarted with a different wallet does not inherit the old scan start', async () => {
+    const at = (from, scannedThrough) =>
+      health(scan('scanning', { from, scannedThrough, head: 48_600_000 }));
+    const { service, api, node } = scanSetup(scan('scanning', { scannedThrough: 43_000_000 }));
+    await service.refresh({ withAccount: true });
+    expect(service.getState().readiness.progress).toBe(82);
+
+    node.status = 'stopped';
+    service.handleNodeStatus();
+    node.status = 'running';
+    service.handleNodeStatus();
+    const other = '0x' + '2'.repeat(40);
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, shortfallPlur: '0', walletAddress: other }))
+    );
+    api.getHealth.mockResolvedValue(at(48_000_000, 48_300_000));
+    await service.refresh({ withAccount: true });
+    await service.refresh({ withAccount: true });
+    expect(service.getState().readiness.progress).toBe(50);
+    service.dispose();
+  });
+
   test('a reported scan is not cut short by the fallback bound', async () => {
     const { service } = scanSetup(scan('scanning', { scannedThrough: 17_000_000 }));
     await service.refresh();
