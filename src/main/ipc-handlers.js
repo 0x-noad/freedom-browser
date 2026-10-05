@@ -572,7 +572,7 @@ async function deleteProfileFromIpc(payload = {}, options = {}) {
       );
     }
 
-    const result = deleteProfileForActiveApp(payload.id, payload.confirmDisplayName);
+    const result = await deleteProfileForActiveApp(payload.id, payload.confirmDisplayName);
     if (!result) {
       return failure(
         'PROFILE_CATALOG_UNAVAILABLE',
