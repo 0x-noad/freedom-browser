@@ -21,6 +21,7 @@ Radicle is available on macOS, Linux, and Windows (x64 and ARM64). The release w
 - Tabs, sidebar, bookmarks, history, downloads, find-in-page, shortcuts, themes, permissions, and automatic updates.
 - Ad blocking with signed list updates and per-site allowlisting.
 - Wallet and dApp flows, x402 payments, hardware-wallet support, and Swarm/Radicle provider APIs.
+- A per-site encrypted data vault (`window.vault`) with per-field consent, a wallet **Data** pane, and the `freedom://dapps` launcher.
 - Custom protocol origins so decentralized applications can use relative assets, storage, service workers, and range requests naturally.
 
 See the [feature guide](docs/features.md) for the detailed capability list.
@@ -80,6 +81,7 @@ Do not post credentials, seed phrases, private keys, or sensitive logs in public
 - [IPFS/IPNS content retrieval and migration](docs/protocols/ipfs.md)
 - [Contract-hosted applications (ERC-8244)](docs/protocols/onchain-apps.md)
 - [Radicle provider API](docs/radicle-provider-api.md)
+- [The data vault for site authors (`window.vault`)](docs/vault-for-site-authors.md)
 - [Native IPFS desktop integration](docs/freedom-ipfs-native-desktop.md)
 - [Changelog](CHANGELOG.md)
 
