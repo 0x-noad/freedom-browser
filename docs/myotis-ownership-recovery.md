@@ -85,9 +85,9 @@ pointer publication remains recoverable without resuming the old snapshot.
   The boot session UUID survives sleep/wake/hibernate.
 - Windows: the installation's `MachineGuid` plus the kernel System process
   (PID 4) creation time from `NtQuerySystemInformation` (the process-table
-  buffer grows on `STATUS_INFO_LENGTH_MISMATCH`, bounded at 256 MiB). That process's
-  creation time is fixed for the lifetime of the kernel; this is **not**
-  wall-clock time minus uptime. It follows the Windows boot identification
+  buffer grows on `STATUS_INFO_LENGTH_MISMATCH`; every allocation, headroom
+  included, is capped at 256 MiB). That process's creation time is fixed for
+  the lifetime of the kernel; this is **not** wall-clock time minus uptime. It follows the Windows boot identification
   approach in the [OCSF CPID specification](https://github.com/ocsf/common-process-id/blob/main/specification.md#windows).
   Network drives and reparse-point owner files are refused. Use Windows
   **Restart**, not merely closing Freedom or sleep/hibernate.

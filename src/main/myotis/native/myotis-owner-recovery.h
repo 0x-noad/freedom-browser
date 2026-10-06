@@ -139,8 +139,10 @@ static int boot_identity(char host[64], char boot[64]) {
   if (!query) return -1;
   /* The process table grows with process *and* thread count (~12k threads
    * already exceed 1 MiB). Retry on STATUS_INFO_LENGTH_MISMATCH with the
-   * reported size plus headroom for processes started in between, bounded
-   * so a hostile/odd answer cannot drive an unbounded allocation. */
+   * reported size plus headroom for processes started in between. Every
+   * allocation, headroom included, is capped at 256 MiB so a hostile/odd
+   * answer cannot drive an unbounded allocation. */
+  const ULONG max_capacity = 256u * 1024 * 1024;
   ULONG capacity = 1024 * 1024, used = 0;
   unsigned char *buffer = NULL;
   NTSTATUS status = (NTSTATUS)0xC0000004L;
@@ -152,8 +154,9 @@ static int boot_identity(char host[64], char boot[64]) {
     status = query(SystemProcessInformation, buffer, capacity, &used);
     if (status == (NTSTATUS)0xC0000004L) {
       ULONG wanted = used > capacity ? used : capacity;
-      if (wanted > 256u * 1024 * 1024 - 1024 * 1024) { free(buffer); return -1; }
-      capacity = wanted + wanted / 4 + 64 * 1024;
+      if (wanted >= max_capacity) { free(buffer); return -1; }
+      ULONG headroom = wanted / 4 + 64 * 1024;
+      capacity = headroom > max_capacity - wanted ? max_capacity : wanted + headroom;
     }
   }
   if (status < 0 || used > capacity) { free(buffer); return -1; }
