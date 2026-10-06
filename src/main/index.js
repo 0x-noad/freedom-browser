@@ -57,7 +57,11 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
 // on a scratch profile, i.e. the packaged E2E launcher
 // (docs/security-audit-electron.md, O-4/O-12); see test-mode.js.
 const TEST_MODE = require('./test-mode').isTestModeRequested();
-const { migrateBeeDataToAntData, migrateUserData } = require('./migrate-user-data');
+const {
+  migrateBeeDataToAntData,
+  migrateUserData,
+  purgeSetAsideBeeData,
+} = require('./migrate-user-data');
 if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
   migrateUserData({ logger: console });
 }
@@ -337,7 +341,11 @@ const { initUpdater } = require('./updater');
 const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
 const { registerClientCertificateHandler } = require('./client-certificate');
-const { installTestHarness, registerStubProtocols } = require('./test-harness');
+const {
+  installTestHarness,
+  registerStubProtocols,
+  adblockEngineLandingGate,
+} = require('./test-harness');
 // Every chain-data caller above holds the router module object and reads
 // `.request` at call time, so wrapping the export here covers all of them.
 require('./networks/chain-data-activity').instrumentChainDataRouter(
@@ -373,7 +381,9 @@ async function bootstrap() {
 
   // Carry the injected Swarm identity from the Bee-era bee-data/ into
   // ant-data/. Must run before the Ant node is started below, or antd
-  // self-generates a throwaway identity on the empty directory.
+  // self-generates a throwaway identity on the empty directory. Its
+  // gigabytes of Bee-only state are only set aside here; they are deleted
+  // off the main thread once the first window has painted (below, #526).
   migrateBeeDataToAntData();
 
   const defaultSession = session.defaultSession;
@@ -461,8 +471,9 @@ async function bootstrap() {
   installAntApiGuard();
   installRequestRewriter();
   // After the rewriter (which owns scheme/gateway rewriting) and before
-  // x402, so blocked requests never reach the payment flow.
-  installAdblockInterception();
+  // x402, so blocked requests never reach the payment flow. The landing gate
+  // is null unless the E2E harness armed it for this launch (#538).
+  installAdblockInterception({ engineLandingGate: adblockEngineLandingGate() });
   // Also installs the `onchain-app-guard` onBeforeRequest handler, which keeps
   // web content out of the `web3:` trust gate. Runs unconditionally — the test
   // harness owns the `web3:` bytes in test mode, but the guard is browser
@@ -568,6 +579,12 @@ async function bootstrap() {
   // manager) carries --open-settings; land its first tab on Profile settings.
   const coldStartUrl = process.argv.includes('--open-settings') ? PROFILE_SETTINGS_DEEPLINK : null;
   const mainWindow = createMainWindow(coldStartUrl);
+  // One-off big deletes wait until the window is up, so an upgrade never
+  // shows up as a slow launch (#526). Interrupted purges (quit before it
+  // finished) are picked up on the next launch.
+  mainWindow.once('ready-to-show', () => {
+    void purgeSetAsideBeeData({ logger: log });
+  });
 
   if (!TEST_MODE) {
     await promptForDefaultExternalCandidates(activeProfile, {

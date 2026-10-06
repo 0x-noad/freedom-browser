@@ -85,6 +85,14 @@ test.each(
   expect(router.request).not.toHaveBeenCalled();
 });
 
+// Ant v0.5.58+ asks for the chain id before every wallet scan and keys the
+// saved scan by it; the bridge serves Gnosis only, so it answers 100 itself.
+test('answers eth_chainId with Gnosis without routing', async () => {
+  const response = await post(bridge.url, rpc('eth_chainId', []));
+  expect(response).toEqual({ status: 200, body: { jsonrpc: '2.0', id: 7, result: '0x64' } });
+  expect(router.request).not.toHaveBeenCalled();
+});
+
 test.each([
   ['{', -32700],
   [[rpc()], -32600],
@@ -147,6 +155,7 @@ test('Ant reads are background work, and only the RPC quorum answers its log sca
     signal: expect.any(AbortSignal),
     background: true,
     excludeSources: ['myotis', 'colibri', 'direct'],
+    includeSources: ['blockscout'],
     quorumTimeoutMs: 30000,
     rankError: rankLogScanError,
     rangeCapOf: logScanRangeCap,
@@ -405,7 +414,7 @@ test('says once why log scans fail when no RPC quorum is configured (R1-M3)', as
   expect(log.warn.mock.calls.flat().join('\n')).not.toContain('none is configured');
 });
 
-test("Ant's shrink needles match v0.5.58 is_range_limit_error", () => {
+test("Ant's shrink needles match v0.5.59 is_range_limit_error", () => {
   expect(antShrinksLogScanOn('Query Timeout')).toBe(true);
   expect(antShrinksLogScanOn('Log response size exceeded')).toBe(true);
   expect(antShrinksLogScanOn('the method eth_getLogs does not exist/is not available')).toBe(false);

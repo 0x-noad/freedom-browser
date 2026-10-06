@@ -370,7 +370,7 @@
                   id="popup-blocked-allowed"
                   data-test="popup-blocked-allowed"
                 >
-                  Pop-ups are allowed on this site. Remove it in Settings &gt; Site Permissions.
+                  Pop-ups are allowed on this site. Remove it in Settings &gt; Privacy and security &gt; Site Permissions.
                 </div>
               </div>
             </div>
@@ -992,6 +992,7 @@
             <line x1="4" x2="20" y1="6" y2="6" vector-effect="non-scaling-stroke" />
             <line x1="4" x2="20" y1="18" y2="18" vector-effect="non-scaling-stroke" />
           </svg>
+          <span class="menu-button-badge" id="menu-update-badge" hidden></span>
         </button>
         <div id="menu-dropdown" class="menu-dropdown chrome-popover" role="menu">
           <!-- Group 0: Profiles -->
@@ -1142,8 +1143,20 @@
           <button id="about-btn" class="menu-item" type="button">
             <span class="menu-item-label">About Freedom</span>
           </button>
-          <button id="check-updates-btn" class="menu-item" type="button">
-            <span class="menu-item-label">Check for Updates…</span>
+          <!-- State-driven (#87): lib/update-status-ui.js rewrites the label,
+               the right-hand status and the progress bar from main's update
+               state. -->
+          <button
+            id="check-updates-btn"
+            class="menu-item update-menu-item"
+            type="button"
+            data-update-status="unsupported"
+          >
+            <span class="menu-item-label" id="update-menu-label">Check for Updates…</span>
+            <span class="menu-item-shortcut update-menu-status" id="update-menu-status" hidden></span>
+            <span class="update-menu-progress" id="update-menu-progress" hidden>
+              <span class="update-menu-progress-bar" id="update-menu-progress-bar"></span>
+            </span>
           </button>
         </div>
       </div>
@@ -3281,6 +3294,15 @@
 
                 <!-- Pick a plan -->
                 <div class="hidden" id="publish-setup-plans">
+                  <!-- Ant could not finish looking for storage the wallet owns -->
+                  <div class="swarm-connect-note hidden" id="publish-setup-plans-warning">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10" />
+                      <line x1="12" y1="8" x2="12" y2="12" />
+                      <line x1="12" y1="16" x2="12.01" y2="16" />
+                    </svg>
+                    <span id="publish-setup-plans-warning-text"></span>
+                  </div>
                   <p class="publish-setup-intro">
                     Pick a storage plan. You pay once, in xDAI: your Swarm node swaps it, buys the
                     storage and sets up its network payments.
@@ -3434,6 +3456,17 @@
                   Top Up Deposit
                 </button>
 
+                <!-- Ant is still looking for storage this wallet already owns -->
+                <p class="stamp-manager-intro hidden" id="stamp-scan-status"></p>
+                <!-- Ant could not finish looking for storage the wallet owns -->
+                <div class="swarm-connect-note hidden" id="stamp-scan-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                  </svg>
+                  <span id="stamp-scan-warning-text"></span>
+                </div>
                 <p class="stamp-manager-intro hidden" id="stamp-list-empty">
                   You have no storage yet. Buy a storage plan to publish on Swarm.
                 </p>

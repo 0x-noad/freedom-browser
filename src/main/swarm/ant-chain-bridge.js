@@ -22,7 +22,7 @@ const MAX_ERROR_MESSAGE = 500;
 // with room for the router's own handling.
 const LOG_SCAN_QUORUM_TIMEOUT_MS = 30000;
 
-// Ant v0.5.58 `is_range_limit_error` (crates/ant-chain/src/discover.rs,
+// Ant v0.5.59 `is_range_limit_error` (crates/ant-chain/src/discover.rs,
 // unchanged since v0.5.45): its eth_getLogs scan shrinks the window only when
 // the error message contains one of these needles, and aborts
 // owned-batch/chequebook recovery otherwise.
@@ -184,16 +184,20 @@ function logScanRangeCap(error, span = null) {
   return null;
 }
 
-// Router options for Ant's eth_getLogs (window-halving) scans. Only the RPC
-// quorum answers them: a log Ant does not receive is the one failure Ant
-// cannot detect (it re-reads every batch and chequebook it finds), so a scan
-// takes no single endpoint's word for a range, and there is no Direct tier.
-// Myotis serves no logs. Colibri proves only the logs it returns, not that
-// none are missing, and answers a range its RPC refuses ("Block range
-// 32059916 exceeds the maximum of 10000 blocks") with only the most recent
-// blocks' logs, so Ant would read a whole-history scan as empty (#496).
+// Router options for Ant's eth_getLogs (window-halving) scans. Only two
+// independent providers that agree answer them: the RPC quorum, or, for a
+// span wider than the quorum can verify, Blockscout's log index paired with
+// one RPC endpoint (#529, the router's blockscout source). A log Ant does not
+// receive is the one failure Ant cannot detect (it re-reads every batch and
+// chequebook it finds), so a scan takes no single endpoint's word for a
+// range, and there is no Direct tier. Myotis serves no logs. Colibri proves
+// only the logs it returns, not that none are missing, and answers a range
+// its RPC refuses ("Block range 32059916 exceeds the maximum of 10000
+// blocks") with only the most recent blocks' logs, so Ant would read a
+// whole-history scan as empty (#496).
 const LOG_SCAN_ROUTER_OPTIONS = Object.freeze({
   excludeSources: Object.freeze(['myotis', 'colibri', 'direct']),
+  includeSources: Object.freeze(['blockscout']),
   quorumTimeoutMs: LOG_SCAN_QUORUM_TIMEOUT_MS,
   rankError: rankLogScanError,
   rangeCapOf: logScanRangeCap,
@@ -352,6 +356,13 @@ async function startAntChainBridge({
       }
       id = request.id;
       method = request.method;
+      // The bridge serves one chain, so it answers the chain id itself. Ant
+      // v0.5.58+ keys its saved wallet scan by it and asks first; a refusal
+      // fails the scan before any log is read.
+      if (method === 'eth_chainId') {
+        send(res, 200, { jsonrpc: '2.0', id, result: `0x${CHAIN_ID.toString(16)}` });
+        return;
+      }
       if (!READ_METHODS.has(method) && !(allowBroadcast && method === 'eth_sendRawTransaction')) {
         fail(-32601, 'Method not available to Ant');
         return;
@@ -388,7 +399,7 @@ async function startAntChainBridge({
         return;
       }
       // No addresses, calldata, signed transactions, URLs or upstream messages.
-      const source = ['myotis', 'colibri', 'quorum', 'direct'].includes(answer.source)
+      const source = ['myotis', 'colibri', 'quorum', 'blockscout', 'direct'].includes(answer.source)
         ? answer.source
         : 'unknown';
       // One line per Ant chain read (hundreds during a startup scan): verbose
