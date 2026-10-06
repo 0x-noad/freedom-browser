@@ -5,10 +5,11 @@
  * On Node 24, `process.exit()` joins V8's background compiler threads without
  * disposing the isolate first; a Maglev/Sparkplug job parked waiting for a
  * main-thread GC at that moment never wakes, and the exit hangs forever at 0%
- * CPU (nodejs/node#64274). `npm run ant:download` printed "All downloads
- * complete.", called `process.exit(0)` and hung the macOS
- * e2e-onboarding-identity leg until its 20-minute job timeout in 6 of 1072
- * jobs between 2026-09-15 and 2026-10-06.
+ * CPU (nodejs/node#64274). The macOS e2e-onboarding-identity leg's
+ * `npm run ant:download` printed "All downloads complete." and then hung until
+ * the 20-minute job timeout in 6 of 1075 jobs between 2026-09-15 and
+ * 2026-10-06, with the script's `process.exit(0)` and npm's own explicit
+ * `process.exit()` the only exits in that process tree.
  *
  * Two checks: no `process.exit(` call survives in the scripts' code, and the
  * real fetch-ant.js, run end to end as a child process against a stand-in

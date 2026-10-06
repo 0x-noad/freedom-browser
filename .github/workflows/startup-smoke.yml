@@ -57,12 +57,14 @@ jobs:
         uses: ./.github/actions/install-playwright-deps
 
       - name: Download Ant (antd) binary
-        # Normally ~5 s. hang-watchdog fails the step after 5 min with a
-        # process table and stack samples instead of a silent 20-minute
-        # job cancel (#544); timeout-minutes is the backstop.
+        # Normally ~5 s. Run node directly, not `npm run ant:download`: npm
+        # ends itself with an unconditional process.exit(), the call that
+        # can hang forever on Node 24 (#544). hang-watchdog fails the step
+        # after 5 min with a process table and stack samples instead of a
+        # silent 20-minute job cancel; timeout-minutes is the backstop.
         timeout-minutes: 7
         shell: bash
-        run: bash scripts/ci/hang-watchdog.sh 300 npm run ant:download
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-ant.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
