@@ -16,7 +16,7 @@ const { MyotisProcess } = require('./myotis-process');
 const checkpointStore = require('./checkpoint-store');
 const seedPins = require('./seed-pins');
 const { acquireCheckpoint } = require('./checkpoint-verifier');
-const MYOTIS_VERSION = '0.1.13';
+const MYOTIS_VERSION = '0.1.14';
 const AVAILABILITY_POLL_MS = 1000;
 const STATUS_FRESH_MS = 6000;
 const STATUS_REQUEST_MS = 10000;
@@ -802,7 +802,7 @@ function publicStatus(chainId = 1) {
     supported,
     available,
     version: MYOTIS_VERSION,
-    abi: 36,
+    abi: 38,
     chainId: instance.chainId,
     network: instance.name,
     displayName: instance.displayName,

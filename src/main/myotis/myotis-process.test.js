@@ -130,7 +130,11 @@ describe('MyotisProcess', () => {
       optimisticBlockNumber: 25684159, elReaderAvailable: true, elHunting: false,
     };
     const status = processClient.request('status');
-    reply(child.send.mock.calls.at(-1)[0], { ...expected, engineLogs: 'private payload' });
+    // ABI 38's snap2ServingPeers is a subset of snapServingPeers (shown
+    // upstream, never gated on), and upgradeAdvisory is not surfaced yet:
+    // both stay out of the allowlist, so the snapshot keeps its exact shape.
+    reply(child.send.mock.calls.at(-1)[0], { ...expected, engineLogs: 'private payload', snap2ServingPeers: 1,
+      upgradeAdvisory: { phase: 'scheduled', activationTime: 0, forkId: '0x00000000', observedPeers: 3 } });
     await status;
     expect(callbacks.onStatus).toHaveBeenLastCalledWith(expected);
     for (const value of ['25684159', Infinity, NaN]) {
