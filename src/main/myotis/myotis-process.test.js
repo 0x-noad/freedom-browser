@@ -134,7 +134,7 @@ describe('MyotisProcess', () => {
     // upstream, never gated on), and upgradeAdvisory is not surfaced yet:
     // both stay out of the allowlist, so the snapshot keeps its exact shape.
     reply(child.send.mock.calls.at(-1)[0], { ...expected, engineLogs: 'private payload', snap2ServingPeers: 1,
-      upgradeAdvisory: { phase: 'scheduled', activationTime: 0, forkId: '0x00000000', observedPeers: 3 } });
+      upgradeAdvisory: { phase: 'SCHEDULED', activationTime: 0, forkId: '0x00000000', observedPeers: 3 } });
     await status;
     expect(callbacks.onStatus).toHaveBeenLastCalledWith(expected);
     for (const value of ['25684159', Infinity, NaN]) {
