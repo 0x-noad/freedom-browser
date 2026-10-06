@@ -62,7 +62,11 @@ source, `SOURCE_CAPABILITIES`, and consults it before trying a source
   direct RPC serves them. What depends on the request rather than the method
   is still refused by the source's adapter and reported as that source's
   failure: Myotis serves only the methods its addon version implements, at
-  `latest`, with the call fields it can honour.
+  `latest`, without state overrides or blob fields. Since v0.1.13 it takes the
+  whole call object and refuses a malformed or contradictory one itself; that
+  refusal (`-32602`), an infeasible call or estimate (`-32000`) and a rejected
+  send end the request like a revert does rather than moving to the next
+  source.
 - **Opt-in.** Blockscout is in no read order: only a caller that names it in
   `includeSources` (the bridge, for Ant's `eth_getLogs`) is routed to it,
   right before the quorum, and only while the read order keeps `quorum`. It
