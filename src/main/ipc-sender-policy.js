@@ -143,7 +143,6 @@ const INTERNAL_CHANNELS = [
 // freedomAPI methods wrapped in guardSettingsPage.
 const SETTINGS_CHANNELS = [
   'adblock:add-allowlist-host',
-  'app:get-version',
   'adblock:remove-allowlist-host',
   'permissions:revoke',
   'permissions:revoke-all',
@@ -154,6 +153,9 @@ const SETTINGS_CHANNELS = [
   'shortcuts:reset',
   'shortcuts:set-override',
   'tor:checkBinary',
+  'update:check',
+  'update:get-state',
+  'update:restart-and-install',
 ];
 
 // freedomAPI methods wrapped in guardProfileManagerPage.

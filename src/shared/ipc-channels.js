@@ -112,7 +112,6 @@ module.exports = {
 
   // App
   APP_SHOW_ABOUT: 'app:show-about',
-  APP_GET_VERSION: 'app:get-version',
   APP_RELAUNCH: 'app:relaunch',
 
   // Profiles

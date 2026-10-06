@@ -3,3 +3,4 @@
   - Chains, RPC Providers and Name Resolution under Settings > Networks
   - Startup toggles, Tor's included, and Swarm publishing under Settings > Nodes
   - Settings > Experimental renamed Advanced, holding only the Beta features
+  - Updates under Settings > About Freedom, its status row naming the running version

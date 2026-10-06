@@ -243,6 +243,35 @@ describe('settings hash routing', () => {
     }
   });
 
+  // The chrome's own links into Settings use the current routes, so none of
+  // them leans on the legacy map. #87's hamburger update row was written
+  // against the 14-item nav (`settings/updates`) and is the one a merge
+  // would most easily leave behind.
+  it('every freedom://settings/<route> the app opens is already canonical', () => {
+    const walk = (dir) =>
+      fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) return entry.name === 'node_modules' ? [] : walk(full);
+        return /\.js$/.test(entry.name) && !/\.test\.js$/.test(entry.name) ? [full] : [];
+      });
+    const root = path.join(__dirname, '..', '..');
+    const routes = new Map();
+    for (const file of walk(root)) {
+      // settings.js names the legacy addresses in the comments that explain them.
+      if (file.endsWith(path.join('pages', 'scripts', 'settings.js'))) continue;
+      const text = fs.readFileSync(file, 'utf8');
+      for (const [, route] of text.matchAll(/freedom:\/\/settings\/([a-z0-9/-]+)/gi)) {
+        routes.set(route, path.relative(root, file));
+      }
+    }
+    expect([...routes.keys()]).toEqual(expect.arrayContaining(['about/updates', 'networks/rpc']));
+    for (const [route, file] of routes) {
+      const { replaced, shown } = drive(`#${route}`);
+      expect([file, route, replaced]).toEqual([file, route, []]);
+      expect([file, shown]).toEqual([file, [route]]);
+    }
+  });
+
   // ── Deep links that were already right stay untouched ──────────────────
   it('leaves every section the page ships exactly as linked', () => {
     for (const section of shippedSections()) {
