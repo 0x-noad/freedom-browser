@@ -54,6 +54,8 @@ const {
   installAdblockInterception,
   registerAdblockIpc,
   _setFirstEngineHoldForTests,
+  _firstEngineHoldForTests,
+  isEngineReady,
   adblockRequestForDispatch,
   getCosmeticFilters,
   getScriptlets,
@@ -752,6 +754,46 @@ describe('scriptlets', () => {
     } finally {
       build.open();
       build.spy.mockRestore();
+    }
+  });
+
+  // #538: the E2E harness's landing gate. The build runs, but its engine is
+  // swapped in only once the gate opens, so a spec can see the first page
+  // waiting on the hold before letting the engine land.
+  test('an engine landing gate keeps the built first engine out until it opens', async () => {
+    const realBuild = engineBuildHost.buildEngine;
+    let markBuilt;
+    const built = new Promise((resolve) => (markBuilt = resolve));
+    const spy = jest.spyOn(engineBuildHost, 'buildEngine').mockImplementation(async (job) => {
+      const result = await realBuild(job);
+      markBuilt();
+      return result;
+    });
+    let open;
+    const gate = new Promise((resolve) => (open = resolve));
+    try {
+      _resetAdblockForTests();
+      registerAdblockIpc();
+      installAdblockInterception({ artifactsDir: dir, cacheDir: null, engineLandingGate: gate });
+      await built;
+      await settle();
+      expect(isEngineReady()).toBe(false);
+      expect(_firstEngineHoldForTests()).toEqual({ holding: true, held: 0 });
+
+      navigateTab(9, 'https://video.test/watch');
+      const held = adblockRequestForDispatch(
+        makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+      );
+      expect(typeof held?.then).toBe('function');
+      expect(_firstEngineHoldForTests()).toEqual({ holding: true, held: 1 });
+
+      open();
+      await expect(held).resolves.toEqual({ cancel: true });
+      expect(isEngineReady()).toBe(true);
+      expect(_firstEngineHoldForTests()).toEqual({ holding: false, held: 1 });
+    } finally {
+      open();
+      spy.mockRestore();
     }
   });
 
