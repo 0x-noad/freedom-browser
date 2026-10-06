@@ -57,7 +57,12 @@ jobs:
         uses: ./.github/actions/install-playwright-deps
 
       - name: Download Ant (antd) binary
-        run: npm run ant:download
+        # Normally ~5 s. hang-watchdog fails the step after 5 min with a
+        # process table and stack samples instead of a silent 20-minute
+        # job cancel (#544); timeout-minutes is the backstop.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 npm run ant:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
 

@@ -277,11 +277,19 @@ async function main() {
     }
 
     console.log('All downloads complete.');
-    process.exit(0);
   } catch (err) {
     console.error('Error:', err);
-    process.exit(1);
+    process.exitCode = 1;
   }
+  // No process.exit() here, on either path (#544): Node 24's process.exit()
+  // joins V8's background compiler threads without tearing the isolate down,
+  // and a Maglev/Sparkplug job parked waiting for a main-thread GC at that
+  // moment never wakes, so the exit hangs forever at 0% CPU
+  // (nodejs/node#64274, fix pending in nodejs/node#66171). That hung this
+  // step on macOS CI in ~0.5% of runs, after "All downloads complete." was
+  // already printed. Returning lets the process end the normal way, which
+  // disposes the isolate first; nothing here holds the event loop open (the
+  // deadline timers are unref'd and keep-alive sockets do not ref the loop).
 }
 
 if (require.main === module) {
