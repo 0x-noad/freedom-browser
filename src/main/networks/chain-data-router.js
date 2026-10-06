@@ -212,6 +212,14 @@ const LOG_INDEX_DISAGREEMENT_COOLDOWN_MS = 5 * 60_000;
 const LOG_INDEX_ABORT_COOLDOWN_MS = 60_000;
 // chainId -> time until which the blockscout source is not asked.
 const logIndexCoolUntil = new Map();
+// How long an RPC endpoint is not asked to be Blockscout's pair after it
+// answered a span with an entry not in the exact shape Ant reads: every wide
+// window would otherwise re-spend a full-span eth_getLogs on it only to fall
+// through to the quorum again.
+const LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS = 30 * 60_000;
+// `${chainId}|${url}` -> time until which that endpoint is not a pair.
+const logIndexPairCoolUntil = new Map();
+const logIndexPairKey = (chainId, url) => `${chainId}|${url}`;
 
 class SourceUnavailableError extends Error {
   constructor(message, failureKind = null) {
@@ -439,6 +447,7 @@ function clearAdaptiveRoutingForTest() {
   colibriInFlightByRoute.clear();
   logRangeState.clear();
   logIndexCoolUntil.clear();
+  logIndexPairCoolUntil.clear();
 }
 
 function blockNumberOf(value) {
@@ -1378,6 +1387,11 @@ async function requestQuorum(chainId, method, params, options = {}) {
     }
     return lastError || new SourceUnavailableError(`No RPC quorum available for ${method}`);
   };
+  // `endsAt` (a Date.now() instant) caps the rounds together rather than
+  // each: a later round runs only on what is left of it, and not at all once
+  // less than the configured quorum timeout is left (requestQuorumRound never
+  // runs a round shorter than that).
+  const { endsAt = null } = options;
   let asked = null;
   let lastError = null;
   for (let round = 1; round <= LOG_SCAN_QUORUM_ROUNDS; round += 1) {
@@ -1386,8 +1400,14 @@ async function requestQuorum(chainId, method, params, options = {}) {
       .filter((url) => servableLogSpan(chainId, url, now) >= logRange.span)
       .slice(0, k);
     if (urls.length < m || (asked && urls.every((url) => asked.includes(url)))) break;
+    let roundOptions = options;
+    if (endsAt !== null && round > 1) {
+      const leftMs = endsAt - now;
+      if (leftMs < configuredSourceTimeoutMs(chainId)) break;
+      roundOptions = { ...options, quorumTimeoutMs: leftMs };
+    }
     try {
-      return await askQuorum(urls);
+      return await requestQuorumRound(chainId, method, params, { ...roundOptions, keeper, urls });
     } catch (err) {
       asked = urls;
       lastError = err;
@@ -1445,7 +1465,11 @@ async function requestLogIndex(chainId, method, params, options = {}) {
   const tail = Math.min(quorumSpan, LOG_INDEX_TAIL_BLOCKS);
   const pairTo = filter.toBlock - tail;
   const pairSpan = pairTo - filter.fromBlock + 1;
-  const pairUrls = endpoints.filter((url) => servableLogSpan(chainId, url, now) >= pairSpan);
+  const pairUrls = endpoints.filter(
+    (url) =>
+      servableLogSpan(chainId, url, now) >= pairSpan &&
+      (logIndexPairCoolUntil.get(logIndexPairKey(chainId, url)) || 0) <= now
+  );
   if (!pairUrls.length) {
     throw new SourceUnavailableError('no RPC endpoint serves this span to compare Blockscout with');
   }
@@ -1453,9 +1477,10 @@ async function requestLogIndex(chainId, method, params, options = {}) {
   // One budget (the caller's widened quorum budget) covers the whole source:
   // the pair (the RPC, then every Blockscout page) runs inside it less the
   // configured quorum timeout, which is held back for the newest blocks'
-  // quorum (requestQuorum never runs one shorter than that). So the source
-  // costs at most one quorum budget before the quorum after it is asked,
-  // inside the bridge's own deadline.
+  // quorum (requestQuorum never runs one shorter than that), and that quorum's
+  // rounds share what is left (endsAt). So the source costs at most one
+  // quorum budget before the quorum after it is asked, inside the bridge's own
+  // deadline.
   const configuredMs = configuredSourceTimeoutMs(chainId);
   const budgetMs = Math.max(configuredMs, Number(quorumTimeoutMs) || 0);
   const startedAt = Date.now();
@@ -1465,20 +1490,36 @@ async function requestLogIndex(chainId, method, params, options = {}) {
     if (left < 1000) throw new SourceUnavailableError('Blockscout pairing ran out of time');
     return left;
   };
+  // The RPC's entries are what Ant gets: an answer with one not in the exact
+  // shape Ant reads is not taken (nor credited as covering the span); that
+  // endpoint is not asked to pair again for a while
+  // (LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS) and the next one is tried. No
+  // Blockscout request is spent on it, and Blockscout, not at fault, is not
+  // left alone for it.
   const askPairRpc = async () => {
     let lastError;
     for (const url of pairUrls) {
       signal?.throwIfAborted();
+      let result;
       try {
-        const result = await requestRpcUrl(url, method, pairParams, remainingMs(), { signal });
-        noteLogRangeAnswer(chainId, url, pairSpan);
-        return { url, result };
+        result = await requestRpcUrl(url, method, pairParams, remainingMs(), { signal });
       } catch (err) {
         signal?.throwIfAborted();
         if (err instanceof SourceUnavailableError) throw err;
         lastError = err;
         noteLogRangeFailure(chainId, url, pairSpan, err, logRange, Date.now());
+        continue;
       }
+      if (!blockscoutLogs.rpcTransferLogsWellFormed(result)) {
+        logIndexPairCoolUntil.set(
+          logIndexPairKey(chainId, url),
+          Date.now() + LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS
+        );
+        lastError = new Error(`${endpointHost(url)} answered the span with a malformed log entry`);
+        continue;
+      }
+      noteLogRangeAnswer(chainId, url, pairSpan);
+      return { url, result };
     }
     throw lastError;
   };
@@ -1526,6 +1567,7 @@ async function requestLogIndex(chainId, method, params, options = {}) {
       [{ ...params[0], fromBlock: blockHex(pairTo + 1) }],
       {
         quorumTimeoutMs: Math.max(configuredMs, leftMs()),
+        endsAt: startedAt + budgetMs,
         keeper: createErrorKeeper(logRange.rank),
         logRange: { ...logRange, span: tail },
       }
@@ -1539,6 +1581,13 @@ async function requestLogIndex(chainId, method, params, options = {}) {
   signal?.throwIfAborted();
   if (!Array.isArray(newest)) {
     throw new SourceUnavailableError('RPC quorum answered the newest blocks without a log list');
+  }
+  // The quorum's entries reach Ant too, and agreement alone does not make
+  // them well formed: they meet the same shape as the pair's.
+  if (!blockscoutLogs.rpcTransferLogsWellFormed(newest)) {
+    throw new SourceUnavailableError(
+      `RPC quorum answered the newest ${tail} blocks with a malformed log entry`
+    );
   }
   const result = [...rpc.result, ...newest];
   if (!includeTrust) return result;
@@ -2103,5 +2152,6 @@ module.exports = {
   LOG_SCAN_COOLDOWN_MS,
   LOG_INDEX_TAIL_BLOCKS,
   LOG_INDEX_DISAGREEMENT_COOLDOWN_MS,
+  LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS,
   clearAdaptiveRoutingForTest,
 };
