@@ -774,10 +774,22 @@
         line-height: 1.45;
       }
 
-      .profile-node-actions {
-        display: flex;
-        justify-content: flex-end;
-        margin-top: 8px;
+      /* Nodes commit on change (#271): a row that could not be saved — an
+         external switch with an empty endpoint, or one the main process
+         refused — says so inline and flags the field. */
+      .profile-node-error {
+        margin: 0;
+        color: var(--danger);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .profile-node-error[hidden] {
+        display: none;
+      }
+
+      .profile-node-field .rpc-input[aria-invalid='true'] {
+        border-color: var(--danger);
       }
 
       .btn.danger {
