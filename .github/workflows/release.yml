@@ -1352,6 +1352,14 @@ jobs:
 
       # No --no-sandbox here: Windows needs no sandbox opt-out, and passing one
       # would smoke-test a configuration no user runs.
+      # The runner has the Visual C++ Redistributable in System32, so the smoke
+      # test below would pass even if the package depended on it; a clean
+      # Windows 11 does not have it (#563). Read the installed binaries' import
+      # tables instead: whatever imports the runtime must ship it beside itself
+      # (scripts/after-pack.js places it).
+      - name: Assert the installed package ships the VC++ runtime it needs
+        run: node scripts/win-vcruntime.js --check "$(cygpath -w "$(dirname "$(cygpath -u "$FREEDOM_INSTALLED_EXE")")")"
+
       - name: Smoke-test the installed package
         env:
           FREEDOM_E2E_EXECUTABLE: ${{ env.FREEDOM_INSTALLED_EXE }}
@@ -1389,6 +1397,9 @@ jobs:
             exit 1
           fi
           echo "Bundled arti.exe present ($(stat -c %s "$arti") bytes)"
+
+      - name: Assert the portable zip ships the VC++ runtime it needs
+        run: node scripts/win-vcruntime.js --check "$(cygpath -w "$(dirname "$(cygpath -u "$FREEDOM_PORTABLE_EXE")")")"
 
       - name: Smoke-test the portable zip
         env:
