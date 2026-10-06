@@ -27,6 +27,13 @@
 // requests fail with HistorySearchTimeout and the next request respawns.
 // Node always reports `online`, `error` or `exit`, so the bound is only a
 // safety net for the "every request settles" promise above.
+//
+// A caller's worst-case wait for one request is therefore
+// WORKER_START_TIMEOUT_MS plus REQUEST_TIMEOUT_MS (up to 40 s) when it is
+// posted to a worker that is still starting, not REQUEST_TIMEOUT_MS alone —
+// the History page can spin that long before it errors. Once the worker is
+// online the request's own timer runs from when it was posted, so time spent
+// behind other requests in the worker counts against it.
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const log = require('./logger');
@@ -156,7 +163,9 @@ function spawn(dbPath) {
  * @param {'autocomplete'|'page'} op
  * @param {object} payload - `{ query }` or `{ options }`
  * @returns {Promise<any>} rejects with HistorySearchUnavailable when the
- *   caller should answer on the main thread instead
+ *   caller should answer on the main thread instead, or HistorySearchTimeout.
+ *   Settles within REQUEST_TIMEOUT_MS of the worker being online, so up to
+ *   WORKER_START_TIMEOUT_MS + REQUEST_TIMEOUT_MS on a worker still starting.
  */
 function runInWorker(dbPath, op, payload) {
   if (disabled) {
