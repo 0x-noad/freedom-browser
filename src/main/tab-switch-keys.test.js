@@ -214,23 +214,40 @@ describe('a Settings > Shortcuts recording', () => {
     expect(chromeWindow.webContents.send).toHaveBeenCalledTimes(2);
   });
 
-  test('is disarmed when the page navigates away or goes away', () => {
-    const { mod, settingsPage } = setup();
+  test('is disarmed when the page is replaced or goes away', () => {
+    const { mod, chromeWindow, settingsPage } = setup();
+    const LISTENED = ['did-navigate', 'did-fail-load', 'destroyed'];
 
     mod.setShortcutRecording(settingsPage, true);
-    // Its own #hash routing and a subframe load keep it armed…
-    settingsPage.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
-    settingsPage.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
-    expect(mod._isRecording(settingsPage.id)).toBe(true);
-    // …a real main-frame navigation does not.
+    // A main-frame navigation that starts but never commits (Stop, a link
+    // that becomes a download, an external-protocol link) leaves the page
+    // and its armed recorder in place, so the chord still reaches it.
     settingsPage.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    settingsPage.emit('did-fail-load', {}, -3, 'ERR_ABORTED', 'https://x.test/a.zip', true);
+    // Its own #hash routing and a subframe's failed load keep it armed too.
+    settingsPage.emit('did-navigate-in-page', {}, 'file:///settings.html#shortcuts', true);
+    settingsPage.emit('did-fail-load', {}, -105, 'ERR_NAME_NOT_RESOLVED', 'https://x.test/', false);
+    expect(mod._isRecording(settingsPage.id)).toBe(true);
+    expect(press(settingsPage, CMD_OPT_RIGHT).preventDefault).not.toHaveBeenCalled();
+    expect(chromeWindow.webContents.send).not.toHaveBeenCalled();
+
+    // A committed main-frame cross-document navigation disarms.
+    settingsPage.emit('did-navigate', {}, 'https://example.test/', 200, 'OK');
     expect(mod._isRecording(settingsPage.id)).toBe(false);
-    expect(settingsPage.listenerCount('did-start-navigation')).toBe(0);
-    expect(settingsPage.listenerCount('destroyed')).toBe(0);
+    for (const name of LISTENED) expect(settingsPage.listenerCount(name)).toBe(0);
+    expect(press(settingsPage, CMD_OPT_RIGHT).preventDefault).toHaveBeenCalled();
+
+    // So does an error page committed over it (a main-frame failure other
+    // than ERR_ABORTED).
+    mod.setShortcutRecording(settingsPage, true);
+    settingsPage.emit('did-fail-load', {}, -105, 'ERR_NAME_NOT_RESOLVED', 'https://x.test/', true);
+    expect(mod._isRecording(settingsPage.id)).toBe(false);
+    for (const name of LISTENED) expect(settingsPage.listenerCount(name)).toBe(0);
 
     mod.setShortcutRecording(settingsPage, true);
     settingsPage.emit('destroyed');
     expect(mod._isRecording(settingsPage.id)).toBe(false);
+    for (const name of LISTENED) expect(settingsPage.listenerCount(name)).toBe(0);
   });
 
   test('re-arming does not stack listeners', () => {
@@ -240,8 +257,9 @@ describe('a Settings > Shortcuts recording', () => {
       mod.setShortcutRecording(settingsPage, true);
       mod.setShortcutRecording(settingsPage, false);
     }
-    expect(settingsPage.listenerCount('did-start-navigation')).toBe(0);
-    expect(settingsPage.listenerCount('destroyed')).toBe(0);
+    for (const name of ['did-navigate', 'did-fail-load', 'destroyed']) {
+      expect(settingsPage.listenerCount(name)).toBe(0);
+    }
   });
 
   test('is set through the shortcuts:set-recording IPC from the sender', () => {

@@ -58,6 +58,9 @@ const TAB_SWITCH_SHORTCUTS = [
 // recording armed.
 const recordingContents = new Map();
 
+// net::ERR_ABORTED: a navigation cancelled before it committed.
+const ERR_ABORTED = -3;
+
 const currentOverrides = () => {
   try {
     return loadSettings()?.shortcutOverrides || {};
@@ -135,21 +138,28 @@ function setShortcutRecording(contents, recording) {
     return;
   }
   if (recordingContents.has(id)) return;
-  // Electron passes a details object first and the legacy positional
-  // arguments after it; only a cross-document main-frame navigation leaves
-  // the settings page (its own #hash routing does not).
-  const onNavigate = (details, _url, legacyInPlace, legacyIsMainFrame) => {
-    const isMainFrame = details?.isMainFrame ?? legacyIsMainFrame;
-    const isSameDocument = details?.isSameDocument ?? legacyInPlace;
-    if (isMainFrame !== false && !isSameDocument) disarm();
+  // Disarm only once the settings page has actually been replaced, i.e. on
+  // a main-frame cross-document *commit* — not when a navigation merely
+  // starts. A navigation that starts but never commits (Stop, a link that
+  // turns into a download, an external-protocol link) leaves the page — and
+  // its armed recorder — in place, so the chords must keep reaching it.
+  // `did-navigate` is main-frame and cross-document only (its own #hash
+  // routing fires `did-navigate-in-page` instead). A failed navigation that
+  // commits an error page over the settings page reports `did-fail-load`
+  // instead of `did-navigate`; that also unloads the page, unless the error
+  // is ERR_ABORTED (-3), which is exactly the never-committed case above.
+  const onFailLoad = (_event, errorCode, _description, _url, isMainFrame) => {
+    if (isMainFrame && errorCode !== ERR_ABORTED) disarm();
   };
   const disarm = () => {
     recordingContents.delete(id);
-    contents.removeListener?.('did-start-navigation', onNavigate);
+    contents.removeListener?.('did-navigate', disarm);
+    contents.removeListener?.('did-fail-load', onFailLoad);
     contents.removeListener?.('destroyed', disarm);
   };
   recordingContents.set(id, disarm);
-  contents.on?.('did-start-navigation', onNavigate);
+  contents.on?.('did-navigate', disarm);
+  contents.on?.('did-fail-load', onFailLoad);
   contents.once?.('destroyed', disarm);
 }
 
