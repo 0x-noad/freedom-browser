@@ -480,7 +480,6 @@ describe('bookmarks-ui', () => {
     await ctx.mod.updateBookmarkButtonVisibility();
     expect(ctx.elements.addBookmarkBtn.classList.contains('hidden')).toBe(false);
 
-
     // Onchain apps are bookmarkable like every other native scheme — the
     // address bar carries the standard `web3://<contract>:<chainId>` form,
     // not the internal `.eip155-<chainId>` origin.
@@ -648,10 +647,6 @@ describe('bookmarks-ui', () => {
     expect(ctx.menuBackdropMocks.hideMenuBackdrop).toHaveBeenCalled();
   });
 
-  // #307: the bar handled a plain left click and nothing else. Ctrl/Cmd+click
-  // navigated the page the user was reading away, and middle-click did nothing
-  // at all — the two gestures Chrome uses for "open that in the background and
-  // leave me where I am".
   describe('file:// pages (#555)', () => {
     const LOCAL = 'file:///Users/me/Downloads/ens-website-test.html';
 
@@ -729,6 +724,10 @@ describe('bookmarks-ui', () => {
     });
   });
 
+  // #307: the bar handled a plain left click and nothing else. Ctrl/Cmd+click
+  // navigated the page the user was reading away, and middle-click did nothing
+  // at all — the two gestures Chrome uses for "open that in the background and
+  // leave me where I am".
   describe('activation dispositions', () => {
     const setupBar = async (extra = {}) => {
       const onLoadTarget = jest.fn();
