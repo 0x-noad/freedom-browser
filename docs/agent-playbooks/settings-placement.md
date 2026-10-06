@@ -42,7 +42,12 @@ implements it. Settings has ten entries, and a new setting joins one of them:
 | **About Freedom**        | Version, updates, licences, links                                                                                                                                                |                                                            |
 
 If a setting seems to fit two entries, ask which screen a user would open to
-change it, and put it there. Don't split one feature across both.
+change it, and put it there. Don't split one feature's controls across both.
+The one standing exception is start-up: every bundled node's "start when
+Freedom opens" toggle sits together in Nodes → Startup, even when the feature
+itself is Beta and enabled from Advanced (Tor is enabled in Advanced and
+started at launch from Nodes → Startup; the Beta Ethereum and Gnosis node
+start-up rows live in Startup with their badges).
 
 ## 3. Adding an entry or a panel
 
@@ -50,12 +55,16 @@ change it, and put it there. Don't split one feature across both.
   issue. The default is a **panel** under an existing entry:
   `<section class="section panel" id="<panel>" data-nav="<entry>">`. That
   makes it reachable as `#<entry>/<panel>` and keeps it in the entry's scroll.
-- Never a nav entry that holds a single control.
+- Don't add a new nav entry for a single control; put it in a panel under the
+  closest existing entry. (Downloads holds one control today. It is an
+  established entry kept for discoverability, not a precedent.)
 - When a new bundled node arrives, it gets a row in the Nodes panel and one in
   Startup, with the same name in both.
-- A Beta feature lives in Advanced with the `.resolver-badge` Beta badge,
-  never "(Beta)" in the label. When it graduates, the same PR that drops the
-  badge moves its rows to their home entry (§2) and adds the old hash to
+- A Beta feature's enable and configuration rows live in Advanced, with the
+  `.resolver-badge` Beta badge, never "(Beta)" in the label. Its start-at-launch
+  toggle, if it has one, still goes in Nodes → Startup beside its siblings,
+  badged the same way (§2). When it graduates, the same PR that drops the badge
+  moves its rows to their home entry (§2) and adds the old hash to
   `LEGACY_ROUTES`.
 
 ## 4. One feature, one place, one name
@@ -87,6 +96,10 @@ change it, and put it there. Don't split one feature across both.
   Validate inline, and never commit an invalid or half-finished value: a mode
   switch that needs an endpoint waits until the endpoint is valid, and the
   stored config stays as it was until then.
+- The exception is a form that **creates or edits an item** from several
+  fields at once (Search's custom-provider form). It keeps explicit
+  Save/Cancel (`#save-search-provider`), because a half-typed new item must
+  not exist yet. Apply-on-change covers preferences, not item editors.
 - If a change only takes effect after a restart, or after a node restarts, say
   so on the row.
 
