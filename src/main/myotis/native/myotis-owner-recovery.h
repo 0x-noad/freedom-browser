@@ -94,11 +94,15 @@ static owner_file owner_open_mode(const owner_path_char *directory, const char *
 #ifdef __APPLE__
   local = local && (filesystem.f_flags & MNT_LOCAL);
 #else
-  /* ext, XFS, Btrfs, tmpfs, overlay, F2FS, ZFS. Unknown/remote filesystems
-   * retain the existing ownership block rather than assuming locality. */
+  /* ext2/3/4, XFS, Btrfs, tmpfs, overlay, F2FS, ZFS, eCryptfs (Ubuntu's
+   * encrypted home), bcachefs, JFS, ReiserFS, NILFS2 (linux/magic.h, statfs(2)).
+   * Unknown/remote filesystems retain the existing ownership block rather
+   * than assuming locality. */
   unsigned long type = (unsigned long)filesystem.f_type;
   local = local && (type == 0xef53 || type == 0x58465342 || type == 0x9123683e ||
-    type == 0x01021994 || type == 0x794c7630 || type == 0xf2f52010 || type == 0x2fc12fc1);
+    type == 0x01021994 || type == 0x794c7630 || type == 0xf2f52010 || type == 0x2fc12fc1 ||
+    type == 0xf15f || type == 0xca451a4e || type == 0x3153464a || type == 0x52654973 ||
+    type == 0x3434);
 #endif
   if (!local) { close(dir); return OWNER_BAD; }
   int file = openat(dir, name, (readonly ? O_RDONLY : O_RDWR) | O_NOFOLLOW | O_NONBLOCK | (create ? O_CREAT : 0), 0600);
@@ -133,10 +137,25 @@ static int boot_identity(char host[64], char boot[64]) {
   FARPROC address = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation");
   query_system_fn query; memcpy(&query, &address, sizeof(query));
   if (!query) return -1;
+  /* The process table grows with process *and* thread count (~12k threads
+   * already exceed 1 MiB). Retry on STATUS_INFO_LENGTH_MISMATCH with the
+   * reported size plus headroom for processes started in between, bounded
+   * so a hostile/odd answer cannot drive an unbounded allocation. */
   ULONG capacity = 1024 * 1024, used = 0;
-  unsigned char *buffer = (unsigned char *)malloc(capacity);
-  if (!buffer) return -1;
-  NTSTATUS status = query(SystemProcessInformation, buffer, capacity, &used);
+  unsigned char *buffer = NULL;
+  NTSTATUS status = (NTSTATUS)0xC0000004L;
+  for (int attempt = 0; attempt < 8 && status == (NTSTATUS)0xC0000004L; attempt++) {
+    free(buffer);
+    buffer = (unsigned char *)malloc(capacity);
+    if (!buffer) return -1;
+    used = 0;
+    status = query(SystemProcessInformation, buffer, capacity, &used);
+    if (status == (NTSTATUS)0xC0000004L) {
+      ULONG wanted = used > capacity ? used : capacity;
+      if (wanted > 256u * 1024 * 1024 - 1024 * 1024) { free(buffer); return -1; }
+      capacity = wanted + wanted / 4 + 64 * 1024;
+    }
+  }
   if (status < 0 || used > capacity) { free(buffer); return -1; }
   ULONGLONG created = 0;
   /* SYSTEM_PROCESS_INFORMATION's public Reserved1 contains the three times:

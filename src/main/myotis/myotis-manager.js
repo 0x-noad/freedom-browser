@@ -463,7 +463,7 @@ function recoverCheckpoint(instance, { resetAttempts = false } = {}) {
         instance.retiring = null;
         if (!currentRun(instance, token)) return false;
         if (!exited || !previous.exited) {
-          failRecovery(instance, 'ownership');
+          failRecovery(instance, stopFailureReason(previous));
           return false;
         }
       }
@@ -504,6 +504,12 @@ function recoverCheckpoint(instance, { resetAttempts = false } = {}) {
   return pending;
 }
 
+// A stop that could not confirm the old child's exit stays blocked; when the
+// native helper said only a computer restart can prove it, say so.
+function stopFailureReason(client) {
+  return client?.recoveryFailureCode === 'CHECKPOINT_REBOOT_REQUIRED' ? 'reboot-required' : 'ownership';
+}
+
 // Ordinary process or peer failures do not require a different checkpoint.
 // Retry the authenticated generation; its native stale guard can then request
 // checkpoint recovery if the anchor really has expired.
@@ -527,7 +533,7 @@ function restartOwnedState(instance, { repair = false } = {}) {
         instance.retiring = null;
         if (!currentRun(instance, token)) return false;
         if (!exited || !previous.exited) {
-          failRecovery(instance, 'ownership');
+          failRecovery(instance, stopFailureReason(previous));
           return false;
         }
       }
@@ -858,7 +864,7 @@ async function recoveryHelp(event, chainId = 1) {
   const reason = status.recovery?.reason;
   const guidance = {
     'reboot-required': 'Save your work, restart the computer, then reopen Freedom. Freedom has recorded the interrupted node state and will recover after it confirms a new system boot. Old sync data will be kept. Restarting Freedom alone is not enough.',
-    ownership: 'Close other Freedom instances, then choose Retry sync in Nodes. Freedom will tell you if a computer restart is needed to recover the node. If it still cannot confirm that the previous node stopped, contact Freedom support with the details below. Do not delete the sync folder or ownership files to force a restart.',
+    ownership: 'Close other Freedom instances, then choose Retry sync in Nodes. Freedom will tell you if a computer restart is needed to recover the node. If it still cannot confirm that the previous node stopped (for example, sync data on a network drive), contact Freedom support with the details below. Do not delete the sync folder or ownership files to force a restart.',
     storage: 'Choose Repair sync data in Nodes to start again while keeping the old data. If repair fails, contact Freedom support with the details below. Repair cannot bypass an unconfirmed node exit or unsafe filesystem entries.',
     'storage-io': 'Check free disk space and that Freedom can write to its data folder, then choose Retry sync in Nodes. If this keeps happening, contact Freedom support with the details below.',
     installation: 'Update or reinstall Freedom from its official release. Your profile does not need to be deleted. If this keeps happening, contact Freedom support with the details below.',

@@ -321,10 +321,17 @@ class MyotisProcess {
     // supervisor path/environment defined here. It never scans or kills PIDs.
     const { recoverOwner } = require('./ownership-recovery');
     const pending = recoverOwner(this.dataDir).then(() => {
+      this.recoveryFailureCode = null;
       this.report('exit-recovered');
       this.didExit();
       return true;
-    }, () => false);
+    }, (error) => {
+      // Keep the helper's verdict so a failed stop can say "restart the
+      // computer" rather than collapsing every refusal into ownership.
+      this.recoveryFailureCode = error?.code === 'CHECKPOINT_REBOOT_REQUIRED'
+        ? 'CHECKPOINT_REBOOT_REQUIRED' : 'CHECKPOINT_OWNERSHIP';
+      return false;
+    });
     this.recoveryExitPromise = pending;
     pending.finally(() => {
       if (this.recoveryExitPromise === pending) this.recoveryExitPromise = null;

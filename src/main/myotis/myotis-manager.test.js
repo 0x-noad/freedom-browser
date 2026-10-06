@@ -682,6 +682,29 @@ describe('myotis-manager', () => {
     expect(ctx.clients).toHaveLength(0);
   });
 
+  test.each([['checkpoint', 'reboot-required'], ['restart', 'reboot-required'], ['restart', 'ownership']])(
+    'a failed %s stop reports the native helper verdict (%s)', async (path, reason) => {
+      const ctx = loadManager();
+      let resolveProof;
+      if (path === 'checkpoint') {
+        ctx.acquireCheckpoint.mockImplementation(() => new Promise(resolve => { resolveProof = resolve; }));
+        ctx.status.beaconState = 'STALE_ANCHOR';
+      }
+      await ctx.mod.startMyotis({ chainId: 100 });
+      ctx.clients[0].stop.mockResolvedValue(false);
+      ctx.clients[0].recoveryFailureCode = reason === 'reboot-required' ? 'CHECKPOINT_REBOOT_REQUIRED' : 'CHECKPOINT_OWNERSHIP';
+      if (path === 'checkpoint') {
+        resolveProof(checkpoint); await flush();
+      } else {
+        ctx.clients[0].options.onUnavailable('native failure');
+        ctx.mod.registerMyotisIpc();
+        ctx.ipcMain.handlers.get(IPC.MYOTIS_RETRY_CHECKPOINT)(ctx.event, 100); await flush();
+      }
+      expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'blocked', reason });
+      expect(ctx.store.replaceCheckpoint).not.toHaveBeenCalled();
+      expect(ctx.clients).toHaveLength(1);
+    });
+
   test('repair never replaces storage while its native child has unconfirmed exit', async () => {
     const ctx = loadManager(); await ctx.mod.startMyotis({ chainId: 100 });
     ctx.clients[0].options.onUnavailable('mismatch', 'CHECKPOINT_STORAGE');

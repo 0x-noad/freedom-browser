@@ -76,11 +76,16 @@ pointer publication remains recoverable without resuming the old snapshot.
 ## Platform evidence
 
 - Linux: `/etc/machine-id` plus `/proc/sys/kernel/random/boot_id`. Recovery
-  accepts a bounded list of local filesystem types, not NFS/CIFS/unknown types.
+  (both the lifetime lease and this fallback) accepts a bounded list of local
+  filesystem types — ext2/3/4, XFS, Btrfs, tmpfs, overlayfs, F2FS, ZFS,
+  eCryptfs, bcachefs, JFS, ReiserFS and NILFS2 — not NFS/CIFS/FUSE/unknown
+  types. A profile on any other filesystem stays blocked as in 0.8.6, with the
+  ownership message rather than restart advice.
 - macOS: `gethostuuid` plus `kern.bootsessionuuid`, on `MNT_LOCAL` storage.
   The boot session UUID survives sleep/wake/hibernate.
 - Windows: the installation's `MachineGuid` plus the kernel System process
-  (PID 4) creation time from `NtQuerySystemInformation`. That process's
+  (PID 4) creation time from `NtQuerySystemInformation` (the process-table
+  buffer grows on `STATUS_INFO_LENGTH_MISMATCH`, bounded at 256 MiB). That process's
   creation time is fixed for the lifetime of the kernel; this is **not**
   wall-clock time minus uptime. It follows the Windows boot identification
   approach in the [OCSF CPID specification](https://github.com/ocsf/common-process-id/blob/main/specification.md#windows).

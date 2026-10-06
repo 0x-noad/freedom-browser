@@ -333,6 +333,20 @@ describe('MyotisProcess', () => {
     expect(child.kill).not.toHaveBeenCalled();
   });
 
+  test('keeps the native helper verdict when exit recovery is refused', async () => {
+    ready();
+    recoverOwner.mockRejectedValue(Object.assign(new Error('reboot'), { code: 'CHECKPOINT_REBOOT_REQUIRED' }));
+    child.emit('exit', null, 'SIGKILL'); child.stdout.emit('end');
+    await expect(processClient.stop()).resolves.toBe(false);
+    expect(processClient.recoveryFailureCode).toBe('CHECKPOINT_REBOOT_REQUIRED');
+    recoverOwner.mockRejectedValue(Object.assign(new Error('owned'), { code: 'CHECKPOINT_OWNERSHIP' }));
+    await expect(processClient.stop()).resolves.toBe(false);
+    expect(processClient.recoveryFailureCode).toBe('CHECKPOINT_OWNERSHIP');
+    recoverOwner.mockRejectedValue(new Error('spawn failed'));
+    await expect(processClient.stop()).resolves.toBe(false);
+    expect(processClient.recoveryFailureCode).toBe('CHECKPOINT_OWNERSHIP');
+  });
+
   test('reconciles a lost terminal report using native proof after supervisor exit', async () => {
     ready();
     recoverOwner.mockResolvedValue();
