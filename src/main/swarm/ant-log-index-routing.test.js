@@ -413,6 +413,36 @@ describe('Blockscout is a shortcut: anything wrong falls back to the quorum path
     expect(Date.now() - started).toBeLessThanOrEqual(LOG_SCAN_ROUTER_OPTIONS.quorumTimeoutMs + 100);
   });
 
+  test("the newest blocks' quorum rounds share one budget: no second round past it", async () => {
+    let tailHangs = false;
+    const hangingTail =
+      (capped = false) =>
+      (from, to) => {
+        if (capped && to - from + 1 > 10_000) return { rpcError: PUBLICNODE_CAP };
+        if (tailHangs && to - from + 1 <= 1000) return new Promise(() => {});
+        return inRange(CHAIN, from, to);
+      };
+    // Five endpoints: after the first tail round hangs out its three
+    // members, two are left that a second round could ask.
+    useProviders({
+      gnosischain: hangingTail(),
+      publicnode: hangingTail(true),
+      drpc: hangingTail(true),
+      fourth: hangingTail(true),
+      fifth: hangingTail(true),
+    });
+    await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    tailHangs = true;
+    requests = [];
+    const started = Date.now();
+    const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    expect(got.result).toBeUndefined();
+    expect(blockscout.calls).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThanOrEqual(LOG_SCAN_ROUTER_OPTIONS.quorumTimeoutMs + 100);
+    expect(requests).not.toContain('fourth:1000');
+    expect(requests).not.toContain('fifth:1000');
+  });
+
   test('a Blockscout slower than the whole budget is cut off before the newest-block quorum', async () => {
     useProviders(DEFAULTS, { delayMs: 28_000 });
     await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
@@ -466,6 +496,42 @@ describe('Blockscout is a shortcut: anything wrong falls back to the quorum path
     const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
     expect(got.result).toBeUndefined();
     expect(got).toMatchObject({ shrinks: true });
+  });
+
+  // The pair RPC's entries are what Ant gets: one not in the exact shape Ant
+  // reads fails the pair before Blockscout is asked, and the quorum's refusal
+  // follows. Blockscout, not at fault, is not left alone for it.
+  test.each([
+    ['no blockHash', (log) => ({ ...log, blockHash: undefined })],
+    ['a short blockHash', (log) => ({ ...log, blockHash: log.blockHash.slice(0, 40) })],
+    ['a value of two words', (log) => ({ ...log, data: `${log.data}${'0'.repeat(64)}` })],
+    [
+      'a recipient topic that is not an address',
+      (log) => ({ ...log, topics: [log.topics[0], log.topics[1], `0x${'f'.repeat(64)}`] }),
+    ],
+    [
+      'a sender topic that is not an address',
+      (log) => ({
+        ...log,
+        topics: [log.topics[0], `0x01${log.topics[1].slice(4)}`, log.topics[2]],
+      }),
+    ],
+    ['removed: true', (log) => ({ ...log, removed: true })],
+  ])('a pair RPC entry with %s: no answer, Blockscout unasked', async (_label, spoil) => {
+    let malformed = false;
+    const spoiling = (from, to) => {
+      const logs = inRange(CHAIN, from, to);
+      return malformed && to - from + 1 > 10_000 ? [spoil(logs[0]), ...logs.slice(1)] : logs;
+    };
+    useProviders({ ...DEFAULTS, gnosischain: spoiling });
+    await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    malformed = true;
+    const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    expect(got.result).toBeUndefined();
+    expect(got).toMatchObject({ shrinks: true });
+    expect(blockscout.calls).toHaveLength(0);
+    malformed = false;
+    expect((await bridgeGetLogs(DEPLOY_BLOCK, HEAD)).source).toBe('blockscout');
   });
 
   test("a capped Blockscout page Blockscout's cap hides is caught by the RPC disagreeing", async () => {

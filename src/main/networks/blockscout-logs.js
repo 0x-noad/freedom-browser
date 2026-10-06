@@ -30,6 +30,8 @@
 // - keyless use is rate limited (x-ratelimit-limit: 10, with x-ratelimit-reset
 //   in milliseconds), answered with HTTP 429 and "Too many requests".
 
+const net = require('node:net');
+
 const LOG_INDEX_URLS = Object.freeze({ 100: 'https://gnosis.blockscout.com/api' });
 // The token whose Transfer logs Ant scans: xBZZ on Gnosis.
 const LOG_INDEX_TOKENS = Object.freeze({ 100: '0xdbf3ea6f5bee45c02255b2c26a16f300502f68da' });
@@ -144,6 +146,31 @@ function blockscoutLogToRpcLog(row) {
   return log ? { ...log, removed: false } : null;
 }
 
+// A Transfer's value: exactly one 32-byte word, the only encoding Ant decodes.
+const VALUE_WORD = /^0x[0-9a-f]{64}$/i;
+
+// Whether one of an RPC's eth_getLogs entries has the exact shape Ant reads,
+// as the RPC sent it: these raw entries, not a canonical form of them, are
+// what Ant gets once the pair agrees. A 32-byte blockHash, a value that is
+// exactly one 32-byte word, and topics that are all 32-byte hashes (no null
+// padding), the address ones (topics[1], topics[2]) zero-padded addresses;
+// canonicalLog checks the rest (a 32-byte transactionHash, not removed, the
+// address and quantities).
+function rpcTransferLogWellFormed(entry) {
+  if (!entry || typeof entry !== 'object') return false;
+  if (!hash32(entry.blockHash)) return false;
+  if (typeof entry.data !== 'string' || !VALUE_WORD.test(entry.data)) return false;
+  const { topics } = entry;
+  if (!Array.isArray(topics) || !topics.every((topic) => hash32(topic) !== null)) return false;
+  if (topics.slice(1, 3).some((topic) => !ADDRESS_TOPIC.test(topic))) return false;
+  return canonicalLog(entry) !== null;
+}
+
+// Whether an RPC's eth_getLogs answer is a list of well-formed entries.
+function rpcTransferLogsWellFormed(result) {
+  return Array.isArray(result) && result.every(rpcTransferLogWellFormed);
+}
+
 function logMatchesFilter(log, filter, fromBlock, toBlock) {
   const block = blockNumberOf(log.blockNumber);
   return (
@@ -153,15 +180,20 @@ function logMatchesFilter(log, filter, fromBlock, toBlock) {
     log.address === filter.token &&
     log.topics[0] === ERC20_TRANSFER_TOPIC &&
     log.topics.length === 3 &&
+    // The same encoding the RPC's entries must have (rpcTransferLogWellFormed).
+    VALUE_WORD.test(log.data) &&
+    ADDRESS_TOPIC.test(log.topics[1]) &&
+    ADDRESS_TOPIC.test(log.topics[2]) &&
     (!filter.sender || log.topics[1] === filter.sender) &&
     (!filter.recipient || log.topics[2] === filter.recipient)
   );
 }
 
 // Whether an RPC's eth_getLogs answer and Blockscout's mapped logs list the
-// same logs, identical in every field both report.
+// same logs, identical in every field both report. An RPC entry that is not
+// in the exact shape Ant reads (rpcTransferLogWellFormed) never agrees.
 function logsAgree(indexed, rpcResult) {
-  if (!Array.isArray(indexed) || !Array.isArray(rpcResult)) return false;
+  if (!Array.isArray(indexed) || !rpcTransferLogsWellFormed(rpcResult)) return false;
   if (indexed.length !== rpcResult.length) return false;
   const key = (log) => `${log.blockNumber}:${log.logIndex}`;
   const expected = new Map();
@@ -197,6 +229,48 @@ function cooldownFrom(headers) {
 const MAX_REDIRECTS = 3;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
+// Addresses on this machine or its local networks, which a redirect off the
+// configured origin must not name: a remote Blockscout must not be able to
+// turn the read into a fetch, carrying the wallet address, of a service on
+// the user's machine or LAN. Loopback, unspecified, RFC 1918 private,
+// link-local, CGNAT (100.64/10) and IPv6 ULA (fc00::/7) and link-local
+// (fe80::/10), plus the IPv4 ones' IPv4-mapped (::ffff:a.b.c.d, which
+// BlockList checks against its IPv4 rules itself) and IPv4-compatible
+// (::a.b.c.d, added here; ::0.0.0.0/104 also covers :: and ::1) IPv6
+// forms. The WHATWG URL parser has already canonicalised shorthand hosts
+// such as 127.1, 0x7f.1, 2130706433 and [::ffff:127.0.0.1] (to
+// [::ffff:7f00:1]).
+const LOCAL_IPV4_SUBNETS = [
+  ['0.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['100.64.0.0', 10],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['172.16.0.0', 12],
+  ['192.168.0.0', 16],
+];
+const LOCAL_ADDRESSES = new net.BlockList();
+for (const [address, prefix] of LOCAL_IPV4_SUBNETS) {
+  LOCAL_ADDRESSES.addSubnet(address, prefix, 'ipv4');
+  LOCAL_ADDRESSES.addSubnet(`::${address}`, 96 + prefix, 'ipv6');
+}
+LOCAL_ADDRESSES.addSubnet('fc00::', 7, 'ipv6');
+LOCAL_ADDRESSES.addSubnet('fe80::', 10, 'ipv6');
+
+// Whether a URL's hostname (as `new URL()` gives it: lower case, IPv6 in
+// brackets) names this machine or a local network: localhost and
+// *.localhost (with or without a trailing dot), or an address above.
+function isLocalHostname(hostname) {
+  const host = String(hostname || '')
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.+$/, '');
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  const version = net.isIP(host);
+  if (!version) return false;
+  return LOCAL_ADDRESSES.check(host, version === 4 ? 'ipv4' : 'ipv6');
+}
+
 // One page, within `deadline` (a Date.now() instant shared by every page and
 // redirect hop of a read, so the read as a whole stays inside `timeoutMs`).
 async function fetchPage(url, { signal, deadline, timeoutMs, fetchImpl = fetch }) {
@@ -214,6 +288,7 @@ async function fetchPage(url, { signal, deadline, timeoutMs, fetchImpl = fetch }
   try {
     let response;
     let current = url;
+    const origin = new URL(url).origin;
     for (let hop = 0; ; hop += 1) {
       try {
         response = await fetchImpl(current, {
@@ -244,6 +319,10 @@ async function fetchPage(url, { signal, deadline, timeoutMs, fetchImpl = fetch }
       }
       // A redirect must stay on https; checked before the hop is dialled.
       if (next.protocol !== 'https:') throw new BlockscoutError('redirected off https');
+      // Off the configured origin, never to this machine or its LAN.
+      if (next.origin !== origin && isLocalHostname(next.hostname)) {
+        throw new BlockscoutError('redirected to a local host');
+      }
       if (hop + 1 > MAX_REDIRECTS) throw new BlockscoutError('redirected too often');
       current = next.toString();
     }
@@ -385,7 +464,9 @@ module.exports = {
   blockscoutLogToRpcLog,
   canonicalLog,
   fetchBlockscoutTransferLogs,
+  isLocalHostname,
   logIndexFilter,
   logIndexHost,
   logsAgree,
+  rpcTransferLogsWellFormed,
 };

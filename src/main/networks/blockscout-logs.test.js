@@ -4,8 +4,10 @@ const {
   ERC20_TRANSFER_TOPIC,
   blockscoutLogToRpcLog,
   fetchBlockscoutTransferLogs,
+  isLocalHostname,
   logIndexFilter,
   logsAgree,
+  rpcTransferLogsWellFormed,
 } = require('./blockscout-logs');
 const captured = require('./__fixtures__/blockscout-xbzz-transfers.json');
 
@@ -127,6 +129,57 @@ describe('mapping (captured from both providers, 2026-10-05)', () => {
   ])('they disagree with %s', (_label, change) => {
     const mapped = captured.blockscout.result.map(blockscoutLogToRpcLog);
     expect(logsAgree(mapped, change(captured.rpc))).toBe(false);
+  });
+});
+
+// The RPC's entries are what Ant receives, so they must be in the exact shape
+// Ant reads, not only agree with Blockscout once both are canonicalised.
+describe('the RPC entries must have the exact shape Ant reads', () => {
+  const mapped = () => captured.blockscout.result.map(blockscoutLogToRpcLog);
+  const first = (change) => (rpc) => [{ ...rpc[0], ...change(rpc[0]) }, ...rpc.slice(1)];
+  const WORD = `0x${'0'.repeat(63)}1`;
+
+  test('the captured RPC answer is well formed', () => {
+    expect(rpcTransferLogsWellFormed(captured.rpc)).toBe(true);
+    expect(rpcTransferLogsWellFormed([])).toBe(true);
+    expect(rpcTransferLogsWellFormed(null)).toBe(false);
+  });
+
+  test.each([
+    ['no blockHash', first(() => ({ blockHash: undefined }))],
+    ['a short blockHash', first((log) => ({ blockHash: log.blockHash.slice(0, 64) }))],
+    ['a blockHash that is not hex', first(() => ({ blockHash: `0x${'g'.repeat(64)}` }))],
+    [
+      'a short transactionHash',
+      first((log) => ({ transactionHash: log.transactionHash.slice(0, 64) })),
+    ],
+    ['removed: true', first(() => ({ removed: true }))],
+    ['a value of two words', first((log) => ({ data: `${log.data}${'0'.repeat(64)}` }))],
+    ['a value shorter than a word', first((log) => ({ data: `0x${log.data.slice(4)}` }))],
+    ['an empty value', first(() => ({ data: '0x' }))],
+    [
+      'a sender topic that is not a zero-padded address',
+      first((log) => ({ topics: [log.topics[0], `0x${'1'.repeat(64)}`, log.topics[2]] })),
+    ],
+    [
+      'a recipient topic that is not a zero-padded address',
+      first((log) => ({ topics: [log.topics[0], log.topics[1], `0x01${log.topics[2].slice(4)}`] })),
+    ],
+    ['null-padded topics', first((log) => ({ topics: [...log.topics, null] }))],
+  ])('%s: the check fails', (_label, change) => {
+    const rpc = change(captured.rpc);
+    expect(rpcTransferLogsWellFormed(rpc)).toBe(false);
+    expect(logsAgree(mapped(), rpc)).toBe(false);
+  });
+
+  // A malformed RPC value never agrees, even with a Blockscout row that is
+  // malformed the same way (Blockscout's rows are held to the same encoding
+  // when they are read: fetchBlockscoutTransferLogs).
+  test('a two-word value disagrees even when Blockscout reports the same', () => {
+    const data = `${WORD}${'0'.repeat(64)}`;
+    const indexed = mapped().map((log, i) => (i === 0 ? { ...log, data } : log));
+    const rpc = captured.rpc.map((log, i) => (i === 0 ? { ...log, data } : log));
+    expect(logsAgree(indexed, rpc)).toBe(false);
   });
 });
 
@@ -280,6 +333,42 @@ describe('fetchBlockscoutTransferLogs', () => {
   });
 
   test.each([
+    ['a value of two words', { data: `0x${'0'.repeat(127)}1` }],
+    ['an empty value', { data: '0x' }],
+    ['a recipient topic that is not an address', { to: `0x${'1'.repeat(64)}` }],
+  ])('a Blockscout row with %s is not in the encoding Ant reads', async (_label, change) => {
+    const bad = { ...row(200, 0, change.to ? { to: change.to } : {}) };
+    if (change.data) bad.data = change.data;
+    await expect(read(() => ok([bad]))).rejects.toThrow('outside the filter');
+  });
+
+  test('a recipient scan refuses a Blockscout row whose sender topic is not an address', async () => {
+    const recipient = logIndexFilter(
+      100,
+      antFilter({
+        fromBlock: '0x64',
+        toBlock: '0x2710',
+        topics: [ERC20_TRANSFER_TOPIC, null, OTHER],
+      })
+    );
+    const bad = row(200, 0, { from: `0x${'1'.repeat(64)}` });
+    await expect(
+      fetchBlockscoutTransferLogs(recipient, 10_000, {
+        timeoutMs: 1000,
+        fetchImpl: () => ok([bad]),
+      })
+    ).rejects.toThrow('outside the filter');
+    // The same row with an address sender is read.
+    const good = row(200, 0);
+    await expect(
+      fetchBlockscoutTransferLogs(recipient, 10_000, {
+        timeoutMs: 1000,
+        fetchImpl: () => ok([good]),
+      })
+    ).resolves.toHaveLength(1);
+  });
+
+  test.each([
     ['HTTP 500', () => reply('oops', { status: 500 }), 'HTTP 500'],
     ['an answer that is not JSON', () => reply('<html>'), 'not JSON'],
     [
@@ -357,6 +446,52 @@ describe('fetchBlockscoutTransferLogs', () => {
     await expect(read(fetchImpl)).rejects.toThrow('redirected too often');
     expect(fetchImpl).toHaveBeenCalledTimes(4);
     expect(fetchImpl.mock.calls[1][0]).toBe('https://gnosis.blockscout.com/api?again=1');
+  });
+
+  test.each([
+    'https://127.0.0.1/api',
+    'https://127.1/api',
+    'https://[::1]/api',
+    'https://localhost./api',
+    'https://localhost/api',
+    'https://wallet.localhost/api',
+    'https://0.0.0.0/api',
+    'https://[::]/api',
+    'https://[::7f00:1]/api',
+    'https://10.0.0.1/api',
+    'https://172.16.5.4/api',
+    'https://192.168.1.1/api',
+    'https://169.254.169.254/api',
+    'https://100.64.0.1/api',
+    'https://[fd00::1]/api',
+    'https://[fe80::1]/api',
+    'https://[::ffff:127.0.0.1]/api',
+    'https://[::ffff:10.0.0.1]/api',
+  ])('a redirect to %s is refused before it is dialled', async (location) => {
+    const fetchImpl = jest.fn((url) =>
+      url.startsWith('https://gnosis.blockscout.com/')
+        ? reply('', { status: 302, headers: { location } })
+        : ok([])
+    );
+    await expect(read(fetchImpl)).rejects.toThrow('redirected to a local host');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('local hosts: canonical forms are caught, public hosts are not', () => {
+    const local = (url) => isLocalHostname(new URL(url).hostname);
+    for (const url of ['https://0x7f.1', 'https://2130706433', 'https://[::127.0.0.1]']) {
+      expect(local(url)).toBe(true);
+    }
+    for (const url of [
+      'https://gnosisscan.io',
+      'https://8.8.8.8',
+      'https://172.32.0.1',
+      'https://[2001:db8::1]',
+      'https://[::ffff:8.8.8.8]',
+      'https://notlocalhost',
+    ]) {
+      expect(local(url)).toBe(false);
+    }
   });
 
   test('a browser-style opaque redirect is refused', async () => {

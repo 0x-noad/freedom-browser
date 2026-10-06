@@ -1378,6 +1378,11 @@ async function requestQuorum(chainId, method, params, options = {}) {
     }
     return lastError || new SourceUnavailableError(`No RPC quorum available for ${method}`);
   };
+  // `endsAt` (a Date.now() instant) caps the rounds together rather than
+  // each: a later round runs only on what is left of it, and not at all once
+  // less than the configured quorum timeout is left (requestQuorumRound never
+  // runs a round shorter than that).
+  const { endsAt = null } = options;
   let asked = null;
   let lastError = null;
   for (let round = 1; round <= LOG_SCAN_QUORUM_ROUNDS; round += 1) {
@@ -1386,8 +1391,14 @@ async function requestQuorum(chainId, method, params, options = {}) {
       .filter((url) => servableLogSpan(chainId, url, now) >= logRange.span)
       .slice(0, k);
     if (urls.length < m || (asked && urls.every((url) => asked.includes(url)))) break;
+    let roundOptions = options;
+    if (endsAt !== null && round > 1) {
+      const leftMs = endsAt - now;
+      if (leftMs < configuredSourceTimeoutMs(chainId)) break;
+      roundOptions = { ...options, quorumTimeoutMs: leftMs };
+    }
     try {
-      return await askQuorum(urls);
+      return await requestQuorumRound(chainId, method, params, { ...roundOptions, keeper, urls });
     } catch (err) {
       asked = urls;
       lastError = err;
@@ -1453,9 +1464,10 @@ async function requestLogIndex(chainId, method, params, options = {}) {
   // One budget (the caller's widened quorum budget) covers the whole source:
   // the pair (the RPC, then every Blockscout page) runs inside it less the
   // configured quorum timeout, which is held back for the newest blocks'
-  // quorum (requestQuorum never runs one shorter than that). So the source
-  // costs at most one quorum budget before the quorum after it is asked,
-  // inside the bridge's own deadline.
+  // quorum (requestQuorum never runs one shorter than that), and that quorum's
+  // rounds share what is left (endsAt). So the source costs at most one
+  // quorum budget before the quorum after it is asked, inside the bridge's own
+  // deadline.
   const configuredMs = configuredSourceTimeoutMs(chainId);
   const budgetMs = Math.max(configuredMs, Number(quorumTimeoutMs) || 0);
   const startedAt = Date.now();
@@ -1493,6 +1505,14 @@ async function requestLogIndex(chainId, method, params, options = {}) {
       `no RPC endpoint answered the span to compare Blockscout with: ${safeErrorMessage(err)}`
     );
   }
+  // The RPC's entries are what Ant gets: one not in the exact shape Ant
+  // reads fails the pair before Blockscout is asked (no request spent, and
+  // Blockscout, not at fault, is not left alone for it).
+  if (!blockscoutLogs.rpcTransferLogsWellFormed(rpc.result)) {
+    throw new SourceUnavailableError(
+      `${endpointHost(rpc.url)} answered the span with a malformed log entry`
+    );
+  }
   let indexed;
   try {
     indexed = await blockscoutLogs.fetchBlockscoutTransferLogs(filter, pairTo, {
@@ -1526,6 +1546,7 @@ async function requestLogIndex(chainId, method, params, options = {}) {
       [{ ...params[0], fromBlock: blockHex(pairTo + 1) }],
       {
         quorumTimeoutMs: Math.max(configuredMs, leftMs()),
+        endsAt: startedAt + budgetMs,
         keeper: createErrorKeeper(logRange.rank),
         logRange: { ...logRange, span: tail },
       }
