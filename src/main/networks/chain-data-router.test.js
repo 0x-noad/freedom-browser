@@ -612,6 +612,40 @@ describe('chain-data-router', () => {
     );
   });
 
+  // The engine's parser takes only 0x-hex for chainId/type and its -32602 is
+  // served as final, so a dApp sending them as a JSON number or a decimal
+  // string must reach Myotis already hex-encoded — not be refused outright.
+  test.each([
+    ['JSON numbers', { chainId: 100, type: 2 }],
+    ['decimal strings', { chainId: '100', type: '2' }],
+    ['zero-padded hex', { chainId: '0x064', type: '0x02' }],
+  ])('hex-encodes chainId and type given as %s before Myotis sees them', async (_label, fields) => {
+    mockMyotis.ethCallTx.mockResolvedValue({ status: 'ok', resultHex: '0x2a' });
+    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 21000 });
+
+    await expect(
+      request(100, 'eth_call', [{ to: '0xabc', data: '0x70a08231', ...fields }, 'latest'])
+    ).resolves.toEqual({ result: '0x2a', source: 'myotis', verified: true });
+    await expect(
+      request(100, 'eth_estimateGas', [{ to: '0xabc', ...fields }])
+    ).resolves.toMatchObject({ result: '0x5208', source: 'myotis' });
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledWith(expect.objectContaining({
+      tx: { to: '0xabc', data: '0x70a08231', chainId: '0x64', type: '0x2' },
+    }));
+    expect(mockMyotis.estimateGas).toHaveBeenCalledWith(expect.objectContaining({
+      tx: { to: '0xabc', chainId: '0x64', type: '0x2' },
+    }));
+  });
+
+  test('hex-encodes a legacy type 0 rather than dropping it', async () => {
+    mockMyotis.ethCallTx.mockResolvedValue({ status: 'ok', resultHex: '0x2a' });
+
+    await request(1, 'eth_call', [{ to: '0xabc', type: 0 }, 'latest']);
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledWith(
+      expect.objectContaining({ tx: { to: '0xabc', type: '0x0' } })
+    );
+  });
+
   test.each([
     ['a decimal string', '21000'],
     ['a hex string', '0x5208'],

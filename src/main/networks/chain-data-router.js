@@ -626,6 +626,10 @@ function quantity(value) {
 // raw decimal makes strict nodes answer -32602, which silently drops the read
 // out of the quorum tier. Normalise once here — the boundary every source
 // shares — so all endpoints also see a byte-identical body to agree on.
+// `chainId` and `type` are QUANTITYs too, and since ABI 34/35 the Myotis
+// engine applies them instead of dropping them: its parser accepts only
+// 0x-hex, and its -32602 refusal is final (no fallback), so a dApp's
+// `{ chainId: 1 }` or `{ type: 2 }` has to be hex by the time it gets there.
 const CALL_OBJECT_METHODS = new Set(['eth_call', 'eth_estimateGas']);
 const CALL_QUANTITY_FIELDS = [
   'value',
@@ -634,6 +638,8 @@ const CALL_QUANTITY_FIELDS = [
   'maxFeePerGas',
   'maxPriorityFeePerGas',
   'nonce',
+  'chainId',
+  'type',
 ];
 
 // `input` is the standardised calldata field of a call object and `data` the
