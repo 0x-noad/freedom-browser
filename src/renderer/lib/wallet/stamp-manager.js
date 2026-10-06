@@ -21,12 +21,17 @@ let stampManagerScreen;
 let stampManagerBackBtn;
 let batchListContainer;
 let emptyText;
+let scanStatus;
+let scanWarning;
+let scanWarningText;
 let buyMoreBtn;
 let depositWarning;
 let depositTopUpBtn;
 
 let isOpen = false;
 let setupState = null;
+// Batches in the list last rendered.
+let batchCount = 0;
 let loadedKey = null;
 let loadRequestId = 0;
 
@@ -35,6 +40,9 @@ export function initStampManager() {
   stampManagerBackBtn = document.getElementById('stamp-manager-back');
   batchListContainer = document.getElementById('stamp-batch-list');
   emptyText = document.getElementById('stamp-list-empty');
+  scanStatus = document.getElementById('stamp-scan-status');
+  scanWarning = document.getElementById('stamp-scan-warning');
+  scanWarningText = document.getElementById('stamp-scan-warning-text');
   buyMoreBtn = document.getElementById('stamp-buy-another-btn');
   depositWarning = document.getElementById('stamp-deposit-warning');
   depositTopUpBtn = document.getElementById('stamp-deposit-topup');
@@ -52,6 +60,7 @@ export function initStampManager() {
     setupState = state;
     if (!isOpen) return;
     renderDepositWarning();
+    renderScanStatus();
     if (stampsKey(state) !== loadedKey) loadBatchList();
   });
 }
@@ -66,13 +75,17 @@ export async function openStampManager() {
   void window.publishSetup?.watch('storage', true);
 
   renderDepositWarning();
+  renderScanStatus();
   loadBatchList();
   try {
     setupState = (await window.publishSetup?.getState()) || setupState;
   } catch {
     // The push subscription fills it in.
   }
-  if (isOpen) renderDepositWarning();
+  if (isOpen) {
+    renderDepositWarning();
+    renderScanStatus();
+  }
 }
 
 export function closeStampManager() {
@@ -93,6 +106,39 @@ function renderDepositWarning() {
   const dry = Boolean(chequebook?.needsTopUp) && chequebook.managed !== false;
   depositWarning?.classList.toggle('hidden', !dry);
   depositTopUpBtn?.classList.toggle('hidden', !dry || !setupState?.canBuy);
+}
+
+// Ant's search for storage this wallet bought before (#510,
+// /health.walletScan). While publish setup holds on it, the list may be
+// missing batches the wallet owns, so the screen shows the search and its
+// progress instead of "You have no storage yet". Readiness carries the
+// message (publish-setup-service.js), so this screen words it the same way
+// as the setup screen.
+function scanHold() {
+  const readiness = setupState?.readiness;
+  if (readiness?.key !== 'checking') return null;
+  return readiness.rediscovery === 'running' || readiness.rediscovery === 'retrying'
+    ? readiness
+    : null;
+}
+
+function renderScanStatus() {
+  const hold = scanHold();
+  if (scanStatus) {
+    scanStatus.textContent = hold?.message || '';
+    scanStatus.classList.toggle('hidden', !hold);
+  }
+  // The search gave up (30 minutes without progress): the hold is released,
+  // so the empty state is back, under the same warning setup shows.
+  const readiness = setupState?.readiness;
+  const stalled = !hold && readiness?.scanStalled === true;
+  scanWarning?.classList.toggle('hidden', !stalled);
+  if (scanWarningText) scanWarningText.textContent = stalled ? readiness.message : '';
+  renderEmptyText();
+}
+
+function renderEmptyText() {
+  emptyText?.classList.toggle('hidden', batchCount > 0 || scanHold() !== null);
 }
 
 async function loadBatchList() {
@@ -126,7 +172,8 @@ function renderBatchList(stamps) {
   if (!batchListContainer) return;
 
   batchListContainer.innerHTML = '';
-  emptyText?.classList.toggle('hidden', stamps.length > 0);
+  batchCount = stamps.length;
+  renderEmptyText();
   if (buyMoreBtn) buyMoreBtn.textContent = stamps.length > 0 ? 'Buy More Storage' : 'Buy Storage';
   buyMoreBtn?.classList.toggle('hidden', setupState?.canBuy === false);
 

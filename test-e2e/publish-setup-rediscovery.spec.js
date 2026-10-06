@@ -176,6 +176,27 @@ async function openSetup(window) {
   await expect(window.locator('#sidebar-publish-setup')).toBeVisible();
 }
 
+// The Storage screen, which lists the node's batches.
+async function openStorage(window) {
+  await expect
+    .poll(() =>
+      window.evaluate(async () => {
+        const sidebar = await import('./lib/sidebar.js');
+        sidebar.open();
+        return sidebar.isVisible();
+      })
+    )
+    .toBe(true);
+  await window.evaluate(async () => {
+    const { walletState } = await import('./lib/wallet/wallet-state.js');
+    walletState.identityView = document.getElementById('sidebar-identity');
+    document.getElementById('sidebar-setup-cta')?.classList.add('hidden');
+    const { openStampManager } = await import('./lib/wallet/stamp-manager.js');
+    await openStampManager();
+  });
+  await expect(window.locator('#sidebar-stamp-manager')).toBeVisible();
+}
+
 // The Nodes tab's Swarm card, whose publishing button is the usual way in.
 async function openNodesTab(window) {
   await expect
@@ -334,6 +355,65 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
     );
     await expect(window.locator('#publish-plan-list .stamp-preset-btn')).toHaveCount(3);
     await shoot(window, 'retrying-stalled');
+  });
+
+  test('the storage screen shows the search instead of "no storage yet", until it ends', async ({
+    electronApp,
+    window,
+  }) => {
+    await startFakeAnt(electronApp);
+    await setNode(electronApp, { walletScan: scanning(32_000_000) });
+    await wireRealService(electronApp);
+    await openStorage(window);
+
+    const status = window.locator('#stamp-scan-status');
+    const empty = window.locator('#stamp-list-empty');
+    await expect(status).toHaveText(
+      'Looking for your existing storage… 48% checked. Storage plans appear if this wallet has none.'
+    );
+    await expect(empty).toBeHidden();
+    await expect(window.locator('#stamp-scan-warning')).toBeHidden();
+    await shoot(window, 'storage-scanning');
+
+    await setNode(electronApp, { walletScan: scanning(44_000_000) });
+    await expect(status).toHaveText(/^Looking for your existing storage… 85% checked\./);
+
+    // It found nothing: the plain empty state, at once.
+    await setNode(electronApp, {
+      walletScan: { state: 'done', from: FROM, scannedThrough: HEAD, head: HEAD },
+    });
+    await expect(empty).toBeVisible();
+    await expect(status).toBeHidden();
+    await shoot(window, 'storage-none');
+  });
+
+  test('the storage screen shows the stalled-scan warning over the empty state', async ({
+    electronApp,
+    window,
+  }) => {
+    await startFakeAnt(electronApp);
+    await setNode(electronApp, {
+      walletScan: {
+        state: 'retrying',
+        from: FROM,
+        scannedThrough: 24_000_000,
+        head: HEAD,
+        error: 'RPC quorum needs 2 endpoints',
+      },
+    });
+    await wireRealService(electronApp);
+    await openStorage(window);
+    await expect(window.locator('#stamp-scan-status')).toHaveText(/trying again/);
+    await expect(window.locator('#stamp-list-empty')).toBeHidden();
+    await shoot(window, 'storage-retrying');
+
+    await advanceClock(electronApp, 31 * 60_000);
+    await expect(window.locator('#stamp-scan-warning-text')).toHaveText(
+      /^The Swarm node could not finish looking for storage this wallet already owns/
+    );
+    await expect(window.locator('#stamp-scan-status')).toBeHidden();
+    await expect(window.locator('#stamp-list-empty')).toBeVisible();
+    await shoot(window, 'storage-stalled');
   });
 
   test('the node card shows the progress and opens setup', async ({ electronApp, window }) => {
