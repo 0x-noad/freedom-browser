@@ -184,6 +184,9 @@
         }
       ]
     },
+    "toolsets": {
+      "appimage": "1.0.3"
+    },
     "pacman": {
       "synopsis": "A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols",
       "depends": [
