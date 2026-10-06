@@ -212,6 +212,14 @@ const LOG_INDEX_DISAGREEMENT_COOLDOWN_MS = 5 * 60_000;
 const LOG_INDEX_ABORT_COOLDOWN_MS = 60_000;
 // chainId -> time until which the blockscout source is not asked.
 const logIndexCoolUntil = new Map();
+// How long an RPC endpoint is not asked to be Blockscout's pair after it
+// answered a span with an entry not in the exact shape Ant reads: every wide
+// window would otherwise re-spend a full-span eth_getLogs on it only to fall
+// through to the quorum again.
+const LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS = 30 * 60_000;
+// `${chainId}|${url}` -> time until which that endpoint is not a pair.
+const logIndexPairCoolUntil = new Map();
+const logIndexPairKey = (chainId, url) => `${chainId}|${url}`;
 
 class SourceUnavailableError extends Error {
   constructor(message, failureKind = null) {
@@ -439,6 +447,7 @@ function clearAdaptiveRoutingForTest() {
   colibriInFlightByRoute.clear();
   logRangeState.clear();
   logIndexCoolUntil.clear();
+  logIndexPairCoolUntil.clear();
 }
 
 function blockNumberOf(value) {
@@ -1456,7 +1465,11 @@ async function requestLogIndex(chainId, method, params, options = {}) {
   const tail = Math.min(quorumSpan, LOG_INDEX_TAIL_BLOCKS);
   const pairTo = filter.toBlock - tail;
   const pairSpan = pairTo - filter.fromBlock + 1;
-  const pairUrls = endpoints.filter((url) => servableLogSpan(chainId, url, now) >= pairSpan);
+  const pairUrls = endpoints.filter(
+    (url) =>
+      servableLogSpan(chainId, url, now) >= pairSpan &&
+      (logIndexPairCoolUntil.get(logIndexPairKey(chainId, url)) || 0) <= now
+  );
   if (!pairUrls.length) {
     throw new SourceUnavailableError('no RPC endpoint serves this span to compare Blockscout with');
   }
@@ -1477,20 +1490,36 @@ async function requestLogIndex(chainId, method, params, options = {}) {
     if (left < 1000) throw new SourceUnavailableError('Blockscout pairing ran out of time');
     return left;
   };
+  // The RPC's entries are what Ant gets: an answer with one not in the exact
+  // shape Ant reads is not taken (nor credited as covering the span); that
+  // endpoint is not asked to pair again for a while
+  // (LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS) and the next one is tried. No
+  // Blockscout request is spent on it, and Blockscout, not at fault, is not
+  // left alone for it.
   const askPairRpc = async () => {
     let lastError;
     for (const url of pairUrls) {
       signal?.throwIfAborted();
+      let result;
       try {
-        const result = await requestRpcUrl(url, method, pairParams, remainingMs(), { signal });
-        noteLogRangeAnswer(chainId, url, pairSpan);
-        return { url, result };
+        result = await requestRpcUrl(url, method, pairParams, remainingMs(), { signal });
       } catch (err) {
         signal?.throwIfAborted();
         if (err instanceof SourceUnavailableError) throw err;
         lastError = err;
         noteLogRangeFailure(chainId, url, pairSpan, err, logRange, Date.now());
+        continue;
       }
+      if (!blockscoutLogs.rpcTransferLogsWellFormed(result)) {
+        logIndexPairCoolUntil.set(
+          logIndexPairKey(chainId, url),
+          Date.now() + LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS
+        );
+        lastError = new Error(`${endpointHost(url)} answered the span with a malformed log entry`);
+        continue;
+      }
+      noteLogRangeAnswer(chainId, url, pairSpan);
+      return { url, result };
     }
     throw lastError;
   };
@@ -1503,14 +1532,6 @@ async function requestLogIndex(chainId, method, params, options = {}) {
     signal?.throwIfAborted();
     throw new SourceUnavailableError(
       `no RPC endpoint answered the span to compare Blockscout with: ${safeErrorMessage(err)}`
-    );
-  }
-  // The RPC's entries are what Ant gets: one not in the exact shape Ant
-  // reads fails the pair before Blockscout is asked (no request spent, and
-  // Blockscout, not at fault, is not left alone for it).
-  if (!blockscoutLogs.rpcTransferLogsWellFormed(rpc.result)) {
-    throw new SourceUnavailableError(
-      `${endpointHost(rpc.url)} answered the span with a malformed log entry`
     );
   }
   let indexed;
@@ -1560,6 +1581,13 @@ async function requestLogIndex(chainId, method, params, options = {}) {
   signal?.throwIfAborted();
   if (!Array.isArray(newest)) {
     throw new SourceUnavailableError('RPC quorum answered the newest blocks without a log list');
+  }
+  // The quorum's entries reach Ant too, and agreement alone does not make
+  // them well formed: they meet the same shape as the pair's.
+  if (!blockscoutLogs.rpcTransferLogsWellFormed(newest)) {
+    throw new SourceUnavailableError(
+      `RPC quorum answered the newest ${tail} blocks with a malformed log entry`
+    );
   }
   const result = [...rpc.result, ...newest];
   if (!includeTrust) return result;
@@ -2124,5 +2152,6 @@ module.exports = {
   LOG_SCAN_COOLDOWN_MS,
   LOG_INDEX_TAIL_BLOCKS,
   LOG_INDEX_DISAGREEMENT_COOLDOWN_MS,
+  LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS,
   clearAdaptiveRoutingForTest,
 };

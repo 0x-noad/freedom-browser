@@ -212,8 +212,11 @@ const NO_LOGS = { status: '0', message: 'No logs found', result: [] };
 
 describe('fetchBlockscoutTransferLogs', () => {
   const filter = logIndexFilter(100, antFilter({ fromBlock: '0x64', toBlock: '0x2710' }));
-  const read = (fetchImpl, toBlock = 10_000) =>
-    fetchBlockscoutTransferLogs(filter, toBlock, { timeoutMs: 1000, fetchImpl });
+  // Off-origin redirect hops are resolved before they are dialled; tests
+  // never reach the real resolver.
+  const publicLookup = jest.fn(async () => [{ address: '104.18.12.34', family: 4 }]);
+  const read = (fetchImpl, toBlock = 10_000, lookup = publicLookup) =>
+    fetchBlockscoutTransferLogs(filter, toBlock, { timeoutMs: 1000, fetchImpl, lookup });
   const queryOf = (url) => Object.fromEntries(new URL(url).searchParams);
 
   test("asks Blockscout's logs API for exactly the filter, and maps the answer", async () => {
@@ -467,6 +470,16 @@ describe('fetchBlockscoutTransferLogs', () => {
     'https://[fe80::1]/api',
     'https://[::ffff:127.0.0.1]/api',
     'https://[::ffff:10.0.0.1]/api',
+    'https://[2002:7f00:1::1]/api',
+    'https://[2002:c0a8:101::1]/api',
+    'https://[64:ff9b::7f00:1]/api',
+    'https://[64:ff9b:1::a00:1]/api',
+    'https://[::ffff:0:7f00:1]/api',
+    'https://[fec0::1]/api',
+    'https://[ff02::1]/api',
+    'https://198.18.0.1/api',
+    'https://224.0.0.251/api',
+    'https://255.255.255.255/api',
   ])('a redirect to %s is refused before it is dialled', async (location) => {
     const fetchImpl = jest.fn((url) =>
       url.startsWith('https://gnosis.blockscout.com/')
@@ -488,9 +501,81 @@ describe('fetchBlockscoutTransferLogs', () => {
       'https://172.32.0.1',
       'https://[2001:db8::1]',
       'https://[::ffff:8.8.8.8]',
+      'https://[2002:808:808::1]',
+      'https://[64:ff9b::808:808]',
+      'https://198.20.0.1',
       'https://notlocalhost',
     ]) {
       expect(local(url)).toBe(false);
+    }
+  });
+
+  const redirectTo = (location) =>
+    jest.fn((url) =>
+      url.startsWith('https://gnosis.blockscout.com/')
+        ? reply('', { status: 302, headers: { location } })
+        : ok([row(200)])
+    );
+
+  test.each([
+    ['to loopback', [{ address: '127.0.0.1', family: 4 }]],
+    [
+      'to a LAN address among public ones',
+      [
+        { address: '104.18.12.34', family: 4 },
+        { address: '192.168.1.10', family: 4 },
+      ],
+    ],
+    ['to IPv6 loopback', [{ address: '::1', family: 6 }]],
+  ])(
+    'a redirect to a DNS name resolving %s is refused before it is dialled',
+    async (_l, answer) => {
+      const lookup = jest.fn(async () => answer);
+      const fetchImpl = redirectTo('https://127.0.0.1.nip.io/api');
+      await expect(read(fetchImpl, 10_000, lookup)).rejects.toThrow('redirected to a local host');
+      expect(lookup).toHaveBeenCalledWith('127.0.0.1.nip.io', { all: true, verbatim: true });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test('a redirect to a name that does not resolve is refused before it is dialled', async () => {
+    const lookup = jest.fn(async () => {
+      throw Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' });
+    });
+    const fetchImpl = redirectTo('https://nowhere.example/api');
+    await expect(read(fetchImpl, 10_000, lookup)).rejects.toThrow('does not resolve');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('a redirect to a public name is resolved, then followed', async () => {
+    const lookup = jest.fn(async () => [{ address: '104.18.12.34', family: 4 }]);
+    const fetchImpl = redirectTo('https://gnosisscan.io/api');
+    expect(await read(fetchImpl, 10_000, lookup)).toHaveLength(1);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('a same-origin redirect is not resolved', async () => {
+    const lookup = jest.fn(async () => [{ address: '127.0.0.1', family: 4 }]);
+    const fetchImpl = jest
+      .fn()
+      .mockImplementationOnce(() => reply('', { status: 302, headers: { location: '/api?x=1' } }))
+      .mockImplementationOnce(() => ok([]));
+    await read(fetchImpl, 10_000, lookup);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  test('a hung lookup is bounded by the read timeout', async () => {
+    jest.useFakeTimers();
+    try {
+      const lookup = jest.fn(() => new Promise(() => {}));
+      const pending = read(redirectTo('https://slow.example/api'), 10_000, lookup).catch(
+        (err) => err
+      );
+      await jest.advanceTimersByTimeAsync(1000);
+      expect((await pending).message).toBe('no answer within 1000ms');
+    } finally {
+      jest.useRealTimers();
     }
   });
 

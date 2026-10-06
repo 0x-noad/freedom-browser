@@ -500,7 +500,9 @@ describe('Blockscout is a shortcut: anything wrong falls back to the quorum path
 
   // The pair RPC's entries are what Ant gets: one not in the exact shape Ant
   // reads fails the pair before Blockscout is asked, and the quorum's refusal
-  // follows. Blockscout, not at fault, is not left alone for it.
+  // follows. Blockscout, not at fault, is not left alone for it; the RPC is
+  // not asked to pair again (nor re-spent on every wide window) until its
+  // cooldown is over.
   test.each([
     ['no blockHash', (log) => ({ ...log, blockHash: undefined })],
     ['a short blockHash', (log) => ({ ...log, blockHash: log.blockHash.slice(0, 40) })],
@@ -531,7 +533,40 @@ describe('Blockscout is a shortcut: anything wrong falls back to the quorum path
     expect(got).toMatchObject({ shrinks: true });
     expect(blockscout.calls).toHaveLength(0);
     malformed = false;
+    const wideAsks = () =>
+      requests.filter(
+        (name) => name.startsWith('gnosischain:') && Number(name.split(':')[1]) > 10_000
+      ).length;
+    const before = wideAsks();
+    const cooled = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    expect(cooled).toMatchObject({ shrinks: true });
+    expect(wideAsks()).toBe(before);
+    expect(blockscout.calls).toHaveLength(0);
+    // Past the cooldown (the learned caps lapse with it, so the quorum learns
+    // them again first), the RPC pairs once more.
+    jest.setSystemTime(Date.now() + router.LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS + 1);
+    await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
     expect((await bridgeGetLogs(DEPLOY_BLOCK, HEAD)).source).toBe('blockscout');
+  });
+
+  // The newest blocks' quorum answer reaches Ant too: members that agree on
+  // an entry not in the exact shape Ant reads do not make it well formed.
+  test('a tail quorum agreeing on a malformed entry: no answer', async () => {
+    const spoilTail = (capped) => (from, to) => {
+      if (capped && to - from + 1 > 10_000) return { rpcError: PUBLICNODE_CAP };
+      const logs = inRange(CHAIN, from, to);
+      return to - from + 1 <= 1000 ? logs.map((log) => ({ ...log, blockHash: undefined })) : logs;
+    };
+    useProviders({
+      gnosischain: spoilTail(false),
+      publicnode: spoilTail(true),
+      drpc: spoilTail(true),
+    });
+    await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    expect(got.result).toBeUndefined();
+    expect(got).toMatchObject({ shrinks: true });
+    expect(blockscout.calls.length).toBeGreaterThan(0);
   });
 
   test("a capped Blockscout page Blockscout's cap hides is caught by the RPC disagreeing", async () => {
