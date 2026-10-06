@@ -61,7 +61,6 @@ export function initVaultData(opts = {}) {
   const detailJson = document.getElementById('vault-detail-json');
   const detailDelete = document.getElementById('vault-detail-delete');
   // Consent request view
-  const reqApp = document.getElementById('vault-request-app');
   const reqSite = document.getElementById('vault-request-site');
   const reqIcon = document.getElementById('vault-request-icon');
   const reqFavicon = document.getElementById('vault-request-favicon');
@@ -277,42 +276,77 @@ export function initVaultData(opts = {}) {
     refresh();
   }
 
+  /** Bumped per request, so a late cache hit can't paint over a newer prompt. */
+  let requestGeneration = 0;
+  /** Re-checks of a cold favicon cache: 6 × 500ms covers a page load. */
+  const FAVICON_RETRIES = 6;
+  const FAVICON_RETRY_MS = 500;
+
+  function paintRequestFavicon(src) {
+    reqFavicon.onerror = () => reqIcon.classList.add('hidden');
+    reqFavicon.src = src;
+    reqIcon.classList.remove('hidden');
+    reqIcon.classList.add('has-favicon');
+  }
+
   /**
-   * Paint the requesting site's favicon, mirroring the wallet's Connect pane:
-   * the cached one if the browser has it, otherwise hide the tile rather than
-   * fetch — this pane must not make a network request on a site's behalf.
+   * Paint the requesting site's icon, the way the wallet's Connect pane does.
+   *
+   * The site's own icon comes first. It rode in with the request and main has
+   * already clamped it (data: URI, PNG/JPEG/WebP, size and dimension capped),
+   * and it is the same icon the launcher tile will carry — so the user approves
+   * exactly what they will later see, with nothing fetched.
+   *
+   * Only without one do we fall back to the favicon cache, and that fallback is
+   * why the tile used to be a coin toss. The cache is filled by the tab strip,
+   * which pairs `did-stop-loading` with `page-favicon-updated` before it fetches
+   * anything — so a site calling `vault.connect()` early in its boot raises this
+   * sheet before its own icon has been fetched, and a first visit starts cold
+   * regardless. One lookup at prompt time therefore hit or missed depending on
+   * when the site happened to ask. Re-check for a few seconds while the sheet is
+   * up instead; still never fetch, because this pane must not make a network
+   * request on a site's behalf.
    */
-  function showRequestFavicon(site) {
+  function showRequestFavicon(site, icon) {
     if (!reqIcon || !reqFavicon) return;
-    reqIcon.classList.remove('has-favicon', 'hidden');
+    const generation = ++requestGeneration;
+    reqIcon.classList.remove('has-favicon');
+    reqIcon.classList.add('hidden');
     reqFavicon.src = '';
-    if (!site || !window.electronAPI?.getCachedFavicon) {
-      reqIcon.classList.add('hidden');
+
+    if (icon) {
+      paintRequestFavicon(icon);
       return;
     }
-    window.electronAPI
-      .getCachedFavicon(site)
-      .then((favicon) => {
-        if (!favicon) {
-          reqIcon.classList.add('hidden');
-          return;
-        }
-        reqFavicon.src = favicon;
-        reqIcon.classList.add('has-favicon');
-        reqFavicon.onerror = () => reqIcon.classList.add('hidden');
-      })
-      .catch(() => reqIcon.classList.add('hidden'));
+    if (!site || !window.electronAPI?.getCachedFavicon) return;
+
+    let attempts = 0;
+    const check = () => {
+      if (generation !== requestGeneration) return;
+      window.electronAPI
+        .getCachedFavicon(site)
+        .then((favicon) => {
+          if (generation !== requestGeneration) return;
+          if (favicon) {
+            paintRequestFavicon(favicon);
+            return;
+          }
+          if (++attempts < FAVICON_RETRIES) setTimeout(check, FAVICON_RETRY_MS);
+        })
+        .catch(() => {});
+    };
+    check();
   }
 
   // --- consent request (a site is asking for access) -------------------------
   function showRequest(req) {
-    reqApp.textContent = (req.appMetadata && req.appMetadata.name) || 'A website';
-    // The authoritative origin, shown the way the wallet's Connect pane shows it.
-    // `req.origin` is what main derived from the sender frame, so unlike the app
-    // name above it cannot be spoofed by the page.
+    // The origin main derived from the sender frame — the one thing on this
+    // sheet the page cannot choose. The site's claimed name is deliberately not
+    // shown: the wallet's Connect pane names the origin and nothing else, and a
+    // page-supplied name sitting above it would be the spoofable half.
     const site = req.origin || req.namespace || '';
     if (reqSite) reqSite.textContent = hostOf(site) || site;
-    showRequestFavicon(site);
+    showRequestFavicon(site, req.icon);
     const fields = (req.requestedScopes || []).flatMap((s) => s.fields || []);
     reqFields.innerHTML = '';
     for (const f of fields) {

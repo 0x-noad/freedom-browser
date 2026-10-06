@@ -1930,24 +1930,33 @@
                 <!-- REQUEST VIEW (a site is asking for access — the consent prompt) -->
                 <div id="vault-request-view" class="hidden">
                   <div class="vault-request">
-                    <!-- Same block the wallet's Connect pane uses, same classes:
-                         the two prompts are the same question about the same site,
-                         so they should look the same. The site shown is the origin
-                         main observed on the sender frame, never a page claim. -->
+                    <!-- The wallet's Connect pane, class for class: the two prompts
+                         ask the same question about the same site, so they look the
+                         same. The site shown is the origin main derived from the
+                         sender frame, never anything the page claims. -->
                     <div class="dapp-connect-origin">
                       <div class="dapp-connect-icon" id="vault-request-icon">
                         <img class="dapp-connect-favicon" id="vault-request-favicon" alt="" />
                       </div>
                       <div class="dapp-connect-site" id="vault-request-site">example.com</div>
+                      <div class="dapp-connect-wants">wants access to your vault</div>
                     </div>
-                    <div class="vault-request-head">
-                      <div class="vault-request-app" id="vault-request-app">A website</div>
+
+                    <!-- Where Connect lists three fixed bullets, the vault lists the
+                         fields this site asked for, each with its own read/write
+                         toggle: whatever is left ticked IS the grant. -->
+                    <div class="dapp-connect-permissions">
+                      <div class="dapp-connect-permissions-title">This will allow the site to:</div>
+                      <div id="vault-request-fields" class="vault-request-fields"></div>
                     </div>
-                    <div class="vault-request-sub">wants access to your vault. Choose what to allow:</div>
-                    <div id="vault-request-fields" class="vault-request-fields"></div>
-                    <div class="vault-request-actions">
-                      <button type="button" id="vault-request-deny" class="vault-btn">Deny</button>
-                      <button type="button" id="vault-request-allow" class="vault-btn primary">Allow</button>
+
+                    <div class="dapp-connect-actions">
+                      <button type="button" id="vault-request-deny" class="dapp-connect-reject-btn">
+                        Deny
+                      </button>
+                      <button type="button" id="vault-request-allow" class="dapp-connect-approve-btn">
+                        Allow
+                      </button>
                     </div>
                   </div>
                 </div>

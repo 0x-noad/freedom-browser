@@ -51,10 +51,9 @@
 }
 .vault-btn.primary:hover { filter: brightness(1.08); }
 
-/* Consent request view */
-.vault-request-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.vault-request-app { font-size: 16px; font-weight: 700; color: var(--text); }
-.vault-request-sub { font-size: 13px; color: var(--muted); margin: 8px 0 14px; }
+/* Consent request view. The frame is the wallet's own `.dapp-connect-*` Connect
+   pane (src/renderer/styles/sidebar.css); only the field rows below are ours,
+   standing in for that pane's fixed bullet list. */
 .vault-request-fields { display: flex; flex-direction: column; gap: 8px; }
 .vault-req-field {
   display: flex;
@@ -76,8 +75,6 @@
 }
 .vault-req-tog { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .vault-req-tog input { accent-color: var(--accent); }
-.vault-request-actions { display: flex; gap: 8px; margin-top: 16px; }
-.vault-request-actions .vault-btn { flex: 1; padding: 10px; }
 
 .vault-list { display: flex; flex-direction: column; gap: 6px; }
 .vault-empty { color: var(--muted); font-size: 13px; padding: 10px 4px; }
