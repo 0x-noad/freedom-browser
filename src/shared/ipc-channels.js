@@ -87,6 +87,9 @@ module.exports = {
   SHORTCUTS_PREVIEW_BINDING: 'shortcuts:preview-binding',
   SHORTCUTS_SET_OVERRIDE: 'shortcuts:set-override',
   SHORTCUTS_RESET: 'shortcuts:reset',
+  // Settings > Shortcuts arming/disarming a recording, so the browser-process
+  // tab-switch keys (tab-switch-keys.js) let the chord reach the page.
+  SHORTCUTS_SET_RECORDING: 'shortcuts:set-recording',
 
   // Bzz routing (Swarm)
   BZZ_SET_BASE: 'bzz:set-base',

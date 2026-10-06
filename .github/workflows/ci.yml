@@ -1507,6 +1507,11 @@ jobs:
   # half runs on all three (that is where macOS and Windows/Linux differed);
   # the real-keypress half needs X11 key injection and runs on Linux only,
   # which is where the bug shipped.
+  #
+  # Issue #556 rides along: Next/Previous Tab must switch on every press from
+  # a focused page. Same shape — a main-process-delivered press on all three
+  # platforms (the leg that runs on macOS, where #556 was reported), real X11
+  # presses via xdotool on Linux.
   e2e-close-tab-shortcut:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -1547,13 +1552,13 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install xdotool
 
-      - name: Run close-tab shortcut E2E
+      - name: Run close-tab and tab-switch shortcut E2E
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a npm run test:e2e -- test-e2e/close-tab-shortcut.spec.js
+            xvfb-run -a npm run test:e2e -- test-e2e/close-tab-shortcut.spec.js test-e2e/tab-switch-shortcut.spec.js
           else
-            npm run test:e2e -- test-e2e/close-tab-shortcut.spec.js
+            npm run test:e2e -- test-e2e/close-tab-shortcut.spec.js test-e2e/tab-switch-shortcut.spec.js
           fi
 
       - name: Upload Playwright traces and screenshots

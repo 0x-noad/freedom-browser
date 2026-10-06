@@ -2534,7 +2534,9 @@ export const initTabs = async () => {
         addressInput.select();
       }
     }
-    // Next tab (Ctrl+PageDown; aliases Ctrl+Tab, Cmd+Shift+])
+    // Next tab (Ctrl+PageDown; aliases Ctrl+Tab, Cmd+Shift+]). Next/Previous
+    // are normally claimed in the main process before this listener sees
+    // them (tab-switch-keys.js, #556); this stays as the chrome's fallback.
     if (matchesShortcut(event, 'tab.next')) {
       event.preventDefault();
       switchToNextTab();
