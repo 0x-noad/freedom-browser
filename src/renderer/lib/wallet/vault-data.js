@@ -62,7 +62,9 @@ export function initVaultData(opts = {}) {
   const detailDelete = document.getElementById('vault-detail-delete');
   // Consent request view
   const reqApp = document.getElementById('vault-request-app');
-  const reqOrigin = document.getElementById('vault-request-origin');
+  const reqSite = document.getElementById('vault-request-site');
+  const reqIcon = document.getElementById('vault-request-icon');
+  const reqFavicon = document.getElementById('vault-request-favicon');
   const reqFields = document.getElementById('vault-request-fields');
   const reqAllow = document.getElementById('vault-request-allow');
   const reqDeny = document.getElementById('vault-request-deny');
@@ -275,10 +277,42 @@ export function initVaultData(opts = {}) {
     refresh();
   }
 
+  /**
+   * Paint the requesting site's favicon, mirroring the wallet's Connect pane:
+   * the cached one if the browser has it, otherwise hide the tile rather than
+   * fetch — this pane must not make a network request on a site's behalf.
+   */
+  function showRequestFavicon(site) {
+    if (!reqIcon || !reqFavicon) return;
+    reqIcon.classList.remove('has-favicon', 'hidden');
+    reqFavicon.src = '';
+    if (!site || !window.electronAPI?.getCachedFavicon) {
+      reqIcon.classList.add('hidden');
+      return;
+    }
+    window.electronAPI
+      .getCachedFavicon(site)
+      .then((favicon) => {
+        if (!favicon) {
+          reqIcon.classList.add('hidden');
+          return;
+        }
+        reqFavicon.src = favicon;
+        reqIcon.classList.add('has-favicon');
+        reqFavicon.onerror = () => reqIcon.classList.add('hidden');
+      })
+      .catch(() => reqIcon.classList.add('hidden'));
+  }
+
   // --- consent request (a site is asking for access) -------------------------
   function showRequest(req) {
     reqApp.textContent = (req.appMetadata && req.appMetadata.name) || 'A website';
-    reqOrigin.textContent = req.origin || req.namespace || '';
+    // The authoritative origin, shown the way the wallet's Connect pane shows it.
+    // `req.origin` is what main derived from the sender frame, so unlike the app
+    // name above it cannot be spoofed by the page.
+    const site = req.origin || req.namespace || '';
+    if (reqSite) reqSite.textContent = hostOf(site) || site;
+    showRequestFavicon(site);
     const fields = (req.requestedScopes || []).flatMap((s) => s.fields || []);
     reqFields.innerHTML = '';
     for (const f of fields) {

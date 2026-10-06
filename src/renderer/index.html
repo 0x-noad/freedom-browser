@@ -1930,9 +1930,18 @@
                 <!-- REQUEST VIEW (a site is asking for access — the consent prompt) -->
                 <div id="vault-request-view" class="hidden">
                   <div class="vault-request">
+                    <!-- Same block the wallet's Connect pane uses, same classes:
+                         the two prompts are the same question about the same site,
+                         so they should look the same. The site shown is the origin
+                         main observed on the sender frame, never a page claim. -->
+                    <div class="dapp-connect-origin">
+                      <div class="dapp-connect-icon" id="vault-request-icon">
+                        <img class="dapp-connect-favicon" id="vault-request-favicon" alt="" />
+                      </div>
+                      <div class="dapp-connect-site" id="vault-request-site">example.com</div>
+                    </div>
                     <div class="vault-request-head">
                       <div class="vault-request-app" id="vault-request-app">A website</div>
-                      <div class="vault-request-origin" id="vault-request-origin"></div>
                     </div>
                     <div class="vault-request-sub">wants access to your vault. Choose what to allow:</div>
                     <div id="vault-request-fields" class="vault-request-fields"></div>

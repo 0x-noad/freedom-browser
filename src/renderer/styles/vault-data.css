@@ -54,12 +54,6 @@
 /* Consent request view */
 .vault-request-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .vault-request-app { font-size: 16px; font-weight: 700; color: var(--text); }
-.vault-request-origin {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: var(--accent);
-  word-break: break-all;
-}
 .vault-request-sub { font-size: 13px; color: var(--muted); margin: 8px 0 14px; }
 .vault-request-fields { display: flex; flex-direction: column; gap: 8px; }
 .vault-req-field {

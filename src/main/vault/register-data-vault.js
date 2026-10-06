@@ -73,6 +73,8 @@ async function promptConsent(req) {
 
 /** id -> resolve, for unlock round-trips in flight. */
 const pendingUnlock = new Map();
+/** The unlock prompt in flight, shared by every caller (see requestUnlockFromUi). */
+let pendingUnlockPrompt = null;
 let unlockSeq = 0;
 
 /**
@@ -84,13 +86,26 @@ let unlockSeq = 0;
 async function requestUnlockFromUi(context) {
   if (identity.isUnlocked()) return true;
   if (!consentTarget || consentTarget.isDestroyed()) return false;
+
+  // One prompt at a time, whoever asks. The engine guards every operation that
+  // needs the key with `if (!isUnlocked() && !await unlock())`, so a single
+  // connect reaches here more than once — the second check runs before the first
+  // prompt has resolved, both see a locked vault, and the user is asked twice for
+  // the same unlock. Sharing the in-flight promise makes every caller wait on one
+  // prompt. There is only ever one vault to unlock, so there is only ever one
+  // right answer in flight.
+  if (pendingUnlockPrompt) return pendingUnlockPrompt;
+
   const id = `unlock-${++unlockSeq}`;
-  return new Promise((resolve) => {
+  pendingUnlockPrompt = new Promise((resolve) => {
     pendingUnlock.set(id, resolve);
     // `label` names whoever the unlock is for, so the sidebar prompt reads the
     // same way it does for the wallet's own flows. Main-derived, never page-supplied.
     consentTarget.webContents.send('datavault:show-unlock', { id, label: context || null });
+  }).finally(() => {
+    pendingUnlockPrompt = null;
   });
+  return pendingUnlockPrompt;
 }
 
 /** Wire the consent + unlock round-trip channels. */
