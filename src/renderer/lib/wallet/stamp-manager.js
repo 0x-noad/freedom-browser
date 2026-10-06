@@ -72,6 +72,8 @@ export async function openStampManager() {
   stampManagerScreen?.classList.remove('hidden');
   isOpen = true;
   loadedKey = null;
+  // Nothing is listed until this visit's getStamps lands.
+  batchCount = 0;
   void window.publishSetup?.watch('storage', true);
 
   renderDepositWarning();
@@ -91,6 +93,7 @@ export async function openStampManager() {
 export function closeStampManager() {
   if (isOpen) void window.publishSetup?.watch('storage', false);
   isOpen = false;
+  batchCount = 0;
   stampManagerScreen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
 }
@@ -112,8 +115,9 @@ function renderDepositWarning() {
 // /health.walletScan). While publish setup holds on it, the list may be
 // missing batches the wallet owns, so the screen shows the search and its
 // progress instead of "You have no storage yet". Readiness carries the
-// message (publish-setup-service.js), so this screen words it the same way
-// as the setup screen.
+// message (publish-setup-service.js); this screen shows its `scanMessage`
+// when set, since the setup screen's wording promises storage plans that
+// never appear here.
 function scanHold() {
   const readiness = setupState?.readiness;
   if (readiness?.key !== 'checking') return null;
@@ -125,7 +129,7 @@ function scanHold() {
 function renderScanStatus() {
   const hold = scanHold();
   if (scanStatus) {
-    scanStatus.textContent = hold?.message || '';
+    scanStatus.textContent = hold?.scanMessage || hold?.message || '';
     scanStatus.classList.toggle('hidden', !hold);
   }
   // The search gave up (30 minutes without progress): the hold is released,

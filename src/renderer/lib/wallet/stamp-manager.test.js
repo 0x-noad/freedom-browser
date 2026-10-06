@@ -54,16 +54,26 @@ const flush = async () => {
 
 const SCANNING =
   'Looking for your existing storage… 42% checked. Storage plans appear if this wallet has none.';
+// What the Storage screen shows for SCANNING: no plans appear there.
+const SCANNING_HERE =
+  'Looking for your existing storage… 42% checked. Storage this wallet already owns is listed here once found.';
 const SCANNING_UNREPORTED = 'Looking for your existing storage…';
 const RETRYING =
   'Looking for your existing storage… 42% checked. Gnosis Chain did not answer, so the Swarm node is trying again. If this lasts, check the Gnosis RPC in Settings.';
 const STALLED =
   'The Swarm node could not finish looking for storage this wallet already owns: Gnosis Chain keeps failing. Check the Gnosis RPC in Settings before buying, or you may pay for storage you already have.';
 
-const held = (message, rediscovery = 'running', progress = 42) => ({
+const held = (message, rediscovery = 'running', progress = 42, scanMessage) => ({
   canBuy: true,
   stamps: { known: true, usable: 0, pending: 0, total: 0 },
-  readiness: { key: 'checking', ok: false, message, rediscovery, progress },
+  readiness: {
+    key: 'checking',
+    ok: false,
+    message,
+    rediscovery,
+    progress,
+    ...(scanMessage ? { scanMessage } : {}),
+  },
 });
 const needsStorage = (extra = {}) => ({
   canBuy: true,
@@ -129,7 +139,7 @@ async function load({ state, stamps = [] }) {
     push(next);
     await flush();
   };
-  return { elements, visible, emit, setStamps };
+  return { elements, visible, emit, setStamps, mod };
 }
 
 afterEach(() => {
@@ -143,6 +153,11 @@ afterEach(() => {
 describe('the storage screen during the wallet-history search', () => {
   test.each([
     ['scanning with a percentage', held(SCANNING), SCANNING],
+    [
+      'scanning, worded for this screen',
+      held(SCANNING, 'running', 42, SCANNING_HERE),
+      SCANNING_HERE,
+    ],
     [
       'scanning with no percentage',
       held(SCANNING_UNREPORTED, 'running', null),
@@ -206,6 +221,27 @@ describe('the storage screen during the wallet-history search', () => {
     const { visible } = await load({ state: needsStorage() });
     expect(visible('stamp-scan-status')).toBe(false);
     expect(visible('stamp-scan-warning')).toBe(false);
+    expect(visible('stamp-list-empty')).toBe(true);
+  });
+
+  test("reopening forgets the last visit's batches until this visit's list lands", async () => {
+    const { visible, mod, setStamps } = await load({ state: ready(), stamps: [BATCH] });
+    expect(visible('stamp-list-empty')).toBe(false);
+    mod.closeStampManager();
+
+    // The batches are gone by the next visit, and the list is slow to come.
+    setStamps([]);
+    let land;
+    global.window.swarmNode.getStamps.mockImplementation(
+      () => new Promise((resolve) => (land = resolve))
+    );
+    global.window.publishSetup.getState.mockResolvedValue(needsStorage());
+    await mod.openStampManager();
+    await flush();
+    expect(visible('stamp-list-empty')).toBe(true);
+
+    land({ success: true, stamps: [] });
+    await flush();
     expect(visible('stamp-list-empty')).toBe(true);
   });
 });

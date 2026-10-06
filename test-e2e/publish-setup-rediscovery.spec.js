@@ -369,7 +369,7 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
     const status = window.locator('#stamp-scan-status');
     const empty = window.locator('#stamp-list-empty');
     await expect(status).toHaveText(
-      'Looking for your existing storage… 48% checked. Storage plans appear if this wallet has none.'
+      'Looking for your existing storage… 48% checked. Storage this wallet already owns is listed here once found.'
     );
     await expect(empty).toBeHidden();
     await expect(window.locator('#stamp-scan-warning')).toBeHidden();
