@@ -1108,8 +1108,6 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   // Tor rows only where there is one to drive (or where the integration is
   // already enabled). Same shape as checkRadicleBinary: `{ available }`.
   checkTorBinary: guardSettingsPage('checkTorBinary', () => ipcRenderer.invoke('tor:checkBinary')),
-  // The running version, for Settings → About Freedom.
-  getAppVersion: guardSettingsPage('getAppVersion', () => ipcRenderer.invoke('app:get-version')),
   onProfileUpdated: guardInternalSubscription('onProfileUpdated', 'profile:updated'),
   listProfiles: guardInternal('listProfiles', () => ipcRenderer.invoke('profile:list')),
   createProfile: guardProfileManagerPage('createProfile', (profile) =>
@@ -1231,6 +1229,22 @@ contextBridge.exposeInMainWorld('freedomAPI', {
     'onSitePermissionsChanged',
     'permissions:changed'
   ),
+
+  // Settings → About Freedom → Updates (#87). The state is a snapshot of the main-process
+  // updater (updater.js / update-state.js); `onUpdateState` gets every change,
+  // `getUpdateState` hydrates a page opened after the last broadcast. Check
+  // and install are settings-only, like every other action in Settings —
+  // install quits the app.
+  getUpdateState: guardSettingsPage('getUpdateState', () =>
+    ipcRenderer.invoke('update:get-state')
+  ),
+  checkForUpdates: guardSettingsPage('checkForUpdates', () => {
+    ipcRenderer.send('update:check');
+  }),
+  restartToUpdate: guardSettingsPage('restartToUpdate', () => {
+    ipcRenderer.send('update:restart-and-install');
+  }),
+  onUpdateState: guardInternalSubscription('onUpdateState', 'update:state'),
 
   // Bookmarks (read-only for internal pages)
   getBookmarks: guardInternal('getBookmarks', () => ipcRenderer.invoke('bookmarks:get')),
