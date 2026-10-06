@@ -22,7 +22,15 @@
 // WORKER_START_TIMEOUT_MS, independent of `timeoutMs` so a tight per-request
 // limit is not also a start limit; a worker not online by then counts as one
 // that cannot start. Node always reports `online`, `error` or `exit`, so this
-// is a safety net that keeps the "every request settles" promise below.
+// is a safety net that keeps the "every request settles" promise below. Once
+// any worker of this host has answered, the thread start is known to work, so
+// a later replacement that misses the bound is a loaded machine, not a broken
+// worker: its request fails with `TaskWorkerTimeout` and the next request gets
+// a fresh worker, instead of the host being disabled for the session.
+//
+// A caller's worst-case wait for one request is therefore its queue wait plus
+// WORKER_START_TIMEOUT_MS plus `timeoutMs`. A caller that needs a tighter
+// total bound wraps `run` in its own deadline and passes the `signal`.
 //
 // Every request settles:
 //   - A worker that cannot start, or dies before it has answered anything, is
@@ -76,7 +84,9 @@ function abortError(message) {
  * @param {() => any} [options.workerData] - evaluated at each spawn
  * @param {object} [options.resourceLimits]
  * @param {number} options.timeoutMs - per request, from when the worker gets it
- *   (or, for a worker still starting, from when it comes online)
+ *   (or, for a worker still starting, from when it comes online). Not a bound
+ *   on the caller's total wait, which can add up to WORKER_START_TIMEOUT_MS
+ *   for the start and any time spent queued behind other requests.
  */
 function createTaskWorkerHost({
   name,
@@ -89,6 +99,8 @@ function createTaskWorkerHost({
   let entry = null;
   const queue = []; // requests not yet handed to a worker
   let disabled = false;
+  // Some worker of this host has answered, so a start can succeed here.
+  let anyAnswered = false;
   let nextId = 1;
   let requestTimeoutMs = timeoutMs;
   let currentWorkerPath = workerPath;
@@ -149,7 +161,17 @@ function createTaskWorkerHost({
       if (target.current) armTimer(target, target.current);
     });
     target.startTimer = setTimeout(() => {
-      if (!target.online) retire(target, `worker not online after ${WORKER_START_TIMEOUT_MS} ms`);
+      if (target.online) return;
+      const reason = `worker not online after ${WORKER_START_TIMEOUT_MS} ms`;
+      if (!anyAnswered) {
+        retire(target, reason);
+        return;
+      }
+      // Earlier workers started fine: this is load, not a worker that cannot
+      // run. Fail the request as a timeout and let the next one respawn.
+      log.warn(`[${name}] ${reason}; replacing it`);
+      target.deliberate = true;
+      retire(target, reason, () => new TaskWorkerTimeout(`${name} ${reason}`));
     }, WORKER_START_TIMEOUT_MS);
     target.worker.on('message', (message) => {
       if (message?.type === 'log') {
@@ -161,6 +183,7 @@ function createTaskWorkerHost({
       if (!request || message?.id !== request.id) return;
       target.current = null;
       target.answered = true;
+      anyAnswered = true;
       if (message.ok) {
         settle(request, null, message.result);
       } else {
@@ -287,6 +310,7 @@ function createTaskWorkerHost({
     stop();
     entry = null;
     disabled = false;
+    anyAnswered = false;
     requestTimeoutMs = testTimeoutMs;
     currentWorkerPath = testPath;
   }

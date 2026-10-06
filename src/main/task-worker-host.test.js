@@ -174,6 +174,29 @@ test('a worker that does not come online within the start limit is disabled for 
   );
 });
 
+test('a replacement that misses the start limit after earlier answers times out, not disables', async () => {
+  fakeTimeouts();
+  host.resetForTest({ timeoutMs: 200 });
+  const first = await host.run('echo', { value: 'a' });
+  // Retire the answering worker: the hang times out and the next request
+  // needs a replacement.
+  const hung = host.run('echo', { value: 'hang' });
+  jest.advanceTimersByTime(200);
+  await expect(hung).rejects.toBeInstanceOf(TaskWorkerTimeout);
+  // Synchronously, before the replacement can report online.
+  const pending = host.run('echo', { value: 'b' });
+  jest.advanceTimersByTime(WORKER_START_TIMEOUT_MS);
+  const err = await pending.catch((e) => e);
+  expect(err).toBeInstanceOf(TaskWorkerTimeout);
+  expect(err.message).toContain(`not online after ${WORKER_START_TIMEOUT_MS} ms`);
+  // Not disabled: the next request gets a fresh worker.
+  jest.useRealTimers();
+  const next = await host.run('echo', { value: 'c' });
+  expect(next).toMatch(/^echo:c/);
+  expect(next.split(':')[2]).not.toBe(first.split(':')[2]);
+  expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('running on the main thread'));
+});
+
 test('the timeout counts from when the worker takes a request, not from when it was queued', async () => {
   // The worker answers only when the test releases it, and (fake) time moves
   // only when the test advances it, so this does not depend on how fast the
