@@ -45,9 +45,10 @@ If a setting seems to fit two entries, ask which screen a user would open to
 change it, and put it there. Don't split one feature's controls across both.
 The one standing exception is start-up: every bundled node's "start when
 Freedom opens" toggle sits together in Nodes → Startup, even when the feature
-itself is Beta and enabled from Advanced (Tor is enabled in Advanced and
-started at launch from Nodes → Startup; the Beta Ethereum and Gnosis node
-start-up rows live in Startup with their badges).
+itself is Beta. Tor is switched on in Advanced ("Enable Tor"), while its mode
+and SOCKS endpoint sit in the Nodes panel and its start-up toggle in Startup.
+The Ethereum and Gnosis nodes have no Advanced toggle at all: they are one
+"Myotis" row in the Nodes panel and two badged start-up rows in Startup.
 
 ## 3. Adding an entry or a panel
 
@@ -59,13 +60,21 @@ start-up rows live in Startup with their badges).
   closest existing entry. (Downloads holds one control today. It is an
   established entry kept for discoverability, not a precedent.)
 - When a new bundled node arrives, it gets a row in the Nodes panel and one in
-  Startup, with the same name in both.
-- A Beta feature's enable and configuration rows live in Advanced, with the
-  `.resolver-badge` Beta badge, never "(Beta)" in the label. Its start-at-launch
-  toggle, if it has one, still goes in Nodes → Startup beside its siblings,
-  badged the same way (§2). When it graduates, the same PR that drops the badge
-  moves its rows to their home entry (§2) and adds the old hash to
-  `LEGACY_ROUTES`.
+  Startup, named so a user can tell they are the same node. Today's pairs
+  don't all match word for word (Nodes says "Myotis" where Startup says
+  "Start Ethereum node" / "Start Gnosis node"); don't rename an existing row
+  just to match, and don't flag that pre-existing mismatch in an unrelated PR.
+- A Beta feature's on/off switch lives in Advanced, with the `.resolver-badge`
+  Beta badge, never "(Beta)" in the label. A Beta _node's_ own configuration
+  (mode, endpoint) stays in the Nodes panel beside the other nodes, as Tor's
+  and Myotis's do; don't move node rows into Advanced. Its start-at-launch
+  toggle, if it has one, goes in Nodes → Startup beside its siblings (§2).
+  Badging that toggle is not settled yet: the Ethereum and Gnosis start-up
+  rows carry the Beta badge, `#start-tor-row` doesn't, because Tor's badge is
+  on its Advanced enable row. Follow whichever the nearest sibling does and
+  don't add or remove a badge on an existing row in passing. When a feature
+  graduates, the same PR that drops its badges moves any Advanced rows to
+  their home entry (§2) and adds the old hash to `LEGACY_ROUTES`.
 
 ## 4. One feature, one place, one name
 
