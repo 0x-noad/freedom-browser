@@ -59,6 +59,23 @@ descendants() {
     }'
 }
 
+# macOS: 2 s of samples of pid $1, every thread, symbolicated. Node's release
+# binaries use the hardened runtime, which can refuse an unprivileged sampler;
+# hosted runners have passwordless sudo for the retry. Whether the first try
+# worked is judged by its output, not its exit status: `sample` is not
+# documented to exit non-zero when it can only print "cannot examine process
+# ... try running with sudo", and a missed retry loses the one stack this
+# script exists to capture. A real report always has a "Call graph:" section.
+sample_stack() {
+  local out status=0
+  out=$(sample "$1" 2 -mayDie 2>&1) || status=$?
+  printf '%s\n' "$out"
+  if [ "$status" -ne 0 ] || ! grep -q 'Call graph:' <<<"$out"; then
+    echo "hang-watchdog: unprivileged sample gave no call graph (exit $status); retrying with sudo -n"
+    sudo -n sample "$1" 2 -mayDie 2>&1
+  fi
+}
+
 diagnose() {
   echo "::group::hang-watchdog: process table"
   ps -axo pid,ppid,pgid,etime,stat,%cpu,command 2>/dev/null || ps -ef || ps
@@ -67,10 +84,7 @@ diagnose() {
   for p in $(descendants "$pid"); do
     echo "::group::hang-watchdog: stack of pid $p ($(ps -o command= -p "$p" 2>/dev/null))"
     if command -v sample >/dev/null 2>&1; then
-      # macOS: 2 s of samples, every thread, symbolicated. Node's release
-      # binaries use the hardened runtime, which can refuse an unprivileged
-      # sampler; hosted runners have passwordless sudo for the retry.
-      { sample "$p" 2 -mayDie 2>&1 || sudo -n sample "$p" 2 -mayDie 2>&1; } | sed -n '1,400p'
+      sample_stack "$p" | sed -n '1,400p'
     elif [ -r "/proc/$p/status" ]; then
       grep -E '^(State|Threads):' "/proc/$p/status"
       for t in /proc/"$p"/task/*; do
