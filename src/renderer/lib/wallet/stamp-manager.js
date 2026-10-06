@@ -72,8 +72,7 @@ export async function openStampManager() {
   stampManagerScreen?.classList.remove('hidden');
   isOpen = true;
   loadedKey = null;
-  // Nothing is listed until this visit's getStamps lands.
-  batchCount = 0;
+  clearBatchList();
   void window.publishSetup?.watch('storage', true);
 
   renderDepositWarning();
@@ -93,7 +92,7 @@ export async function openStampManager() {
 export function closeStampManager() {
   if (isOpen) void window.publishSetup?.watch('storage', false);
   isOpen = false;
-  batchCount = 0;
+  clearBatchList();
   stampManagerScreen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
 }
@@ -143,6 +142,15 @@ function renderScanStatus() {
 
 function renderEmptyText() {
   emptyText?.classList.toggle('hidden', batchCount > 0 || scanHold() !== null);
+}
+
+// Nothing is listed until a visit's getStamps lands: the cards, the count and
+// the buy button's wording go together, so the empty text never shows over a
+// previous visit's cards (or beside a "Buy More Storage" for them).
+function clearBatchList() {
+  if (batchListContainer) batchListContainer.innerHTML = '';
+  batchCount = 0;
+  if (buyMoreBtn) buyMoreBtn.textContent = 'Buy Storage';
 }
 
 async function loadBatchList() {

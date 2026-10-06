@@ -225,9 +225,15 @@ describe('the storage screen during the wallet-history search', () => {
   });
 
   test("reopening forgets the last visit's batches until this visit's list lands", async () => {
-    const { visible, mod, setStamps } = await load({ state: ready(), stamps: [BATCH] });
+    const { elements, visible, mod, setStamps } = await load({
+      state: ready(),
+      stamps: [BATCH],
+    });
     expect(visible('stamp-list-empty')).toBe(false);
+    expect(elements['stamp-batch-list'].children).toHaveLength(1);
     mod.closeStampManager();
+    // Closing drops the cards along with the count.
+    expect(elements['stamp-batch-list'].children).toHaveLength(0);
 
     // The batches are gone by the next visit, and the list is slow to come.
     setStamps([]);
@@ -239,9 +245,25 @@ describe('the storage screen during the wallet-history search', () => {
     await mod.openStampManager();
     await flush();
     expect(visible('stamp-list-empty')).toBe(true);
+    // The empty text never sits next to a previous visit's cards.
+    expect(elements['stamp-batch-list'].children).toHaveLength(0);
+    expect(elements['stamp-buy-another-btn'].textContent).toBe('Buy Storage');
 
     land({ success: true, stamps: [] });
     await flush();
     expect(visible('stamp-list-empty')).toBe(true);
+  });
+
+  test("opening clears a previous visit's cards even if close never ran", async () => {
+    // A screen switch can hide the screen without closeStampManager (the
+    // screen hider runs it, but openStampManager must not depend on that).
+    const { elements, visible, mod } = await load({ state: ready(), stamps: [BATCH] });
+    expect(elements['stamp-batch-list'].children).toHaveLength(1);
+    global.window.swarmNode.getStamps.mockImplementation(() => new Promise(() => {}));
+    global.window.publishSetup.getState.mockResolvedValue(needsStorage());
+    await mod.openStampManager();
+    await flush();
+    expect(visible('stamp-list-empty')).toBe(true);
+    expect(elements['stamp-batch-list'].children).toHaveLength(0);
   });
 });
