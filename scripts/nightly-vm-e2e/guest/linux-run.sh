@@ -49,18 +49,26 @@ export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
 export WAYLAND_DISPLAY=wayland-0 DISPLAY=:0 XDG_SESSION_TYPE=wayland
 export FREEDOM_E2E_EXPECTED_VERSION="$version"
 
-run_leg() { # name executable
-  step "packaged suites: $1 ($2)"
-  FREEDOM_E2E_EXECUTABLE="$2" \
-    PLAYWRIGHT_JSON_OUTPUT_FILE="$results/$1.json" \
-    PLAYWRIGHT_HTML_OUTPUT_DIR="$results/$1-report" PLAYWRIGHT_HTML_OPEN=never \
+run_leg() { # name executable [playwright args...]
+  local name="$1" exe="$2"
+  shift 2
+  step "packaged suites: $name ($exe)"
+  FREEDOM_E2E_EXECUTABLE="$exe" \
+    PLAYWRIGHT_JSON_OUTPUT_FILE="$results/$name.json" \
+    PLAYWRIGHT_HTML_OUTPUT_DIR="$results/$name-report" PLAYWRIGHT_HTML_OPEN=never \
     npx playwright test --project=packaged --project=packaged-live \
-    --reporter=list,json,html --output="$results/$1-artifacts" ||
+    --reporter=list,json,html --output="$results/$name-artifacts" "$@" ||
     failed=$((failed + 1))
 }
 
 run_leg deb /opt/Freedom/freedom
-run_leg appimage "$work/Freedom.AppImage"
+# The AppImage is one self-mounting file, so the specs that inspect the
+# artifact's layout on disk (fuse wire in the binary, NOTICES next to it) have
+# nothing to read. The .deb leg above and release.yml's extracted-AppImage
+# smoke cover those; this leg is about launching it the way users do.
+run_leg appimage "$work/Freedom.AppImage" \
+  --grep-invert 'configured fuses|own app\.asar|--inspect does not open|notices ship|licence and NOTICES'
+
 
 step "done: $failed failed leg(s)"
 exit "$failed"
