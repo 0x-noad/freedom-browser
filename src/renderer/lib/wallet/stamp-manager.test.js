@@ -244,8 +244,8 @@ describe('the storage screen during the wallet-history search', () => {
     global.window.publishSetup.getState.mockResolvedValue(needsStorage());
     await mod.openStampManager();
     await flush();
-    expect(visible('stamp-list-empty')).toBe(true);
-    // The empty text never sits next to a previous visit's cards.
+    // Not "no storage yet" before this visit knows; no previous visit's cards.
+    expect(visible('stamp-list-empty')).toBe(false);
     expect(elements['stamp-batch-list'].children).toHaveLength(0);
     expect(elements['stamp-buy-another-btn'].textContent).toBe('Buy Storage');
 
@@ -263,7 +263,28 @@ describe('the storage screen during the wallet-history search', () => {
     global.window.publishSetup.getState.mockResolvedValue(needsStorage());
     await mod.openStampManager();
     await flush();
-    expect(visible('stamp-list-empty')).toBe(true);
+    expect(visible('stamp-list-empty')).toBe(false);
     expect(elements['stamp-batch-list'].children).toHaveLength(0);
+  });
+
+  test('a wallet with storage never reads "no storage yet" while the list loads', async () => {
+    const { elements, visible, mod } = await load({ state: ready(), stamps: [BATCH] });
+    // This visit's /stamps is slow to answer.
+    let land;
+    global.window.swarmNode.getStamps.mockImplementation(
+      () => new Promise((resolve) => (land = resolve))
+    );
+    mod.closeStampManager();
+    await mod.openStampManager();
+    await flush();
+    expect(visible('stamp-scan-status')).toBe(false);
+    expect(visible('stamp-list-empty')).toBe(false);
+    expect(visible('stamp-buy-another-btn')).toBe(true);
+
+    land({ success: true, stamps: [BATCH] });
+    await flush();
+    expect(visible('stamp-list-empty')).toBe(false);
+    expect(elements['stamp-batch-list'].children).toHaveLength(1);
+    expect(elements['stamp-buy-another-btn'].textContent).toBe('Buy More Storage');
   });
 });

@@ -387,6 +387,62 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
     await shoot(window, 'storage-none');
   });
 
+  test('a wallet with storage never reads "no storage yet" while the list loads', async ({
+    electronApp,
+    window,
+  }) => {
+    await startFakeAnt(electronApp);
+    const batch = { batchID: 'aa'.repeat(32), usable: true, utilization: 0, depth: 20 };
+    await setNode(electronApp, {
+      walletScan: { state: 'done', from: FROM, scannedThrough: HEAD, head: HEAD },
+      stamps: [batch],
+    });
+    await wireRealService(electronApp);
+    // A slow node: the Storage screen's list request waits on the test.
+    await electronApp.evaluate(({ ipcMain }) => {
+      globalThis.__heldStamps = [];
+      ipcMain.removeHandler('swarm:get-stamps');
+      ipcMain.handle('swarm:get-stamps', () => {
+        return new Promise((resolve) => {
+          globalThis.__heldStamps.push(() =>
+            resolve({
+              success: true,
+              stamps: [
+                {
+                  batchId: 'aa'.repeat(32),
+                  usable: true,
+                  sizeBytes: 1e9,
+                  usagePercent: 0,
+                  ttlSeconds: 30 * 86400,
+                  depth: 20,
+                },
+              ],
+            })
+          );
+        });
+      });
+    });
+    await openStorage(window);
+
+    const empty = window.locator('#stamp-list-empty');
+    const cards = window.locator('#stamp-batch-list .stamp-batch-card');
+    await expect
+      .poll(() => electronApp.evaluate(() => globalThis.__heldStamps.length))
+      .toBeGreaterThan(0);
+    await expect(window.locator('#stamp-scan-status')).toBeHidden();
+    await expect(empty).toBeHidden();
+    await expect(cards).toHaveCount(0);
+    await shoot(window, 'storage-loading');
+
+    await electronApp.evaluate(() => {
+      for (const release of globalThis.__heldStamps.splice(0)) release();
+    });
+    await expect(cards).toHaveCount(1);
+    await expect(empty).toBeHidden();
+    await expect(window.locator('#stamp-buy-another-btn')).toHaveText('Buy More Storage');
+    await shoot(window, 'storage-loaded');
+  });
+
   test('the storage screen shows the stalled-scan warning over the empty state', async ({
     electronApp,
     window,

@@ -30,8 +30,8 @@ let depositTopUpBtn;
 
 let isOpen = false;
 let setupState = null;
-// Batches in the list last rendered.
-let batchCount = 0;
+// Batches in the list last rendered; null until this visit's getStamps lands.
+let batchCount = null;
 let loadedKey = null;
 let loadRequestId = 0;
 
@@ -141,15 +141,22 @@ function renderScanStatus() {
 }
 
 function renderEmptyText() {
-  emptyText?.classList.toggle('hidden', batchCount > 0 || scanHold() !== null);
+  // Until the list lands nothing says "no storage": a wallet with batches
+  // would read that, beside the buy button, for as long as /stamps takes.
+  emptyText?.classList.toggle(
+    'hidden',
+    batchCount === null || batchCount > 0 || scanHold() !== null
+  );
 }
 
 // Nothing is listed until a visit's getStamps lands: the cards, the count and
-// the buy button's wording go together, so the empty text never shows over a
-// previous visit's cards (or beside a "Buy More Storage" for them).
+// the buy button's wording go together, so a previous visit's cards never
+// show, and neither does the empty text until this visit knows it is empty.
+// The button stays (with the neutral "Buy Storage") so a slow or stuck
+// /stamps never leaves the screen without a way to buy.
 function clearBatchList() {
   if (batchListContainer) batchListContainer.innerHTML = '';
-  batchCount = 0;
+  batchCount = null;
   if (buyMoreBtn) buyMoreBtn.textContent = 'Buy Storage';
 }
 
