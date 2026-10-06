@@ -15,6 +15,15 @@
 // times out), and a request that is aborted or times out costs nothing to the
 // ones still waiting: they go to the next worker.
 //
+// Nor does it count a fresh worker's thread start (#545): handed to a worker
+// that is not yet `online`, a request's timer arms when the worker comes
+// online. (Loading the worker's own script runs after `online`, so that does
+// count against the first request.) The start has its own bound,
+// WORKER_START_TIMEOUT_MS, independent of `timeoutMs` so a tight per-request
+// limit is not also a start limit; a worker not online by then counts as one
+// that cannot start. Node always reports `online`, `error` or `exit`, so this
+// is a safety net that keeps the "every request settles" promise below.
+//
 // Every request settles:
 //   - A worker that cannot start, or dies before it has answered anything, is
 //     not retried: its request and every request (then and later) reject with
@@ -50,6 +59,9 @@ class TaskWorkerTimeout extends Error {
 }
 
 const LOG_LEVELS = new Set(['info', 'warn', 'error']);
+// Generous on purpose: a thread start on a heavily loaded machine takes
+// seconds, not tens of them.
+const WORKER_START_TIMEOUT_MS = 30_000;
 
 function abortError(message) {
   const error = new Error(message);
@@ -64,6 +76,7 @@ function abortError(message) {
  * @param {() => any} [options.workerData] - evaluated at each spawn
  * @param {object} [options.resourceLimits]
  * @param {number} options.timeoutMs - per request, from when the worker gets it
+ *   (or, for a worker still starting, from when it comes online)
  */
 function createTaskWorkerHost({
   name,
@@ -72,7 +85,7 @@ function createTaskWorkerHost({
   resourceLimits,
   timeoutMs,
 }) {
-  // { worker, current: request|null, answered, deliberate, terminated }
+  // { worker, current: request|null, online, startTimer, answered, deliberate, terminated }
   let entry = null;
   const queue = []; // requests not yet handed to a worker
   let disabled = false;
@@ -97,6 +110,7 @@ function createTaskWorkerHost({
     if (target.terminated) return;
     target.terminated = true;
     if (entry === target) entry = null;
+    clearTimeout(target.startTimer);
     const request = target.current;
     target.current = null;
     if (request) settle(request, makeError());
@@ -116,6 +130,8 @@ function createTaskWorkerHost({
     const target = {
       worker: null,
       current: null,
+      online: false,
+      startTimer: null,
       answered: false,
       // Retired on purpose (timeout, abort, stop), not because it could not run.
       deliberate: false,
@@ -126,6 +142,15 @@ function createTaskWorkerHost({
       execArgv: [],
       resourceLimits,
     });
+    target.worker.on('online', () => {
+      if (target.terminated) return;
+      target.online = true;
+      clearTimeout(target.startTimer);
+      if (target.current) armTimer(target, target.current);
+    });
+    target.startTimer = setTimeout(() => {
+      if (!target.online) retire(target, `worker not online after ${WORKER_START_TIMEOUT_MS} ms`);
+    }, WORKER_START_TIMEOUT_MS);
     target.worker.on('message', (message) => {
       if (message?.type === 'log') {
         const level = LOG_LEVELS.has(message.level) ? message.level : 'info';
@@ -174,6 +199,16 @@ function createTaskWorkerHost({
     const target = entry;
     const request = queue.shift();
     target.current = request;
+    // A worker still starting arms this from its 'online' handler instead.
+    if (target.online) armTimer(target, request);
+    try {
+      target.worker.postMessage({ id: request.id, op: request.op, ...request.payload });
+    } catch (err) {
+      retire(target, `worker unreachable (${err.message})`);
+    }
+  }
+
+  function armTimer(target, request) {
     const deadlineMs = requestTimeoutMs;
     request.timer = setTimeout(() => {
       if (target.current !== request) return;
@@ -187,11 +222,6 @@ function createTaskWorkerHost({
         () => new TaskWorkerTimeout(`${name} ${request.op} timed out after ${deadlineMs} ms`)
       );
     }, deadlineMs);
-    try {
-      target.worker.postMessage({ id: request.id, op: request.op, ...request.payload });
-    } catch (err) {
-      retire(target, `worker unreachable (${err.message})`);
-    }
   }
 
   /**
@@ -264,4 +294,9 @@ function createTaskWorkerHost({
   return { run, stop, resetForTest };
 }
 
-module.exports = { createTaskWorkerHost, TaskWorkerUnavailable, TaskWorkerTimeout };
+module.exports = {
+  createTaskWorkerHost,
+  TaskWorkerUnavailable,
+  TaskWorkerTimeout,
+  WORKER_START_TIMEOUT_MS,
+};
