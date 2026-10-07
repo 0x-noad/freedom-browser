@@ -190,62 +190,76 @@ const test = base.extend({
   },
 });
 
-// Wait until a chrome surface that has just appeared over the page can take a
-// synthetic click.
+// --- Pointer input at chrome drawn over the tab's <webview> ----------------
 //
-// A Playwright click is dispatched by the *browser* process, which picks the
-// widget it goes to by hit-testing the point against the compositor's own
-// hit-test data. That data only changes when the renderer produces a frame, so
-// in the window between "the menu is in the DOM" and "the menu is in a
-// submitted frame", the browser still believes the point belongs to the
-// `<webview>` guest behind it and routes the whole click there — the embedder
-// sees no mousemove, no mousedown, nothing, and Playwright's own actionability
-// checks cannot see it either (they run in the renderer, where the DOM is
-// already right). The guest takes focus from the click it was handed, which is
-// the only trace of it in the chrome.
+// Which helper, when:
 //
-// It is a `<webview>` property, not a bug in any one menu: the same probe
-// (click N ms after opening the hamburger) is swallowed at N=0 on `main` and on
-// this branch alike, and lands from ~8 ms on both. A real user cannot hit it —
-// the menu opens *on* their click and the pointer has to travel to a row — but
-// a synthetic click that arrives in the same frame does, and a loaded CI runner
-// stretches "the same frame" to tens of milliseconds.
+// - `clickOverGuest(locator, clickOptions)` — click a chrome element that sits
+//   over the tab's `<webview>` and has only just appeared, moved or been
+//   revealed there (a menu row, a popover, a modal's button, a download card,
+//   a control a sidebar just widened over the page). It clicks exactly once.
+// - `hoverOverGuest(locator)` — the same, when the hover is the step under
+//   test (a sibling menu row closing a flyout). `clickOverGuest` is this plus
+//   one click.
+// - Neither, for chrome that is not over the guest, or that has been on screen
+//   for a while: a plain `locator.click()` is fine there. Calling the helper
+//   on such an element is harmless, only slower.
+// - Not a retry. Never re-issue a click until its effect shows: that also
+//   passes a control that genuinely ate the first click. Specs that are not
+//   about pointer input at all may instead `dispatchEvent('click')` to bypass
+//   routing (`permission-fixtures.js` `answerPrompt`, `popup-blocker.spec.js`).
 //
-// Two `requestAnimationFrame`s are the wait for exactly the missing thing: the
-// callback of the second runs at the start of the frame after the one that
-// carried the popover, so a frame provably went out. It is not a timeout —
-// where frames are slow the wait is long, which is the case that needs it.
-const waitForPopoverFrame = (window) =>
-  window.evaluate(
-    () =>
-      new Promise((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-      })
-  );
+// Why. A Playwright click or hover is dispatched by the *browser* process,
+// which picks the widget it goes to by hit-testing the point against viz's
+// hit-test data for the last *presented* frame. In the window between "the
+// menu is in the DOM" and "the menu is on screen", the browser still believes
+// the point belongs to the `<webview>` guest behind it and routes the whole
+// event there. The chrome sees no mousemove, no mousedown, nothing, and
+// Playwright's own actionability checks cannot see it either: they run in the
+// chrome renderer, where the DOM is already right, and treat "no event
+// arrived" as success. The guest takes focus from a click it was handed,
+// which is the only trace of it in the chrome. A real user cannot hit this —
+// the pointer has to travel to a row that is already on screen — but a
+// synthetic click that arrives in the same frame does, and a loaded CI runner
+// or a just-launched app stretches that to tens or hundreds of milliseconds.
+// Probed on CI with pointer/focus listeners in both the chrome and the guest:
+// the create-profile dialog's Create click (#539) and the hamburger's New Tab
+// hover (#537, PR #582), the page context menu's search item (#540, PR #583),
+// and the download, tab-mute, identity-selector and focus-ring clicks that the
+// retrying helper this replaces was written for (2026-09-29).
+//
+// Two `requestAnimationFrame`s (this file's old `waitForPopoverFrame`) are not
+// enough: rAF only says the renderer *started* a frame, and presentation can
+// lag several frames behind that in a just-launched app.
+//
+// How. A wait, a gate, then the input once:
+// 1. `waitForPresentedFrame` paints a marker tagged `elementtiming` and waits
+//    for Chromium's `PerformanceElementTiming.renderTime` for it, the
+//    presentation time of the frame that first painted it. Frames are
+//    presented in order, so everything in the DOM before the call is on screen
+//    by then. No fixed delay: on a slow machine the wait is just longer. This
+//    is what makes the first hover land (looped on CI 2026-10-07, 27 file runs
+//    across Ubuntu/Windows/macOS: the gate below never had to re-send one). It
+//    is not the gate: once in CI (e2e-chrome, 2026-10-07) no entry for the
+//    marker arrived within 10 s and the retry passed in 2 s, so a missing
+//    entry is logged and left to step 2 rather than failing the test. The
+//    wait is bounded by (half of) the caller's `timeout`, never added to it.
+// 2. Hover the element until it matches `:hover`. That only happens once a
+//    pointer event at that point has reached this renderer, i.e. the browser
+//    now routes the point to the chrome — the condition a click needs, and the
+//    one that decides. A hover the browser still hands to the guest has no
+//    effect on the page — unlike a click, which focuses (and over a field,
+//    edits) whatever the guest has there — so the move, never the click, is
+//    what may be re-sent. Hovering is the only input these helpers can send
+//    more than once.
+// The element must stay put between the hover and the click; a popover does.
 
-// Wait until the chrome's current DOM has been *presented*, not just produced,
-// so the browser's hit-test data includes it.
-//
-// `waitForPopoverFrame` waits for the renderer to start a new frame. The
-// browser routes a synthetic click or mousemove using hit-test data that viz
-// sends after it aggregates and draws a frame, and that can lag several
-// renderer frames in a just-launched app. Probed 2026-10 (#539) by logging
-// every pointer event in the chrome around the create-profile modal's Create
-// click. When the click was lost, no pointer event reached the chrome and
-// `document.activeElement` was the `<webview>`. The dialog had been laid out
-// and Playwright's two-rAF stability check had passed.
-//
-// This waits for the frame to be presented. It paints a one-character marker
-// tagged `elementtiming` and resolves when Chromium reports that element's
-// `renderTime`, which is the presentation time of the frame that first painted
-// it. Frames are presented in order, so everything in the DOM before the call
-// is on screen by then. No fixed delay is involved: on a slow machine the wait
-// is just longer. The 10 s guard only turns "no frame was ever presented" (for
-// example a hidden window) into a readable failure instead of a test timeout.
-const waitForPresentedFrame = (window) =>
-  window.evaluate(
-    () =>
-      new Promise((resolve, reject) => {
+// Resolve `true` once the chrome's current DOM has been *presented*, or `false`
+// if no presentation entry for the marker arrived within `timeoutMs`.
+const waitForPresentedFrame = (page, timeoutMs) =>
+  page.evaluate(
+    (timeoutMs) =>
+      new Promise((resolve) => {
         const id = `e2e-presented-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         const marker = document.createElement('div');
         marker.setAttribute('elementtiming', id);
@@ -261,61 +275,43 @@ const waitForPresentedFrame = (window) =>
           fn(value);
         };
         const observer = new PerformanceObserver((list) => {
-          if (list.getEntries().some((entry) => entry.identifier === id)) done(resolve);
+          if (list.getEntries().some((entry) => entry.identifier === id)) done(resolve, true);
         });
-        const guard = setTimeout(
-          () => done(reject, new Error('waitForPresentedFrame: no frame presented in 10 s')),
-          10_000
-        );
+        const guard = setTimeout(() => done(resolve, false), timeoutMs);
         observer.observe({ type: 'element', buffered: false });
         document.body.append(marker);
-      })
+      }),
+    timeoutMs
   );
 
-// Click a chrome element that sits over the tab's `<webview>` and has only just
-// appeared (or moved) there, until the click's effect shows. The two-rAF wait
-// (`waitForPopoverFrame`, which this helper calls) closes most of the window,
-// but not all of it: in a just-launched app on a loaded machine the guest
-// has been seen (2026-09-29, `tab-mute`, `downloads`,
-// `publisher-identity-selector`, `chrome-input-focus`, 1 run in 5–10) to take
-// the click after two frames — no pointer event reached the chrome, and
-// `document.activeElement` was the `<webview>`. `click` is re-issued only
-// while `landed()` is false, so a toggle is never clicked twice by the retry
-// itself. (`waitForPresentedFrame`, just above, is a separate presentation
-// wait this helper does not use; this note is about the two-rAF wait only.)
-const clickOverGuest = async (window, click, landed, { timeout = 15_000 } = {}) => {
-  await expect(async () => {
-    if (!(await landed())) {
-      await waitForPopoverFrame(window);
-      await click();
-    }
-    await expect.poll(landed, { timeout: 1000 }).toBe(true);
-  }).toPass({ timeout });
-};
-
-// Put the pointer on a chrome element that has just appeared over the tab's
-// `<webview>`, and return once the element itself is under it — i.e. once the
-// browser routes input at that point to the chrome, not to the guest. Click it
-// after this, exactly once.
+// Put the pointer on `locator` and return once the element itself is under it
+// as far as the browser's input routing is concerned (see above).
 //
-// This is the same mis-routing `waitForPopoverFrame` describes, gated on the
-// thing a click needs rather than on frames: `:hover` only matches once a
-// pointer event at that point has reached this renderer. A move that the
-// browser still hands to the guest has no effect on the page — unlike a click,
-// which focuses (and, over a field, edits) whatever the guest has there — so
-// it is the move, not the click, that is re-sent until the routing is right.
-// The element must stay put between this and the click, which a popover does.
-//
-// Prefer this to `clickOverGuest` where one click has to be shown to work: a
-// click retried until it lands would also pass a menu that genuinely ate the
-// first one. A real user cannot hit the window this closes — their pointer has
-// to travel to a row that is already on screen (#540: a page context menu
-// item clicked one frame after the menu was revealed went to the page below).
-const pointAtOverGuest = async (locator, { timeout = 15_000 } = {}) => {
+// `timeout` bounds the whole call, presentation wait included, so a caller
+// that retries around this (a menu that may need reopening) gets its retry
+// even when the presentation entry never arrives. The wait takes at most half
+// the budget (10 s at the default) and the `:hover` gate always has the rest.
+const hoverOverGuest = async (locator, { timeout = 25_000 } = {}) => {
+  const started = Date.now();
+  const presentationTimeout = Math.min(10_000, Math.floor(timeout / 2));
+  if (!(await waitForPresentedFrame(locator.page(), presentationTimeout))) {
+    // Visible in the run log; whether the pointer reaches the chrome is still
+    // decided by the `:hover` gate below, which fails the test if it never does.
+    console.warn(
+      `hoverOverGuest: no presentation entry in ${presentationTimeout} ms before hovering ${locator}`
+    );
+  }
   await expect(async () => {
     await locator.hover({ timeout: 1000 });
     expect(await locator.evaluate((element) => element.matches(':hover'))).toBe(true);
-  }).toPass({ timeout });
+  }).toPass({ timeout: Math.max(1000, timeout - (Date.now() - started)) });
+};
+
+// Click `locator` exactly once, after `hoverOverGuest` has shown the click
+// will reach it. `clickOptions` go to `locator.click` (e.g. `modifiers`).
+const clickOverGuest = async (locator, clickOptions) => {
+  await hoverOverGuest(locator);
+  await locator.click(clickOptions);
 };
 
 // Convenience: an arbitrary 64-char Swarm hex hash for fixture-driven
@@ -327,10 +323,8 @@ module.exports = {
   test,
   expect,
   browserWindow,
-  waitForPopoverFrame,
-  waitForPresentedFrame,
   clickOverGuest,
-  pointAtOverGuest,
+  hoverOverGuest,
   SAMPLE_BZZ_HASH,
   SAMPLE_IPFS_CID,
 };
