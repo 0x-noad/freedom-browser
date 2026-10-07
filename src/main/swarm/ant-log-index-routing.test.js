@@ -31,7 +31,7 @@ jest.mock('../ens/colibri-resolver', () => ({ requestViaColibri: jest.fn() }));
 jest.mock('../logger', () => ({ verbose: jest.fn(), info: jest.fn(), warn: jest.fn() }));
 
 const router = require('../networks/chain-data-router');
-const { blockscoutLogToRpcLog, ERC20_TRANSFER_TOPIC } = require('../networks/blockscout-logs');
+const { ERC20_TRANSFER_TOPIC } = require('../networks/blockscout-logs');
 const {
   LOG_SCAN_ROUTER_OPTIONS,
   antErrorReply,
@@ -72,15 +72,44 @@ const inRange = (logs, from, to) =>
     const block = parseInt(log.blockNumber, 16);
     return block >= from && block <= to;
   });
-// Blockscout's row for an entry: topics padded to four with null, gas and
-// time fields added, no blockHash or removed (see the captured fixture).
-const blockscoutRow = ({ blockHash: _blockHash, removed: _removed, ...log }) => ({
-  ...log,
-  topics: [...log.topics, null],
-  gasPrice: '0x8f0d1f53',
-  gasUsed: '0x23aa4',
-  timeStamp: '0x66fa04b3',
+// Blockscout's token-transfer item for an entry: no transaction index (see
+// the captured fixture).
+const blockscoutItem = (log) => ({
+  block_hash: log.blockHash,
+  block_number: parseInt(log.blockNumber, 16),
+  from: { hash: `0x${log.topics[1].slice(26)}` },
+  log_index: parseInt(log.logIndex, 16),
+  to: { hash: `0x${log.topics[2].slice(26)}` },
+  token: { address_hash: XBZZ },
+  token_type: 'ERC-20',
+  total: { decimals: '16', value: BigInt(log.data).toString() },
+  transaction_hash: log.transactionHash,
+  type: 'token_transfer',
 });
+// Blockscout's page of `entries` before a position: newest first, 50 at most.
+const BLOCKSCOUT_PAGE_SIZE = 50;
+function blockscoutPage(entries, block, index) {
+  const position = (log) => [parseInt(log.blockNumber, 16), parseInt(log.logIndex, 16)];
+  const before = entries
+    .filter((log) => {
+      const [b, i] = position(log);
+      return b < block || (b === block && i < index);
+    })
+    .sort((x, y) => {
+      const [xb, xi] = position(x);
+      const [yb, yi] = position(y);
+      return yb - xb || yi - xi;
+    });
+  const page = before.slice(0, BLOCKSCOUT_PAGE_SIZE);
+  const last = page[page.length - 1];
+  return {
+    items: page.map(blockscoutItem),
+    next_page_params:
+      before.length > BLOCKSCOUT_PAGE_SIZE
+        ? { block_number: position(last)[0], index: position(last)[1], items_count: 50 }
+        : null,
+  };
+}
 
 const FULL = 'full';
 const CAPPED = 'capped';
@@ -92,7 +121,7 @@ let blockscout;
 // endpoints: name -> FULL | CAPPED | 'down' | function(from, to) -> logs.
 // blockscoutBehaviour: 'chain' (answers from CHAIN), 'down', '429', 'lagging'
 // (misses the newest log), 'missing' (misses an old log), 'hang', or a
-// function(from, to) -> rows.
+// function() -> the entries Blockscout lists.
 function useProviders(endpoints, blockscoutBehaviour = 'chain') {
   const urls = Object.keys(endpoints).map((name) => `https://${name}.example`);
   mockRegistry.getNetwork.mockReturnValue({
@@ -109,9 +138,9 @@ function useProviders(endpoints, blockscoutBehaviour = 'chain') {
       const query = Object.fromEntries(new URL(url).searchParams);
       blockscout.calls.push(query);
       requests.push('blockscout');
-      const from = Number(query.fromBlock);
-      const to = Number(query.toBlock);
-      let rows;
+      const block = Number(query.block_number);
+      const index = Number(query.index);
+      let entries;
       if (blockscoutBehaviour?.delayMs) {
         // A slow-but-answering Blockscout: each page after delayMs.
         await new Promise((resolve, reject) => {
@@ -121,10 +150,8 @@ function useProviders(endpoints, blockscoutBehaviour = 'chain') {
             reject(new Error('aborted'));
           });
         });
-        rows = blockscoutBehaviour.rows
-          ? blockscoutBehaviour.rows(from, to)
-          : inRange(CHAIN, from, to).map(blockscoutRow);
-      } else if (typeof blockscoutBehaviour === 'function') rows = blockscoutBehaviour(from, to);
+        entries = blockscoutBehaviour.entries ? blockscoutBehaviour.entries() : CHAIN;
+      } else if (typeof blockscoutBehaviour === 'function') entries = blockscoutBehaviour();
       else if (blockscoutBehaviour === 'down') throw new TypeError('fetch failed');
       else if (blockscoutBehaviour === 'hang') {
         return new Promise((_resolve, reject) =>
@@ -136,17 +163,14 @@ function useProviders(endpoints, blockscoutBehaviour = 'chain') {
           status: 429,
           url,
           headers: { get: (name) => (name === 'x-ratelimit-reset' ? '344628' : null) },
-          text: async () => '{"message":"Too many requests","result":null,"status":"0"}',
+          text: async () => '{"message":"Too many requests"}',
         };
       } else {
-        let logs = inRange(CHAIN, from, to);
-        if (blockscoutBehaviour === 'lagging') logs = logs.filter((log) => log !== CHAIN[6]);
-        if (blockscoutBehaviour === 'missing') logs = logs.filter((log) => log !== CHAIN[1]);
-        rows = logs.map(blockscoutRow);
+        entries = CHAIN;
+        if (blockscoutBehaviour === 'lagging') entries = entries.filter((log) => log !== CHAIN[6]);
+        if (blockscoutBehaviour === 'missing') entries = entries.filter((log) => log !== CHAIN[1]);
       }
-      const body = rows.length
-        ? { status: '1', message: 'OK', result: rows }
-        : { status: '0', message: 'No logs found', result: [] };
+      const body = blockscoutPage(entries, block, index);
       return {
         ok: true,
         status: 200,
@@ -289,11 +313,12 @@ describe('a first wallet scan with Blockscout', () => {
     expect(got).toMatchObject({ source: 'blockscout', verified: true });
     expect(got.result).toEqual(CHAIN);
     const pairSpan = HEAD - 1000 - DEPLOY_BLOCK + 1;
-    expect(blockscout.calls[blockscout.calls.length - 1]).toMatchObject({
-      fromBlock: String(DEPLOY_BLOCK),
-      toBlock: String(HEAD - 1000),
-      topic1: WALLET,
-      topic0_1_opr: 'and',
+    expect(blockscout.calls[blockscout.calls.length - 1]).toEqual({
+      type: 'ERC-20',
+      filter: 'from',
+      token: XBZZ.toLowerCase(),
+      block_number: String(HEAD - 1000 + 1),
+      index: '0',
     });
     expect(requests.sort()).toEqual(
       [
@@ -306,12 +331,13 @@ describe('a first wallet scan with Blockscout', () => {
     );
   });
 
-  test('the RPC entries (with blockHash) are what Ant gets, not the mapped Blockscout rows', async () => {
+  test("the RPC entries are what Ant gets, not Blockscout's transfers", async () => {
     useProviders(DEFAULTS);
     await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
     const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
-    expect(got.result[0].blockHash).toBe(CHAIN[0].blockHash);
-    expect(blockscoutLogToRpcLog(blockscoutRow(CHAIN[0])).blockHash).toBeUndefined();
+    expect(got.result[0]).toEqual(CHAIN[0]);
+    // Blockscout does not report the transaction index Ant receives.
+    expect(blockscoutItem(CHAIN[0])).not.toHaveProperty('transaction_index');
   });
 });
 
@@ -362,17 +388,11 @@ describe('Blockscout is a shortcut: anything wrong falls back to the quorum path
     expect(Date.now() - started).toBeLessThanOrEqual(LOG_SCAN_ROUTER_OPTIONS.quorumTimeoutMs + 100);
   });
 
-  // A wallet with more than 1,000 transfers: Blockscout pages, slowly. The
-  // scan budget bounds every page together, not each one.
+  // A wallet with many transfers: Blockscout pages, slowly. The scan budget
+  // bounds every page together, not each one.
+  const MANY = Array.from({ length: 500 }, (_, i) => entry(DEPLOY_BLOCK + 1000 * i, 1));
   test('a slow multi-page Blockscout stays inside the scan budget, then is left alone', async () => {
-    let page = 0;
-    useProviders(DEFAULTS, {
-      delayMs: 12_000,
-      rows: (from) => {
-        page += 1;
-        return Array.from({ length: 1000 }, (_, i) => blockscoutRow(entry(from + i, page)));
-      },
-    });
+    useProviders(DEFAULTS, { delayMs: 12_000, entries: () => MANY });
     await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
     const started = Date.now();
     const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
@@ -570,8 +590,8 @@ describe('Blockscout is a shortcut: anything wrong falls back to the quorum path
   });
 
   test("a capped Blockscout page Blockscout's cap hides is caught by the RPC disagreeing", async () => {
-    // A Blockscout that silently caps below 1,000 (say a future 2-log cap).
-    useProviders(DEFAULTS, (from, to) => inRange(CHAIN, from, to).slice(0, 2).map(blockscoutRow));
+    // A Blockscout that silently lists only the newest two transfers.
+    useProviders(DEFAULTS, () => CHAIN.slice(-3, -1));
     await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
     const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
     expect(got.result).toBeUndefined();
