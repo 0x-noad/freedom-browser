@@ -2609,6 +2609,17 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       if (!status) return 'Status unknown';
       if (status.recovery?.reason === 'installation' || status.recovery?.reason === 'unsupported')
         return 'Update or reinstall — open Nodes';
+      // Myotis's fork watch (peer-reported, display-only): this build lacks
+      // a network upgrade. The Nodes menu carries the full explanation.
+      // Deliberate precedence: below an installation/unsupported recovery
+      // (that already says "Update or reinstall"), above every other state,
+      // including recovering / recovery-blocked — a fork this build can't
+      // follow is the likeliest cause of a stall or checkpoint recovery, and
+      // updating is the one action that can end it; the Nodes card still
+      // shows the recovery state next to the notice. Pinned by
+      // test-e2e/myotis-upgrade-advisory.spec.js.
+      if (!['off', 'disabled'].includes(status.state) && ['SCHEDULED', 'ACTIVE'].includes(status.upgradeAdvisory?.phase))
+        return status.state === 'ready' ? 'Ready — update Freedom' : 'Update Freedom — open Nodes';
       if (status.state === 'ready') return 'Ready';
       if (status.state === 'syncing') return 'Syncing';
       if (status.state === 'recovering') return 'Updating checkpoint';
