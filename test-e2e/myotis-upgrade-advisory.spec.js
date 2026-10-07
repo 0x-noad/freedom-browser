@@ -17,8 +17,8 @@ const settingsEval = (window, script) =>
     return webview.executeJavaScript(source);
   }, script);
 
-async function advisoryState(app, advisories) {
-  await app.evaluate(({ ipcMain, BrowserWindow }, advisories) => {
+async function advisoryState(app, advisories, gnosisExtra = {}) {
+  await app.evaluate(({ ipcMain, BrowserWindow }, { advisories, gnosisExtra }) => {
     const base = {
       available: true,
       supported: true,
@@ -40,6 +40,7 @@ async function advisoryState(app, advisories) {
         state: 'syncing',
         finalizedBlockNumber: 43210000,
         upgradeAdvisory: advisories[100],
+        ...gnosisExtra,
       },
     };
     ipcMain.removeHandler('myotis:getStatus');
@@ -48,7 +49,7 @@ async function advisoryState(app, advisories) {
       for (const status of Object.values(statuses))
         win.webContents.send('myotis:statusUpdate', status);
     }
-  }, advisories);
+  }, { advisories, gnosisExtra });
 }
 
 const inTwelveDays = () => Math.floor(Date.now() / 1000) + 12 * 86400 + 3600;
@@ -78,7 +79,7 @@ for (const theme of ['dark', 'light']) {
         'An Ethereum network upgrade that this version of Freedom doesn’t know about is coming in 12 days ('
       );
       await expect(window.locator('#myotis-upgrade-text')).toContainText(
-        'Update Freedom before then to keep verified reads. Use Check for Updates… in the menu.'
+        'Update Freedom before then to keep verified reads. Update from the bottom of the main menu.'
       );
       await expect(window.locator('#myotis-upgrade-detail')).toHaveText(
         'Reported by 4 peer networks, not verified. It doesn’t change how Freedom checks answers.'
@@ -91,7 +92,7 @@ for (const theme of ['dark', 'light']) {
       await expect(window.locator('#myotis-gnosis-upgrade-text')).toHaveText(
         'The Gnosis network has upgraded and this version of Freedom can’t follow it. ' +
           'This node can’t verify until you update; Freedom uses your other Gnosis sources meanwhile. ' +
-          'Use Check for Updates… in the menu.'
+          'Update from the bottom of the main menu.'
       );
       // The detail is its own line under the sentence, not run on after it.
       const [textBox, detailBox] = await Promise.all([
@@ -125,6 +126,39 @@ for (const theme of ['dark', 'light']) {
         `document.querySelector('[data-access-source="myotis"]').scrollIntoView({ block: 'center' })`
       );
       await window.screenshot({ path: testInfo.outputPath(`settings-gnosis-${theme}.png`) });
+
+      // Precedence (settings.js sourceStatus): the advisory outranks a
+      // checkpoint recovery / paused sync — the likeliest cause of either —
+      // but not an installation recovery, which already says to update.
+      const active = { phase: 'ACTIVE', activationTime: 0, forkId: '0x6c1d9423', observedPeers: 3 };
+      // Settings re-reads Myotis status on a hashchange into Networks, and the
+      // badge already reads "Update Freedom — open Nodes" from above: hop via
+      // chain 1 so each poll is a fresh read, not the cached one.
+      const freshBadge100 = async () => {
+        await badge(1);
+        return badge(100);
+      };
+      // Each with-advisory step follows the same state without one, so a
+      // badge left over from the previous step can't satisfy it.
+      const steps = [
+        [{ state: 'recovering' }, 'Updating checkpoint', 'Update Freedom — open Nodes'],
+        [
+          { state: 'recovery-blocked', recovery: { reason: 'stalled' } },
+          'Syncing slowly — open Nodes',
+          'Update Freedom — open Nodes',
+        ],
+        [
+          { state: 'recovery-blocked', recovery: { reason: 'installation' } },
+          'Update or reinstall — open Nodes',
+          'Update or reinstall — open Nodes',
+        ],
+      ];
+      for (const [extra, without, withAdvisory] of steps) {
+        await advisoryState(electronApp, { 1: null, 100: null }, extra);
+        await expect.poll(freshBadge100, { timeout: 15_000 }).toBe(without);
+        await advisoryState(electronApp, { 1: null, 100: active }, extra);
+        await expect.poll(freshBadge100, { timeout: 15_000 }).toBe(withAdvisory);
+      }
 
       await advisoryState(electronApp, { 1: null, 100: null });
       await expect.poll(() => badge(1), { timeout: 15_000 }).toBe('Ready');

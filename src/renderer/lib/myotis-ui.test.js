@@ -192,7 +192,7 @@ describe('myotis-ui', () => {
       expect(view.phase).toBe('SCHEDULED');
       expect(view.text).toBe(
         `An Ethereum network upgrade that this version of Freedom doesn’t know about is coming in 12 days (${day(12.5)}). ` +
-        'Update Freedom before then to keep verified reads. Use Check for Updates… in the menu.'
+        'Update Freedom before then to keep verified reads. Update from the bottom of the main menu.'
       );
       expect(view.detail).toBe('Reported by 4 peer networks, not verified. It doesn’t change how Freedom checks answers.');
       expect(message(ready(advisory({ activationTime: at(1) })), NOW, 'en-US').text).toContain(`coming in 1 day (${day(1)})`);
@@ -210,7 +210,7 @@ describe('myotis-ui', () => {
       const text = message(ready(advisory({ activationTime: 0 })), NOW, 'en-US').text;
       expect(text).toBe(
         'An Ethereum network upgrade that this version of Freedom doesn’t know about is coming soon. ' +
-        'Update Freedom soon to keep verified reads. Use Check for Updates… in the menu.'
+        'Update Freedom soon to keep verified reads. Update from the bottom of the main menu.'
       );
       expect(text).not.toMatch(/1970/);
     });
@@ -219,7 +219,7 @@ describe('myotis-ui', () => {
       expect(message(ready(advisory({ phase: 'ACTIVE', observedPeers: 1 })), NOW)).toEqual({
         phase: 'ACTIVE',
         text: 'The Ethereum network has upgraded and this version of Freedom can’t follow it. ' +
-          'Verified reads may stop until you update. Use Check for Updates… in the menu.',
+          'Verified reads may stop until you update. Update from the bottom of the main menu.',
         detail: 'Reported by 1 peer network, not verified. It doesn’t change how Freedom checks answers.',
       });
     });
@@ -231,7 +231,7 @@ describe('myotis-ui', () => {
         expect(text).toBe(
           'The Gnosis network has upgraded and this version of Freedom can’t follow it. ' +
           'This node can’t verify until you update; Freedom uses your other Gnosis sources meanwhile. ' +
-          'Use Check for Updates… in the menu.'
+          'Update from the bottom of the main menu.'
         );
       }
     );
@@ -241,6 +241,33 @@ describe('myotis-ui', () => {
         const base = advisory({ phase, activationTime: at(3) });
         expect(message(ready({ ...base, forkId: '0x00000000' }), NOW, 'en-US'))
           .toEqual(message(ready(base), NOW, 'en-US'));
+      }
+    });
+
+    test('no notice names an update menu row label (the row relabels with update state)', async () => {
+      // The notice stays up while an update is checked, downloaded and made
+      // ready; naming one of the row's labels would point at a control that
+      // isn't there in the other states (#550 R2-M1, #587 R1-M1).
+      const { describeUpdateMenuItem } = await import('./update-status-ui.js');
+      const labels = new Set(
+        ['idle', 'checking', 'downloading', 'ready', 'up-to-date', 'error', 'unsupported']
+          .flatMap((status) => [
+            describeUpdateMenuItem({ status }).label,
+            describeUpdateMenuItem({ status, menuInstallLabel: 'Install Update and Close' }).label,
+          ])
+      );
+      expect(labels.size).toBeGreaterThan(3);
+      for (const phase of ['SCHEDULED', 'ACTIVE']) {
+        for (const state of ['ready', 'syncing', 'recovering']) {
+          for (const activationTime of [0, at(-0.1), at(3)]) {
+            const view = message(ready(advisory({ phase, activationTime }), { state }), NOW, 'en-US');
+            for (const label of labels) {
+              const stem = label.replace(/…$/, '').toLowerCase();
+              expect(view.text.toLowerCase()).not.toContain(stem);
+              expect(view.detail.toLowerCase()).not.toContain(stem);
+            }
+          }
+        }
       }
     });
 

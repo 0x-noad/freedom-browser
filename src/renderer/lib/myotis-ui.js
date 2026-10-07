@@ -62,7 +62,11 @@ const stateLabel = (status) => {
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const UPDATE_PATH = 'Use Check for Updates… in the menu.';
+// Names no menu row label: update-status-ui.js relabels the hamburger row
+// with the update state (Checking…, Downloading Update…, Restart to Update /
+// Install Update and Close), and this notice stays up through all of them.
+// myotis-ui.test.js pins that no notice names one of those labels (#550 R2-M1).
+const UPDATE_PATH = 'Update from the bottom of the main menu.';
 
 // Myotis's fork watch (`upgradeAdvisory`, validated in main's
 // myotis-process.js): enough distinct peer networks say this build is missing
