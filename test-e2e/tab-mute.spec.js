@@ -9,32 +9,56 @@ const { test, expect, hoverOverGuest } = require('./fixtures');
 // window blur (e.g. the previous Electron instance releasing OS focus) can
 // close the menu at any point up to the click; only the *opening* is re-done
 // for that — an open menu is never reopened (its backdrop would take the
-// right-click). The click sits inside the retry too: a Playwright click that
-// throws never dispatched (it only sends input once its actionability checks
-// pass, and here nothing runs after it), so retrying it cannot act twice.
+// right-click). The click sits inside the retry too, but a thrown click is not
+// proof it never landed: Playwright dispatches mouse down/up and only then
+// stops its hit-target interception under the same deadline, so the timeout
+// can expire after the item already got the click (and hid the menu). A
+// capture-phase listener counts the clicks the item actually receives; a throw
+// after one landed is the action done, never a reason to click again.
 // `hoverOverGuest`'s 5 s covers its presentation wait as well, so one stalled
 // frame still leaves the outer 15 s room to reopen the menu.
 async function clickTabContextAction(window, tabLocator, action) {
   const menu = window.locator('#tab-context-menu');
   const item = menu.locator(`[data-action="${action}"]`);
-  await expect(async () => {
-    if (!(await menu.isVisible())) {
-      await tabLocator.click({ button: 'right' });
-      await expect(menu).toBeVisible({ timeout: 1000 });
-    }
-    await hoverOverGuest(item, { timeout: 5000 });
-    try {
-      await item.click({ timeout: 1000 });
-    } catch (error) {
+  const key = `__tabContextClicks_${action}`;
+  await window.evaluate(
+    ({ key, action }) => {
+      window[key] = 0;
+      window[`${key}_off`]?.();
+      const onClick = (e) => {
+        if (e.target?.closest?.(`#tab-context-menu [data-action="${action}"]`)) window[key] += 1;
+      };
+      document.addEventListener('click', onClick, true);
+      window[`${key}_off`] = () => document.removeEventListener('click', onClick, true);
+    },
+    { key, action }
+  );
+  const landed = () => window.evaluate((k) => window[k], key);
+  try {
+    await expect(async () => {
+      if ((await landed()) > 0) return;
       if (!(await menu.isVisible())) {
-        throw new Error(
-          `#tab-context-menu closed before "${action}" was clicked (stray window blur?): ${error.message}`,
-          { cause: error }
-        );
+        await tabLocator.click({ button: 'right' });
+        await expect(menu).toBeVisible({ timeout: 1000 });
       }
-      throw error;
-    }
-  }).toPass({ timeout: 15_000 });
+      await hoverOverGuest(item, { timeout: 5000 });
+      try {
+        await item.click({ timeout: 1000 });
+      } catch (error) {
+        if ((await landed()) > 0) return;
+        if (!(await menu.isVisible())) {
+          throw new Error(
+            `#tab-context-menu closed before "${action}" was clicked (stray window blur?): ${error.message}`,
+            { cause: error }
+          );
+        }
+        throw error;
+      }
+    }).toPass({ timeout: 15_000 });
+    expect(await landed(), `"${action}" must be clicked exactly once`).toBe(1);
+  } finally {
+    await window.evaluate((k) => window[`${k}_off`]?.(), key).catch(() => {});
+  }
 }
 
 test('Mute Tab context-menu item toggles the muted indicator', async ({ window }) => {
