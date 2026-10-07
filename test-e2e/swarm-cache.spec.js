@@ -1,16 +1,16 @@
 // The Swarm node's cache (#579), shown in one place only: Settings → Nodes →
 // Swarm cache. Its usage line is read from `GET /debugstore` by the main
-// process; its size picker writes the size the node starts with. The node
-// window (the toolbar's Nodes menu) has no cache row at all.
+// process; its size picker writes the size the node starts with and applies it
+// live (`PUT /v0/cache/capacity`); Clear cache sends `POST /v0/cache/clear`.
+// The node window (the toolbar's Nodes menu) has no cache row at all.
 //
-// The harness runs no node. The usage group serves `/debugstore` from a fake
-// antd and runs the real main-process cache service (swarm/ant-cache.js)
-// against it, with the node's status, spawn time and data dir under the
-// test's control, so every state the line has goes through the real parser
-// and the real settings page. The picker group drives the real picker; the
-// restart path (a running node) is stubbed at its IPC, since there is no node
-// to restart. Set SWARM_CACHE_SHOTS_DIR to keep a screenshot of every state in
-// both themes.
+// The harness runs no node. The usage, clear and live-size groups serve those
+// routes from a fake antd and run the real main-process cache service
+// (swarm/ant-cache.js) against it, with the node's status, spawn time and data
+// dir under the test's control, so every state goes through the real parser,
+// the real client and the real settings page. The picker group drives the real
+// picker with no node. Set SWARM_CACHE_SHOTS_DIR to keep a screenshot of every
+// state in both themes.
 
 const fs = require('fs');
 const path = require('path');
@@ -20,7 +20,7 @@ const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 const SHOTS = process.env.SWARM_CACHE_SHOTS_DIR || null;
 
-// Ant v0.5.60's `/debugstore` for `used`/`pinned` bytes under a `cap`.
+// Ant v0.5.61's `/debugstore` for `used`/`pinned` bytes under a `cap`.
 const debugstore = ({ used = 0, pinned = 0, cap = 2 * GIB }) => ({
   Upload: { TotalUploaded: 0, TotalSynced: 0, PendingUpload: 0 },
   Pinning: { TotalCollections: pinned ? 1 : 0, TotalChunks: pinned / 4096 },
@@ -33,19 +33,50 @@ const debugstore = ({ used = 0, pinned = 0, cap = 2 * GIB }) => ({
   },
 });
 
+// Ant v0.5.61's `GET /v0/cache` for `used`/`pinned` bytes under a `cap`.
+const v0cache = ({ used = 0, pinned = 0, cap = 2 * GIB }) => ({
+  disk_enabled: true,
+  used_bytes: used,
+  capacity_bytes: cap,
+  pinned_bytes: pinned,
+  chunks: Math.ceil(used / 4096),
+  pinned_chunks: Math.ceil(pinned / 4096),
+  file_bytes: used + pinned,
+  memory_chunks: 0,
+  memory_capacity_chunks: 8192,
+});
+
 // A fake antd answering `/debugstore` with `globalThis.__debugstore` (an
-// object, or `{ status, raw }` for a non-JSON / error answer), and the real
-// cache service wired to it in place of the app's own.
+// object, or `{ status, raw }` for a non-JSON / error answer), `GET /v0/cache`
+// with `__cacheStatus` (a 404 while that is null, as on a node before v0.5.61), `POST
+// /v0/cache/clear` and `PUT /v0/cache/capacity` with `globalThis.__clearAnswer`
+// / `__capacityAnswer` (`{ status, body }`, recording each write in
+// `__writes`), and the real cache service wired to it in place of the app's
+// own, behind the same IPC handlers ant-manager registers.
 async function wireFakeNode(electronApp, dataDir) {
   await electronApp.evaluate(async ({ ipcMain, webContents }, dir) => {
     const load = process.mainModule.require;
     const http = load('http');
-    const { createAntCacheService } = load('./src/main/swarm/ant-cache');
+    const antCache = load('./src/main/swarm/ant-cache');
     globalThis.__debugstore = null;
     globalThis.__antStatus = 'running';
     globalThis.__spawnedAt = null;
     globalThis.__debugstoreHits = 0;
+    globalThis.__writes = [];
+    globalThis.__clearAnswer = null;
+    globalThis.__capacityAnswer = null;
+    globalThis.__afterClear = null;
+    globalThis.__cacheStatus = null;
     const server = http.createServer((req, res) => {
+      // `GET /v0/cache`: 404 (a node without it, so the service reads
+      // `/debugstore`) unless `__cacheStatus` is set.
+      if (req.method === 'GET' && req.url === '/v0/cache') {
+        globalThis.__debugstoreHits += 1;
+        const live = globalThis.__cacheStatus;
+        res.writeHead(live ? 200 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(live || { code: 404 }));
+        return;
+      }
       if (req.method === 'GET' && req.url === '/debugstore') {
         globalThis.__debugstoreHits += 1;
         const answer = globalThis.__debugstore;
@@ -58,20 +89,86 @@ async function wireFakeNode(electronApp, dataDir) {
         res.end(JSON.stringify(answer));
         return;
       }
+      const writes = {
+        'POST /v0/cache/clear': '__clearAnswer',
+        'PUT /v0/cache/capacity': '__capacityAnswer',
+      };
+      const key = writes[`${req.method} ${req.url}`];
+      if (key) {
+        let body = '';
+        req.on('data', (chunk) => (body += chunk));
+        req.on('end', () => {
+          globalThis.__writes.push({
+            method: req.method,
+            url: req.url,
+            body,
+            origin: req.headers.origin ?? null,
+            contentType: req.headers['content-type'] ?? null,
+          });
+          const answer = globalThis[key] || { status: 404, body: { code: 404 } };
+          // The cache after the write, as the next read sees it: a clear
+          // leaves `__afterClear` (a `/v0/cache` body when it has
+          // `disk_enabled`, else a `/debugstore` one); a resize sets the
+          // live cap.
+          if (answer.status === 200 && key === '__clearAnswer' && globalThis.__afterClear) {
+            const after = globalThis.__afterClear;
+            if ('disk_enabled' in after) globalThis.__cacheStatus = after;
+            else globalThis.__debugstore = after;
+          }
+          if (answer.status === 200 && key === '__capacityAnswer' && globalThis.__cacheStatus) {
+            globalThis.__cacheStatus = {
+              ...globalThis.__cacheStatus,
+              capacity_bytes: JSON.parse(body).bytes,
+            };
+          }
+          res.writeHead(answer.status, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(answer.body));
+        });
+        return;
+      }
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end('{"code":404}');
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     globalThis.__fakeAntServer = server;
     const base = `http://127.0.0.1:${server.address().port}`;
-    const svc = createAntCacheService({
+    const svc = antCache.createAntCacheService({
       getNodeStatus: () => ({ status: globalThis.__antStatus, error: null }),
       getApiBase: () => base,
       getSpawnedAt: () => globalThis.__spawnedAt,
       getDataDir: () => dir,
     });
-    ipcMain.removeHandler('ant:cache-status');
-    ipcMain.handle('ant:cache-status', () => svc.getStatus());
+    // ant-manager's handlers, over this node: the view of a node Freedom runs.
+    const view = () =>
+      antCache.cacheSettingsView({
+        stored: load('./src/main/settings-store').loadSettings().antCacheCapacityBytes,
+        profileMode: 'managed',
+        nodeActive: globalThis.__antStatus === 'running',
+      });
+    const status = async () => {
+      const usage = await svc.getStatus();
+      return { ...usage, ...antCache.clearAvailability(usage, view()) };
+    };
+    const replace = (channel, handler) => {
+      ipcMain.removeHandler(channel);
+      ipcMain.handle(channel, handler);
+    };
+    replace('ant:cache-status', () => status());
+    replace('ant:cache-clear', async () => {
+      const { canClear, clearReason } = await status();
+      if (!canClear) return { ok: false, error: clearReason };
+      return svc.clearCache();
+    });
+    replace('ant:cache-get-settings', () => view());
+    replace('ant:cache-set-size', (_e, bytes) =>
+      antCache.applyCacheSize(bytes, {
+        getView: view,
+        save: (size) =>
+          load('./src/main/settings-store').saveSettings({ antCacheCapacityBytes: size }),
+        isNodeActive: () => globalThis.__antStatus === 'running',
+        setLiveCapacity: (size) => svc.setCapacity(size),
+      })
+    );
     // The node status change the settings page hears about through the
     // publish setup broadcast, as the real service sends it.
     globalThis.__pushNodeStatus = () => {
@@ -85,6 +182,11 @@ async function wireFakeNode(electronApp, dataDir) {
     };
   }, dataDir);
 }
+
+const setAnswers = (electronApp, answers) =>
+  electronApp.evaluate((_e, a) => Object.assign(globalThis, a), answers);
+
+const fakeWrites = (electronApp) => electronApp.evaluate(() => globalThis.__writes);
 
 async function feed(
   electronApp,
@@ -396,7 +498,7 @@ test.describe('Settings: Swarm cache size', () => {
         reason: '',
         nodeActive: false,
       },
-      answer: { ok: true, restarted: false },
+      answer: { ok: true, live: false },
     });
     const page = await openNodesSettings(window, electronApp);
     const select = page.locator('#swarm-cache-size');
@@ -443,51 +545,6 @@ test.describe('Settings: Swarm cache size', () => {
     }
   });
 
-  test('with the node running it asks first, saying it restarts the Swarm node', async ({
-    electronApp,
-    window,
-  }) => {
-    await stubCacheIpc(electronApp, {
-      view: {
-        bytes: 2 * GIB,
-        defaultBytes: 2 * GIB,
-        sizes: SIZES,
-        managed: true,
-        reason: '',
-        nodeActive: true,
-      },
-      answer: { ok: true, restarted: true },
-    });
-    const page = await openNodesSettings(window, electronApp);
-    const select = page.locator('#swarm-cache-size');
-    await expect(select).toHaveValue(String(2 * GIB));
-
-    // Cancel: the old size comes back and nothing is applied.
-    const messages = [];
-    let accept = false;
-    page.on('dialog', (dialog) => {
-      messages.push(dialog.message());
-      return accept ? dialog.accept() : dialog.dismiss();
-    });
-    await select.selectOption(String(512 * MIB));
-    await expect.poll(() => messages.length).toBe(1);
-    expect(messages[0]).toContain('Set the Swarm cache to 512 MB?');
-    expect(messages[0]).toContain('This restarts the Swarm node.');
-    await expect(select).toHaveValue(String(2 * GIB));
-    expect(await electronApp.evaluate(() => globalThis.__cacheSets)).toEqual([]);
-
-    // OK: applied, and the row says the node restarted.
-    accept = true;
-    await select.selectOption(String(5 * GIB));
-    await expect(page.locator('#swarm-cache-status')).toHaveText(
-      'Swarm cache set to 5 GB. The Swarm node restarted.'
-    );
-    expect(await electronApp.evaluate(() => globalThis.__cacheSets)).toEqual([5 * GIB]);
-    await expect(select).toHaveValue(String(5 * GIB));
-    await expect(select).toBeEnabled();
-    await shootSettings(window, page, 'restarted');
-  });
-
   test('a node Freedom does not run: disabled, with the reason', async ({
     electronApp,
     window,
@@ -509,5 +566,220 @@ test.describe('Settings: Swarm cache size', () => {
     await expect(page.locator('#swarm-cache-status')).toHaveText(reason);
     await expect(page.locator('#swarm-cache-row')).toHaveClass(/\bdisabled\b/);
     await shootSettings(window, page, 'external');
+  });
+});
+
+// Ant v0.5.61's `POST /v0/cache/clear` answer.
+const clearReport = ({ freed, before, after }) => ({
+  freed_bytes: freed,
+  removed_chunks: freed / 4096,
+  file_bytes_before: before,
+  file_bytes_after: after,
+  memory_chunks_removed: 12,
+  status: { disk_enabled: true, used_bytes: 0, capacity_bytes: 2 * GIB, pinned_bytes: 0 },
+});
+
+const CONFIRM =
+  "Clear the Swarm cache?\n\nSwarm pages you've opened will load from the network again. Pinned and published content is kept.";
+
+test.describe('Settings: Clear Swarm cache', () => {
+  async function setUp(electronApp, window, testInfo) {
+    const dataDir = testInfo.outputPath('ant-data');
+    fs.mkdirSync(dataDir, { recursive: true });
+    await wireFakeNode(electronApp, dataDir);
+    await feed(electronApp, { answer: debugstore({ used: 1.3 * GIB, pinned: 120 * MIB }) });
+    const page = await openNodesSettings(window, electronApp);
+    await expect(page.locator('#swarm-cache-usage-text')).toHaveText(
+      '1.3 GB of 2 GB · 120 MB pinned'
+    );
+    return page;
+  }
+
+  test('asks first, then clears through the fake antd and says what it freed', async ({
+    electronApp,
+    window,
+  }, testInfo) => {
+    test.setTimeout(SHOTS ? 120_000 : 60_000);
+    const page = await setUp(electronApp, window, testInfo);
+    const button = page.locator('#swarm-cache-clear');
+    const result = page.locator('#swarm-cache-clear-status');
+    await expect(page.locator('#swarm-cache-clear-row .row-label')).toHaveText('Clear Swarm cache');
+    await expect(button).toHaveText('Clear cache');
+    await expect(button).toBeEnabled();
+    await expect(page.locator('#swarm-cache-clear-reason')).toBeHidden();
+    await expect(result).toHaveAttribute('role', 'status');
+    await expect(result).toHaveAttribute('aria-live', 'polite');
+    await shootSettings(window, page, 'clear-ready');
+
+    await setAnswers(electronApp, {
+      __clearAnswer: {
+        status: 200,
+        body: clearReport({ freed: 1.3 * GIB, before: 1.5 * GIB, after: 130 * MIB }),
+      },
+      // Read live from `/v0/cache` from here on.
+      __cacheStatus: v0cache({ used: 1.3 * GIB, pinned: 120 * MIB }),
+      __afterClear: v0cache({ used: 0, pinned: 120 * MIB }),
+    });
+
+    // Cancel: nothing is sent.
+    const messages = [];
+    let accept = false;
+    page.on('dialog', (dialog) => {
+      messages.push(dialog.message());
+      return accept ? dialog.accept() : dialog.dismiss();
+    });
+    await button.click();
+    await expect.poll(() => messages.length).toBe(1);
+    expect(messages[0]).toBe(CONFIRM);
+    await page.waitForTimeout(300);
+    expect(await fakeWrites(electronApp)).toEqual([]);
+    await expect(result).toBeEmpty();
+
+    // OK: one POST from the main process, no Origin, and the result.
+    accept = true;
+    await button.click();
+    await expect(result).toHaveText('Freed 1.3 GB.');
+    expect(await fakeWrites(electronApp)).toEqual([
+      { method: 'POST', url: '/v0/cache/clear', body: '', origin: null, contentType: null },
+    ]);
+    // The usage line shows the emptied cache at once; pins are still there.
+    await expect(page.locator('#swarm-cache-usage-text')).toHaveText(
+      '0 B of 2 GB · 120 MB pinned',
+      {
+        timeout: 2_000,
+      }
+    );
+    await expect(button).toBeEnabled();
+    await shootSettings(window, page, 'cleared');
+    await electronApp.evaluate(() => globalThis.__fakeAntServer.close());
+  });
+
+  test('a failed clear says why and keeps the button', async ({
+    electronApp,
+    window,
+  }, testInfo) => {
+    const page = await setUp(electronApp, window, testInfo);
+    await setAnswers(electronApp, {
+      __clearAnswer: {
+        status: 500,
+        body: { code: 500, message: 'clear disk cache: database is locked' },
+      },
+    });
+    page.on('dialog', (dialog) => dialog.accept());
+    await page.locator('#swarm-cache-clear').click();
+    await expect(page.locator('#swarm-cache-clear-status')).toHaveText(
+      "The Swarm cache wasn't cleared. The Swarm node couldn't clear its cache (500: clear disk cache: database is locked)."
+    );
+    await expect(page.locator('#swarm-cache-clear')).toBeEnabled();
+    await expect(page.locator('#swarm-cache-usage-text')).toHaveText(
+      '1.3 GB of 2 GB · 120 MB pinned'
+    );
+    expect(await fakeWrites(electronApp)).toHaveLength(1);
+    await shootSettings(window, page, 'clear-failed');
+
+    // A node without the route.
+    await setAnswers(electronApp, { __clearAnswer: null });
+    await page.locator('#swarm-cache-clear').click();
+    await expect(page.locator('#swarm-cache-clear-status')).toHaveText(
+      "The Swarm cache wasn't cleared. This Swarm node can't clear its cache while it runs."
+    );
+    await electronApp.evaluate(() => globalThis.__fakeAntServer.close());
+  });
+
+  test('off, with the reason, while the node is stopped or has no disk cache', async ({
+    electronApp,
+    window,
+  }, testInfo) => {
+    test.setTimeout(SHOTS ? 120_000 : 60_000);
+    const page = await setUp(electronApp, window, testInfo);
+    const button = page.locator('#swarm-cache-clear');
+    const reason = page.locator('#swarm-cache-clear-reason');
+
+    await feed(electronApp, { answer: debugstore({ cap: 0 }) });
+    await expect(button).toBeDisabled({ timeout: 6_000 });
+    await expect(reason).toHaveText(
+      "The node's disk cache isn't available, so there is nothing to clear."
+    );
+    await shootSettings(window, page, 'clear-disk-off');
+
+    await feed(electronApp, { status: 'stopped', answer: debugstore({}), broadcast: true });
+    await expect(reason).toHaveText('Available while the Swarm node is running.', {
+      timeout: 2_000,
+    });
+    await expect(button).toBeDisabled();
+    await shootSettings(window, page, 'clear-not-running');
+
+    // A click on the disabled button sends nothing.
+    await button.click({ force: true });
+    await page.waitForTimeout(300);
+    expect(await fakeWrites(electronApp)).toEqual([]);
+
+    // Back up: offered again.
+    await feed(electronApp, { answer: debugstore({ used: GIB }), broadcast: true });
+    await expect(button).toBeEnabled({ timeout: 2_000 });
+    await expect(reason).toBeHidden();
+    await electronApp.evaluate(() => globalThis.__fakeAntServer.close());
+  });
+});
+
+test.describe('Settings: Swarm cache size, live', () => {
+  test('a running node takes the new size through PUT /v0/cache/capacity, no restart', async ({
+    electronApp,
+    window,
+  }, testInfo) => {
+    const dataDir = testInfo.outputPath('ant-data');
+    fs.mkdirSync(dataDir, { recursive: true });
+    await wireFakeNode(electronApp, dataDir);
+    await setAnswers(electronApp, {
+      __cacheStatus: v0cache({ used: 300 * MIB }),
+      __capacityAnswer: { status: 200, body: { disk_enabled: true, capacity_bytes: 512 * MIB } },
+    });
+    const page = await openNodesSettings(window, electronApp);
+    const select = page.locator('#swarm-cache-size');
+    await expect(select).toBeEnabled();
+
+    // Nothing asks first: no restart.
+    let asked = false;
+    page.on('dialog', (dialog) => {
+      asked = true;
+      dialog.dismiss();
+    });
+    await select.selectOption(String(512 * MIB));
+    await expect(page.locator('#swarm-cache-status')).toHaveText('Swarm cache set to 512 MB.');
+    expect(asked).toBe(false);
+    expect(await fakeWrites(electronApp)).toEqual([
+      {
+        method: 'PUT',
+        url: '/v0/cache/capacity',
+        body: JSON.stringify({ bytes: 512 * MIB }),
+        origin: null,
+        contentType: 'application/json',
+      },
+    ]);
+    // Persisted too: Ant doesn't keep a live size across a restart.
+    const saved = await window.evaluate(() => window.electronAPI.getSettings());
+    expect(saved.antCacheCapacityBytes).toBe(512 * MIB);
+    await expect(select).toHaveValue(String(512 * MIB));
+    // The usage line shows the new cap at once, read live from `/v0/cache`.
+    await expect(page.locator('#swarm-cache-usage-text')).toHaveText('300 MB of 512 MB', {
+      timeout: 2_000,
+    });
+    await shootSettings(window, page, 'live-size');
+
+    // Ant refuses (no disk cache): saved for the next start, and why.
+    await setAnswers(electronApp, {
+      __capacityAnswer: {
+        status: 503,
+        body: { code: 503, message: 'disk chunk cache is not available' },
+      },
+    });
+    await select.selectOption(String(GIB));
+    await expect(page.locator('#swarm-cache-status')).toHaveText(
+      "Swarm cache set to 1 GB. It applies the next time the Swarm node starts: The node's disk cache isn't available."
+    );
+    expect(
+      (await window.evaluate(() => window.electronAPI.getSettings())).antCacheCapacityBytes
+    ).toBe(GIB);
+    await electronApp.evaluate(() => globalThis.__fakeAntServer.close());
   });
 });

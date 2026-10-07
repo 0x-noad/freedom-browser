@@ -1114,9 +1114,9 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   // already enabled). Same shape as checkRadicleBinary: `{ available }`.
   checkTorBinary: guardSettingsPage('checkTorBinary', () => ipcRenderer.invoke('tor:checkBinary')),
   // Settings → Nodes → Swarm cache (#579): how much the cache holds, read
-  // from the node's `/debugstore` by the main process; the sizes on offer and
-  // the current one; and applying one (which restarts the Swarm node Freedom
-  // runs).
+  // from the node's `/v0/cache` by the main process; the sizes on offer and
+  // the current one; applying one (live, on the Swarm node Freedom runs);
+  // and clearing the cache (pinned and published content is kept).
   getSwarmCacheStatus: guardSettingsPage('getSwarmCacheStatus', () =>
     ipcRenderer.invoke('ant:cache-status')
   ),
@@ -1125,6 +1125,9 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   ),
   setSwarmCacheSize: guardSettingsPage('setSwarmCacheSize', (bytes) =>
     ipcRenderer.invoke('ant:cache-set-size', bytes)
+  ),
+  clearSwarmCache: guardSettingsPage('clearSwarmCache', () =>
+    ipcRenderer.invoke('ant:cache-clear')
   ),
   onProfileUpdated: guardInternalSubscription('onProfileUpdated', 'profile:updated'),
   listProfiles: guardInternal('listProfiles', () => ipcRenderer.invoke('profile:list')),

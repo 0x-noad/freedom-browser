@@ -17,18 +17,38 @@ const {
   formatCacheBytes,
   cacheSizeLabel,
   parseDebugstore,
+  parseCacheStatus,
   isCounting,
   describeCache,
   cacheFileBytes,
+  parseClearReport,
+  describeClearResult,
+  describeCacheWriteError,
   createAntCacheService,
   cacheSettingsView,
+  clearAvailability,
   applyCacheSize,
 } = require('./ant-cache');
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 
-// Ant v0.5.60's `/debugstore` (crates/ant-gateway/src/status.rs `debugstore`).
+// Ant v0.5.61's `GET /v0/cache` (crates/ant-retrieval/src/cache_control.rs `status_json`).
+function v0cache({ used = 0, pinned = 0, cap = 2 * GIB, diskEnabled = true } = {}) {
+  return {
+    disk_enabled: diskEnabled,
+    used_bytes: diskEnabled ? used : 0,
+    capacity_bytes: diskEnabled ? cap : 0,
+    pinned_bytes: diskEnabled ? pinned : 0,
+    chunks: diskEnabled ? Math.ceil(used / 4096) : 0,
+    pinned_chunks: diskEnabled ? Math.ceil(pinned / 4096) : 0,
+    file_bytes: 0,
+    memory_chunks: 0,
+    memory_capacity_chunks: 8192,
+  };
+}
+
+// Ant v0.5.61's `/debugstore` (crates/ant-gateway/src/status.rs `debugstore`).
 function debugstore({ size = 0, capacity = (2 * GIB) / 4096, total = size, pins = 0 } = {}) {
   return {
     Upload: { TotalUploaded: 0, TotalSynced: 0, PendingUpload: 0 },
@@ -195,6 +215,31 @@ describe('parseDebugstore', () => {
   });
 });
 
+describe('parseCacheStatus (GET /v0/cache)', () => {
+  test('reads the figures in bytes, chunks counting pinned ones too', () => {
+    expect(parseCacheStatus(v0cache({ used: 8192, pinned: 4096 }))).toEqual({
+      diskEnabled: true,
+      usedBytes: 8192,
+      capacityBytes: 2 * GIB,
+      pinnedBytes: 4096,
+      chunks: 3,
+    });
+    expect(parseCacheStatus(v0cache({ diskEnabled: false }))).toMatchObject({
+      diskEnabled: false,
+    });
+  });
+
+  test.each([
+    [null],
+    [[]],
+    [debugstore()],
+    [{ disk_enabled: 'yes', capacity_bytes: 1 }],
+    [{ disk_enabled: true, capacity_bytes: -1 }],
+  ])('refuses %p', (body) => {
+    expect(parseCacheStatus(body)).toBeNull();
+  });
+});
+
 describe('isCounting', () => {
   const zero = parseDebugstore(debugstore());
   const big = 5 * MIB;
@@ -294,13 +339,49 @@ describe('createAntCacheService', () => {
     };
   }
 
-  test('reads GET /debugstore from the node', async () => {
-    const { svc, fetchImpl } = service({ answer: response(200, debugstore({ size: 256 })) });
-    await expect(svc.getStatus()).resolves.toMatchObject({ state: 'ok', text: '1 MB of 2 GB' });
+  test('reads GET /v0/cache from the node, live and in bytes', async () => {
+    const { svc, fetchImpl } = service({
+      answer: response(200, v0cache({ used: 1.3 * GIB, pinned: 120 * MIB })),
+    });
+    await expect(svc.getStatus()).resolves.toMatchObject({
+      state: 'ok',
+      text: '1.3 GB of 2 GB · 120 MB pinned',
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledWith(
-      'http://127.0.0.1:1633/debugstore',
+      'http://127.0.0.1:1633/v0/cache',
       expect.objectContaining({ method: 'GET' })
     );
+  });
+
+  // A reused bee, or an Ant before v0.5.61.
+  test('falls back to GET /debugstore on a node without /v0/cache', async () => {
+    const fetchImpl = jest.fn(async (url) =>
+      url.endsWith('/v0/cache')
+        ? response(404, { code: 404 })
+        : response(200, debugstore({ size: 256 }))
+    );
+    const svc = createAntCacheService({
+      getNodeStatus: () => ({ status: 'running' }),
+      getApiBase: () => 'http://127.0.0.1:1633',
+      fetchImpl,
+    });
+    await expect(svc.getStatus()).resolves.toMatchObject({ state: 'ok', text: '1 MB of 2 GB' });
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      'http://127.0.0.1:1633/v0/cache',
+      'http://127.0.0.1:1633/debugstore',
+    ]);
+  });
+
+  test('no answer at all is not asked twice', async () => {
+    const { svc, fetchImpl } = service({ answer: new Error('ECONNREFUSED') });
+    await expect(svc.getStatus()).resolves.toMatchObject({ state: 'unreadable' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('/v0/cache with the disk cache off', async () => {
+    const { svc } = service({ answer: response(200, v0cache({ diskEnabled: false })) });
+    await expect(svc.getStatus()).resolves.toMatchObject({ state: 'disk-off' });
   });
 
   test('does not ask a node that is not running', async () => {
@@ -417,92 +498,87 @@ describe('applyCacheSize', () => {
     getView: () => ({ managed: true, reason: '' }),
     save: jest.fn(() => true),
     isNodeActive: () => true,
-    restartNode: jest.fn(async () => ({ ok: true })),
+    setLiveCapacity: jest.fn(async () => ({ ok: true })),
     ...overrides,
   });
 
-  test('saves and restarts a running node', async () => {
+  test('saves and applies the size live on a running node, without a restart', async () => {
     const d = deps();
-    await expect(applyCacheSize(GIB, d)).resolves.toEqual({ ok: true, restarted: true });
+    await expect(applyCacheSize(GIB, d)).resolves.toEqual({ ok: true, live: true });
     expect(d.save).toHaveBeenCalledWith(GIB);
-    expect(d.restartNode).toHaveBeenCalledTimes(1);
+    expect(d.setLiveCapacity).toHaveBeenCalledWith(GIB);
+    // Saved before the live call: Ant doesn't persist it, the next start reads config.yaml.
+    expect(d.save.mock.invocationCallOrder[0]).toBeLessThan(
+      d.setLiveCapacity.mock.invocationCallOrder[0]
+    );
   });
 
-  test('a restart that left the node down (startAnt set ERROR) is not reported as restarted', async () => {
-    let active = true;
-    const d = deps({
-      isNodeActive: () => active,
-      restartNode: jest.fn(async () => {
-        active = false;
-        return { ok: true };
-      }),
-      getNodeError: () => 'No available ports for Ant API',
-    });
-    await expect(applyCacheSize(GIB, d)).resolves.toEqual({
-      ok: true,
-      restarted: false,
-      error: 'The Swarm node did not start again (No available ports for Ant API).',
-    });
-  });
-
-  // R2-M1 on #588: startAnt returns while antd is STARTING, which counts as
-  // active; a node that then exits must not be reported as restarted.
-  test('waits for the start to settle and requires a running node', async () => {
-    let state = 'running';
+  // A node still coming up may have read config.yaml before the save.
+  test('a node still starting: waits for it, then applies live', async () => {
+    let state = 'starting';
     const d = deps({
       isNodeActive: () => state === 'running' || state === 'starting',
       isNodeRunning: () => state === 'running',
-      restartNode: jest.fn(async () => {
-        state = 'starting';
-        return { ok: true };
-      }),
-      waitForNodeSettled: jest.fn(async () => {
-        state = 'stopped';
-      }),
-      getNodeError: () => 'Exited with code 1',
-    });
-    await expect(applyCacheSize(GIB, d)).resolves.toEqual({
-      ok: true,
-      restarted: false,
-      error: 'The Swarm node did not start again (Exited with code 1).',
-    });
-    expect(d.waitForNodeSettled).toHaveBeenCalledTimes(1);
-  });
-
-  test('a node still starting when the wait gives up is not reported as restarted', async () => {
-    let state = 'running';
-    const d = deps({
-      isNodeActive: () => state === 'running' || state === 'starting',
-      isNodeRunning: () => state === 'running',
-      restartNode: jest.fn(async () => {
-        state = 'starting';
-        return { ok: true };
-      }),
-      waitForNodeSettled: jest.fn(async () => {}),
-    });
-    await expect(applyCacheSize(GIB, d)).resolves.toMatchObject({ ok: true, restarted: false });
-  });
-
-  test('a start that settles healthy is reported as restarted', async () => {
-    let state = 'running';
-    const d = deps({
-      isNodeActive: () => state === 'running' || state === 'starting',
-      isNodeRunning: () => state === 'running',
-      restartNode: jest.fn(async () => {
-        state = 'starting';
-        return { ok: true };
-      }),
       waitForNodeSettled: jest.fn(async () => {
         state = 'running';
       }),
     });
-    await expect(applyCacheSize(GIB, d)).resolves.toEqual({ ok: true, restarted: true });
+    await expect(applyCacheSize(GIB, d)).resolves.toEqual({ ok: true, live: true });
+    expect(d.waitForNodeSettled).toHaveBeenCalledTimes(1);
+    expect(d.setLiveCapacity).toHaveBeenCalledWith(GIB);
+  });
+
+  test('a start that failed: saved for the next start, nothing sent', async () => {
+    let state = 'starting';
+    const d = deps({
+      isNodeActive: () => state === 'running' || state === 'starting',
+      isNodeRunning: () => state === 'running',
+      waitForNodeSettled: jest.fn(async () => {
+        state = 'stopped';
+      }),
+    });
+    await expect(applyCacheSize(GIB, d)).resolves.toEqual({ ok: true, live: false });
+    expect(d.setLiveCapacity).not.toHaveBeenCalled();
   });
 
   test('a stopped node: saved, applies at its next start', async () => {
     const d = deps({ isNodeActive: () => false });
-    await expect(applyCacheSize(GIB, d)).resolves.toEqual({ ok: true, restarted: false });
-    expect(d.restartNode).not.toHaveBeenCalled();
+    await expect(applyCacheSize(GIB, d)).resolves.toEqual({ ok: true, live: false });
+    expect(d.setLiveCapacity).not.toHaveBeenCalled();
+  });
+
+  test('a live call that failed: still saved, applies at the next start, says why', async () => {
+    const d = deps({
+      setLiveCapacity: jest.fn(async () => ({
+        ok: false,
+        applied: false,
+        error: "The node's disk cache isn't available.",
+      })),
+    });
+    await expect(applyCacheSize(GIB, d)).resolves.toEqual({
+      ok: true,
+      live: false,
+      error: "The node's disk cache isn't available.",
+    });
+    expect(d.save).toHaveBeenCalledWith(GIB);
+  });
+
+  test('a live call that threw reads as no answer', async () => {
+    const d = deps({ setLiveCapacity: jest.fn(async () => Promise.reject(new Error('boom'))) });
+    await expect(applyCacheSize(GIB, d)).resolves.toEqual({
+      ok: true,
+      live: false,
+      error: "The Swarm node didn't answer.",
+    });
+  });
+
+  // Ant's 500: the size is applied, only the eviction down to it failed, and
+  // the next cache write evicts again.
+  test('an eviction failure still counts as applied', async () => {
+    const d = deps({
+      setLiveCapacity: jest.fn(async () => ({ ok: false, applied: true, error: 'x' })),
+    });
+    await expect(applyCacheSize(GIB, d)).resolves.toEqual({ ok: true, live: true });
   });
 
   test.each([[3 * GIB], ['1073741824'], [null], [-1]])(
@@ -511,7 +587,7 @@ describe('applyCacheSize', () => {
       const d = deps();
       await expect(applyCacheSize(bytes, d)).resolves.toMatchObject({ ok: false });
       expect(d.save).not.toHaveBeenCalled();
-      expect(d.restartNode).not.toHaveBeenCalled();
+      expect(d.setLiveCapacity).not.toHaveBeenCalled();
     }
   );
 
@@ -519,23 +595,261 @@ describe('applyCacheSize', () => {
     const d = deps({ getView: () => ({ managed: false, reason: 'not ours' }) });
     await expect(applyCacheSize(GIB, d)).resolves.toEqual({ ok: false, error: 'not ours' });
     expect(d.save).not.toHaveBeenCalled();
+    expect(d.setLiveCapacity).not.toHaveBeenCalled();
   });
 
-  test('a failed save is reported and nothing restarts', async () => {
+  test('a failed save is reported and nothing is sent', async () => {
     const d = deps({ save: jest.fn(() => false) });
     await expect(applyCacheSize(GIB, d)).resolves.toMatchObject({ ok: false });
-    expect(d.restartNode).not.toHaveBeenCalled();
+    expect(d.setLiveCapacity).not.toHaveBeenCalled();
+  });
+});
+
+// Ant v0.5.61's `POST /v0/cache/clear` answer (crates/ant-retrieval/src/cache_control.rs).
+const clearReport = ({ freed = 0, before = 0, after = 0, diskEnabled = true } = {}) => ({
+  freed_bytes: freed,
+  removed_chunks: freed / 4096,
+  file_bytes_before: before,
+  file_bytes_after: after,
+  memory_chunks_removed: 3,
+  status: { disk_enabled: diskEnabled, used_bytes: 0, capacity_bytes: 2 * GIB },
+});
+
+describe('parseClearReport / describeClearResult', () => {
+  test('reads Ant’s clear answer', () => {
+    expect(parseClearReport(clearReport({ freed: 5 * MIB, before: 9 * MIB, after: MIB }))).toEqual({
+      freedBytes: 5 * MIB,
+      fileBytesBefore: 9 * MIB,
+      fileBytesAfter: MIB,
+      diskEnabled: true,
+    });
+    expect(parseClearReport(clearReport({ diskEnabled: false })).diskEnabled).toBe(false);
   });
 
-  test('a refused restart (mid-purchase) still saved the size and says why', async () => {
-    const d = deps({
-      restartNode: jest.fn(async () => ({ ok: false, error: 'Wait for the purchase.' })),
+  test.each([[null], [[]], ['x'], [{}], [{ freed_bytes: -1 }], [{ freed_bytes: '5' }]])(
+    'refuses %p',
+    (body) => {
+      expect(parseClearReport(body)).toBeNull();
+    }
+  );
+
+  test('"Freed X", and the cases with nothing to free or no shrink on disk', () => {
+    expect(
+      describeClearResult({ freedBytes: 1.3 * GIB, fileBytesBefore: 2 * GIB, fileBytesAfter: 0 })
+    ).toBe('Freed 1.3 GB.');
+    expect(describeClearResult({ freedBytes: 0, fileBytesBefore: 0, fileBytesAfter: 0 })).toBe(
+      'Freed 0 B. The cache was already empty.'
+    );
+    // A cache file from before Ant v0.5.60 that couldn't be rebuilt smaller.
+    expect(
+      describeClearResult({
+        freedBytes: 5 * MIB,
+        fileBytesBefore: 20 * MIB,
+        fileBytesAfter: 20 * MIB,
+      })
+    ).toBe('Freed 5 MB. The cache file keeps its size on disk; the node reuses the space.');
+    expect(
+      describeClearResult({ freedBytes: 5 * MIB, fileBytesBefore: null, fileBytesAfter: null })
+    ).toBe('Freed 5 MB.');
+  });
+});
+
+describe('describeCacheWriteError', () => {
+  test.each([
+    [{ timedOut: true }, 'The Swarm node took too long to answer.'],
+    [{}, "The Swarm node didn't answer."],
+    [{ status: 404 }, "This Swarm node can't clear its cache while it runs."],
+    [{ status: 501 }, "This Swarm node can't clear its cache while it runs."],
+    [{ status: 503 }, "The node's disk cache isn't available."],
+    [
+      { status: 500, message: 'clear disk cache: disk I/O error' },
+      "The Swarm node couldn't clear its cache (500: clear disk cache: disk I/O error).",
+    ],
+    [{ status: 403, message: '' }, "The Swarm node couldn't clear its cache (403)."],
+  ])('clear %p', (failure, text) => {
+    expect(describeCacheWriteError('clear', failure)).toBe(text);
+  });
+
+  test('resize words its own action', () => {
+    expect(describeCacheWriteError('resize', { status: 405 })).toBe(
+      "This Swarm node can't change its cache size while it runs."
+    );
+  });
+});
+
+describe('clearAvailability', () => {
+  const managed = { managed: true, reason: '', clearReason: '' };
+
+  test.each([['ok'], ['counting']])('offered while the usage line is %s', (state) => {
+    expect(clearAvailability({ state }, managed)).toEqual({ canClear: true, clearReason: '' });
+  });
+
+  test.each([
+    ['not-running', 'Available while the Swarm node is running.'],
+    ['starting', 'Available once the Swarm node is running.'],
+    ['disk-off', "The node's disk cache isn't available, so there is nothing to clear."],
+    ['unreadable', "The node doesn't report its cache, so Freedom can't clear it."],
+  ])('off while %s, with the reason', (state, clearReason) => {
+    expect(clearAvailability({ state }, managed)).toEqual({ canClear: false, clearReason });
+  });
+
+  test('never for a node Freedom doesn’t run, even with a figure', () => {
+    const view = cacheSettingsView({ stored: null, profileMode: 'external' });
+    expect(clearAvailability({ state: 'ok' }, view)).toEqual({
+      canClear: false,
+      clearReason: "Freedom doesn't run this Swarm node. Clear its cache where it runs.",
     });
-    await expect(applyCacheSize(GIB, d)).resolves.toEqual({
+    const off = cacheSettingsView({ stored: null, profileMode: 'disabled' });
+    expect(clearAvailability({ state: 'ok' }, off).canClear).toBe(false);
+    expect(clearAvailability({ state: 'ok' }, off).clearReason).toMatch(/off for this profile/);
+  });
+});
+
+describe('the cache writes (createAntCacheService)', () => {
+  const answer = (status, body) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
+  });
+
+  function service({ status = 'running', reply, spawnedAt = 5, dataDir = null, now = 6 } = {}) {
+    const calls = [];
+    const fetchImpl = jest.fn(async (url, init) => {
+      calls.push({ url, init });
+      const next = typeof reply === 'function' ? reply(url, init) : reply;
+      if (next instanceof Error) throw next;
+      return next;
+    });
+    return {
+      calls,
+      fetchImpl,
+      svc: createAntCacheService({
+        getNodeStatus: () => ({ status }),
+        getApiBase: () => 'http://127.0.0.1:1633/',
+        getSpawnedAt: () => spawnedAt,
+        getDataDir: () => dataDir,
+        fetchImpl,
+        now: () => now,
+      }),
+    };
+  }
+
+  test('clear: POST /v0/cache/clear, no body, no Origin; answers "Freed X"', async () => {
+    const { svc, calls } = service({
+      reply: answer(200, clearReport({ freed: 6 * MIB, before: 20 * MIB, after: 64 * 1024 })),
+    });
+    await expect(svc.clearCache()).resolves.toEqual({
       ok: true,
-      restarted: false,
-      error: 'Wait for the purchase.',
+      freedBytes: 6 * MIB,
+      text: 'Freed 6 MB.',
     });
-    expect(d.save).toHaveBeenCalledWith(GIB);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('http://127.0.0.1:1633/v0/cache/clear');
+    expect(calls[0].init).toMatchObject({ method: 'POST' });
+    expect(calls[0].init.body).toBeUndefined();
+    // Ant refuses a write that carries an Origin (a web page's).
+    expect(JSON.stringify(calls[0].init.headers || {})).not.toMatch(/origin/i);
+    expect(calls[0].init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  test('clear: a node that isn’t running is not asked', async () => {
+    const { svc, fetchImpl } = service({ status: 'stopped' });
+    await expect(svc.clearCache()).resolves.toEqual({
+      ok: false,
+      error: "The Swarm node isn't running.",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    [
+      'a 500 with Ant’s error body',
+      () => answer(500, { code: 500, message: 'clear disk cache: database is locked' }),
+      "The Swarm node couldn't clear its cache (500: clear disk cache: database is locked).",
+    ],
+    [
+      'a 403 (refused as a web page)',
+      () => answer(403, { code: 403, message: 'does not accept requests from web pages' }),
+      "The Swarm node couldn't clear its cache (403: does not accept requests from web pages).",
+    ],
+    [
+      'a node without the route',
+      () => answer(404, '{"code":404}'),
+      "This Swarm node can't clear its cache while it runs.",
+    ],
+    ['no answer', () => new Error('ECONNREFUSED'), "The Swarm node didn't answer."],
+    [
+      'a timeout',
+      () => Object.assign(new Error('timed out'), { name: 'TimeoutError' }),
+      'The Swarm node took too long to answer.',
+    ],
+    ['garbage', () => answer(200, '<html>'), "The Swarm node's answer couldn't be read."],
+    [
+      'no disk cache (Ant emptied only the memory tier)',
+      () => answer(200, clearReport({ diskEnabled: false })),
+      "The node's disk cache isn't available, so nothing was cleared.",
+    ],
+  ])('clear: %s is a failure with the reason', async (_label, reply, error) => {
+    const { svc } = service({ reply });
+    await expect(svc.clearCache()).resolves.toEqual({ ok: false, error });
+  });
+
+  // After a clear, an all-zero reading over a big old cache file is the truth
+  // (Ant can't always shrink a pre-v0.5.60 file), not Ant still counting.
+  test('after a clear, the same spawn never reads as counting', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ant-cache-clear-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'chunks.sqlite'), Buffer.alloc(2 * MIB));
+      let spawnedAt = 1_000;
+      const svc = createAntCacheService({
+        getNodeStatus: () => ({ status: 'running' }),
+        getApiBase: () => 'http://127.0.0.1:1633',
+        getSpawnedAt: () => spawnedAt,
+        getDataDir: () => dir,
+        now: () => spawnedAt + 5_000,
+        fetchImpl: async (url) =>
+          url.endsWith('/v0/cache/clear')
+            ? answer(200, clearReport({ freed: MIB, before: 2 * MIB, after: 2 * MIB }))
+            : answer(200, debugstore()),
+      });
+      await expect(svc.getStatus()).resolves.toMatchObject({ state: 'counting' });
+      await expect(svc.clearCache()).resolves.toMatchObject({ ok: true });
+      await expect(svc.getStatus()).resolves.toMatchObject({ state: 'ok', text: '0 B of 2 GB' });
+      // A new spawn counts afresh.
+      spawnedAt = 9_000;
+      await expect(svc.getStatus()).resolves.toMatchObject({ state: 'counting' });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('resize: PUT /v0/cache/capacity with {"bytes": N} as JSON', async () => {
+    const { svc, calls } = service({ reply: answer(200, { capacity_bytes: GIB }) });
+    await expect(svc.setCapacity(GIB)).resolves.toEqual({ ok: true });
+    expect(calls[0].url).toBe('http://127.0.0.1:1633/v0/cache/capacity');
+    expect(calls[0].init).toMatchObject({
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    expect(JSON.parse(calls[0].init.body)).toEqual({ bytes: GIB });
+  });
+
+  test.each([
+    [
+      503,
+      { code: 503, message: 'disk chunk cache is not available' },
+      false,
+      "The node's disk cache isn't available.",
+    ],
+    [
+      500,
+      { code: 500, message: 'set cache capacity: disk full' },
+      true,
+      "The Swarm node couldn't change its cache size (500: set cache capacity: disk full).",
+    ],
+    [404, '{"code":404}', false, "This Swarm node can't change its cache size while it runs."],
+  ])('resize: a %i', async (status, body, applied, error) => {
+    const { svc } = service({ reply: answer(status, body) });
+    await expect(svc.setCapacity(GIB)).resolves.toEqual({ ok: false, applied, error });
   });
 });

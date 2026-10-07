@@ -43,8 +43,9 @@ const DEFAULT_SETTINGS = {
   // The Swarm node's disk cache size in bytes (#579), one of the sizes in
   // swarm/ant-cache.js. Null until chosen: the node's first start saves the
   // default, or 10 GB for a profile whose node already has a cache from
-  // before this setting. ant-manager writes it into config.yaml, so a change
-  // applies when the node restarts (Settings → Nodes → Swarm cache size).
+  // before this setting. ant-manager writes it into config.yaml for the next
+  // start; Settings → Nodes → Swarm cache size also applies a change to the
+  // running node live (Ant v0.5.61+, not persisted by Ant itself).
   antCacheCapacityBytes: null,
   startIpfsAtLaunch: true,
   startRadicleAtLaunch: false,

@@ -144,6 +144,7 @@ const INTERNAL_CHANNELS = [
 const SETTINGS_CHANNELS = [
   'adblock:add-allowlist-host',
   'adblock:remove-allowlist-host',
+  'ant:cache-clear',
   'ant:cache-get-settings',
   'ant:cache-set-size',
   'ant:cache-status',

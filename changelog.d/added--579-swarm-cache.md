@@ -1,5 +1,6 @@
 - The Swarm node's cache, in Settings → Nodes → Swarm cache size ([#579](https://github.com/solardev-xyz/freedom-browser/issues/579)):
   - How much it holds, e.g. "1.3 GB of 2 GB · 120 MB pinned", or why there is no figure (node not running, disk cache unavailable, still counting)
-  - A size from 512 MB to 16 GB; applying it restarts the node
+  - A size from 512 MB to 16 GB, applied to the running node at once, without a restart
+  - Clear cache, which keeps pinned and published content and says how much it freed
   - New profiles get 2 GB; existing ones keep Ant's 10 GB until you pick
-  - A smaller size frees space gradually; caches made before this release may not shrink on disk
+  - A smaller size frees space straight away; caches made before this release may not shrink on disk
