@@ -152,6 +152,8 @@ for (const theme of ['dark', 'light']) {
           'Update or reinstall — open Nodes',
           'Update or reinstall — open Nodes',
         ],
+        // Turned off, client still exiting: nothing to update for.
+        [{ state: 'off', running: false }, 'Off', 'Off'],
       ];
       for (const [extra, without, withAdvisory] of steps) {
         await advisoryState(electronApp, { 1: null, 100: null }, extra);

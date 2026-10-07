@@ -292,6 +292,10 @@ describe('myotis-ui', () => {
       expect(ctx.elements.upgradeText.textContent).toBe('');
       update(ready(advisory(), { chainId: 100, state: 'disabled' }));
       expect(ctx.elements.gnosisUpgrade.hidden).toBe(true);
+      // Turned off (client still exiting): no notice either.
+      update(ready(advisory(), { chainId: 1, state: 'off', running: false }));
+      expect(ctx.elements.upgrade.hidden).toBe(true);
+      expect(ctx.elements.upgradeText.textContent).toBe('');
       // Recovery messages are untouched by the notice.
       expect(ctx.elements.gnosisRecoveryMessage.hidden).not.toBe(false);
     });

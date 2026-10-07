@@ -111,6 +111,23 @@ describe('myotis-manager', () => {
     expect(mod.publicStatus().upgradeAdvisory).toBeNull();
   });
 
+  test('a node being stopped drops the advisory before its client has exited', async () => {
+    const { mod, clients, status } = loadManager();
+    await mod.startMyotis();
+    const advisory = { phase: 'ACTIVE', activationTime: 0, forkId: '0x00000000', observedPeers: 3 };
+    clients[0].options.onStatus({ ...status, upgradeAdvisory: advisory });
+    let exit;
+    clients[0].stop.mockImplementation(() => new Promise((resolve) => { exit = resolve; }));
+    const stopping = mod.stopMyotis();
+    // Client still alive; a late snapshot from it must not resurrect the notice.
+    expect(clients[0].exited).toBe(false);
+    clients[0].options.onStatus({ ...status, upgradeAdvisory: advisory });
+    expect(mod.publicStatus()).toMatchObject({ state: 'off', running: false, upgradeAdvisory: null });
+    clients[0].exited = true; exit(true);
+    await stopping;
+    expect(mod.publicStatus().upgradeAdvisory ?? null).toBeNull();
+  });
+
   test('status queries use cached snapshots and stale status removes readiness', async () => {
     const { mod, clients } = loadManager();
     await mod.startMyotis();

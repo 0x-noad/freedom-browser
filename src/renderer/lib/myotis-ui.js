@@ -119,7 +119,8 @@ const updateUpgradeNotice = (status, chainId) => {
   const prefix = chainId === 100 ? 'myotis-gnosis-upgrade' : 'myotis-upgrade';
   const notice = document.getElementById(`${prefix}-message`);
   if (!notice) return;
-  const view = status?.state === 'disabled' ? null : upgradeAdvisoryMessage(status);
+  // An off or profile-disabled node isn't verifying anything; nothing to update for.
+  const view = ['disabled', 'off'].includes(status?.state) ? null : upgradeAdvisoryMessage(status);
   const text = document.getElementById(`${prefix}-text`);
   const detail = document.getElementById(`${prefix}-detail`);
   if (text) text.textContent = view?.text || '';

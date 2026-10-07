@@ -2612,7 +2612,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       // updating is the one action that can end it; the Nodes card still
       // shows the recovery state next to the notice. Pinned by
       // test-e2e/myotis-upgrade-advisory.spec.js.
-      if (['SCHEDULED', 'ACTIVE'].includes(status.upgradeAdvisory?.phase))
+      if (!['off', 'disabled'].includes(status.state) && ['SCHEDULED', 'ACTIVE'].includes(status.upgradeAdvisory?.phase))
         return status.state === 'ready' ? 'Ready — update Freedom' : 'Update Freedom — open Nodes';
       if (status.state === 'ready') return 'Ready';
       if (status.state === 'syncing') return 'Syncing';
