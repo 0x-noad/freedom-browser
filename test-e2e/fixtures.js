@@ -232,29 +232,33 @@ const test = base.extend({
 // enough: rAF only says the renderer *started* a frame, and presentation can
 // lag several frames behind that in a just-launched app.
 //
-// How. Two gates, then the input once:
+// How. A wait, a gate, then the input once:
 // 1. `waitForPresentedFrame` paints a marker tagged `elementtiming` and waits
 //    for Chromium's `PerformanceElementTiming.renderTime` for it, the
 //    presentation time of the frame that first painted it. Frames are
 //    presented in order, so everything in the DOM before the call is on screen
-//    by then. No fixed delay: on a slow machine the wait is just longer.
+//    by then. No fixed delay: on a slow machine the wait is just longer. This
+//    is what makes the first hover land (looped on CI 2026-10-07, 27 file runs
+//    across Ubuntu/Windows/macOS: the gate below never had to re-send one). It
+//    is not the gate: once in CI (e2e-chrome, 2026-10-07) no entry for the
+//    marker arrived within 10 s and the retry passed in 2 s, so a missing
+//    entry is logged and left to step 2 rather than failing the test.
 // 2. Hover the element until it matches `:hover`. That only happens once a
 //    pointer event at that point has reached this renderer, i.e. the browser
-//    now routes the point to the chrome. This is the ground truth the first
-//    gate makes likely. A hover the browser still hands to the guest has no
+//    now routes the point to the chrome — the condition a click needs, and the
+//    one that decides. A hover the browser still hands to the guest has no
 //    effect on the page — unlike a click, which focuses (and over a field,
 //    edits) whatever the guest has there — so the move, never the click, is
 //    what may be re-sent. Hovering is the only input these helpers can send
 //    more than once.
 // The element must stay put between the hover and the click; a popover does.
 
-// Resolve once the chrome's current DOM has been *presented*. The 10 s guard
-// only turns "no frame was ever presented" (for example a hidden window, #567)
-// into a readable failure instead of a test timeout.
+// Resolve `true` once the chrome's current DOM has been *presented*, or `false`
+// if no presentation entry for the marker arrived within 10 s.
 const waitForPresentedFrame = (page) =>
   page.evaluate(
     () =>
-      new Promise((resolve, reject) => {
+      new Promise((resolve) => {
         const id = `e2e-presented-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         const marker = document.createElement('div');
         marker.setAttribute('elementtiming', id);
@@ -270,12 +274,9 @@ const waitForPresentedFrame = (page) =>
           fn(value);
         };
         const observer = new PerformanceObserver((list) => {
-          if (list.getEntries().some((entry) => entry.identifier === id)) done(resolve);
+          if (list.getEntries().some((entry) => entry.identifier === id)) done(resolve, true);
         });
-        const guard = setTimeout(
-          () => done(reject, new Error('waitForPresentedFrame: no frame presented in 10 s')),
-          10_000
-        );
+        const guard = setTimeout(() => done(resolve, false), 10_000);
         observer.observe({ type: 'element', buffered: false });
         document.body.append(marker);
       })
@@ -284,7 +285,11 @@ const waitForPresentedFrame = (page) =>
 // Put the pointer on `locator` and return once the element itself is under it
 // as far as the browser's input routing is concerned (see above).
 const hoverOverGuest = async (locator, { timeout = 15_000 } = {}) => {
-  await waitForPresentedFrame(locator.page());
+  if (!(await waitForPresentedFrame(locator.page()))) {
+    // Visible in the run log; whether the pointer reaches the chrome is still
+    // decided by the `:hover` gate below, which fails the test if it never does.
+    console.warn(`hoverOverGuest: no presentation entry in 10 s before hovering ${locator}`);
+  }
   await expect(async () => {
     await locator.hover({ timeout: 1000 });
     expect(await locator.evaluate((element) => element.matches(':hover'))).toBe(true);
