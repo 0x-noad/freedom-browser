@@ -12,7 +12,7 @@
 // drive that page's real markup + IPC inside its <webview>.
 
 const { test, expect } = require('./profiles-fixtures');
-const { waitForPresentedFrame } = require('./fixtures');
+const { clickOverGuest, hoverOverGuest } = require('./fixtures');
 
 // --- helpers ---------------------------------------------------------------
 
@@ -437,8 +437,7 @@ test('create: a new profile via the chrome modal lands in the catalog and is ope
   // The dialog sits over the tab's <webview>. Until its frame is presented,
   // the browser hands a synthetic click at Create to the guest underneath and
   // the form is never submitted (#539).
-  await waitForPresentedFrame(window);
-  await window.click('#profile-create-submit');
+  await clickOverGuest(window.locator('#profile-create-submit'));
 
   // On success the modal closes itself.
   await expect(window.locator('#profile-create-modal')).toBeHidden();
@@ -509,10 +508,8 @@ test('menu: hovering another hamburger row closes the profiles flyout', async ({
   // The "New Tab" row sits over the tab's <webview>, and the hamburger has only
   // just opened. Until its frame is presented, the browser routes the hover's
   // mousemove to the guest, so the chrome sees no mouseover (#537).
-  await waitForPresentedFrame(window);
-
   // Hovering a sibling row ("New Tab") dismisses it …
-  await window.hover('#new-tab-menu-btn');
+  await hoverOverGuest(window.locator('#new-tab-menu-btn'));
   await expect(flyout).toBeHidden();
   // … and only the flyout: the hamburger it lives in stays open.
   await expect(hamburger).toHaveClass(/\bopen\b/);
