@@ -702,9 +702,12 @@ test.describe('Settings: Clear Swarm cache', () => {
     );
     await shootSettings(window, page, 'clear-disk-off');
 
+    // The broadcast only repaints at once when it changes the node status the
+    // page last heard, which in the harness may already be "stopped"; the
+    // next poll (every 3 s) picks it up either way.
     await feed(electronApp, { status: 'stopped', answer: debugstore({}), broadcast: true });
     await expect(reason).toHaveText('Available while the Swarm node is running.', {
-      timeout: 2_000,
+      timeout: 6_000,
     });
     await expect(button).toBeDisabled();
     await shootSettings(window, page, 'clear-not-running');
