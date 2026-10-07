@@ -7,7 +7,7 @@
 // Ctrl-modified click, which is the only way to exercise the background
 // disposition (a synthetic `element.click()` carries no modifiers).
 
-const { test, expect, pointAtOverGuest, SAMPLE_BZZ_HASH } = require('./fixtures');
+const { test, expect, clickOverGuest, SAMPLE_BZZ_HASH } = require('./fixtures');
 
 // Both themes, as a `src/renderer/` change owes: these tests run dark (an
 // unseeded app takes theme 'system', which is light under xvfb, so the dark
@@ -147,12 +147,9 @@ const searchItem = (window) =>
 // raised over the tab's `<webview>`, and a click the browser dispatches before
 // it has caught up with the frame that revealed the menu goes to the page
 // underneath: the guest got the whole pointerdown→click and the item never
-// saw it (#540, `pointAtOverGuest`). The label is written before that reveal,
+// saw it (#540, `clickOverGuest`). The label is written before that reveal,
 // so `toHaveText` alone lets a click arrive on the very next frame.
-const clickSearchItem = async (window, options) => {
-  await pointAtOverGuest(searchItem(window));
-  await searchItem(window).click(options);
-};
+const clickSearchItem = (window, options) => clickOverGuest(searchItem(window), options);
 
 // The visible rows of the selection group, in DOM order — the item has to sit
 // directly under Copy, where Chrome puts it.
