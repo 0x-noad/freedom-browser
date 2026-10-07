@@ -266,6 +266,12 @@ async function antWalletScan(from = DEPLOY_BLOCK, to = HEAD, { maxWindows = 20_0
 
 const DEFAULTS = { gnosischain: FULL, publicnode: CAPPED, drpc: CAPPED };
 const sameLogs = (logs) => expect(logs).toEqual(CHAIN);
+// What a Blockscout-paired answer delivers: the pair's entries cut to the
+// fields the two providers compared (no transactionIndex, which Blockscout
+// does not report), the quorum's newest-block entries (CHAIN[6]) whole.
+const pairedEntry = ({ transactionIndex: _unverified, ...log }) => log;
+const PAIRED_CHAIN = [...CHAIN.slice(0, 6).map(pairedEntry), CHAIN[6]];
+const samePairedLogs = (logs) => expect(logs).toEqual(PAIRED_CHAIN);
 
 beforeEach(() => {
   jest.useFakeTimers({ now: 1_000_000 });
@@ -280,7 +286,7 @@ describe('a first wallet scan with Blockscout', () => {
   test('three requests from Ant instead of window by window, every answer verified', async () => {
     useProviders(DEFAULTS);
     const scan = await antWalletScan();
-    sameLogs(scan.logs);
+    samePairedLogs(scan.logs);
     // 1: the quorum learns publicnode's and dRPC's caps and refuses the span;
     // Ant halves. 2 and 3: Blockscout + rpc.gnosischain.com agree on each half,
     // the quorum verifies its newest 1,000 blocks.
@@ -311,7 +317,7 @@ describe('a first wallet scan with Blockscout', () => {
     requests = [];
     const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
     expect(got).toMatchObject({ source: 'blockscout', verified: true });
-    expect(got.result).toEqual(CHAIN);
+    expect(got.result).toEqual(PAIRED_CHAIN);
     const pairSpan = HEAD - 1000 - DEPLOY_BLOCK + 1;
     expect(blockscout.calls[blockscout.calls.length - 1]).toEqual({
       type: 'ERC-20',
@@ -335,9 +341,42 @@ describe('a first wallet scan with Blockscout', () => {
     useProviders(DEFAULTS);
     await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
     const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
-    expect(got.result[0]).toEqual(CHAIN[0]);
-    // Blockscout does not report the transaction index Ant receives.
+    expect(got.result[0]).toEqual(pairedEntry(CHAIN[0]));
+    // In the RPC's own spelling, not Blockscout's (decimal block number).
+    expect(got.result[0].blockNumber).toBe(CHAIN[0].blockNumber);
+  });
+
+  // Blockscout does not report the transaction index, so nothing checks the
+  // RPC's: it is not delivered inside an answer labelled verified. A wrong
+  // one (or any field the pair did not compare) never reaches Ant.
+  test('only the fields the pair compared reach Ant', async () => {
+    const lying = (from, to) =>
+      inRange(CHAIN, from, to).map((log) => ({
+        ...log,
+        transactionIndex: '0x3e7',
+        blockTimestamp: '0x1',
+      }));
+    useProviders({ ...DEFAULTS, gnosischain: lying });
     expect(blockscoutItem(CHAIN[0])).not.toHaveProperty('transaction_index');
+    await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
+    expect(got).toMatchObject({ source: 'blockscout', verified: true });
+    const paired = got.result.slice(0, 6);
+    expect(paired).toEqual(CHAIN.slice(0, 6).map(pairedEntry));
+    for (const log of paired) {
+      expect(Object.keys(log).sort()).toEqual(
+        [
+          'address',
+          'blockHash',
+          'blockNumber',
+          'data',
+          'logIndex',
+          'removed',
+          'topics',
+          'transactionHash',
+        ].sort()
+      );
+    }
   });
 });
 
@@ -503,7 +542,7 @@ describe('Blockscout is a shortcut: anything wrong falls back to the quorum path
   test('Blockscout behind the head by less than the quorum tail still agrees', async () => {
     useProviders(DEFAULTS, 'lagging');
     const scan = await antWalletScan();
-    sameLogs(scan.logs);
+    samePairedLogs(scan.logs);
     expect(scan.antRequests).toBe(3);
   });
 
