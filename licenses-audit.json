@@ -1,7 +1,7 @@
 {
   "project_license": "MPL-2.0",
-  "generated_at": "2026-09-23T00:00:00.000Z",
-  "audit_baseline": "0.8.6",
+  "generated_at": "2026-10-07T00:00:00.000Z",
+  "audit_baseline": "0.8.7-rc.1",
   "notes": "Regenerated for the 0.8.5 release. The 2026-08-19 revision of this file described a pre-0.8.5 tree (electron 39.2.7, ant v0.5.21, libradicle 0.3.0, no Myotis, no Arti) and reported zero copyleft dependencies, which was already untrue. Bundled-component inventory is derived from package.json build.extraResources and src/renderer/vendor/; licenses-audit.test.js fails if this file drifts from either.",
   "distribution_model": {
     "packaging": "electron-builder",
@@ -154,6 +154,32 @@
           "kind": "notice",
           "details": "Built from crates.io with `cargo install arti --locked`, so the shipped binary statically links the crate's whole dependency tree. Copyright 2019-2025, The Tor Project, Inc.",
           "recommended_fix": "Re-check the Cargo.lock license set on every ARTI_VERSION bump; upstream distributes the tree under permissive licenses."
+        }
+      ]
+    },
+    {
+      "name": "AppImage type2-runtime",
+      "version": "20251108",
+      "type": "binary",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "github-release",
+        "url": "https://github.com/AppImage/type2-runtime"
+      },
+      "license": {
+        "spdx": ["MIT", "LGPL-2.1-only", "BSD-2-Clause", "BSD-3-Clause", "Zlib"],
+        "raw": "runtime MIT; statically links libfuse 3.15.0 (LGPL-2.1, patched by upstream), squashfuse 0.5.2 (BSD-2-Clause), musl (MIT), zstd (BSD-3-Clause OR GPL-2.0, used as BSD-3-Clause), zlib (Zlib) and mimalloc (MIT)",
+        "notice_required": true
+      },
+      "version_pin": "package.json build.toolsets.appimage (1.0.3), which electron-builder maps to appimage-tools-runtime-20251108",
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-process",
+      "risk": "orange",
+      "issues": [
+        {
+          "kind": "copyleft",
+          "details": "Linux AppImage only. Since #566 every .AppImage starts with the static type-2 runtime as its ELF header; it mounts the squashfs image and execs Freedom, so Freedom is not linked to it. The runtime statically links libfuse 3.15.0 (LGPL-2.1) with upstream's patches/libfuse/mount.c.diff applied. The previous runtime (appimage-12.0.1) dlopen()ed the system libfuse.so.2 instead, so 0.8.7 is the first release whose AppImage carries LGPL-2.1 code. The .deb and pacman packages do not contain the runtime. Attribution is in NOTICES; until this revision none of the audit files recorded the runtime, because licenses-audit.test.js derives its inventory from build.extraResources and src/, and the runtime arrives through electron-builder's toolset instead.",
+          "recommended_fix": "Maintainer decision pending. The runtime is a separate upstream program, unmodified by Freedom, whose complete source, build scripts and libfuse patch are public at the pinned release, which is the usual basis for meeting LGPL-2.1 section 6 (the runtime can be relinked against a modified libfuse from that source). Decide whether NOTICES' pointer to the upstream source is enough or whether Freedom should offer the corresponding source itself, and record the decision here and in LICENSE_AUDIT.md. Re-read the component list on every build.toolsets.appimage or electron-builder bump."
         }
       ]
     },
@@ -918,6 +944,11 @@
       "priority": "required",
       "action": "Keep shipping Electron's LICENSES.chromium.html on macOS",
       "details": "Linux and Windows packages inherit it from the Electron dist. macOS does not: electron-builder unlinks it, and the .dmg/-mac.zip carry only Freedom.app, so build.mac.extraResources copies it into Contents/Resources. Dropping that entry silently removes Chromium's third-party attribution from every macOS artifact; licenses-audit.test.js fails if it goes."
+    },
+    {
+      "priority": "required",
+      "action": "Decide the AppImage runtime's LGPL-2.1 handling",
+      "details": "The static AppImage runtime (AppImage/type2-runtime 20251108, via build.toolsets.appimage) links a patched libfuse 3.15.0 into every Linux .AppImage. NOTICES attributes it; whether pointing to upstream's source is sufficient, or Freedom must offer corresponding source itself, is a maintainer decision that has not been recorded yet."
     },
     {
       "priority": "recommended",
