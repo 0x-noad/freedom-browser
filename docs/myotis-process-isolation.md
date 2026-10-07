@@ -325,9 +325,28 @@ Snapshots, native anchor markers and old host anchor records are never copied.
 Readiness requires beacon `SYNCED`, the EL reader available and not hunting,
 and a numeric `snapServingPeers > 0`. Missing serving counts fail closed.
 `snapPeers` remains available alongside `snapServingPeers` in renderer status.
-ABI 38's `snap2ServingPeers` (the part of `snapServingPeers` on snap/2) and the
-`upgradeAdvisory` fork-watch result are not in the status allowlist: reads are
-the same on either snap version, so readiness keeps gating on the total.
+ABI 38's `snap2ServingPeers` (the part of `snapServingPeers` on snap/2) is not
+in the status allowlist: reads are the same on either snap version, so
+readiness keeps gating on the total.
+
+The fork watch's `upgradeAdvisory` (v0.1.14+, `null` or `{ phase,
+activationTime, forkId, observedPeers }`) is allowlisted only after strict
+validation in `myotis-process.js`: `phase` `SCHEDULED`/`ACTIVE`,
+`activationTime` a non-negative integer of seconds (0 = unknown), `forkId`
+`0x` plus 8 hex digits (`0x00000000` = unknown, a blob-parameter-only fork),
+`observedPeers` an integer from 1 to 100000. Anything else drops the whole
+advisory to `null`. `publicStatus` carries it to the Nodes menu, which shows an
+"update Freedom" notice, and to Settings' source status. It is **display-only**:
+upstream derives it from what peers announce (discv5 ENRs, libp2p Status
+digests), unverified and never read by verification, so neither readiness nor
+the chain-data router reads it. An `ACTIVE` advisory does not demote Myotis in
+routing on purpose — that would let a majority of peer networks push Freedom
+off its own verified node. The node's own state already covers the real
+failure: a post-fork call the engine's fork table cannot run is refused as a
+capability limit and falls through to the next source (#557), and a light
+client that cannot follow the fork stops being `SYNCED`, which fails readiness
+so the router skips Myotis. The notice says "this node can't verify" only in
+that not-ready case, and "verified reads may stop" while it is still ready.
 A serving count reflects announced/proven head coverage and read-bench state;
 it is not a guarantee that the next peer request succeeds. ENS continues to
 request `latest`, with existing fallbacks for transient failures. Finalized state

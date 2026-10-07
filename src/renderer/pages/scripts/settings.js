@@ -121,6 +121,9 @@ let savedProfileName = '';
 let torBundled = true;
 let profileRefreshTimer = null;
 let setProfileRefreshActive = () => {};
+// Starts or stops the Swarm cache usage poll to match whether its row is on
+// screen (defined with the row, below; #579).
+let syncSwarmCacheUsage = () => {};
 
 const esc = (s) =>
   String(s == null ? '' : s).replace(
@@ -470,6 +473,7 @@ const showSection = (route) => {
   }
   navItems.forEach((item) => item.classList.toggle('active', item.dataset.target === section));
   setProfileRefreshActive(section === 'profile' || section === 'nodes');
+  syncSwarmCacheUsage();
   // Always scroll the content area to the top when switching — avoids a
   // stale scroll offset from a taller prior section.
   stopPanelScroll();
@@ -869,6 +873,7 @@ const settingsSearchResets = [];
     for (const id of PANELS) document.getElementById(id)?.classList.add('hidden');
     panel.classList.remove('hidden');
     showing = true;
+    syncSwarmCacheUsage();
     window.scrollTo({ top: 0 });
   };
 
@@ -1361,6 +1366,8 @@ const isProfileOrNodesSection = () => {
 setProfileRefreshActive(isProfileOrNodesSection());
 freedomAPI.onProfileUpdated?.(() => {
   refreshRadicleLaunchStatus();
+  refreshSwarmCacheRow();
+  syncSwarmCacheUsage({ restart: true });
   if (isProfileOrNodesSection()) {
     refreshProfileSection(true);
   }
@@ -1867,8 +1874,194 @@ const refreshSwarmPublishingRow = async () => {
 };
 
 freedomAPI.onPublishSetupState?.((state) => {
+  const previousNodeStatus = cachedSetupState?.node?.status;
   cachedSetupState = state;
   renderSwarmPublishingRow(cachedSettings, cachedSetupState);
+  // The cache usage line follows the node at once (stopped → starting →
+  // running), rather than on its next poll, and picks polling back up when a
+  // stopped node starts again.
+  const nodeStatus = state?.node?.status;
+  if (nodeStatus && nodeStatus !== previousNodeStatus) {
+    syncSwarmCacheUsage({ restart: true });
+  }
+});
+
+// Settings → Nodes → Swarm cache: how much it holds (#579). The main process
+// reads the node's `/debugstore` and words the line (swarm/ant-cache.js); this
+// page only paints it. It is read every few seconds while the row is on
+// screen — the Nodes section open, not covered by search results, the page not
+// in a background tab — and not at all otherwise. A node that isn't running
+// stops the polling too: the line says so, and a node status change (the
+// publish setup broadcast, below) or a profile change picks it back up.
+const SWARM_CACHE_POLL_MS = 3000;
+const swarmCacheUsageRow = $('swarm-cache-row');
+const swarmCacheUsageText = $('swarm-cache-usage-text');
+const swarmCacheUsageNote = $('swarm-cache-usage-note');
+let swarmCacheUsageTimer = null;
+let swarmCacheUsageSeq = 0;
+let swarmCacheUsageActive = false;
+
+const swarmCacheRowOnScreen = () =>
+  !document.hidden && Boolean(swarmCacheUsageRow?.getClientRects().length);
+
+const paintSwarmCacheUsage = (usage) => {
+  if (swarmCacheUsageText) swarmCacheUsageText.textContent = usage?.text || 'Unknown';
+  if (swarmCacheUsageNote) {
+    swarmCacheUsageNote.textContent = usage?.reason || '';
+    swarmCacheUsageNote.hidden = !usage?.reason;
+  }
+};
+
+const stopSwarmCacheUsage = () => {
+  clearTimeout(swarmCacheUsageTimer);
+  swarmCacheUsageTimer = null;
+  // A read still out lands on nothing.
+  swarmCacheUsageSeq += 1;
+  swarmCacheUsageActive = false;
+};
+
+const readSwarmCacheUsage = async () => {
+  swarmCacheUsageTimer = null;
+  const seq = ++swarmCacheUsageSeq;
+  let usage;
+  try {
+    usage = (await freedomAPI.getSwarmCacheStatus?.()) || null;
+  } catch {
+    usage = null;
+  }
+  if (seq !== swarmCacheUsageSeq) return;
+  paintSwarmCacheUsage(usage);
+  if (usage?.state === 'not-running' || !swarmCacheRowOnScreen()) {
+    swarmCacheUsageActive = false;
+    return;
+  }
+  swarmCacheUsageTimer = setTimeout(readSwarmCacheUsage, SWARM_CACHE_POLL_MS);
+};
+
+syncSwarmCacheUsage = ({ restart = false } = {}) => {
+  if (!swarmCacheRowOnScreen()) {
+    stopSwarmCacheUsage();
+    return;
+  }
+  if (swarmCacheUsageActive && !restart) return;
+  stopSwarmCacheUsage();
+  swarmCacheUsageActive = true;
+  readSwarmCacheUsage();
+};
+
+document.addEventListener('visibilitychange', () => syncSwarmCacheUsage());
+// The section the page opened on was shown before this ran.
+syncSwarmCacheUsage();
+
+// Settings → Nodes → Swarm cache size (#579). The sizes, the current one and
+// whether Freedom runs this profile's node come from the main process
+// (src/main/swarm/ant-cache.js). Picking a size asks first when the node is
+// running, since applying it restarts the node; Cancel puts the old size back.
+const swarmCacheRow = $('swarm-cache-row');
+const swarmCacheSelect = $('swarm-cache-size');
+const swarmCacheStatus = $('swarm-cache-status');
+let swarmCacheView = null;
+let swarmCacheBusy = false;
+
+const setSwarmCacheStatus = (text) => {
+  if (swarmCacheStatus) swarmCacheStatus.textContent = text || '';
+};
+
+const renderSwarmCacheRow = (view) => {
+  if (!swarmCacheSelect) return;
+  swarmCacheView = view;
+  if (!view || !Array.isArray(view.sizes)) {
+    swarmCacheSelect.replaceChildren();
+    swarmCacheSelect.disabled = true;
+    swarmCacheRow?.classList.add('disabled');
+    setSwarmCacheStatus("The cache size couldn't be read.");
+    return;
+  }
+  swarmCacheSelect.replaceChildren(
+    ...view.sizes.map(({ bytes, label }) => {
+      const option = document.createElement('option');
+      option.value = String(bytes);
+      option.textContent = label;
+      return option;
+    })
+  );
+  swarmCacheSelect.value = String(view.bytes);
+  swarmCacheSelect.disabled = !view.managed || swarmCacheBusy;
+  swarmCacheRow?.classList.toggle('disabled', !view.managed);
+  if (!swarmCacheBusy) setSwarmCacheStatus(view.managed ? '' : view.reason);
+};
+
+const refreshSwarmCacheRow = async () => {
+  if (swarmCacheBusy) return;
+  let view;
+  try {
+    view = await freedomAPI.getSwarmCacheSettings();
+  } catch {
+    view = null;
+  }
+  if (!swarmCacheBusy) renderSwarmCacheRow(view);
+};
+
+swarmCacheSelect?.addEventListener('change', async () => {
+  // One change at a time: a second change event (arrow keys on the focused
+  // select) while this one is still re-reading or applying is dropped, and the
+  // picker is disabled before the first await so it can't fire one.
+  if (swarmCacheBusy) return;
+  const bytes = Number(swarmCacheSelect.value);
+  swarmCacheBusy = true;
+  swarmCacheSelect.disabled = true;
+  // Re-read first: whether the node is running (and so whether this restarts
+  // it) can have changed since the row was painted.
+  let view = swarmCacheView;
+  try {
+    view = (await freedomAPI.getSwarmCacheSettings()) || view;
+  } catch {
+    // Keep the painted view.
+  }
+  const release = () => {
+    swarmCacheBusy = false;
+    renderSwarmCacheRow(view);
+  };
+  if (!view || !view.managed || bytes === view.bytes) {
+    release();
+    return;
+  }
+  const label = view.sizes.find((size) => size.bytes === bytes)?.label || '';
+  if (
+    view.nodeActive &&
+    !window.confirm(
+      `Set the Swarm cache to ${label}?\n\nThis restarts the Swarm node. Swarm pages stop loading until it is back, usually a few seconds.`
+    )
+  ) {
+    release();
+    return;
+  }
+  setSwarmCacheStatus(view.nodeActive ? 'Restarting the Swarm node…' : 'Saving…');
+  let result;
+  try {
+    result = await freedomAPI.setSwarmCacheSize(bytes);
+  } catch {
+    result = { ok: false, error: "The cache size couldn't be saved." };
+  }
+  swarmCacheBusy = false;
+  let message;
+  if (!result?.ok) {
+    message = result?.error || "The cache size couldn't be saved.";
+  } else if (result.restarted) {
+    message = `Swarm cache set to ${label}. The Swarm node restarted.`;
+  } else if (result.error) {
+    message = `Swarm cache set to ${label}. It applies the next time the Swarm node starts: ${result.error}`;
+  } else {
+    message = `Swarm cache set to ${label}. It applies the next time the Swarm node starts.`;
+  }
+  let fresh;
+  try {
+    fresh = await freedomAPI.getSwarmCacheSettings();
+  } catch {
+    fresh = null;
+  }
+  renderSwarmCacheRow(fresh);
+  setSwarmCacheStatus(message);
 });
 
 const save = async () => {
@@ -1939,6 +2132,11 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     applyFormState(settings);
   }
   renderSwarmPublishingRow(cachedSettings, cachedSetupState);
+  // Against what settings hold (null before the first start), not the size
+  // shown, which before the first start is the one that start will write.
+  if (swarmCacheView && (settings.antCacheCapacityBytes ?? null) !== swarmCacheView.storedBytes) {
+    refreshSwarmCacheRow();
+  }
 });
 
 (async () => {
@@ -1969,6 +2167,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     applyFormState(settings);
     refreshSwarmPublishingRow();
     refreshRadicleLaunchStatus();
+    refreshSwarmCacheRow();
   } catch {
     console.error('[settings] failed to load settings');
   }
@@ -2127,6 +2326,9 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   };
 
   const stopRecording = () => {
+    if (recordingId) {
+      freedomAPI.setShortcutRecording?.(false)?.catch?.(() => {});
+    }
     if (recordingHandler) {
       window.removeEventListener('keydown', recordingHandler, true);
       recordingHandler = null;
@@ -2161,6 +2363,9 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     rowNotice = null;
     setStatus('');
     recordingId = id;
+    // Next/Previous Tab are answered in main before the page sees the key;
+    // tell it a recording is armed so the chord reaches the handler below.
+    freedomAPI.setShortcutRecording?.(true)?.catch?.(() => {});
     render();
 
     // Chrome's own recorder gives up when the row it is recording loses
@@ -2603,6 +2808,17 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       if (!status) return 'Status unknown';
       if (status.recovery?.reason === 'installation' || status.recovery?.reason === 'unsupported')
         return 'Update or reinstall — open Nodes';
+      // Myotis's fork watch (peer-reported, display-only): this build lacks
+      // a network upgrade. The Nodes menu carries the full explanation.
+      // Deliberate precedence: below an installation/unsupported recovery
+      // (that already says "Update or reinstall"), above every other state,
+      // including recovering / recovery-blocked — a fork this build can't
+      // follow is the likeliest cause of a stall or checkpoint recovery, and
+      // updating is the one action that can end it; the Nodes card still
+      // shows the recovery state next to the notice. Pinned by
+      // test-e2e/myotis-upgrade-advisory.spec.js.
+      if (!['off', 'disabled'].includes(status.state) && ['SCHEDULED', 'ACTIVE'].includes(status.upgradeAdvisory?.phase))
+        return status.state === 'ready' ? 'Ready — update Freedom' : 'Update Freedom — open Nodes';
       if (status.state === 'ready') return 'Ready';
       if (status.state === 'syncing') return 'Syncing';
       if (status.state === 'recovering') return 'Updating checkpoint';
