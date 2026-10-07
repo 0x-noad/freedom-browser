@@ -186,20 +186,6 @@ describe('Nodes menu placeholders (#252, #253)', () => {
       'tor-version-text': ['tor-ui.js'],
     });
   });
-
-  // #579: the Swarm Cache row starts on the same Unknown placeholder, and
-  // ant-ui.js is its only writer.
-  test('the Swarm Cache row defaults to Unknown and has one owner', () => {
-    expect(index).toMatch(/<span id="bee-cache-text"[^>]*>Unknown<\/span>/);
-    const modules = fs
-      .readdirSync(path.join(RENDERER, 'lib'))
-      .filter((name) => name.endsWith('.js') && !name.endsWith('.test.js'));
-    for (const id of ['bee-cache-text', 'bee-cache-note']) {
-      expect(
-        modules.filter((name) => read(path.join(RENDERER, 'lib', name)).includes(id))
-      ).toEqual(['ant-ui.js']);
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------

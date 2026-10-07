@@ -89,25 +89,6 @@
   color: var(--muted);
 }
 
-/* The Cache value can be long ("1.3 GB of 2 GB · 120 MB pinned"); when the
-   menu is narrow it wraps, and stays flush right like the other values. */
-#bee-cache-text {
-  text-align: right;
-}
-
-/* A line under a row saying why it has no figure (the Cache row's "Shown
-   while the Swarm node is running."). Wraps rather than clipping. */
-.bee-info-note {
-  font-size: 11px;
-  line-height: 1.35;
-  text-align: right;
-  overflow-wrap: anywhere;
-}
-
-.bee-info-note[hidden] {
-  display: none;
-}
-
 /* Divider between Swarm and IPFS */
 .nodes-divider {
   height: 1px;

@@ -1108,8 +1108,13 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   // Tor rows only where there is one to drive (or where the integration is
   // already enabled). Same shape as checkRadicleBinary: `{ available }`.
   checkTorBinary: guardSettingsPage('checkTorBinary', () => ipcRenderer.invoke('tor:checkBinary')),
-  // Settings → Nodes → Swarm cache size (#579): the sizes on offer and the
-  // current one, and applying one (which restarts the Swarm node Freedom runs).
+  // Settings → Nodes → Swarm cache (#579): how much the cache holds, read
+  // from the node's `/debugstore` by the main process; the sizes on offer and
+  // the current one; and applying one (which restarts the Swarm node Freedom
+  // runs).
+  getSwarmCacheStatus: guardSettingsPage('getSwarmCacheStatus', () =>
+    ipcRenderer.invoke('ant:cache-status')
+  ),
   getSwarmCacheSettings: guardSettingsPage('getSwarmCacheSettings', () =>
     ipcRenderer.invoke('ant:cache-get-settings')
   ),

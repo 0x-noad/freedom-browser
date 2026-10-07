@@ -1026,8 +1026,10 @@ function registerAntIpc() {
   // API access for the chrome's status/wallet screens. See ant-api-chrome.js.
   ipcMain.handle(IPC.ANT_API_GET, (_event, endpoint) => antApiGet(endpoint));
 
-  // Chrome-only too: the Nodes menu's Cache row, read from `/debugstore` here
-  // rather than by widening the chrome's endpoint allowlist (#579).
+  // Settings page only (SETTINGS tier in ipc-sender-policy.js): Settings →
+  // Nodes → Swarm cache's usage line, read from `/debugstore` here rather than
+  // by widening the chrome's endpoint allowlist (#579). Web content reaches
+  // neither this nor the node's API.
   const cacheService = antCache.createAntCacheService({
     getNodeStatus: getStatus,
     getApiBase: () => require('./service-registry').getAntApiUrl(),
@@ -1036,8 +1038,8 @@ function registerAntIpc() {
   });
   ipcMain.handle(IPC.ANT_CACHE_STATUS, () => cacheService.getStatus());
 
-  // Settings page only (SETTINGS tier in ipc-sender-policy.js): the cache size
-  // picker, and applying a size, which restarts the node Freedom runs.
+  // Settings page only too: the cache size picker, and applying a size, which
+  // restarts the node Freedom runs.
   ipcMain.handle(IPC.ANT_CACHE_GET_SETTINGS, () => getCacheSettingsView());
   ipcMain.handle(IPC.ANT_CACHE_SET_SIZE, (_event, bytes) =>
     antCache.applyCacheSize(bytes, {

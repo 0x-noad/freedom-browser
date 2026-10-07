@@ -1,14 +1,15 @@
-// The Swarm node's cache (#579): the Nodes menu's Cache row, read from
-// `GET /debugstore` by the main process, and Settings → Nodes → Swarm cache
-// size.
+// The Swarm node's cache (#579), shown in one place only: Settings → Nodes →
+// Swarm cache. Its usage line is read from `GET /debugstore` by the main
+// process; its size picker writes the size the node starts with. The node
+// window (the toolbar's Nodes menu) has no cache row at all.
 //
-// The harness runs no node. The Nodes menu group serves `/debugstore` from a
-// fake antd and runs the real main-process cache service (swarm/ant-cache.js)
+// The harness runs no node. The usage group serves `/debugstore` from a fake
+// antd and runs the real main-process cache service (swarm/ant-cache.js)
 // against it, with the node's status, spawn time and data dir under the
-// test's control, so every state the row has goes through the real parser and
-// the real renderer. The Settings group drives the real picker; the restart
-// path (a running node) is stubbed at its IPC, since there is no node to
-// restart. Set SWARM_CACHE_SHOTS_DIR to keep a screenshot of every state in
+// test's control, so every state the line has goes through the real parser
+// and the real settings page. The picker group drives the real picker; the
+// restart path (a running node) is stubbed at its IPC, since there is no node
+// to restart. Set SWARM_CACHE_SHOTS_DIR to keep a screenshot of every state in
 // both themes.
 
 const fs = require('fs');
@@ -36,7 +37,7 @@ const debugstore = ({ used = 0, pinned = 0, cap = 2 * GIB }) => ({
 // object, or `{ status, raw }` for a non-JSON / error answer), and the real
 // cache service wired to it in place of the app's own.
 async function wireFakeNode(electronApp, dataDir) {
-  await electronApp.evaluate(async ({ ipcMain, BrowserWindow }, dir) => {
+  await electronApp.evaluate(async ({ ipcMain, webContents }, dir) => {
     const load = process.mainModule.require;
     const http = load('http');
     const { createAntCacheService } = load('./src/main/swarm/ant-cache');
@@ -69,44 +70,44 @@ async function wireFakeNode(electronApp, dataDir) {
       getSpawnedAt: () => globalThis.__spawnedAt,
       getDataDir: () => dir,
     });
-    const replace = (channel, handler) => {
-      ipcMain.removeHandler(channel);
-      ipcMain.handle(channel, handler);
-    };
-    replace('ant:cache-status', () => svc.getStatus());
-    // The menu's own 5 s status poll would otherwise read the harness's
-    // stopped node and close the panel.
-    replace('ant:getStatus', () => ({ status: globalThis.__antStatus, error: null }));
-    globalThis.__pushAntStatus = () => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        win.webContents.send('ant:statusUpdate', { status: globalThis.__antStatus });
+    ipcMain.removeHandler('ant:cache-status');
+    ipcMain.handle('ant:cache-status', () => svc.getStatus());
+    // The node status change the settings page hears about through the
+    // publish setup broadcast, as the real service sends it.
+    globalThis.__pushNodeStatus = () => {
+      const state = load('./src/main/swarm/publish-setup-service')
+        .getPublishSetupService()
+        .getState();
+      const payload = { ...state, node: { ...state.node, status: globalThis.__antStatus } };
+      for (const wc of webContents.getAllWebContents()) {
+        if (wc.getURL().includes('/pages/settings.html')) wc.send('swarm:setup-state', payload);
       }
     };
-    globalThis.__pushAntStatus();
   }, dataDir);
 }
 
-async function feed(electronApp, { status = 'running', answer = null, spawnedAt = null }) {
+async function feed(
+  electronApp,
+  { status = 'running', answer = null, spawnedAt = null, broadcast = false }
+) {
   await electronApp.evaluate(
     (_e, s) => {
       globalThis.__antStatus = s.status;
       globalThis.__debugstore = s.answer;
       globalThis.__spawnedAt = s.spawnedAt === 'now' ? Date.now() : s.spawnedAt;
-      globalThis.__pushAntStatus();
+      if (s.broadcast) globalThis.__pushNodeStatus();
     },
-    { status, answer, spawnedAt }
+    { status, answer, spawnedAt, broadcast }
   );
 }
 
-async function openNodesMenu(window) {
-  await window.locator('#bee-menu-button').click();
-  await expect(window.locator('#bee-menu-dropdown')).toHaveClass(/\bopen\b/);
-  await expect(window.locator('.bee-info')).toHaveClass(/\bvisible\b/);
-}
+const debugstoreHits = (electronApp) => electronApp.evaluate(() => globalThis.__debugstoreHits);
 
-async function closeNodesMenu(window) {
-  await window.keyboard.press('Escape');
-  await expect(window.locator('#bee-menu-dropdown')).not.toHaveClass(/\bopen\b/);
+// No `/debugstore` read lands for a few poll intervals.
+async function expectNoReads(electronApp, page) {
+  const hits = await debugstoreHits(electronApp);
+  await page.waitForTimeout(3_500);
+  expect(await debugstoreHits(electronApp)).toBe(hits);
 }
 
 const setTheme = (window, theme) =>
@@ -117,92 +118,6 @@ async function shoot(target, name) {
   fs.mkdirSync(SHOTS, { recursive: true });
   await target.screenshot({ path: path.join(SHOTS, `${name}.png`) });
 }
-
-async function shootMenu(window, name) {
-  if (!SHOTS) return;
-  for (const theme of ['dark', 'light']) {
-    await setTheme(window, theme);
-    await window.waitForTimeout(250);
-    await shoot(window.locator('#bee-menu-dropdown'), `${theme}-menu-${name}`);
-  }
-}
-
-test.describe('Nodes menu: the Swarm Cache row', () => {
-  test('every state, through the real parser, against a fake antd', async ({
-    electronApp,
-    window,
-  }, testInfo) => {
-    const dataDir = testInfo.outputPath('ant-data');
-    fs.mkdirSync(dataDir, { recursive: true });
-    // A cache file from a previous run, big enough not to be an empty cache.
-    fs.writeFileSync(path.join(dataDir, 'chunks.sqlite'), Buffer.alloc(2 * MIB));
-    await wireFakeNode(electronApp, dataDir);
-
-    const row = window.locator('#bee-cache-text');
-    const note = window.locator('#bee-cache-note');
-
-    // In use, with pinned content.
-    await feed(electronApp, { answer: debugstore({ used: 1.3 * GIB, pinned: 120 * MIB }) });
-    await openNodesMenu(window);
-    await expect(row).toHaveText('1.3 GB of 2 GB · 120 MB pinned');
-    await expect(note).toBeHidden();
-    await shootMenu(window, 'in-use-pinned');
-
-    // Polled while open: the next reading lands without reopening the menu.
-    await feed(electronApp, { answer: debugstore({ used: 300 * MIB }) });
-    await expect(row).toHaveText('300 MB of 2 GB', { timeout: 6_000 });
-    await shootMenu(window, 'in-use');
-
-    // The disk cache couldn't be opened.
-    await feed(electronApp, { answer: debugstore({ cap: 0 }) });
-    await expect(row).toHaveText('Unavailable', { timeout: 6_000 });
-    await expect(note).toBeVisible();
-    await expect(note).toHaveText(/couldn't open its disk cache/);
-    await shootMenu(window, 'disk-off');
-
-    // Ant still counting the cache it just opened.
-    await feed(electronApp, { answer: debugstore({ used: 0 }), spawnedAt: 'now' });
-    await expect(row).toHaveText('Counting… (2 GB max)', { timeout: 6_000 });
-    await expect(note).toHaveText(/still counting/);
-    await shootMenu(window, 'counting');
-
-    // The same all-zero answer from a node spawned long ago is a real empty cache.
-    await feed(electronApp, { answer: debugstore({ used: 0 }), spawnedAt: 1 });
-    await expect(row).toHaveText('0 B of 2 GB', { timeout: 6_000 });
-    await expect(note).toBeHidden();
-
-    // A node without the route, and garbage.
-    await feed(electronApp, { answer: { status: 404, raw: '{"code":404}' } });
-    await expect(row).toHaveText('Unknown', { timeout: 6_000 });
-    await expect(note).toHaveText(/doesn't report its cache/);
-    await shootMenu(window, 'unreadable');
-    await feed(electronApp, { answer: { status: 200, raw: '<html>not json' } });
-    await expect(row).toHaveText('Unknown', { timeout: 6_000 });
-
-    // Starting: no figure yet, says so.
-    await feed(electronApp, { status: 'starting', answer: debugstore({ used: GIB }) });
-    await expect(row).toHaveText('Starting…', { timeout: 6_000 });
-    await shootMenu(window, 'starting');
-
-    // Stopped: the Swarm details hide, and the node is not asked.
-    await feed(electronApp, { status: 'stopped', answer: debugstore({ used: GIB }) });
-    await expect(window.locator('.bee-info')).not.toHaveClass(/\bvisible\b/);
-    const hits = await electronApp.evaluate(() => globalThis.__debugstoreHits);
-    await window.waitForTimeout(3_500);
-    expect(await electronApp.evaluate(() => globalThis.__debugstoreHits)).toBe(hits);
-    await expect(row).toHaveText('Unknown');
-
-    // Closing the menu stops the polling.
-    await feed(electronApp, { answer: debugstore({ used: GIB }) });
-    await expect(row).toHaveText('1 GB of 2 GB', { timeout: 6_000 });
-    await closeNodesMenu(window);
-    const closedHits = await electronApp.evaluate(() => globalThis.__debugstoreHits);
-    await window.waitForTimeout(3_500);
-    expect(await electronApp.evaluate(() => globalThis.__debugstoreHits)).toBe(closedHits);
-
-    await electronApp.evaluate(() => globalThis.__fakeAntServer.close());
-  });
-});
 
 // -----------------------------------------------------------------------------
 // Settings → Nodes → Swarm cache size
@@ -280,6 +195,127 @@ async function shootSettings(window, page, name) {
     await shoot(page, `${theme}-settings-${name}`);
   }
 }
+
+test.describe('Settings: the Swarm cache usage line', () => {
+  test('every state, through the real parser, against a fake antd', async ({
+    electronApp,
+    window,
+  }, testInfo) => {
+    // Three no-reads windows of 3.5 s each, and (with SWARM_CACHE_SHOTS_DIR)
+    // a theme round trip per state.
+    test.setTimeout(SHOTS ? 180_000 : 60_000);
+    const dataDir = testInfo.outputPath('ant-data');
+    fs.mkdirSync(dataDir, { recursive: true });
+    // A cache file from a previous run, big enough not to be an empty cache.
+    fs.writeFileSync(path.join(dataDir, 'chunks.sqlite'), Buffer.alloc(2 * MIB));
+    await wireFakeNode(electronApp, dataDir);
+
+    // In use, with pinned content: read as soon as the section opens.
+    await feed(electronApp, { answer: debugstore({ used: 1.3 * GIB, pinned: 120 * MIB }) });
+    const page = await openNodesSettings(window, electronApp);
+    const usage = page.locator('#swarm-cache-usage');
+    const value = page.locator('#swarm-cache-usage-text');
+    const note = page.locator('#swarm-cache-usage-note');
+    await expect(value).toHaveText('1.3 GB of 2 GB · 120 MB pinned');
+    await expect(usage).toHaveText('In use: 1.3 GB of 2 GB · 120 MB pinned');
+    await expect(note).toBeHidden();
+    await shootSettings(window, page, 'in-use-pinned');
+
+    // Polled while on screen: the next reading lands without reopening.
+    await feed(electronApp, { answer: debugstore({ used: 300 * MIB }) });
+    await expect(value).toHaveText('300 MB of 2 GB', { timeout: 6_000 });
+    await shootSettings(window, page, 'in-use');
+
+    // The disk cache couldn't be opened.
+    await feed(electronApp, { answer: debugstore({ cap: 0 }) });
+    await expect(value).toHaveText('Unavailable', { timeout: 6_000 });
+    await expect(note).toBeVisible();
+    await expect(note).toHaveText(/couldn't open its disk cache/);
+    await shootSettings(window, page, 'disk-off');
+
+    // Ant still counting the cache it just opened.
+    await feed(electronApp, { answer: debugstore({ used: 0 }), spawnedAt: 'now' });
+    await expect(value).toHaveText('Counting… (2 GB max)', { timeout: 6_000 });
+    await expect(note).toHaveText(/still counting/);
+    await shootSettings(window, page, 'counting');
+
+    // The same all-zero answer from a node spawned long ago is a real empty cache.
+    await feed(electronApp, { answer: debugstore({ used: 0 }), spawnedAt: 1 });
+    await expect(value).toHaveText('0 B of 2 GB', { timeout: 6_000 });
+    await expect(note).toBeHidden();
+
+    // A node without the route, and garbage.
+    await feed(electronApp, { answer: { status: 404, raw: '{"code":404}' } });
+    await expect(value).toHaveText('Unknown', { timeout: 6_000 });
+    await expect(note).toHaveText(/doesn't report its cache/);
+    await shootSettings(window, page, 'unreadable');
+    await feed(electronApp, { answer: { status: 200, raw: '<html>not json' } });
+    await expect(value).toHaveText('Unknown', { timeout: 6_000 });
+
+    // Starting: no figure yet, says so. Followed at once, not on the next poll.
+    await feed(electronApp, {
+      status: 'starting',
+      answer: debugstore({ used: GIB }),
+      broadcast: true,
+    });
+    await expect(value).toHaveText('Starting…', { timeout: 2_000 });
+    await expect(note).toHaveText('Shown once the Swarm node is running.');
+    await shootSettings(window, page, 'starting');
+
+    // Stopped: says so, and the node is no longer asked.
+    await feed(electronApp, {
+      status: 'stopped',
+      answer: debugstore({ used: GIB }),
+      broadcast: true,
+    });
+    await expect(value).toHaveText('Not running', { timeout: 2_000 });
+    await expect(note).toHaveText('Shown while the Swarm node is running.');
+    await shootSettings(window, page, 'not-running');
+    await expectNoReads(electronApp, page);
+
+    // The node comes back: polling picks up again without touching the page.
+    await feed(electronApp, { answer: debugstore({ used: GIB }), broadcast: true });
+    await expect(value).toHaveText('1 GB of 2 GB', { timeout: 2_000 });
+    await feed(electronApp, { answer: debugstore({ used: 2 * GIB }) });
+    await expect(value).toHaveText('2 GB of 2 GB', { timeout: 6_000 });
+
+    // Another section: the row is off screen, so nothing is read.
+    await page.evaluate(() => {
+      location.hash = 'appearance';
+    });
+    await expect(page.locator('#swarm-cache-row')).toBeHidden();
+    await expectNoReads(electronApp, page);
+
+    // Back on Nodes: read at once, and polled again.
+    await feed(electronApp, { answer: debugstore({ used: 512 * MIB }) });
+    await page.evaluate(() => {
+      location.hash = 'nodes';
+    });
+    await expect(value).toHaveText('512 MB of 2 GB', { timeout: 2_000 });
+    await feed(electronApp, { answer: debugstore({ used: GIB }) });
+    await expect(value).toHaveText('1 GB of 2 GB', { timeout: 6_000 });
+
+    // Search results covering the section hide it too.
+    const field = page.locator('#settings-search');
+    await field.click();
+    await field.pressSequentially('theme');
+    await expect(page.locator('#settings-search-results')).toBeVisible();
+    await expect(page.locator('#swarm-cache-row')).toBeHidden();
+    await expectNoReads(electronApp, page);
+
+    await electronApp.evaluate(() => globalThis.__fakeAntServer.close());
+  });
+});
+
+test.describe('The node window', () => {
+  test('has no cache row: the Nodes menu is as it was before #579', async ({ window }) => {
+    await window.locator('#bee-menu-button').click();
+    await expect(window.locator('#bee-menu-dropdown')).toHaveClass(/\bopen\b/);
+    await expect(window.locator('[id^="bee-cache"]')).toHaveCount(0);
+    await expect(window.locator('#bee-menu-dropdown')).not.toContainText(/cache/i);
+    expect(await window.evaluate(() => typeof window.ant?.cacheStatus)).toBe('undefined');
+  });
+});
 
 test.describe('Settings: Swarm cache size', () => {
   test('the real picker: six sizes, 2 GB default, saved when the node is off', async ({

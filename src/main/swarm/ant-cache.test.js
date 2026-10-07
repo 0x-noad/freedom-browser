@@ -228,7 +228,7 @@ describe('isCounting', () => {
   });
 });
 
-describe('describeCache (the Nodes menu’s Cache row)', () => {
+describe('describeCache (Settings’ cache usage line)', () => {
   test('"1.3 GB of 2 GB · 120 MB pinned", pinned only when there is some', () => {
     const used = Math.round((1.3 * GIB) / 4096);
     const pinned = (120 * MIB) / 4096;

@@ -146,6 +146,7 @@ const SETTINGS_CHANNELS = [
   'adblock:remove-allowlist-host',
   'ant:cache-get-settings',
   'ant:cache-set-size',
+  'ant:cache-status',
   'permissions:revoke',
   'permissions:revoke-all',
   'permissions:revoke-origin',

@@ -121,6 +121,9 @@ let savedProfileName = '';
 let torBundled = true;
 let profileRefreshTimer = null;
 let setProfileRefreshActive = () => {};
+// Starts or stops the Swarm cache usage poll to match whether its row is on
+// screen (defined with the row, below; #579).
+let syncSwarmCacheUsage = () => {};
 
 const esc = (s) =>
   String(s == null ? '' : s).replace(
@@ -470,6 +473,7 @@ const showSection = (route) => {
   }
   navItems.forEach((item) => item.classList.toggle('active', item.dataset.target === section));
   setProfileRefreshActive(section === 'profile' || section === 'nodes');
+  syncSwarmCacheUsage();
   // Always scroll the content area to the top when switching — avoids a
   // stale scroll offset from a taller prior section.
   stopPanelScroll();
@@ -869,6 +873,7 @@ const settingsSearchResets = [];
     for (const id of PANELS) document.getElementById(id)?.classList.add('hidden');
     panel.classList.remove('hidden');
     showing = true;
+    syncSwarmCacheUsage();
     window.scrollTo({ top: 0 });
   };
 
@@ -1362,6 +1367,7 @@ setProfileRefreshActive(isProfileOrNodesSection());
 freedomAPI.onProfileUpdated?.(() => {
   refreshRadicleLaunchStatus();
   refreshSwarmCacheRow();
+  syncSwarmCacheUsage({ restart: true });
   if (isProfileOrNodesSection()) {
     refreshProfileSection(true);
   }
@@ -1868,9 +1874,84 @@ const refreshSwarmPublishingRow = async () => {
 };
 
 freedomAPI.onPublishSetupState?.((state) => {
+  const previousNodeStatus = cachedSetupState?.node?.status;
   cachedSetupState = state;
   renderSwarmPublishingRow(cachedSettings, cachedSetupState);
+  // The cache usage line follows the node at once (stopped → starting →
+  // running), rather than on its next poll, and picks polling back up when a
+  // stopped node starts again.
+  const nodeStatus = state?.node?.status;
+  if (nodeStatus && nodeStatus !== previousNodeStatus) {
+    syncSwarmCacheUsage({ restart: true });
+  }
 });
+
+// Settings → Nodes → Swarm cache: how much it holds (#579). The main process
+// reads the node's `/debugstore` and words the line (swarm/ant-cache.js); this
+// page only paints it. It is read every few seconds while the row is on
+// screen — the Nodes section open, not covered by search results, the page not
+// in a background tab — and not at all otherwise. A node that isn't running
+// stops the polling too: the line says so, and a node status change (the
+// publish setup broadcast, below) or a profile change picks it back up.
+const SWARM_CACHE_POLL_MS = 3000;
+const swarmCacheUsageRow = $('swarm-cache-row');
+const swarmCacheUsageText = $('swarm-cache-usage-text');
+const swarmCacheUsageNote = $('swarm-cache-usage-note');
+let swarmCacheUsageTimer = null;
+let swarmCacheUsageSeq = 0;
+let swarmCacheUsageActive = false;
+
+const swarmCacheRowOnScreen = () =>
+  !document.hidden && Boolean(swarmCacheUsageRow?.getClientRects().length);
+
+const paintSwarmCacheUsage = (usage) => {
+  if (swarmCacheUsageText) swarmCacheUsageText.textContent = usage?.text || 'Unknown';
+  if (swarmCacheUsageNote) {
+    swarmCacheUsageNote.textContent = usage?.reason || '';
+    swarmCacheUsageNote.hidden = !usage?.reason;
+  }
+};
+
+const stopSwarmCacheUsage = () => {
+  clearTimeout(swarmCacheUsageTimer);
+  swarmCacheUsageTimer = null;
+  // A read still out lands on nothing.
+  swarmCacheUsageSeq += 1;
+  swarmCacheUsageActive = false;
+};
+
+const readSwarmCacheUsage = async () => {
+  swarmCacheUsageTimer = null;
+  const seq = ++swarmCacheUsageSeq;
+  let usage;
+  try {
+    usage = (await freedomAPI.getSwarmCacheStatus?.()) || null;
+  } catch {
+    usage = null;
+  }
+  if (seq !== swarmCacheUsageSeq) return;
+  paintSwarmCacheUsage(usage);
+  if (usage?.state === 'not-running' || !swarmCacheRowOnScreen()) {
+    swarmCacheUsageActive = false;
+    return;
+  }
+  swarmCacheUsageTimer = setTimeout(readSwarmCacheUsage, SWARM_CACHE_POLL_MS);
+};
+
+syncSwarmCacheUsage = ({ restart = false } = {}) => {
+  if (!swarmCacheRowOnScreen()) {
+    stopSwarmCacheUsage();
+    return;
+  }
+  if (swarmCacheUsageActive && !restart) return;
+  stopSwarmCacheUsage();
+  swarmCacheUsageActive = true;
+  readSwarmCacheUsage();
+};
+
+document.addEventListener('visibilitychange', () => syncSwarmCacheUsage());
+// The section the page opened on was shown before this ran.
+syncSwarmCacheUsage();
 
 // Settings → Nodes → Swarm cache size (#579). The sizes, the current one and
 // whether Freedom runs this profile's node come from the main process

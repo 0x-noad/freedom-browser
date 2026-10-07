@@ -12,8 +12,8 @@
  * chunk counts: `Cache.Size` unpinned chunks, `Cache.Capacity` the cap ÷ 4096,
  * `ChunkStore.TotalChunks` every chunk on disk, pinned or not. The main
  * process reads it — the chrome's Ant API allowlist (ant-api-chrome.js) and
- * web content's guard (ant-api-guard.js) stay as they are — and hands the
- * chrome one summary line.
+ * web content's guard (ant-api-guard.js) stay as they are — and hands
+ * Settings → Nodes → Swarm cache one summary line over a settings-only channel.
  *
  * Clearing the cache is not here: Ant has no HTTP endpoint for it yet
  * (freedom-hq/ant#149), and deleting chunks.sqlite would lose pins.
@@ -167,7 +167,7 @@ function cacheSummary({ usedBytes, capacityBytes, pinnedBytes }) {
   return pinnedBytes > 0 ? `${used} · ${formatCacheBytes(pinnedBytes)} pinned` : used;
 }
 
-// The Nodes menu's Cache row for each state: `text` is the value, `reason`
+// Settings' cache usage line for each state: `text` is the value, `reason`
 // the line under it saying why there is no figure (empty when there is one).
 const STATE_COPY = {
   'not-running': { text: 'Not running', reason: 'Shown while the Swarm node is running.' },
@@ -180,7 +180,7 @@ const STATE_COPY = {
 };
 
 /**
- * The Cache row for a node `status` and its `/debugstore` answer.
+ * The usage line for a node `status` and its `/debugstore` answer.
  *
  * @returns {{ state: string, text: string, reason: string, usedBytes?: number,
  *   capacityBytes?: number, pinnedBytes?: number }}
@@ -221,7 +221,7 @@ function cacheFileBytes(dataDir) {
 }
 
 /**
- * The Cache row, read live. Dependencies are injectable for tests and for the
+ * The usage line, read live. Dependencies are injectable for tests and for the
  * e2e's fake node.
  */
 function createAntCacheService({
