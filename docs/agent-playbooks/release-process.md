@@ -456,6 +456,18 @@ Run it against a scratch profile, for the same reason a release candidate gets o
 FREEDOM_TEST_USER_DATA="$HOME/freedom-nightly" /Applications/Freedom.app/Contents/MacOS/Freedom
 ```
 
+### Real-conditions E2E on clean VMs
+
+A separate job, outside GitHub Actions, tests each published nightly after it lands. It runs on the e2e host as a systemd timer, checking hourly between 00:20 and 11:20 UTC.
+
+- **What it does:** installs the published assets the way a tester would, on fresh snapshots of a stock Ubuntu 24.04 desktop and Windows 11.
+  - Ubuntu: `apt install` of the `.deb`, plus the `.AppImage` run as-is.
+  - Windows: the NSIS installer with `/S`.
+- **What it runs:** the `packaged` and `packaged-live` projects, inside the logged-in desktop session, with the Chromium sandbox on.
+- **Where results go:** failures go to one `Nightly real-conditions E2E failed` issue labelled `nightly`, and a passing night closes it.
+
+It does not gate anything. Setup, maintenance (the Windows evaluation licence needs a rebuild every ~80 days) and how to run it by hand are in [`scripts/nightly-vm-e2e/README.md`](../../scripts/nightly-vm-e2e/README.md). Tracking issue: #559.
+
 ### Next step: a merge queue
 
 Nightlies are only as useful as `main` is green. The recommended next step is to turn on a **GitHub merge queue** for `main`: CI then runs on the merged result of a batch of pull requests before any of them land, which both keeps a broken combination out of `main` (and out of the next nightly) and removes the "branch must be up to date" churn of re-running CI on every PR after every merge.
