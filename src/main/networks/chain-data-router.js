@@ -69,7 +69,7 @@ READ_METHODS.add('web3_sha3');
 //   'proof': a proof fetched from the prover and verified in a worker thread,
 //   with a bounded number in flight (Colibri). 'fanout': k RPC requests per
 //   read (quorum). 'single': one RPC request at a time (direct). 'paired':
-//   one log-index read (a page per 1,000 logs) plus one RPC request, and a
+//   one log-index read (a page per 50 transfers) plus one RPC request, and a
 //   quorum read for the newest blocks (blockscout).
 // - optIn: the source is in no read order. Only a caller that names it in
 //   includeSources is routed to it, right before the quorum, and only while
@@ -88,8 +88,8 @@ READ_METHODS.add('web3_sha3');
 // quorum itself, so a Blockscout a few blocks behind the head does not
 // disagree with the RPC (requestLogIndex).
 //   logSpan 'full-history': it serves any span in one answer.
-//   logResults 'paged': Blockscout caps an answer at 1,000 logs; a page at the
-//   cap is never taken as complete but read on by block. The RPC half of the
+//   logResults 'paged': Blockscout lists a wallet's transfers 50 to a page,
+//   read on until the span is covered or the list ends. The RPC half of the
 //   pair may cut a large answer short (#496); disagreeing with Blockscout's
 //   complete one then fails the pair, so neither half is checked by
 //   checkLogTruncation.
@@ -1523,8 +1523,8 @@ async function requestLogIndex(chainId, method, params, options = {}) {
     }
     throw lastError;
   };
-  // The RPC first: Blockscout's keyless rate limit is tight (10 requests per
-  // window), so it is spent only on a span an RPC has already answered.
+  // The RPC first: Blockscout's keyless rate limit is shared by every page of
+  // its answer, so it is spent only on a span an RPC has already answered.
   let rpc;
   try {
     rpc = await askPairRpc();
