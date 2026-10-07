@@ -819,6 +819,9 @@ jobs:
   # real click opens a popup, a script's window.open is blocked — and drives
   # the address-bar "Pop-up blocked" icon, a private window's session-only
   # allow and an allow that must survive a real app restart.
+  # `popup-close.spec.js` (#580) replays popupcheck.com's test against a local
+  # fixture with the same real input, and closes every popup it opens by its
+  # tab close button, Cmd/Ctrl+W, its window and its own `window.close()`.
   # `dweb-link-gesture.spec.js` covers the dweb-link side of the same gate
   # (#443), which now asks the main-process popup blocker instead of keeping
   # its own budget. `ant-api-guard.spec.js` (#428) needs a real guest too: the
@@ -849,7 +852,7 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + ant-api-guard E2E
+      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + popup-close + ant-api-guard E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/tabs.spec.js \
@@ -862,6 +865,7 @@ jobs:
             test-e2e/external-protocol.spec.js \
             test-e2e/dweb-link-gesture.spec.js \
             test-e2e/popup-blocker.spec.js \
+            test-e2e/popup-close.spec.js \
             test-e2e/ant-api-guard.spec.js
 
       - name: Upload Playwright traces and screenshots
@@ -1201,7 +1205,14 @@ jobs:
 
       - name: Download Ant (antd) binary
         # Version pinned in scripts/fetch-ant.js so CI tests exactly what releases ship.
-        run: npm run ant:download
+        # Normally ~5 s. Run node directly, not `npm run ant:download`: npm
+        # ends itself with an unconditional process.exit(), the call that
+        # can hang forever on Node 24 (#544). hang-watchdog fails the step
+        # after 5 min with a process table and stack samples instead of a
+        # silent 20-minute job cancel; timeout-minutes is the backstop.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-ant.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -1326,7 +1337,14 @@ jobs:
 
       - name: Download Ant (antd) binary
         # Version pinned in scripts/fetch-ant.js so CI tests exactly what releases ship.
-        run: npm run ant:download
+        # Normally ~5 s. Run node directly, not `npm run ant:download`: npm
+        # ends itself with an unconditional process.exit(), the call that
+        # can hang forever on Node 24 (#544). hang-watchdog fails the step
+        # after 5 min with a process table and stack samples instead of a
+        # silent 20-minute job cancel; timeout-minutes is the backstop.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-ant.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 

@@ -50,7 +50,7 @@
     },
     {
       "name": "ant (Swarm)",
-      "version": "v0.5.59",
+      "version": "v0.5.60",
       "type": "binary",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/freedom-hq/ant" },
@@ -110,7 +110,7 @@
     },
     {
       "name": "myotis",
-      "version": "v0.1.13",
+      "version": "v0.1.14",
       "type": "native-addon",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/biafra23/myotis" },
