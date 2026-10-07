@@ -374,6 +374,16 @@ describe('cacheSettingsView', () => {
     expect(cacheSettingsView({ stored: 7 }).bytes).toBe(DEFAULT_CACHE_BYTES);
   });
 
+  // R2-M2 on #588: storedBytes is what settings hold, raw, so the renderer's
+  // broadcast compare matches even for a hand-edited size outside the set.
+  test('storedBytes carries a stored value outside the set as is', () => {
+    expect(cacheSettingsView({ stored: 3 * GIB })).toMatchObject({
+      bytes: DEFAULT_CACHE_BYTES,
+      storedBytes: 3 * GIB,
+    });
+    expect(cacheSettingsView({ stored: undefined }).storedBytes).toBeNull();
+  });
+
   test('before the first start it shows the size that start will write', () => {
     expect(cacheSettingsView({ stored: null, hasExistingCache: true })).toMatchObject({
       bytes: LEGACY_CACHE_BYTES,
@@ -433,6 +443,60 @@ describe('applyCacheSize', () => {
       restarted: false,
       error: 'The Swarm node did not start again (No available ports for Ant API).',
     });
+  });
+
+  // R2-M1 on #588: startAnt returns while antd is STARTING, which counts as
+  // active; a node that then exits must not be reported as restarted.
+  test('waits for the start to settle and requires a running node', async () => {
+    let state = 'running';
+    const d = deps({
+      isNodeActive: () => state === 'running' || state === 'starting',
+      isNodeRunning: () => state === 'running',
+      restartNode: jest.fn(async () => {
+        state = 'starting';
+        return { ok: true };
+      }),
+      waitForNodeSettled: jest.fn(async () => {
+        state = 'stopped';
+      }),
+      getNodeError: () => 'Exited with code 1',
+    });
+    await expect(applyCacheSize(GIB, d)).resolves.toEqual({
+      ok: true,
+      restarted: false,
+      error: 'The Swarm node did not start again (Exited with code 1).',
+    });
+    expect(d.waitForNodeSettled).toHaveBeenCalledTimes(1);
+  });
+
+  test('a node still starting when the wait gives up is not reported as restarted', async () => {
+    let state = 'running';
+    const d = deps({
+      isNodeActive: () => state === 'running' || state === 'starting',
+      isNodeRunning: () => state === 'running',
+      restartNode: jest.fn(async () => {
+        state = 'starting';
+        return { ok: true };
+      }),
+      waitForNodeSettled: jest.fn(async () => {}),
+    });
+    await expect(applyCacheSize(GIB, d)).resolves.toMatchObject({ ok: true, restarted: false });
+  });
+
+  test('a start that settles healthy is reported as restarted', async () => {
+    let state = 'running';
+    const d = deps({
+      isNodeActive: () => state === 'running' || state === 'starting',
+      isNodeRunning: () => state === 'running',
+      restartNode: jest.fn(async () => {
+        state = 'starting';
+        return { ok: true };
+      }),
+      waitForNodeSettled: jest.fn(async () => {
+        state = 'running';
+      }),
+    });
+    await expect(applyCacheSize(GIB, d)).resolves.toEqual({ ok: true, restarted: true });
   });
 
   test('a stopped node: saved, applies at its next start', async () => {

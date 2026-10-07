@@ -294,12 +294,13 @@ function cacheSettingsView({
   // Before the first start there is no stored size yet; show the one that
   // start will write (chooseCacheBytes), so an upgrader with an old cache sees
   // 10 GB and can pick 2 GB before the node ever starts.
-  const normalized = normalizeCacheBytes(stored);
   return {
     bytes: chooseCacheBytes({ stored, hasExistingCache }).bytes,
     // What settings hold (null until chosen or first start): the renderer
     // compares a settings broadcast against this, not against `bytes`.
-    storedBytes: stored === null || stored === undefined ? null : normalized,
+    // The raw stored value, not the normalized one: a hand-edited size
+    // outside the set would otherwise read as null here and never match.
+    storedBytes: stored ?? null,
     defaultBytes: DEFAULT_CACHE_BYTES,
     sizes: CACHE_SIZES.map((bytes) => ({ bytes, label: cacheSizeLabel(bytes) })),
     managed: !reason,
@@ -317,7 +318,19 @@ function cacheSettingsView({
  */
 async function applyCacheSize(
   bytes,
-  { getView, save, isNodeActive, restartNode, getNodeError = null }
+  {
+    getView,
+    save,
+    isNodeActive,
+    restartNode,
+    getNodeError = null,
+    // Resolves once the node has left STARTING (healthy, failed or exited),
+    // or after a timeout. startAnt returns as soon as antd is spawned, so
+    // without this a node that spawns and then dies reads as restarted.
+    waitForNodeSettled = null,
+    // Up and healthy (RUNNING), not merely coming up; defaults to isNodeActive.
+    isNodeRunning = null,
+  }
 ) {
   const size = normalizeCacheBytes(bytes);
   if (size === null) return { ok: false, error: 'That cache size is not one Freedom offers.' };
@@ -331,8 +344,10 @@ async function applyCacheSize(
   }
   // startAnt reports a failed start (a port clash, a config error) through the
   // node's state rather than by throwing, so a restart that "succeeded" can
-  // still have left the node down.
-  if (!isNodeActive()) {
+  // still have left the node down. It also returns while antd is still
+  // starting, so wait for the start to settle and require it to be healthy.
+  if (waitForNodeSettled) await waitForNodeSettled();
+  if (!(isNodeRunning || isNodeActive)()) {
     const reason = getNodeError?.();
     return {
       ok: true,

@@ -952,6 +952,61 @@ describe('ant-manager', () => {
     expect(ctx.registry.getEndpoints).not.toHaveBeenCalled();
   });
 
+  // R2-M1 on #588: startAnt returns while antd is still STARTING, so the
+  // cache-size restart waits for the start to settle before judging it.
+  describe('waitForStartSettled', () => {
+    const spawnCtx = () =>
+      loadAntManagerModule({
+        existsSync: (target) => /[\\/]antd(\.exe)?$/.test(target),
+        portSequence: [false],
+        httpResponse: () => ({ statusCode: 500, body: '' }),
+      });
+
+    test('resolves at once when the node is not starting', async () => {
+      const ctx = loadAntManagerModule({ binExists: false });
+      await expect(ctx.mod.waitForStartSettled(10)).resolves.toBeUndefined();
+    });
+
+    test('waits through STARTING and resolves when a spawned antd exits', async () => {
+      const ctx = spawnCtx();
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      expect(ctx.spawnedProcesses).toHaveLength(1);
+      expect(ctx.mod.getStatus().status).toBe('starting');
+
+      let settled = false;
+      const wait = ctx.mod.waitForStartSettled(60_000).then(() => {
+        settled = true;
+      });
+      await flushMicrotasks();
+      expect(settled).toBe(false);
+
+      ctx.spawnedProcesses[0].emit('close', 1);
+      await wait;
+      expect(settled).toBe(true);
+      expect(ctx.mod.getStatus()).toEqual({ status: 'stopped', error: 'Exited with code 1' });
+      await ctx.mod.stopAnt();
+    });
+
+    test('gives up after the timeout if the node is still starting', async () => {
+      const ctx = spawnCtx();
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      let settled = false;
+      const wait = ctx.mod.waitForStartSettled(500).then(() => {
+        settled = true;
+      });
+      await jest.advanceTimersByTimeAsync(499);
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      await wait;
+      expect(ctx.mod.getStatus().status).toBe('starting');
+      const stop = ctx.mod.stopAnt();
+      await jest.advanceTimersByTimeAsync(0);
+      await stop;
+    });
+  });
+
   test('tells main-process listeners about every status change', async () => {
     const ctx = loadAntManagerModule({ binExists: false });
     const listener = jest.fn();

@@ -1062,8 +1062,35 @@ function registerAntIpc() {
       restartNode: () =>
         require('./swarm/publish-setup-service').getPublishSetupService().restartNode(),
       getNodeError: () => lastError,
+      waitForNodeSettled: () => waitForStartSettled(),
+      isNodeRunning: () => currentState === STATUS.RUNNING && currentMode === MODE.BUNDLED,
     })
   );
+}
+
+// Startup polls health for up to 60s before giving up with ERROR; leave room
+// for the port and config steps before the spawn.
+const START_SETTLE_TIMEOUT_MS = 90_000;
+
+/**
+ * Resolves once the node is no longer STARTING (RUNNING, ERROR or STOPPED),
+ * or after `timeoutMs`.
+ */
+function waitForStartSettled(timeoutMs = START_SETTLE_TIMEOUT_MS) {
+  if (currentState !== STATUS.STARTING) return Promise.resolve();
+  return new Promise((resolve) => {
+    let unsubscribe = () => {};
+    const timer = setTimeout(() => {
+      unsubscribe();
+      resolve();
+    }, timeoutMs);
+    unsubscribe = onStatusChange(({ status }) => {
+      if (status === STATUS.STARTING) return;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    });
+  });
 }
 
 // The node Freedom spawned is up or coming up, so a new cache size restarts it.
@@ -1135,6 +1162,7 @@ module.exports = {
   getActivePort,
   getStatus,
   onStatusChange,
+  waitForStartSettled,
   getSpawnedAt,
   getAntDataPath,
   setUseInjectedIdentity,
