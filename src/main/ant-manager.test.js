@@ -391,8 +391,21 @@ describe('ant-manager', () => {
         IPC.ANT_CACHE_STATUS,
         IPC.ANT_CACHE_GET_SETTINGS,
         IPC.ANT_CACHE_SET_SIZE,
+        IPC.ANT_CACHE_CLEAR,
       ].sort()
     );
+
+    // #579: with the node stopped, Clear cache is off with the reason, and a
+    // clear sent anyway is refused here without reaching any node.
+    await expect(ctx.ipcMain.invoke(IPC.ANT_CACHE_STATUS)).resolves.toMatchObject({
+      state: 'not-running',
+      canClear: false,
+      clearReason: 'Available while the Swarm node is running.',
+    });
+    await expect(ctx.ipcMain.invoke(IPC.ANT_CACHE_CLEAR)).resolves.toEqual({
+      ok: false,
+      error: 'Available while the Swarm node is running.',
+    });
 
     await expect(ctx.ipcMain.invoke(IPC.ANT_GET_STATUS)).resolves.toEqual({
       status: 'stopped',

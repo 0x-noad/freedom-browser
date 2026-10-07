@@ -19,6 +19,7 @@ module.exports = {
   ANT_CACHE_STATUS: 'ant:cache-status',
   ANT_CACHE_GET_SETTINGS: 'ant:cache-get-settings',
   ANT_CACHE_SET_SIZE: 'ant:cache-set-size',
+  ANT_CACHE_CLEAR: 'ant:cache-clear',
 
   // IPFS node management
   IPFS_START: 'ipfs:start',

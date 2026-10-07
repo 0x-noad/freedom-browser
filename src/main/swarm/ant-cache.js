@@ -3,20 +3,36 @@
  *
  * Size. Ant reads bee's `cache-capacity` key (a chunk count, × 4096 bytes)
  * from the config.yaml Freedom writes (ant-manager.js buildAntConfigContent).
- * There is no runtime resize over the HTTP API, so a new size applies when the
- * node restarts. The size is one of a fixed set, so a value Ant would reject
- * (a malformed `cache-capacity` is a startup error) can never reach the file:
- * anything else read from settings falls back to the default.
+ * Since Ant v0.5.61 (https://github.com/freedom-hq/ant/pull/150) a running
+ * node also takes a new size live, `PUT /v0/cache/capacity` with
+ * `{"bytes": N}`, evicting down to it before it answers; Ant doesn't persist
+ * that, so the setting (and so the next config.yaml) is saved first and the
+ * live call only spares the restart. The size is one of a fixed set, so a
+ * value Ant would reject (a malformed `cache-capacity` is a startup error) can
+ * never reach the file: anything else read from settings falls back to the
+ * default.
  *
- * Status. `GET /debugstore` (bee's `debugStorage` shape, Ant v0.5.60+) gives
- * chunk counts: `Cache.Size` unpinned chunks, `Cache.Capacity` the cap ÷ 4096,
- * `ChunkStore.TotalChunks` every chunk on disk, pinned or not. The main
- * process reads it — the chrome's Ant API allowlist (ant-api-chrome.js) and
+ * Status. `GET /v0/cache` (Ant v0.5.61+) gives the live figures in bytes; a
+ * node without it is read through `GET /debugstore` (bee's `debugStorage`
+ * shape, Ant v0.5.60+), which gives chunk counts: `Cache.Size` unpinned
+ * chunks, `Cache.Capacity` the cap ÷ 4096, `ChunkStore.TotalChunks` every
+ * chunk on disk, pinned or not. The main process reads them — the chrome's Ant API allowlist (ant-api-chrome.js) and
  * web content's guard (ant-api-guard.js) stay as they are — and hands
  * Settings → Nodes → Swarm cache one summary line over a settings-only channel.
  *
- * Clearing the cache is not here: Ant has no HTTP endpoint for it yet
- * (freedom-hq/ant#149), and deleting chunks.sqlite would lose pins.
+ * Clear. `POST /v0/cache/clear` (Ant v0.5.61+) removes every unpinned chunk
+ * from the disk and in-memory caches and gives the space back; pinned and
+ * published content stays (deleting chunks.sqlite would lose the pins). It
+ * answers `{freed_bytes, removed_chunks, file_bytes_before, file_bytes_after,
+ * memory_chunks_removed, status}`. With no disk cache it still answers 200,
+ * having emptied only the memory tier, so Settings offers Clear only while the
+ * usage line has a disk figure.
+ *
+ * Both writes are called from here, the main process, only. Ant answers them
+ * only for a loopback caller that isn't a web page (no `Origin`, no cross-site
+ * `Sec-Fetch-Site`), which Node's fetch is; web content can't reach the node's
+ * API at all (ant-api-guard.js), and the chrome's read-only allowlist
+ * (ant-api-chrome.js) doesn't list them.
  */
 
 const fs = require('fs');
@@ -48,6 +64,10 @@ const COUNTING_WINDOW_MS = 60_000;
 const COUNTING_MIN_FILE_BYTES = 1 * MIB;
 
 const STATUS_TIMEOUT_MS = 5_000;
+
+// A clear deletes every unpinned row and vacuums, and a resize evicts down to
+// the new size, before Ant answers: on a cache of several GB that is a while.
+const WRITE_TIMEOUT_MS = 120_000;
 
 /** `bytes` when it is one of the sizes, else null. */
 function normalizeCacheBytes(bytes) {
@@ -147,6 +167,27 @@ function parseDebugstore(data) {
 }
 
 /**
+ * `GET /v0/cache`'s body (Ant v0.5.61+, bytes rather than chunk counts) in the
+ * same shape as parseDebugstore, or null when it isn't Ant's shape.
+ * `chunks` counts pinned chunks too, as parseDebugstore's does.
+ */
+function parseCacheStatus(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  if (typeof data.disk_enabled !== 'boolean') return null;
+  const capacityBytes = byteCount(data.capacity_bytes);
+  if (capacityBytes === null) return null;
+  const chunks = chunkCount(data.chunks) ?? 0;
+  const pinnedChunks = chunkCount(data.pinned_chunks) ?? 0;
+  return {
+    diskEnabled: data.disk_enabled,
+    usedBytes: byteCount(data.used_bytes) ?? 0,
+    capacityBytes,
+    pinnedBytes: byteCount(data.pinned_bytes) ?? 0,
+    chunks: chunks + pinnedChunks,
+  };
+}
+
+/**
  * Whether an all-zero reading is Ant still counting the cache it just opened:
  * the disk cache is on, nothing counted, the node was spawned less than a
  * minute ago, and the cache file is big enough not to be empty. Only known for
@@ -220,6 +261,60 @@ function cacheFileBytes(dataDir) {
   return total;
 }
 
+function byteCount(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * `POST /v0/cache/clear`'s body as `{ freedBytes, fileBytesBefore,
+ * fileBytesAfter, diskEnabled }`, or null when it isn't Ant's shape.
+ */
+function parseClearReport(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const freedBytes = byteCount(data.freed_bytes);
+  if (freedBytes === null) return null;
+  return {
+    freedBytes,
+    fileBytesBefore: byteCount(data.file_bytes_before),
+    fileBytesAfter: byteCount(data.file_bytes_after),
+    diskEnabled: data.status?.disk_enabled !== false,
+  };
+}
+
+/**
+ * What Settings says after a clear: "Freed 1.3 GB", or that there was nothing
+ * to free. Ant frees the chunks at once but a cache file made before v0.5.60
+ * is rebuilt smaller only when there is room for it, so when the file on disk
+ * didn't shrink the line says the space is reused rather than promise it back.
+ */
+function describeClearResult(report) {
+  if (report.freedBytes === 0) return 'Freed 0 B. The cache was already empty.';
+  const freed = `Freed ${formatCacheBytes(report.freedBytes)}.`;
+  const { fileBytesBefore: before, fileBytesAfter: after } = report;
+  if (before !== null && after !== null && after >= before) {
+    return `${freed} The cache file keeps its size on disk; the node reuses the space.`;
+  }
+  return freed;
+}
+
+/**
+ * The sentence for a `/v0/cache` write that didn't go through. `failure` is
+ * `{ status, message }` for an answer (`message` from Ant's `{code, message}`
+ * error body, when there is one) or `{ timedOut }` / `{}` for none.
+ */
+function describeCacheWriteError(action, failure = {}) {
+  const what = action === 'clear' ? 'clear its cache' : 'change its cache size';
+  const { status, message, timedOut } = failure;
+  if (timedOut) return 'The Swarm node took too long to answer.';
+  if (!status) return "The Swarm node didn't answer.";
+  if (status === 404 || status === 405 || status === 501) {
+    return `This Swarm node can't ${what} while it runs.`;
+  }
+  if (status === 503) return "The node's disk cache isn't available.";
+  const detail = typeof message === 'string' && message.trim() ? `: ${message.trim()}` : '';
+  return `The Swarm node couldn't ${what} (${status}${detail}).`;
+}
+
 /**
  * The usage line, read live. Dependencies are injectable for tests and for the
  * e2e's fake node.
@@ -232,35 +327,134 @@ function createAntCacheService({
   fetchImpl = (...args) => fetch(...args),
   now = Date.now,
   timeoutMs = STATUS_TIMEOUT_MS,
+  writeTimeoutMs = WRITE_TIMEOUT_MS,
 } = {}) {
-  async function readDebugstore() {
+  // The spawn whose cache was cleared. Ant can't hand the space of a cache
+  // file made before v0.5.60 back, so after a clear an all-zero reading over
+  // a big file is the truth, not Ant still counting (Android #413 does the same).
+  let clearedSpawnedAt = null;
+
+  // One write to the node: `{ ok: true, data }` with the JSON body, or
+  // `{ ok: false, status?, message?, timedOut? }`.
+  async function writeToNode(route, init) {
+    const base = getApiBase();
+    if (typeof base !== 'string' || !base) return { ok: false };
+    let response;
+    try {
+      response = await fetchImpl(`${base.replace(/\/$/, '')}${route}`, {
+        ...init,
+        signal: AbortSignal.timeout(writeTimeoutMs),
+      });
+    } catch (err) {
+      return { ok: false, timedOut: err?.name === 'TimeoutError' };
+    }
+    let text = '';
+    try {
+      text = await response.text();
+    } catch {
+      // An unreadable body: judged by the status alone.
+    }
+    let data = null;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // Not JSON (axum's own rejections are plain text).
+    }
+    if (!response.ok) {
+      const message = typeof data?.message === 'string' ? data.message : text.slice(0, 200);
+      return { ok: false, status: response.status, message };
+    }
+    return { ok: true, data };
+  }
+
+  /**
+   * Clear the cache of the running node: `{ ok: true, freedBytes, text }` or
+   * `{ ok: false, error }`.
+   */
+  async function clearCache() {
+    if (getNodeStatus()?.status !== 'running') {
+      return { ok: false, error: "The Swarm node isn't running." };
+    }
+    const answer = await writeToNode('/v0/cache/clear', { method: 'POST' });
+    if (!answer.ok) return { ok: false, error: describeCacheWriteError('clear', answer) };
+    const report = parseClearReport(answer.data);
+    if (!report) return { ok: false, error: "The Swarm node's answer couldn't be read." };
+    if (!report.diskEnabled) {
+      return { ok: false, error: "The node's disk cache isn't available, so nothing was cleared." };
+    }
+    clearedSpawnedAt = getSpawnedAt();
+    return { ok: true, freedBytes: report.freedBytes, text: describeClearResult(report) };
+  }
+
+  /**
+   * Set the running node's cache size live: `{ ok: true }`, or
+   * `{ ok: false, applied, error }`. `applied`: Ant set the size but its
+   * eviction down to it failed (a 500); the next cache write evicts again, so
+   * the size still holds.
+   */
+  async function setCapacity(bytes) {
+    const answer = await writeToNode('/v0/cache/capacity', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bytes }),
+    });
+    if (answer.ok) return { ok: true };
+    return {
+      ok: false,
+      applied: answer.status === 500,
+      error: describeCacheWriteError('resize', answer),
+    };
+  }
+
+  // One GET: `{ data }` with the parsed JSON body, `{ missing: true }` for a
+  // node without the route (or a body that isn't JSON), or null for no answer.
+  async function readJson(route) {
     const base = getApiBase();
     if (typeof base !== 'string' || !base) return null;
     try {
-      const response = await fetchImpl(`${base.replace(/\/$/, '')}/debugstore`, {
+      const response = await fetchImpl(`${base.replace(/\/$/, '')}${route}`, {
         method: 'GET',
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (!response.ok) {
         await response.body?.cancel?.().catch(() => {});
-        return null;
+        return { missing: true };
       }
-      return parseDebugstore(JSON.parse(await response.text()));
+      try {
+        return { data: JSON.parse(await response.text()) };
+      } catch {
+        return { missing: true };
+      }
     } catch {
       return null;
     }
   }
 
+  // `GET /v0/cache` first: live counters, in bytes. `/debugstore` reads a
+  // status snapshot the node refreshes on a tick, so right after a clear or a
+  // live resize it can still show the old figures for a moment (measured
+  // 0.1–0.25 s on v0.5.61). A node without `/v0/cache` (a reused bee, an Ant
+  // before v0.5.61) is read through `/debugstore`.
+  async function readUsage() {
+    const live = await readJson('/v0/cache');
+    if (!live) return null;
+    const parsed = live.data ? parseCacheStatus(live.data) : null;
+    if (parsed) return parsed;
+    const store = await readJson('/debugstore');
+    return store?.data ? parseDebugstore(store.data) : null;
+  }
+
   async function getStatus() {
     const nodeStatus = getNodeStatus()?.status;
     if (nodeStatus !== 'running') return describeCache({ nodeStatus });
-    const parsed = await readDebugstore();
+    const parsed = await readUsage();
     // The status can change while the read is out; a node that stopped
     // meanwhile reads as not running, not as unreadable.
     if (getNodeStatus()?.status !== 'running') return describeCache({ nodeStatus: 'stopped' });
     const spawnedAt = getSpawnedAt();
     const counting =
       Number.isFinite(spawnedAt) &&
+      spawnedAt !== clearedSpawnedAt &&
       isCounting(parsed, {
         sinceSpawnMs: now() - spawnedAt,
         fileBytes: parsed?.diskEnabled && parsed.chunks === 0 ? cacheFileBytes(getDataDir()) : null,
@@ -268,15 +462,16 @@ function createAntCacheService({
     return describeCache({ nodeStatus: 'running', parsed, counting });
   }
 
-  return { getStatus };
+  return { getStatus, clearCache, setCapacity };
 }
 
 /**
  * Settings → Nodes → Swarm cache size: what the picker shows and whether it
  * can change anything. `managed` false (an external, disabled or reused node)
- * comes with the reason. `nodeActive`: the node Freedom runs is up, so a new
- * size restarts it. `hasExistingCache`: this profile's data dir already holds
- * a chunks.sqlite, which decides the size the first start writes.
+ * comes with the reason, and `clearReason` the same for Clear cache.
+ * `nodeActive`: the node Freedom runs is up, so a new size applies live.
+ * `hasExistingCache`: this profile's data dir already holds a chunks.sqlite,
+ * which decides the size the first start writes.
  */
 function cacheSettingsView({
   stored,
@@ -286,10 +481,13 @@ function cacheSettingsView({
   nodeActive = false,
 }) {
   let reason = '';
+  let clearReason = '';
   if (profileMode === 'external' || registryMode === 'reused') {
     reason = "Freedom doesn't run this Swarm node. Set its cache size where it runs.";
+    clearReason = "Freedom doesn't run this Swarm node. Clear its cache where it runs.";
   } else if (profileMode === 'disabled') {
     reason = 'The Swarm node is off for this profile under Settings → Nodes.';
+    clearReason = reason;
   }
   // Before the first start there is no stored size yet; show the one that
   // start will write (chooseCacheBytes), so an upgrader with an old cache sees
@@ -305,16 +503,47 @@ function cacheSettingsView({
     sizes: CACHE_SIZES.map((bytes) => ({ bytes, label: cacheSizeLabel(bytes) })),
     managed: !reason,
     reason,
-    // Applying a size restarts the node now (the picker asks first).
+    clearReason,
+    // A new size applies to the running node at once (no restart).
     nodeActive: !reason && nodeActive === true,
   };
 }
 
+// Why Clear cache is off, for each usage state that has no disk figure.
+const CLEAR_STATE_REASON = {
+  'not-running': 'Available while the Swarm node is running.',
+  starting: 'Available once the Swarm node is running.',
+  'disk-off': "The node's disk cache isn't available, so there is nothing to clear.",
+  unreadable: "The node doesn't report its cache, so Freedom can't clear it.",
+};
+
 /**
- * Saves a new size and restarts the node Freedom runs so it takes effect.
- * Refuses anything not in the set, and a node Freedom doesn't manage.
+ * Whether Settings offers Clear cache: only for the node Freedom runs, while
+ * it is running with a disk cache (the usage line has a figure, or is still
+ * counting one). `{ canClear, clearReason }`, the reason empty when it can.
+ */
+function clearAvailability(usage, view) {
+  if (view && view.managed === false) {
+    return { canClear: false, clearReason: view.clearReason || view.reason || '' };
+  }
+  if (usage?.state === 'ok' || usage?.state === 'counting') {
+    return { canClear: true, clearReason: '' };
+  }
+  return {
+    canClear: false,
+    clearReason: CLEAR_STATE_REASON[usage?.state] || CLEAR_STATE_REASON.unreadable,
+  };
+}
+
+/**
+ * Saves a new size and, when the node Freedom runs is up, applies it live
+ * (`PUT /v0/cache/capacity`); otherwise the next start reads it from
+ * config.yaml. Refuses anything not in the set, and a node Freedom doesn't
+ * manage.
  *
- * @returns {Promise<{ ok: boolean, restarted?: boolean, error?: string }>}
+ * @returns {Promise<{ ok: boolean, live?: boolean, error?: string }>}
+ *   `live`: the running node uses the new size now. `error` with `ok: true`:
+ *   saved, but it applies at the next start, and why.
  */
 async function applyCacheSize(
   bytes,
@@ -322,11 +551,11 @@ async function applyCacheSize(
     getView,
     save,
     isNodeActive,
-    restartNode,
-    getNodeError = null,
+    // Ant's live resize (createAntCacheService's setCapacity).
+    setLiveCapacity,
     // Resolves once the node has left STARTING (healthy, failed or exited),
-    // or after a timeout. startAnt returns as soon as antd is spawned, so
-    // without this a node that spawns and then dies reads as restarted.
+    // or after a timeout. A node still coming up may have read config.yaml
+    // before the save, so the live call waits for it and then applies.
     waitForNodeSettled = null,
     // Up and healthy (RUNNING), not merely coming up; defaults to isNodeActive.
     isNodeRunning = null,
@@ -337,27 +566,20 @@ async function applyCacheSize(
   const view = getView();
   if (!view.managed) return { ok: false, error: view.reason };
   if (save(size) === false) return { ok: false, error: 'The cache size could not be saved.' };
-  if (!isNodeActive()) return { ok: true, restarted: false };
-  const result = await restartNode();
-  if (result && result.ok === false) {
-    return { ok: true, restarted: false, error: result.error || 'The Swarm node did not restart.' };
-  }
-  // startAnt reports a failed start (a port clash, a config error) through the
-  // node's state rather than by throwing, so a restart that "succeeded" can
-  // still have left the node down. It also returns while antd is still
-  // starting, so wait for the start to settle and require it to be healthy.
+  if (!isNodeActive()) return { ok: true, live: false };
   if (waitForNodeSettled) await waitForNodeSettled();
-  if (!(isNodeRunning || isNodeActive)()) {
-    const reason = getNodeError?.();
-    return {
-      ok: true,
-      restarted: false,
-      error: reason
-        ? `The Swarm node did not start again (${reason}).`
-        : 'The Swarm node did not start again.',
-    };
+  if (!(isNodeRunning || isNodeActive)()) return { ok: true, live: false };
+  let result;
+  try {
+    result = await setLiveCapacity(size);
+  } catch {
+    result = { ok: false, error: "The Swarm node didn't answer." };
   }
-  return { ok: true, restarted: true };
+  if (result?.ok) return { ok: true, live: true };
+  // Ant applied the size but the eviction down to it failed; it evicts again
+  // on the next cache write, so the size holds.
+  if (result?.applied) return { ok: true, live: true };
+  return { ok: true, live: false, error: result?.error || "The Swarm node didn't answer." };
 }
 
 module.exports = {
@@ -376,11 +598,16 @@ module.exports = {
   formatCacheBytes,
   cacheSizeLabel,
   parseDebugstore,
+  parseCacheStatus,
   isCounting,
   cacheSummary,
   describeCache,
   cacheFileBytes,
+  parseClearReport,
+  describeClearResult,
+  describeCacheWriteError,
   createAntCacheService,
   cacheSettingsView,
+  clearAvailability,
   applyCacheSize,
 };

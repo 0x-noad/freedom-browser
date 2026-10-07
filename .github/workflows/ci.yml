@@ -634,8 +634,9 @@ jobs:
   # profile, with no engine cache, held behind the first ad-block engine build
   # (#524). Without the real lists that build takes milliseconds and the path
   # was only ever exercised by the nightly's full harness run.
-  # `swarm-cache.spec.js` (#579) covers Settings → Nodes → Swarm cache size:
-  # its usage line against a fake antd's `/debugstore`, and its size picker.
+  # `swarm-cache.spec.js` (#579) covers Settings → Nodes → Swarm cache: its
+  # usage line, Clear cache and the live size change against a fake antd's
+  # `/debugstore` and `/v0/cache` routes, and its size picker.
   e2e-settings:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}

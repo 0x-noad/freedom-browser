@@ -1038,34 +1038,53 @@ function registerAntIpc() {
   ipcMain.handle(IPC.ANT_API_GET, (_event, endpoint) => antApiGet(endpoint));
 
   // Settings page only (SETTINGS tier in ipc-sender-policy.js): Settings →
-  // Nodes → Swarm cache's usage line, read from `/debugstore` here rather than
-  // by widening the chrome's endpoint allowlist (#579). Web content reaches
-  // neither this nor the node's API.
+  // Nodes → Swarm cache's usage line, read from `/v0/cache` (or `/debugstore`
+  // on a node without it) here rather than by widening the chrome's endpoint
+  // allowlist (#579), and the cache's two writes, clear and resize, which the
+  // chrome's allowlist never gets. Web content reaches neither these nor the
+  // node's API (ant-api-guard.js).
   const cacheService = antCache.createAntCacheService({
     getNodeStatus: getStatus,
     getApiBase: () => require('./service-registry').getAntApiUrl(),
     getSpawnedAt,
     getDataDir: () => (getSpawnedAt() ? getAntDataPath() : null),
   });
-  ipcMain.handle(IPC.ANT_CACHE_STATUS, () => cacheService.getStatus());
+  // The usage line, with whether Clear cache is on offer and why not.
+  const getCacheStatus = async () => {
+    const usage = await cacheService.getStatus();
+    return { ...usage, ...antCache.clearAvailability(usage, getCacheSettingsView()) };
+  };
+  ipcMain.handle(IPC.ANT_CACHE_STATUS, () => getCacheStatus());
 
   // Settings page only too: the cache size picker, and applying a size, which
-  // restarts the node Freedom runs.
+  // the node Freedom runs takes live (`PUT /v0/cache/capacity`, Ant v0.5.61+).
   ipcMain.handle(IPC.ANT_CACHE_GET_SETTINGS, () => getCacheSettingsView());
   ipcMain.handle(IPC.ANT_CACHE_SET_SIZE, (_event, bytes) =>
     antCache.applyCacheSize(bytes, {
       getView: getCacheSettingsView,
       save: (size) => saveSettings({ antCacheCapacityBytes: size }),
       isNodeActive: isBundledNodeActive,
-      // Through the publish setup service, which refuses mid-purchase and
-      // shows the restart on the wallet sidebar's node card.
-      restartNode: () =>
-        require('./swarm/publish-setup-service').getPublishSetupService().restartNode(),
-      getNodeError: () => lastError,
+      setLiveCapacity: (size) => cacheService.setCapacity(size),
       waitForNodeSettled: () => waitForStartSettled(),
       isNodeRunning: () => currentState === STATUS.RUNNING && currentMode === MODE.BUNDLED,
     })
   );
+
+  // Settings page only: Clear cache (`POST /v0/cache/clear`, Ant v0.5.61+),
+  // which keeps pinned and published content. Checked again here rather than
+  // trusting the button's state, and one clear at a time: a second request
+  // while one runs gets the same answer.
+  let clearInFlight = null;
+  ipcMain.handle(IPC.ANT_CACHE_CLEAR, () => {
+    clearInFlight ||= (async () => {
+      const { canClear, clearReason } = await getCacheStatus();
+      if (!canClear) return { ok: false, error: clearReason };
+      return cacheService.clearCache();
+    })().finally(() => {
+      clearInFlight = null;
+    });
+    return clearInFlight;
+  });
 }
 
 // Startup polls health for up to 60s before giving up with ERROR; leave room
@@ -1093,7 +1112,7 @@ function waitForStartSettled(timeoutMs = START_SETTLE_TIMEOUT_MS) {
   });
 }
 
-// The node Freedom spawned is up or coming up, so a new cache size restarts it.
+// The node Freedom spawned is up or coming up, so a new cache size applies live.
 function isBundledNodeActive() {
   return (
     (currentState === STATUS.RUNNING || currentState === STATUS.STARTING) &&

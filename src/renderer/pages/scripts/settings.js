@@ -1887,7 +1887,7 @@ freedomAPI.onPublishSetupState?.((state) => {
 });
 
 // Settings → Nodes → Swarm cache: how much it holds (#579). The main process
-// reads the node's `/debugstore` and words the line (swarm/ant-cache.js); this
+// reads the node's `/v0/cache` (or `/debugstore`) and words the line (swarm/ant-cache.js); this
 // page only paints it. It is read every few seconds while the row is on
 // screen — the Nodes section open, not covered by search results, the page not
 // in a background tab — and not at all otherwise. A node that isn't running
@@ -1904,12 +1904,36 @@ let swarmCacheUsageActive = false;
 const swarmCacheRowOnScreen = () =>
   !document.hidden && Boolean(swarmCacheUsageRow?.getClientRects().length);
 
+// Clear cache (#579) follows the usage line: the main process says with each
+// reading whether the node can clear now (`canClear`) and, if not, why
+// (`clearReason`), and this row shows that reason under the disabled button.
+const swarmCacheClearButton = $('swarm-cache-clear');
+const swarmCacheClearReason = $('swarm-cache-clear-reason');
+const swarmCacheClearStatus = $('swarm-cache-clear-status');
+let swarmCacheClearing = false;
+let swarmCacheCanClear = false;
+
+const paintSwarmCacheClear = (usage) => {
+  swarmCacheCanClear = usage?.canClear === true;
+  const reason = swarmCacheCanClear
+    ? ''
+    : usage?.clearReason || "The node's cache couldn't be read.";
+  if (swarmCacheClearButton) {
+    swarmCacheClearButton.disabled = swarmCacheClearing || !swarmCacheCanClear;
+  }
+  if (swarmCacheClearReason) {
+    swarmCacheClearReason.textContent = reason;
+    swarmCacheClearReason.hidden = !reason;
+  }
+};
+
 const paintSwarmCacheUsage = (usage) => {
   if (swarmCacheUsageText) swarmCacheUsageText.textContent = usage?.text || 'Unknown';
   if (swarmCacheUsageNote) {
     swarmCacheUsageNote.textContent = usage?.reason || '';
     swarmCacheUsageNote.hidden = !usage?.reason;
   }
+  paintSwarmCacheClear(usage);
 };
 
 const stopSwarmCacheUsage = () => {
@@ -1949,14 +1973,44 @@ syncSwarmCacheUsage = ({ restart = false } = {}) => {
   readSwarmCacheUsage();
 };
 
+swarmCacheClearButton?.addEventListener('click', async () => {
+  if (swarmCacheClearing || !swarmCacheCanClear) return;
+  if (
+    !window.confirm(
+      "Clear the Swarm cache?\n\nSwarm pages you've opened will load from the network again. Pinned and published content is kept."
+    )
+  ) {
+    return;
+  }
+  swarmCacheClearing = true;
+  swarmCacheClearButton.disabled = true;
+  if (swarmCacheClearStatus) swarmCacheClearStatus.textContent = 'Clearing…';
+  let result;
+  try {
+    result = await freedomAPI.clearSwarmCache();
+  } catch {
+    result = null;
+  }
+  swarmCacheClearing = false;
+  if (swarmCacheClearStatus) {
+    swarmCacheClearStatus.textContent = result?.ok
+      ? result.text
+      : `The Swarm cache wasn't cleared. ${result?.error || "The Swarm node didn't answer."}`;
+  }
+  // The usage line (and the button with it) shows the cache after the clear
+  // now, not on the next poll.
+  swarmCacheClearButton.disabled = !swarmCacheCanClear;
+  syncSwarmCacheUsage({ restart: true });
+});
+
 document.addEventListener('visibilitychange', () => syncSwarmCacheUsage());
 // The section the page opened on was shown before this ran.
 syncSwarmCacheUsage();
 
 // Settings → Nodes → Swarm cache size (#579). The sizes, the current one and
 // whether Freedom runs this profile's node come from the main process
-// (src/main/swarm/ant-cache.js). Picking a size asks first when the node is
-// running, since applying it restarts the node; Cancel puts the old size back.
+// (src/main/swarm/ant-cache.js). A running node takes the new size live
+// (Ant v0.5.61+), so nothing restarts and nothing asks first.
 const swarmCacheRow = $('swarm-cache-row');
 const swarmCacheSelect = $('swarm-cache-size');
 const swarmCacheStatus = $('swarm-cache-status');
@@ -2027,16 +2081,7 @@ swarmCacheSelect?.addEventListener('change', async () => {
     return;
   }
   const label = view.sizes.find((size) => size.bytes === bytes)?.label || '';
-  if (
-    view.nodeActive &&
-    !window.confirm(
-      `Set the Swarm cache to ${label}?\n\nThis restarts the Swarm node. Swarm pages stop loading until it is back, usually a few seconds.`
-    )
-  ) {
-    release();
-    return;
-  }
-  setSwarmCacheStatus(view.nodeActive ? 'Restarting the Swarm node…' : 'Saving…');
+  setSwarmCacheStatus(view.nodeActive ? 'Applying…' : 'Saving…');
   let result;
   try {
     result = await freedomAPI.setSwarmCacheSize(bytes);
@@ -2047,13 +2092,15 @@ swarmCacheSelect?.addEventListener('change', async () => {
   let message;
   if (!result?.ok) {
     message = result?.error || "The cache size couldn't be saved.";
-  } else if (result.restarted) {
-    message = `Swarm cache set to ${label}. The Swarm node restarted.`;
+  } else if (result.live) {
+    message = `Swarm cache set to ${label}.`;
   } else if (result.error) {
     message = `Swarm cache set to ${label}. It applies the next time the Swarm node starts: ${result.error}`;
   } else {
     message = `Swarm cache set to ${label}. It applies the next time the Swarm node starts.`;
   }
+  // The usage line shows the new size at once.
+  if (result?.live) syncSwarmCacheUsage({ restart: true });
   let fresh;
   try {
     fresh = await freedomAPI.getSwarmCacheSettings();
