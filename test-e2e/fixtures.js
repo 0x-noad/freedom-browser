@@ -241,6 +241,31 @@ const clickOverGuest = async (window, click, landed, { timeout = 15_000 } = {}) 
   }).toPass({ timeout });
 };
 
+// Put the pointer on a chrome element that has just appeared over the tab's
+// `<webview>`, and return once the element itself is under it — i.e. once the
+// browser routes input at that point to the chrome, not to the guest. Click it
+// after this, exactly once.
+//
+// This is the same mis-routing `waitForPopoverFrame` describes, gated on the
+// thing a click needs rather than on frames: `:hover` only matches once a
+// pointer event at that point has reached this renderer. A move that the
+// browser still hands to the guest has no effect on the page — unlike a click,
+// which focuses (and, over a field, edits) whatever the guest has there — so
+// it is the move, not the click, that is re-sent until the routing is right.
+// The element must stay put between this and the click, which a popover does.
+//
+// Prefer this to `clickOverGuest` where one click has to be shown to work: a
+// click retried until it lands would also pass a menu that genuinely ate the
+// first one. A real user cannot hit the window this closes — their pointer has
+// to travel to a row that is already on screen (#540: a page context menu
+// item clicked one frame after the menu was revealed went to the page below).
+const pointAtOverGuest = async (locator, { timeout = 15_000 } = {}) => {
+  await expect(async () => {
+    await locator.hover({ timeout: 1000 });
+    expect(await locator.evaluate((element) => element.matches(':hover'))).toBe(true);
+  }).toPass({ timeout });
+};
+
 // Convenience: an arbitrary 64-char Swarm hex hash for fixture-driven
 // `bzz://` navigation. Specs should treat this as opaque.
 const SAMPLE_BZZ_HASH = 'a'.repeat(64);
@@ -252,6 +277,7 @@ module.exports = {
   browserWindow,
   waitForPopoverFrame,
   clickOverGuest,
+  pointAtOverGuest,
   SAMPLE_BZZ_HASH,
   SAMPLE_IPFS_CID,
 };
