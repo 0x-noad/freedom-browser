@@ -1095,6 +1095,11 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   resetAllShortcuts: guardSettingsPage('resetAllShortcuts', () =>
     ipcRenderer.invoke('shortcuts:reset', {})
   ),
+  // A recording has to receive the chord it records, including Next/Previous
+  // Tab, which main otherwise claims before the page sees it (#556).
+  setShortcutRecording: guardSettingsPage('setShortcutRecording', (recording) =>
+    ipcRenderer.invoke('shortcuts:set-recording', recording === true)
+  ),
 
   // Platform / environment info needed by settings page
   getPlatform: guardInternal('getPlatform', () => ipcRenderer.invoke('window:get-platform')),
