@@ -273,13 +273,16 @@ const waitForPresentedFrame = (window) =>
   );
 
 // Click a chrome element that sits over the tab's `<webview>` and has only just
-// appeared (or moved) there, until the click's effect shows. The frame wait
-// above closes most of the window, but not all of it: in a just-launched app on
-// a loaded machine the guest has been seen (2026-09-29, `tab-mute`, `downloads`,
+// appeared (or moved) there, until the click's effect shows. The two-rAF wait
+// (`waitForPopoverFrame`, which this helper calls) closes most of the window,
+// but not all of it: in a just-launched app on a loaded machine the guest
+// has been seen (2026-09-29, `tab-mute`, `downloads`,
 // `publisher-identity-selector`, `chrome-input-focus`, 1 run in 5–10) to take
 // the click after two frames — no pointer event reached the chrome, and
-// `document.activeElement` was the `<webview>`. `click` is re-issued only while
-// `landed()` is false, so a toggle is never clicked twice by the retry itself.
+// `document.activeElement` was the `<webview>`. `click` is re-issued only
+// while `landed()` is false, so a toggle is never clicked twice by the retry
+// itself. (`waitForPresentedFrame`, just above, is a separate presentation
+// wait this helper does not use; this note is about the two-rAF wait only.)
 const clickOverGuest = async (window, click, landed, { timeout = 15_000 } = {}) => {
   await expect(async () => {
     if (!(await landed())) {
