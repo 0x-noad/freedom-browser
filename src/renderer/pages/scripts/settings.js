@@ -2127,6 +2127,9 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   };
 
   const stopRecording = () => {
+    if (recordingId) {
+      freedomAPI.setShortcutRecording?.(false)?.catch?.(() => {});
+    }
     if (recordingHandler) {
       window.removeEventListener('keydown', recordingHandler, true);
       recordingHandler = null;
@@ -2161,6 +2164,9 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     rowNotice = null;
     setStatus('');
     recordingId = id;
+    // Next/Previous Tab are answered in main before the page sees the key;
+    // tell it a recording is armed so the chord reaches the handler below.
+    freedomAPI.setShortcutRecording?.(true)?.catch?.(() => {});
     render();
 
     // Chrome's own recorder gives up when the row it is recording loses
