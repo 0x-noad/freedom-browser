@@ -87,7 +87,7 @@ describe('myotis-manager', () => {
     expect(clients.map((client) => client.options.dataDir)).toEqual([
       path.join(dataDir, 'mainnet', 'initial'), path.join(dataDir, 'gnosis', 'initial'),
     ]);
-    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.13', abi: 36, snapPeers: 2, snapServingPeers: 1 });
+    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.14', abi: 38, snapPeers: 2, snapServingPeers: 1 });
     await mod.stopMyotis(100);
     expect(mod.publicStatus(100).state).toBe('off');
     expect(mod.isReady(1)).toBe(true);
