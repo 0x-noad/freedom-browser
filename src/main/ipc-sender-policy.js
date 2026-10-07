@@ -155,6 +155,7 @@ const SETTINGS_CHANNELS = [
   'shortcuts:preview-binding',
   'shortcuts:reset',
   'shortcuts:set-override',
+  'shortcuts:set-recording',
   'tor:checkBinary',
   'update:check',
   'update:get-state',
