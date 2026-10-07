@@ -618,6 +618,8 @@ jobs:
   # side of the same Myotis policy: synthetic checkpoint-recovery states drive
   # the real renderer, so the retry button's visibility while a background
   # retry waits and the notice clearing on success are asserted in CI.
+  # `myotis-upgrade-advisory.spec.js` does the same for the fork-watch
+  # "update Freedom" notice on the Nodes card and the Settings source badge.
   #
   # The other internal pages ride along: `internal-pages-csp.spec.js` drives
   # each page under `script-src 'self'` and fails on any CSP violation (#432),
@@ -671,6 +673,7 @@ jobs:
           test-e2e/settings-adblock.spec.js
           test-e2e/adblock-first-engine.spec.js
           test-e2e/myotis-recovery.spec.js
+          test-e2e/myotis-upgrade-advisory.spec.js
           test-e2e/internal-pages-csp.spec.js
           test-e2e/error-page.spec.js
           test-e2e/internal-page-theme.spec.js

@@ -821,6 +821,7 @@ function publicStatus(chainId = 1) {
       },
       beaconState: instance.lastStatus?.beaconState,
       peerCount: instance.lastStatus?.peerCount,
+      upgradeAdvisory: instance.lastStatus?.upgradeAdvisory ?? null,
     };
   }
   const error = instance.lastError;
@@ -845,6 +846,9 @@ function publicStatus(chainId = 1) {
     snapPeers: s.snapPeers,
     snapServingPeers: s.snapServingPeers,
     finalizedBlockNumber: s.finalizedBlockNumber,
+    // Display-only (validated in myotis-process.js); readiness and routing
+    // never read it — see docs/myotis-process-isolation.md.
+    upgradeAdvisory: s.upgradeAdvisory ?? null,
     uptimeSeconds: Math.round((Date.now() - instance.startedAt) / 1000),
   };
 }

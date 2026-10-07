@@ -2603,6 +2603,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       if (!status) return 'Status unknown';
       if (status.recovery?.reason === 'installation' || status.recovery?.reason === 'unsupported')
         return 'Update or reinstall — open Nodes';
+      // Myotis's fork watch (peer-reported, display-only): this build lacks
+      // a network upgrade. The Nodes menu carries the full explanation.
+      if (['SCHEDULED', 'ACTIVE'].includes(status.upgradeAdvisory?.phase))
+        return status.state === 'ready' ? 'Ready — update Freedom' : 'Update Freedom — open Nodes';
       if (status.state === 'ready') return 'Ready';
       if (status.state === 'syncing') return 'Syncing';
       if (status.state === 'recovering') return 'Updating checkpoint';
