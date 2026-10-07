@@ -346,6 +346,84 @@ test.describe('Settings: Swarm cache size', () => {
     await expect(select).toHaveValue(String(GIB));
   });
 
+  // R1-F1 on #588: a profile whose node already has a cache from an older
+  // Freedom, before its first start with this setting. The real handlers.
+  test('an upgrader before the first start sees 10 GB and can choose 2 GB', async ({
+    electronApp,
+    window,
+  }) => {
+    const cacheFile = await electronApp.evaluate(() => {
+      const load = process.mainModule.require;
+      const file = load('path').join(
+        load('./src/main/profile-paths').getAntDataDir(),
+        'chunks.sqlite'
+      );
+      load('fs').writeFileSync(file, '');
+      return file;
+    });
+    try {
+      expect(
+        (await window.evaluate(() => window.electronAPI.getSettings())).antCacheCapacityBytes
+      ).toBeNull();
+      const page = await openNodesSettings(window, electronApp);
+      const select = page.locator('#swarm-cache-size');
+      await expect(select).toHaveValue(String(10 * GIB));
+      await shootSettings(window, page, 'upgrader');
+      await select.selectOption(String(2 * GIB));
+      await expect(page.locator('#swarm-cache-status')).toHaveText(
+        'Swarm cache set to 2 GB (default). It applies the next time the Swarm node starts.'
+      );
+      const saved = await window.evaluate(() => window.electronAPI.getSettings());
+      expect(saved.antCacheCapacityBytes).toBe(2 * GIB);
+      await expect(select).toHaveValue(String(2 * GIB));
+    } finally {
+      fs.rmSync(cacheFile, { force: true });
+    }
+  });
+
+  // R1-M3 on #588: a second change while the first is still re-reading the
+  // view is dropped, not applied as a second, overlapping restart.
+  test('a second change during the first one is not applied twice', async ({
+    electronApp,
+    window,
+  }) => {
+    await stubCacheIpc(electronApp, {
+      view: {
+        bytes: 2 * GIB,
+        defaultBytes: 2 * GIB,
+        sizes: SIZES,
+        managed: true,
+        reason: '',
+        nodeActive: false,
+      },
+      answer: { ok: true, restarted: false },
+    });
+    const page = await openNodesSettings(window, electronApp);
+    const select = page.locator('#swarm-cache-size');
+    await expect(select).toHaveValue(String(2 * GIB));
+    // The re-read on change now takes a while.
+    await electronApp.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('ant:cache-get-settings');
+      ipcMain.handle(
+        'ant:cache-get-settings',
+        () => new Promise((resolve) => setTimeout(() => resolve(globalThis.__cacheView), 500))
+      );
+    });
+    await page.evaluate(() => {
+      const el = document.getElementById('swarm-cache-size');
+      el.value = String(5 * 1024 ** 3);
+      el.dispatchEvent(new Event('change'));
+      el.value = String(10 * 1024 ** 3);
+      el.dispatchEvent(new Event('change'));
+    });
+    await expect(page.locator('#swarm-cache-status')).toHaveText(
+      'Swarm cache set to 5 GB. It applies the next time the Swarm node starts.'
+    );
+    expect(await electronApp.evaluate(() => globalThis.__cacheSets)).toEqual([5 * GIB]);
+    await expect(select).toHaveValue(String(5 * GIB));
+    await expect(select).toBeEnabled();
+  });
+
   test('settings search finds it by cache, storage and disk space', async ({
     electronApp,
     window,

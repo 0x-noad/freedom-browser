@@ -252,13 +252,24 @@ function isSwapEnabledSetting() {
   return loadSettings().antSwapEnable !== false;
 }
 
+// Whether this profile's node already has a cache from an older Freedom. The
+// Settings view asks the same question, so it shows what the first start
+// will write (R1-F1 on #588).
+function hasExistingCacheFile(dataDir) {
+  try {
+    return Boolean(dataDir) && fs.existsSync(path.join(dataDir, 'chunks.sqlite'));
+  } catch {
+    return false;
+  }
+}
+
 // The cache size for this start (see chooseCacheBytes): the saved choice, or
 // on a profile's first start with this setting, 10 GB if its node already has
 // a cache from an older Freedom (Ant's old default) and the default otherwise.
 function resolveCacheCapacityBytes(dataDir) {
   const { bytes, save } = antCache.chooseCacheBytes({
     stored: loadSettings().antCacheCapacityBytes,
-    hasExistingCache: fs.existsSync(path.join(dataDir, 'chunks.sqlite')),
+    hasExistingCache: hasExistingCacheFile(dataDir),
   });
   if (save) {
     log.info(`[Ant] Swarm cache size set to ${antCache.formatCacheBytes(bytes)} on first start`);
@@ -1050,6 +1061,7 @@ function registerAntIpc() {
       // shows the restart on the wallet sidebar's node card.
       restartNode: () =>
         require('./swarm/publish-setup-service').getPublishSetupService().restartNode(),
+      getNodeError: () => lastError,
     })
   );
 }
@@ -1065,6 +1077,7 @@ function isBundledNodeActive() {
 function getCacheSettingsView() {
   return antCache.cacheSettingsView({
     stored: loadSettings().antCacheCapacityBytes,
+    hasExistingCache: hasExistingCacheFile(getAntDataPath()),
     profileMode: getProfileAntConfig()?.mode || null,
     registryMode: require('./service-registry').getRegistry().ant?.mode || null,
     nodeActive: isBundledNodeActive(),

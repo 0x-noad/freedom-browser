@@ -2003,7 +2003,13 @@ const refreshSwarmCacheRow = async () => {
 };
 
 swarmCacheSelect?.addEventListener('change', async () => {
+  // One change at a time: a second change event (arrow keys on the focused
+  // select) while this one is still re-reading or applying is dropped, and the
+  // picker is disabled before the first await so it can't fire one.
+  if (swarmCacheBusy) return;
   const bytes = Number(swarmCacheSelect.value);
+  swarmCacheBusy = true;
+  swarmCacheSelect.disabled = true;
   // Re-read first: whether the node is running (and so whether this restarts
   // it) can have changed since the row was painted.
   let view = swarmCacheView;
@@ -2012,8 +2018,12 @@ swarmCacheSelect?.addEventListener('change', async () => {
   } catch {
     // Keep the painted view.
   }
-  if (!view || !view.managed || bytes === view.bytes) {
+  const release = () => {
+    swarmCacheBusy = false;
     renderSwarmCacheRow(view);
+  };
+  if (!view || !view.managed || bytes === view.bytes) {
+    release();
     return;
   }
   const label = view.sizes.find((size) => size.bytes === bytes)?.label || '';
@@ -2023,11 +2033,9 @@ swarmCacheSelect?.addEventListener('change', async () => {
       `Set the Swarm cache to ${label}?\n\nThis restarts the Swarm node. Swarm pages stop loading until it is back, usually a few seconds.`
     )
   ) {
-    swarmCacheSelect.value = String(view.bytes);
+    release();
     return;
   }
-  swarmCacheBusy = true;
-  swarmCacheSelect.disabled = true;
   setSwarmCacheStatus(view.nodeActive ? 'Restarting the Swarm node…' : 'Saving…');
   let result;
   try {
@@ -2124,7 +2132,9 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     applyFormState(settings);
   }
   renderSwarmPublishingRow(cachedSettings, cachedSetupState);
-  if (swarmCacheView && settings.antCacheCapacityBytes !== swarmCacheView.bytes) {
+  // Against what settings hold (null before the first start), not the size
+  // shown, which before the first start is the one that start will write.
+  if (swarmCacheView && (settings.antCacheCapacityBytes ?? null) !== swarmCacheView.storedBytes) {
     refreshSwarmCacheRow();
   }
 });

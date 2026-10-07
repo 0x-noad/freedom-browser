@@ -275,17 +275,31 @@ function createAntCacheService({
  * Settings → Nodes → Swarm cache size: what the picker shows and whether it
  * can change anything. `managed` false (an external, disabled or reused node)
  * comes with the reason. `nodeActive`: the node Freedom runs is up, so a new
- * size restarts it.
+ * size restarts it. `hasExistingCache`: this profile's data dir already holds
+ * a chunks.sqlite, which decides the size the first start writes.
  */
-function cacheSettingsView({ stored, profileMode, registryMode, nodeActive = false }) {
+function cacheSettingsView({
+  stored,
+  hasExistingCache = false,
+  profileMode,
+  registryMode,
+  nodeActive = false,
+}) {
   let reason = '';
   if (profileMode === 'external' || registryMode === 'reused') {
     reason = "Freedom doesn't run this Swarm node. Set its cache size where it runs.";
   } else if (profileMode === 'disabled') {
     reason = 'The Swarm node is off for this profile under Settings → Nodes.';
   }
+  // Before the first start there is no stored size yet; show the one that
+  // start will write (chooseCacheBytes), so an upgrader with an old cache sees
+  // 10 GB and can pick 2 GB before the node ever starts.
+  const normalized = normalizeCacheBytes(stored);
   return {
-    bytes: resolveCacheBytes(stored),
+    bytes: chooseCacheBytes({ stored, hasExistingCache }).bytes,
+    // What settings hold (null until chosen or first start): the renderer
+    // compares a settings broadcast against this, not against `bytes`.
+    storedBytes: stored === null || stored === undefined ? null : normalized,
     defaultBytes: DEFAULT_CACHE_BYTES,
     sizes: CACHE_SIZES.map((bytes) => ({ bytes, label: cacheSizeLabel(bytes) })),
     managed: !reason,
@@ -301,7 +315,10 @@ function cacheSettingsView({ stored, profileMode, registryMode, nodeActive = fal
  *
  * @returns {Promise<{ ok: boolean, restarted?: boolean, error?: string }>}
  */
-async function applyCacheSize(bytes, { getView, save, isNodeActive, restartNode }) {
+async function applyCacheSize(
+  bytes,
+  { getView, save, isNodeActive, restartNode, getNodeError = null }
+) {
   const size = normalizeCacheBytes(bytes);
   if (size === null) return { ok: false, error: 'That cache size is not one Freedom offers.' };
   const view = getView();
@@ -311,6 +328,19 @@ async function applyCacheSize(bytes, { getView, save, isNodeActive, restartNode 
   const result = await restartNode();
   if (result && result.ok === false) {
     return { ok: true, restarted: false, error: result.error || 'The Swarm node did not restart.' };
+  }
+  // startAnt reports a failed start (a port clash, a config error) through the
+  // node's state rather than by throwing, so a restart that "succeeded" can
+  // still have left the node down.
+  if (!isNodeActive()) {
+    const reason = getNodeError?.();
+    return {
+      ok: true,
+      restarted: false,
+      error: reason
+        ? `The Swarm node did not start again (${reason}).`
+        : 'The Swarm node did not start again.',
+    };
   }
   return { ok: true, restarted: true };
 }

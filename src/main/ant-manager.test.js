@@ -330,6 +330,8 @@ function loadAntManagerModule(options = {}) {
         setErrorState,
         clearErrorState,
         clearService,
+        getRegistry: () => ({ ant: { mode: 'bundled' } }),
+        getAntApiUrl: () => null,
       }),
     },
   });
@@ -1169,6 +1171,24 @@ describe('ant-manager', () => {
       });
       expect(writtenConfig(ctx)).toMatch(/^cache-capacity: 2621440$/m);
       expect(ctx.saveSettings).toHaveBeenCalledWith({ antCacheCapacityBytes: 10 * GIB });
+    });
+
+    // R1-F1 on #588: before the first start Settings shows what that start
+    // will write, so an upgrader sees 10 GB and can choose 2 GB beforehand.
+    test.each([
+      [true, 10 * GIB],
+      [false, 2 * GIB],
+    ])('Settings before the first start (existing cache: %p) shows %p', async (hasCache, bytes) => {
+      const ctx = loadAntManagerModule({
+        settings: { antCacheCapacityBytes: null },
+        existsSync: (target) => hasCache && target.endsWith(`ant-data${path.sep}chunks.sqlite`),
+      });
+      ctx.mod.registerAntIpc();
+      await expect(ctx.ipcMain.invoke(IPC.ANT_CACHE_GET_SETTINGS)).resolves.toMatchObject({
+        bytes,
+        storedBytes: null,
+      });
+      expect(ctx.saveSettings).not.toHaveBeenCalled();
     });
   });
 

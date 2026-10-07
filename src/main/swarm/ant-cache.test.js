@@ -374,6 +374,22 @@ describe('cacheSettingsView', () => {
     expect(cacheSettingsView({ stored: 7 }).bytes).toBe(DEFAULT_CACHE_BYTES);
   });
 
+  test('before the first start it shows the size that start will write', () => {
+    expect(cacheSettingsView({ stored: null, hasExistingCache: true })).toMatchObject({
+      bytes: LEGACY_CACHE_BYTES,
+      storedBytes: null,
+    });
+    expect(cacheSettingsView({ stored: null, hasExistingCache: false })).toMatchObject({
+      bytes: DEFAULT_CACHE_BYTES,
+      storedBytes: null,
+    });
+    // A stored choice wins over the existing cache.
+    expect(cacheSettingsView({ stored: 2 * GIB, hasExistingCache: true })).toMatchObject({
+      bytes: 2 * GIB,
+      storedBytes: 2 * GIB,
+    });
+  });
+
   test.each([
     [{ profileMode: 'external' }],
     [{ profileMode: 'disabled' }],
@@ -400,6 +416,23 @@ describe('applyCacheSize', () => {
     await expect(applyCacheSize(GIB, d)).resolves.toEqual({ ok: true, restarted: true });
     expect(d.save).toHaveBeenCalledWith(GIB);
     expect(d.restartNode).toHaveBeenCalledTimes(1);
+  });
+
+  test('a restart that left the node down (startAnt set ERROR) is not reported as restarted', async () => {
+    let active = true;
+    const d = deps({
+      isNodeActive: () => active,
+      restartNode: jest.fn(async () => {
+        active = false;
+        return { ok: true };
+      }),
+      getNodeError: () => 'No available ports for Ant API',
+    });
+    await expect(applyCacheSize(GIB, d)).resolves.toEqual({
+      ok: true,
+      restarted: false,
+      error: 'The Swarm node did not start again (No available ports for Ant API).',
+    });
   });
 
   test('a stopped node: saved, applies at its next start', async () => {
