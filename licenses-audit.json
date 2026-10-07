@@ -179,7 +179,7 @@
         {
           "kind": "copyleft",
           "details": "Linux AppImage only. Since #566 every .AppImage starts with the static type-2 runtime as its ELF header; it mounts the squashfs image and execs Freedom, so Freedom is not linked to it. The runtime statically links libfuse 3.15.0 (LGPL-2.1) with upstream's patches/libfuse/mount.c.diff applied. The previous runtime (appimage-12.0.1) dlopen()ed the system libfuse.so.2 instead, so 0.8.7 is the first release whose AppImage carries LGPL-2.1 code. The .deb and pacman packages do not contain the runtime. Attribution is in NOTICES; until this revision none of the audit files recorded the runtime, because licenses-audit.test.js derives its inventory from build.extraResources and src/, and the runtime arrives through electron-builder's toolset instead.",
-          "recommended_fix": "Maintainer decision pending. The runtime is a separate upstream program, unmodified by Freedom, whose complete source, build scripts and libfuse patch are public at the pinned release, which is the usual basis for meeting LGPL-2.1 section 6 (the runtime can be relinked against a modified libfuse from that source). Decide whether NOTICES' pointer to the upstream source is enough or whether Freedom should offer the corresponding source itself, and record the decision here and in LICENSE_AUDIT.md. Re-read the component list on every build.toolsets.appimage or electron-builder bump."
+          "recommended_fix": "Decided by the maintainer (2026-10-07): pointing to upstream's public source is sufficient. The runtime is a separate upstream program, unmodified by Freedom, and AppImage/type2-runtime publishes its complete source, build scripts and the libfuse patch at the pinned release 20251108 (libfuse 3.15.0 itself at libfuse/libfuse), which is what LGPL-2.1 section 6 needs for a user to rebuild and relink the runtime against a modified libfuse. NOTICES names that release and the libfuse version. Re-read the component list, and confirm the source stays published, on every build.toolsets.appimage or electron-builder bump."
         }
       ]
     },
@@ -947,8 +947,8 @@
     },
     {
       "priority": "required",
-      "action": "Decide the AppImage runtime's LGPL-2.1 handling",
-      "details": "The static AppImage runtime (AppImage/type2-runtime 20251108, via build.toolsets.appimage) links a patched libfuse 3.15.0 into every Linux .AppImage. NOTICES attributes it; whether pointing to upstream's source is sufficient, or Freedom must offer corresponding source itself, is a maintainer decision that has not been recorded yet."
+      "action": "Keep the AppImage runtime's attribution and source pointer current",
+      "details": "The static AppImage runtime (AppImage/type2-runtime 20251108, via build.toolsets.appimage) links a patched libfuse 3.15.0 into every Linux .AppImage. The maintainer decided that NOTICES' pointer to upstream's published source meets LGPL-2.1 section 6. On every build.toolsets.appimage or electron-builder bump, re-read the runtime's component list and point NOTICES at the release that actually ships."
     },
     {
       "priority": "recommended",

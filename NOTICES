@@ -69,7 +69,8 @@ AppImage runtime (Linux AppImage only)
   electron-builder (build.toolsets.appimage 1.0.3). It is a separate
   program that mounts the image and then starts Freedom; Freedom's code
   is not linked into it. The .deb and pacman packages do not contain it.
-  https://github.com/AppImage/type2-runtime (source and build scripts)
+  Corresponding source, including the build scripts and the libfuse
+  patch: https://github.com/AppImage/type2-runtime/tree/20251108
   It contains code from:
   - type2-runtime: MIT, Copyright (c) 2004-23 probonopd
   - libfuse 3.15.0: LGPL-2.1, https://github.com/libfuse/libfuse,
