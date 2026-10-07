@@ -65,6 +65,22 @@ journalctl -u freedom-nightly-e2e.service                         # timer runs
 
 To watch a guest, use `virsh vncdisplay freedom-e2e-win11`. VNC only listens on 127.0.0.1, so reach it through an SSH tunnel. `virsh screenshot <vm> out.png` also works.
 
+## Timer
+
+`install-timer.sh` installs `freedom-nightly-e2e.timer` and `.service` into `/etc/systemd/system/` and enables the timer. The service runs `run-nightly.sh` as the user who installed it. Once that user has tested a version, the timer skips that version on later runs, so firing hourly costs one `gh release view` per hour.
+
+```sh
+systemctl list-timers freedom-nightly-e2e.timer               # enabled? next run?
+journalctl -u freedom-nightly-e2e.service -n 200              # past runs
+sudo systemctl start --no-block freedom-nightly-e2e.service   # check for a new nightly now
+sudo systemctl disable --now freedom-nightly-e2e.timer        # pause (re-enable: enable --now)
+sudo systemctl stop freedom-nightly-e2e.service               # abort a run in progress
+```
+
+Stopping a run in progress can leave a VM running. `virsh destroy <vm>` shuts it down. Nothing is lost, because the next run starts from a fresh overlay anyway.
+
+To remove the timer completely, run `sudo systemctl disable --now freedom-nightly-e2e.timer`, then `sudo rm /etc/systemd/system/freedom-nightly-e2e.{timer,service}` and `sudo systemctl daemon-reload`.
+
 ## Maintenance
 
 - **The Windows evaluation licence lasts 90 days from install.** After that, Windows shuts itself down every hour. Re-run `provision-windows.sh` about every 80 days. It rebuilds from scratch, and the newest evaluation ISO also picks up Windows updates.
