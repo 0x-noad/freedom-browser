@@ -353,6 +353,8 @@ contextBridge.exposeInMainWorld('ant', {
   // Read-only node API (GET, allowlisted endpoints) — the node no longer
   // accepts the chrome's `file:` origin over CORS.
   apiGet: (endpoint) => ipcRenderer.invoke('ant:api-get', endpoint),
+  // The Nodes menu's Cache row, read from the node by the main process (#579).
+  cacheStatus: () => ipcRenderer.invoke('ant:cache-status'),
   onStatusUpdate: (callback) => {
     const handler = (_event, value) => callback(value);
     ipcRenderer.on('ant:statusUpdate', handler);

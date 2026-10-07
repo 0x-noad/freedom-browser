@@ -1361,6 +1361,7 @@ const isProfileOrNodesSection = () => {
 setProfileRefreshActive(isProfileOrNodesSection());
 freedomAPI.onProfileUpdated?.(() => {
   refreshRadicleLaunchStatus();
+  refreshSwarmCacheRow();
   if (isProfileOrNodesSection()) {
     refreshProfileSection(true);
   }
@@ -1871,6 +1872,109 @@ freedomAPI.onPublishSetupState?.((state) => {
   renderSwarmPublishingRow(cachedSettings, cachedSetupState);
 });
 
+// Settings → Nodes → Swarm cache size (#579). The sizes, the current one and
+// whether Freedom runs this profile's node come from the main process
+// (src/main/swarm/ant-cache.js). Picking a size asks first when the node is
+// running, since applying it restarts the node; Cancel puts the old size back.
+const swarmCacheRow = $('swarm-cache-row');
+const swarmCacheSelect = $('swarm-cache-size');
+const swarmCacheStatus = $('swarm-cache-status');
+let swarmCacheView = null;
+let swarmCacheBusy = false;
+
+const setSwarmCacheStatus = (text) => {
+  if (swarmCacheStatus) swarmCacheStatus.textContent = text || '';
+};
+
+const renderSwarmCacheRow = (view) => {
+  if (!swarmCacheSelect) return;
+  swarmCacheView = view;
+  if (!view || !Array.isArray(view.sizes)) {
+    swarmCacheSelect.replaceChildren();
+    swarmCacheSelect.disabled = true;
+    swarmCacheRow?.classList.add('disabled');
+    setSwarmCacheStatus("The cache size couldn't be read.");
+    return;
+  }
+  swarmCacheSelect.replaceChildren(
+    ...view.sizes.map(({ bytes, label }) => {
+      const option = document.createElement('option');
+      option.value = String(bytes);
+      option.textContent = label;
+      return option;
+    })
+  );
+  swarmCacheSelect.value = String(view.bytes);
+  swarmCacheSelect.disabled = !view.managed || swarmCacheBusy;
+  swarmCacheRow?.classList.toggle('disabled', !view.managed);
+  if (!swarmCacheBusy) setSwarmCacheStatus(view.managed ? '' : view.reason);
+};
+
+const refreshSwarmCacheRow = async () => {
+  if (swarmCacheBusy) return;
+  let view;
+  try {
+    view = await freedomAPI.getSwarmCacheSettings();
+  } catch {
+    view = null;
+  }
+  if (!swarmCacheBusy) renderSwarmCacheRow(view);
+};
+
+swarmCacheSelect?.addEventListener('change', async () => {
+  const bytes = Number(swarmCacheSelect.value);
+  // Re-read first: whether the node is running (and so whether this restarts
+  // it) can have changed since the row was painted.
+  let view = swarmCacheView;
+  try {
+    view = (await freedomAPI.getSwarmCacheSettings()) || view;
+  } catch {
+    // Keep the painted view.
+  }
+  if (!view || !view.managed || bytes === view.bytes) {
+    renderSwarmCacheRow(view);
+    return;
+  }
+  const label = view.sizes.find((size) => size.bytes === bytes)?.label || '';
+  if (
+    view.nodeActive &&
+    !window.confirm(
+      `Set the Swarm cache to ${label}?\n\nThis restarts the Swarm node. Swarm pages stop loading until it is back, usually a few seconds.`
+    )
+  ) {
+    swarmCacheSelect.value = String(view.bytes);
+    return;
+  }
+  swarmCacheBusy = true;
+  swarmCacheSelect.disabled = true;
+  setSwarmCacheStatus(view.nodeActive ? 'Restarting the Swarm node…' : 'Saving…');
+  let result;
+  try {
+    result = await freedomAPI.setSwarmCacheSize(bytes);
+  } catch {
+    result = { ok: false, error: "The cache size couldn't be saved." };
+  }
+  swarmCacheBusy = false;
+  let message;
+  if (!result?.ok) {
+    message = result?.error || "The cache size couldn't be saved.";
+  } else if (result.restarted) {
+    message = `Swarm cache set to ${label}. The Swarm node restarted.`;
+  } else if (result.error) {
+    message = `Swarm cache set to ${label}. It applies the next time the Swarm node starts: ${result.error}`;
+  } else {
+    message = `Swarm cache set to ${label}. It applies the next time the Swarm node starts.`;
+  }
+  let fresh;
+  try {
+    fresh = await freedomAPI.getSwarmCacheSettings();
+  } catch {
+    fresh = null;
+  }
+  renderSwarmCacheRow(fresh);
+  setSwarmCacheStatus(message);
+});
+
 const save = async () => {
   const ok = await freedomAPI.saveSettings(currentFormState());
   if (!ok) console.error('[settings] failed to save settings');
@@ -1939,6 +2043,9 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     applyFormState(settings);
   }
   renderSwarmPublishingRow(cachedSettings, cachedSetupState);
+  if (swarmCacheView && settings.antCacheCapacityBytes !== swarmCacheView.bytes) {
+    refreshSwarmCacheRow();
+  }
 });
 
 (async () => {
@@ -1969,6 +2076,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     applyFormState(settings);
     refreshSwarmPublishingRow();
     refreshRadicleLaunchStatus();
+    refreshSwarmCacheRow();
   } catch {
     console.error('[settings] failed to load settings');
   }

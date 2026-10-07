@@ -16,6 +16,7 @@ const loadBeeModule = async (options = {}) => {
     currentAntStatus: options.currentAntStatus || 'stopped',
     antPeersInterval: null,
     antVisibleInterval: null,
+    antCacheInterval: null,
     antVersionFetched: options.antVersionFetched ?? false,
     antVersionValue: options.antVersionValue || '',
     suppressRunningStatus: options.suppressRunningStatus ?? false,
@@ -45,6 +46,8 @@ const loadBeeModule = async (options = {}) => {
   const beeStatusRow = createElement('div');
   const beeStatusLabel = createElement('span');
   const beeStatusValue = createElement('span');
+  const beeCacheText = createElement('span');
+  const beeCacheNote = createElement('div');
   const body = createElement('body');
   body.appendChild(beeInfoPanel);
   const document = createDocument({
@@ -58,6 +61,8 @@ const loadBeeModule = async (options = {}) => {
       'bee-status-row': beeStatusRow,
       'bee-status-label': beeStatusLabel,
       'bee-status-value': beeStatusValue,
+      'bee-cache-text': beeCacheText,
+      'bee-cache-note': beeCacheNote,
     },
   });
   let statusHandler = null;
@@ -80,6 +85,7 @@ const loadBeeModule = async (options = {}) => {
           onStatusUpdate: jest.fn((handler) => {
             statusHandler = handler;
           }),
+          cacheStatus: options.cacheStatusImpl || jest.fn(async () => null),
         };
   let intervalId = 1;
   const setIntervalMock = jest.spyOn(global, 'setInterval').mockImplementation(() => intervalId++);
@@ -147,6 +153,8 @@ const loadBeeModule = async (options = {}) => {
       beeStatusRow,
       beeStatusLabel,
       beeStatusValue,
+      beeCacheText,
+      beeCacheNote,
     },
   };
 };
@@ -299,5 +307,88 @@ describe('bee-ui', () => {
 
     expect(ctx.beeApi.stop).toHaveBeenCalled();
     expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith('User toggled Swarm Off');
+  });
+
+  // #579: the Cache row, read from the node by the main process.
+  describe('Cache row', () => {
+    test('polls the main process every 3 s while open and paints its line', async () => {
+      const cacheStatusImpl = jest.fn(async () => ({
+        state: 'ok',
+        text: '1.3 GB of 2 GB · 120 MB pinned',
+        reason: '',
+      }));
+      const ctx = await loadBeeModule({
+        antMenuOpen: true,
+        currentAntStatus: 'running',
+        statusResult: { status: 'running', error: null },
+        cacheStatusImpl,
+      });
+      ctx.mod.initAntUi();
+      ctx.mod.startAntInfoPolling();
+      await flushMicrotasks();
+
+      expect(cacheStatusImpl).toHaveBeenCalled();
+      expect(ctx.elements.beeCacheText.textContent).toBe('1.3 GB of 2 GB · 120 MB pinned');
+      expect(ctx.elements.beeCacheNote.hidden).toBe(true);
+      expect(ctx.elements.beeCacheNote.textContent).toBe('');
+      expect(ctx.setIntervalMock).toHaveBeenCalledWith(expect.any(Function), 3000);
+      // The chrome's Ant API allowlist is not widened for it.
+      expect(ctx.apiGet).not.toHaveBeenCalledWith('/debugstore');
+
+      ctx.mod.stopAntInfoPolling();
+      expect(ctx.state.antCacheInterval).toBeNull();
+      expect(ctx.elements.beeCacheText.textContent).toBe('Unknown');
+    });
+
+    test('a state without a figure shows its reason under the row', async () => {
+      const ctx = await loadBeeModule({
+        antMenuOpen: true,
+        currentAntStatus: 'running',
+        statusResult: { status: 'running', error: null },
+        cacheStatusImpl: jest.fn(async () => ({
+          state: 'disk-off',
+          text: 'Unavailable',
+          reason: "The node couldn't open its disk cache.",
+        })),
+      });
+      ctx.mod.initAntUi();
+      ctx.mod.startAntInfoPolling();
+      await flushMicrotasks();
+
+      expect(ctx.elements.beeCacheText.textContent).toBe('Unavailable');
+      expect(ctx.elements.beeCacheNote.hidden).toBe(false);
+      expect(ctx.elements.beeCacheNote.textContent).toBe("The node couldn't open its disk cache.");
+    });
+
+    test('a failed read paints Unknown, and a reply after the menu closed is dropped', async () => {
+      let resolveRead;
+      const cacheStatusImpl = jest
+        .fn()
+        .mockImplementationOnce(() => Promise.reject(new Error('gone')))
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveRead = resolve;
+            })
+        );
+      const ctx = await loadBeeModule({
+        antMenuOpen: true,
+        currentAntStatus: 'running',
+        statusResult: { status: 'running', error: null },
+        cacheStatusImpl,
+      });
+      ctx.mod.initAntUi();
+      ctx.mod.startAntInfoPolling();
+      await flushMicrotasks();
+      expect(ctx.elements.beeCacheText.textContent).toBe('Unknown');
+
+      // Second read goes out (the next poll), then the menu closes.
+      const poll = ctx.setIntervalMock.mock.calls.find(([, ms]) => ms === 3000)[0];
+      poll();
+      ctx.mod.stopAntInfoPolling();
+      resolveRead({ state: 'ok', text: '5 MB of 2 GB', reason: '' });
+      await flushMicrotasks();
+      expect(ctx.elements.beeCacheText.textContent).toBe('Unknown');
+    });
   });
 });

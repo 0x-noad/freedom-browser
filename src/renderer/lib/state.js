@@ -107,6 +107,7 @@ export const state = {
   currentAntStatus: 'stopped',
   antPeersInterval: null,
   antVisibleInterval: null,
+  antCacheInterval: null,
   antVersionFetched: false,
   antVersionValue: '',
   suppressRunningStatus: false,

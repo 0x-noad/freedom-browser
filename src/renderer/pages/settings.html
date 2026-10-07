@@ -1621,6 +1621,30 @@
                 <button type="button" id="swarm-publishing-btn" class="btn" hidden></button>
               </div>
             </div>
+            <!-- #579: the Swarm node's disk cache size. The sizes come from the
+                 main process (swarm/ant-cache.js); a change restarts the node. -->
+            <div class="row" id="swarm-cache-row">
+              <div class="row-body">
+                <p class="row-label"><label for="swarm-cache-size">Swarm cache size</label></p>
+                <p class="row-help" id="swarm-cache-help">
+                  How much disk space the Swarm node keeps for pages and files you've opened, so
+                  they load faster next time. Pinned and published content doesn't count towards it.
+                </p>
+                <p class="row-help" id="swarm-cache-note">
+                  Changing it restarts the Swarm node. A smaller size drops the oldest cached
+                  content as the node caches more; a cache made by an older Freedom may not give the
+                  storage back right away.
+                </p>
+                <p class="row-help" id="swarm-cache-status" role="status" aria-live="polite"></p>
+              </div>
+              <div class="row-control">
+                <select
+                  id="swarm-cache-size"
+                  aria-describedby="swarm-cache-help swarm-cache-note swarm-cache-status"
+                  disabled
+                ></select>
+              </div>
+            </div>
           </div>
         </section>
 

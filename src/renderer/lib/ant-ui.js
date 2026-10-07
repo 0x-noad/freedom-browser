@@ -14,6 +14,15 @@ let beeInfoPanel = null;
 let beeStatusRow = null;
 let beeStatusLabel = null;
 let beeStatusValue = null;
+let beeCacheText = null;
+let beeCacheNote = null;
+
+// How often the Cache row re-reads the node while the menu is open.
+export const ANT_CACHE_POLL_MS = 3000;
+
+// Bumped by every cache read and by stopping: a reply that lands after a
+// newer read, or after the menu closed, is dropped.
+let cacheReadSeq = 0;
 
 // Binary availability state
 let beeBinaryAvailable = true;
@@ -27,6 +36,12 @@ export const stopAntInfoPolling = () => {
     clearInterval(state.antVisibleInterval);
     state.antVisibleInterval = null;
   }
+  if (state.antCacheInterval) {
+    clearInterval(state.antCacheInterval);
+    state.antCacheInterval = null;
+  }
+  cacheReadSeq += 1;
+  paintCache(null);
   beeInfoPanel?.classList.remove('visible');
   if (beePeersCount) beePeersCount.textContent = '0';
   if (beeNetworkPeers) beeNetworkPeers.textContent = '0';
@@ -86,6 +101,35 @@ const fetchVisiblePeers = async () => {
   }
 };
 
+// The Cache row: the value, and the note under it saying why there is no
+// figure (the main process words both, swarm/ant-cache.js). Null paints the
+// placeholder the markup starts with.
+const paintCache = (cache) => {
+  if (beeCacheText) beeCacheText.textContent = cache?.text || UNKNOWN;
+  if (beeCacheNote) {
+    beeCacheNote.textContent = cache?.reason || '';
+    beeCacheNote.hidden = !cache?.reason;
+  }
+};
+
+const fetchCacheStatus = async () => {
+  if (!state.antMenuOpen) return;
+  if (state.currentAntStatus === 'stopped') {
+    stopAntInfoPolling();
+    return;
+  }
+  if (!beeInfoPanel?.classList.contains('visible')) return;
+  const seq = ++cacheReadSeq;
+  let cache;
+  try {
+    cache = (await window.ant?.cacheStatus?.()) || null;
+  } catch {
+    cache = null;
+  }
+  if (seq !== cacheReadSeq || !beeInfoPanel?.classList.contains('visible')) return;
+  paintCache(cache);
+};
+
 const fetchAntVersionOnce = async () => {
   if (state.antVersionFetched) return;
   try {
@@ -117,6 +161,7 @@ export const startAntInfoPolling = () => {
 
   fetchConnectedPeers();
   fetchVisiblePeers();
+  fetchCacheStatus();
   if (!state.antVersionFetched) fetchAntVersionOnce();
 
   if (state.antPeersInterval) clearInterval(state.antPeersInterval);
@@ -124,6 +169,9 @@ export const startAntInfoPolling = () => {
 
   if (state.antVisibleInterval) clearInterval(state.antVisibleInterval);
   state.antVisibleInterval = setInterval(fetchVisiblePeers, 1000);
+
+  if (state.antCacheInterval) clearInterval(state.antCacheInterval);
+  state.antCacheInterval = setInterval(fetchCacheStatus, ANT_CACHE_POLL_MS);
 };
 
 export const updateAntUi = (status, error) => {
@@ -134,6 +182,7 @@ export const updateAntUi = (status, error) => {
     state.suppressRunningStatus = false;
   }
 
+  const previousStatus = state.currentAntStatus;
   state.currentAntStatus = status;
 
   // Fetch version immediately when Bee becomes running (don't wait for polling)
@@ -170,9 +219,14 @@ export const updateAntUi = (status, error) => {
     } else if (
       !state.antPeersInterval &&
       !state.antVisibleInterval &&
+      !state.antCacheInterval &&
       beeToggleSwitch?.classList.contains('running')
     ) {
       startAntInfoPolling();
+    } else if (status !== previousStatus && state.antCacheInterval) {
+      // The Cache row follows the node (starting → running) at once rather
+      // than on the next poll.
+      fetchCacheStatus();
     }
   }
 };
@@ -249,6 +303,8 @@ export const initAntUi = () => {
   beeStatusRow = document.getElementById('bee-status-row');
   beeStatusLabel = document.getElementById('bee-status-label');
   beeStatusValue = document.getElementById('bee-status-value');
+  beeCacheText = document.getElementById('bee-cache-text');
+  beeCacheNote = document.getElementById('bee-cache-note');
 
   // Check binary availability
   if (window.ant) {

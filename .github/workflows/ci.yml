@@ -632,6 +632,8 @@ jobs:
   # profile, with no engine cache, held behind the first ad-block engine build
   # (#524). Without the real lists that build takes milliseconds and the path
   # was only ever exercised by the nightly's full harness run.
+  # `swarm-cache.spec.js` (#579) covers Settings → Nodes → Swarm cache size and
+  # the Nodes menu's Cache row against a fake antd's `/debugstore`.
   e2e-settings:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -675,6 +677,7 @@ jobs:
           test-e2e/error-page.spec.js
           test-e2e/internal-page-theme.spec.js
           test-e2e/updates.spec.js
+          test-e2e/swarm-cache.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

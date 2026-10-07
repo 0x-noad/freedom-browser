@@ -26,7 +26,8 @@ const {
 } = require('./service-registry');
 const { noteAntApiUrl } = require('./swarm/ant-api-guard');
 const { antApiGet } = require('./swarm/ant-api-chrome');
-const { loadSettings } = require('./settings-store');
+const { loadSettings, saveSettings } = require('./settings-store');
+const antCache = require('./swarm/ant-cache');
 
 // States
 const STATUS = {
@@ -215,6 +216,14 @@ function getPrimaryEthereumRpcUrl() {
 // ignore it, so it is always written. Releases with the switch also flip it
 // live over `PUT /v0/settlement/swap`, which is not persisted: this key is
 // what makes the next start match (browsing-credit-service.js).
+//
+// `cache-capacity` is bee's cache size key, a chunk count (× 4096 bytes), which
+// Ant reads from the file since v0.5.60 (#579). It is used rather than antd's
+// `--disk-cache-max-gb` flag because that flag only takes whole GiB, so it
+// can't say 512 MB, and because the size then lives in the one file Freedom
+// already regenerates every start. The value always comes from the fixed set
+// in swarm/ant-cache.js — anything else resolves to the default there — since
+// Ant refuses to start on a malformed one.
 function buildAntConfigContent({
   dataDir,
   apiPort,
@@ -222,6 +231,7 @@ function buildAntConfigContent({
   password,
   resolverRpcEndpoint,
   swapEnable = true,
+  cacheCapacityBytes = antCache.DEFAULT_CACHE_BYTES,
 }) {
   return `# Ant node configuration (bee-compatible keys)
 api-addr: 127.0.0.1:${apiPort}
@@ -232,6 +242,7 @@ swap-enable: ${swapEnable ? 'true' : 'false'}
 skip-postage-snapshot: true
 resolver-options: "${resolverRpcEndpoint}"
 storage-incentives-enable: false
+cache-capacity: ${antCache.cacheCapacityChunks(cacheCapacityBytes)}
 data-dir: ${dataDir}
 password: ${password}
 `;
@@ -239,6 +250,21 @@ password: ${password}
 
 function isSwapEnabledSetting() {
   return loadSettings().antSwapEnable !== false;
+}
+
+// The cache size for this start (see chooseCacheBytes): the saved choice, or
+// on a profile's first start with this setting, 10 GB if its node already has
+// a cache from an older Freedom (Ant's old default) and the default otherwise.
+function resolveCacheCapacityBytes(dataDir) {
+  const { bytes, save } = antCache.chooseCacheBytes({
+    stored: loadSettings().antCacheCapacityBytes,
+    hasExistingCache: fs.existsSync(path.join(dataDir, 'chunks.sqlite')),
+  });
+  if (save) {
+    log.info(`[Ant] Swarm cache size set to ${antCache.formatCacheBytes(bytes)} on first start`);
+    saveSettings({ antCacheCapacityBytes: bytes });
+  }
+  return bytes;
 }
 
 /**
@@ -304,6 +330,7 @@ function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
     password,
     resolverRpcEndpoint,
     swapEnable: isSwapEnabledSetting(),
+    cacheCapacityBytes: resolveCacheCapacityBytes(dataDir),
   });
 
   fs.writeFileSync(configPath, configContent);
@@ -998,6 +1025,48 @@ function registerAntIpc() {
   // Chrome-only (no webview tier in ipc-sender-policy.js): read-only node
   // API access for the chrome's status/wallet screens. See ant-api-chrome.js.
   ipcMain.handle(IPC.ANT_API_GET, (_event, endpoint) => antApiGet(endpoint));
+
+  // Chrome-only too: the Nodes menu's Cache row, read from `/debugstore` here
+  // rather than by widening the chrome's endpoint allowlist (#579).
+  const cacheService = antCache.createAntCacheService({
+    getNodeStatus: getStatus,
+    getApiBase: () => require('./service-registry').getAntApiUrl(),
+    getSpawnedAt,
+    getDataDir: () => (getSpawnedAt() ? getAntDataPath() : null),
+  });
+  ipcMain.handle(IPC.ANT_CACHE_STATUS, () => cacheService.getStatus());
+
+  // Settings page only (SETTINGS tier in ipc-sender-policy.js): the cache size
+  // picker, and applying a size, which restarts the node Freedom runs.
+  ipcMain.handle(IPC.ANT_CACHE_GET_SETTINGS, () => getCacheSettingsView());
+  ipcMain.handle(IPC.ANT_CACHE_SET_SIZE, (_event, bytes) =>
+    antCache.applyCacheSize(bytes, {
+      getView: getCacheSettingsView,
+      save: (size) => saveSettings({ antCacheCapacityBytes: size }),
+      isNodeActive: isBundledNodeActive,
+      // Through the publish setup service, which refuses mid-purchase and
+      // shows the restart on the wallet sidebar's node card.
+      restartNode: () =>
+        require('./swarm/publish-setup-service').getPublishSetupService().restartNode(),
+    })
+  );
+}
+
+// The node Freedom spawned is up or coming up, so a new cache size restarts it.
+function isBundledNodeActive() {
+  return (
+    (currentState === STATUS.RUNNING || currentState === STATUS.STARTING) &&
+    currentMode === MODE.BUNDLED
+  );
+}
+
+function getCacheSettingsView() {
+  return antCache.cacheSettingsView({
+    stored: loadSettings().antCacheCapacityBytes,
+    profileMode: getProfileAntConfig()?.mode || null,
+    registryMode: require('./service-registry').getRegistry().ant?.mode || null,
+    nodeActive: isBundledNodeActive(),
+  });
 }
 
 function hasLiveProcess() {

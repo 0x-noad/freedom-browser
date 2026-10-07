@@ -269,6 +269,7 @@ function loadAntManagerModule(options = {}) {
   };
   const httpGet = createHttpGetMock(options.httpResponse);
   const noteAntApiUrl = jest.fn();
+  const saveSettings = jest.fn(() => true);
   const Socket = createSocketClass(options.portSequence || options.portResolver || false);
   const randomBytes = options.randomBytes || jest.fn(() => Buffer.from('ab'.repeat(32), 'hex'));
 
@@ -284,6 +285,7 @@ function loadAntManagerModule(options = {}) {
       }),
       [require.resolve('./settings-store')]: () => ({
         loadSettings: jest.fn(() => options.settings || {}),
+        saveSettings,
       }),
       crypto: () => ({
         randomBytes,
@@ -351,6 +353,7 @@ function loadAntManagerModule(options = {}) {
     mod,
     noteAntApiUrl,
     randomBytes,
+    saveSettings,
     setErrorState,
     setStatusMessage,
     spawn,
@@ -377,7 +380,16 @@ describe('ant-manager', () => {
     ctx.mod.registerAntIpc();
 
     expect([...ctx.ipcMain.handlers.keys()].sort()).toEqual(
-      [IPC.ANT_START, IPC.ANT_STOP, IPC.ANT_GET_STATUS, IPC.ANT_CHECK_BINARY, IPC.ANT_API_GET].sort()
+      [
+        IPC.ANT_START,
+        IPC.ANT_STOP,
+        IPC.ANT_GET_STATUS,
+        IPC.ANT_CHECK_BINARY,
+        IPC.ANT_API_GET,
+        IPC.ANT_CACHE_STATUS,
+        IPC.ANT_CACHE_GET_SETTINGS,
+        IPC.ANT_CACHE_SET_SIZE,
+      ].sort()
     );
 
     await expect(ctx.ipcMain.invoke(IPC.ANT_GET_STATUS)).resolves.toEqual({
@@ -1083,6 +1095,81 @@ describe('ant-manager', () => {
     expect(ctx.spawn).not.toHaveBeenCalled();
     expect(ctx.startBridge).not.toHaveBeenCalled();
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'Node failed to start');
+  });
+
+  // #579: bee's cache-capacity (chunks × 4096), from the antCacheCapacityBytes setting.
+  describe('cache-capacity', () => {
+    const GIB = 1024 * 1024 * 1024;
+    const build = (ctx, extra) =>
+      ctx.mod.buildAntConfigContent({
+        dataDir: '/d',
+        apiPort: 1633,
+        p2pPort: 1634,
+        password: 'pw',
+        resolverRpcEndpoint: 'https://eth.example',
+        ...extra,
+      });
+    const writtenConfig = (ctx) =>
+      ctx.fsMock.writeFileSync.mock.calls.find(([file]) => file === ctx.configPath)?.[1];
+    const startOnce = async (options) => {
+      const ctx = loadAntManagerModule({
+        portSequence: [false, false],
+        httpResponse: () => ({ statusCode: 200, body: { status: 'ok', version: '0.5.60' } }),
+        ...options,
+      });
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      await ctx.mod.stopAnt();
+      return ctx;
+    };
+
+    test('writes the size as a chunk count', () => {
+      const ctx = loadAntManagerModule();
+      expect(build(ctx, { cacheCapacityBytes: 512 * 1024 * 1024 })).toMatch(
+        /^cache-capacity: 131072$/m
+      );
+      expect(build(ctx, { cacheCapacityBytes: 16 * GIB })).toMatch(/^cache-capacity: 4194304$/m);
+    });
+
+    test('never writes an unvalidated value: anything else is the 2 GB default', () => {
+      const ctx = loadAntManagerModule();
+      for (const bad of [undefined, 3 * GIB, 'lots', -1, 1.5, '10737418240']) {
+        const content = build(ctx, { cacheCapacityBytes: bad });
+        expect(content).toMatch(/^cache-capacity: 524288$/m);
+        expect(content.match(/^cache-capacity:/gm)).toHaveLength(1);
+      }
+    });
+
+    test('startAnt writes the saved size', async () => {
+      const ctx = await startOnce({ settings: { antCacheCapacityBytes: 5 * GIB } });
+      expect(writtenConfig(ctx)).toMatch(/^cache-capacity: 1310720$/m);
+      expect(ctx.saveSettings).not.toHaveBeenCalled();
+    });
+
+    test('a saved unknown value starts the node at the default, without rewriting it', async () => {
+      const ctx = await startOnce({ settings: { antCacheCapacityBytes: 7 } });
+      expect(writtenConfig(ctx)).toMatch(/^cache-capacity: 524288$/m);
+      expect(ctx.saveSettings).not.toHaveBeenCalled();
+    });
+
+    test('first start of a new profile: 2 GB, saved', async () => {
+      const ctx = await startOnce({ settings: { antCacheCapacityBytes: null } });
+      expect(writtenConfig(ctx)).toMatch(/^cache-capacity: 524288$/m);
+      expect(ctx.saveSettings).toHaveBeenCalledWith({ antCacheCapacityBytes: 2 * GIB });
+    });
+
+    test('first start of a profile with a cache from an older Freedom: keeps 10 GB, saved', async () => {
+      let ctx;
+      ctx = await startOnce({
+        settings: { antCacheCapacityBytes: null },
+        existsSync: (target) => {
+          if (target === ctx?.antBinPath || /ant-bin/.test(target)) return true;
+          return target.endsWith(`ant-data${path.sep}chunks.sqlite`);
+        },
+      });
+      expect(writtenConfig(ctx)).toMatch(/^cache-capacity: 2621440$/m);
+      expect(ctx.saveSettings).toHaveBeenCalledWith({ antCacheCapacityBytes: 10 * GIB });
+    });
   });
 
   // #488: bee's swap-enable, written from the antSwapEnable setting.
