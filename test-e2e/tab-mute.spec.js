@@ -7,9 +7,13 @@ const { test, expect, hoverOverGuest } = require('./fixtures');
 // The menu opens over the tab's `<webview>`, so the pointer is first put on the
 // item until the browser routes it to the chrome (`hoverOverGuest`). A stray
 // window blur (e.g. the previous Electron instance releasing OS focus) can
-// close the menu before then; only the *opening* is re-done for that — an open
-// menu is never reopened (its backdrop would take the right-click), and the
-// action is clicked once, after the pointer is provably on it.
+// close the menu at any point up to the click; only the *opening* is re-done
+// for that — an open menu is never reopened (its backdrop would take the
+// right-click). The click sits inside the retry too: a Playwright click that
+// throws never dispatched (it only sends input once its actionability checks
+// pass, and here nothing runs after it), so retrying it cannot act twice.
+// `hoverOverGuest`'s 5 s covers its presentation wait as well, so one stalled
+// frame still leaves the outer 15 s room to reopen the menu.
 async function clickTabContextAction(window, tabLocator, action) {
   const menu = window.locator('#tab-context-menu');
   const item = menu.locator(`[data-action="${action}"]`);
@@ -19,8 +23,18 @@ async function clickTabContextAction(window, tabLocator, action) {
       await expect(menu).toBeVisible({ timeout: 1000 });
     }
     await hoverOverGuest(item, { timeout: 5000 });
+    try {
+      await item.click({ timeout: 1000 });
+    } catch (error) {
+      if (!(await menu.isVisible())) {
+        throw new Error(
+          `#tab-context-menu closed before "${action}" was clicked (stray window blur?): ${error.message}`,
+          { cause: error }
+        );
+      }
+      throw error;
+    }
   }).toPass({ timeout: 15_000 });
-  await item.click();
 }
 
 test('Mute Tab context-menu item toggles the muted indicator', async ({ window }) => {

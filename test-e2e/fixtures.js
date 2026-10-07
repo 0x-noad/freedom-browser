@@ -242,7 +242,8 @@ const test = base.extend({
 //    across Ubuntu/Windows/macOS: the gate below never had to re-send one). It
 //    is not the gate: once in CI (e2e-chrome, 2026-10-07) no entry for the
 //    marker arrived within 10 s and the retry passed in 2 s, so a missing
-//    entry is logged and left to step 2 rather than failing the test.
+//    entry is logged and left to step 2 rather than failing the test. The
+//    wait is bounded by (half of) the caller's `timeout`, never added to it.
 // 2. Hover the element until it matches `:hover`. That only happens once a
 //    pointer event at that point has reached this renderer, i.e. the browser
 //    now routes the point to the chrome — the condition a click needs, and the
@@ -254,10 +255,10 @@ const test = base.extend({
 // The element must stay put between the hover and the click; a popover does.
 
 // Resolve `true` once the chrome's current DOM has been *presented*, or `false`
-// if no presentation entry for the marker arrived within 10 s.
-const waitForPresentedFrame = (page) =>
+// if no presentation entry for the marker arrived within `timeoutMs`.
+const waitForPresentedFrame = (page, timeoutMs) =>
   page.evaluate(
-    () =>
+    (timeoutMs) =>
       new Promise((resolve) => {
         const id = `e2e-presented-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         const marker = document.createElement('div');
@@ -276,24 +277,34 @@ const waitForPresentedFrame = (page) =>
         const observer = new PerformanceObserver((list) => {
           if (list.getEntries().some((entry) => entry.identifier === id)) done(resolve, true);
         });
-        const guard = setTimeout(() => done(resolve, false), 10_000);
+        const guard = setTimeout(() => done(resolve, false), timeoutMs);
         observer.observe({ type: 'element', buffered: false });
         document.body.append(marker);
-      })
+      }),
+    timeoutMs
   );
 
 // Put the pointer on `locator` and return once the element itself is under it
 // as far as the browser's input routing is concerned (see above).
-const hoverOverGuest = async (locator, { timeout = 15_000 } = {}) => {
-  if (!(await waitForPresentedFrame(locator.page()))) {
+//
+// `timeout` bounds the whole call, presentation wait included, so a caller
+// that retries around this (a menu that may need reopening) gets its retry
+// even when the presentation entry never arrives. The wait takes at most half
+// the budget (10 s at the default) and the `:hover` gate always has the rest.
+const hoverOverGuest = async (locator, { timeout = 25_000 } = {}) => {
+  const started = Date.now();
+  const presentationTimeout = Math.min(10_000, Math.floor(timeout / 2));
+  if (!(await waitForPresentedFrame(locator.page(), presentationTimeout))) {
     // Visible in the run log; whether the pointer reaches the chrome is still
     // decided by the `:hover` gate below, which fails the test if it never does.
-    console.warn(`hoverOverGuest: no presentation entry in 10 s before hovering ${locator}`);
+    console.warn(
+      `hoverOverGuest: no presentation entry in ${presentationTimeout} ms before hovering ${locator}`
+    );
   }
   await expect(async () => {
     await locator.hover({ timeout: 1000 });
     expect(await locator.evaluate((element) => element.matches(':hover'))).toBe(true);
-  }).toPass({ timeout });
+  }).toPass({ timeout: Math.max(1000, timeout - (Date.now() - started)) });
 };
 
 // Click `locator` exactly once, after `hoverOverGuest` has shown the click
