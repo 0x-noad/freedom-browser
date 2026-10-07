@@ -223,14 +223,66 @@ const waitForPopoverFrame = (window) =>
       })
   );
 
+// Wait until the chrome's current DOM has been *presented*, not just produced,
+// so the browser's hit-test data includes it.
+//
+// `waitForPopoverFrame` waits for the renderer to start a new frame. The
+// browser routes a synthetic click or mousemove using hit-test data that viz
+// sends after it aggregates and draws a frame, and that can lag several
+// renderer frames in a just-launched app. Probed 2026-10 (#539) by logging
+// every pointer event in the chrome around the create-profile modal's Create
+// click. When the click was lost, no pointer event reached the chrome and
+// `document.activeElement` was the `<webview>`. The dialog had been laid out
+// and Playwright's two-rAF stability check had passed.
+//
+// This waits for the frame to be presented. It paints a one-character marker
+// tagged `elementtiming` and resolves when Chromium reports that element's
+// `renderTime`, which is the presentation time of the frame that first painted
+// it. Frames are presented in order, so everything in the DOM before the call
+// is on screen by then. No fixed delay is involved: on a slow machine the wait
+// is just longer. The 10 s guard only turns "no frame was ever presented" (for
+// example a hidden window) into a readable failure instead of a test timeout.
+const waitForPresentedFrame = (window) =>
+  window.evaluate(
+    () =>
+      new Promise((resolve, reject) => {
+        const id = `e2e-presented-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const marker = document.createElement('div');
+        marker.setAttribute('elementtiming', id);
+        marker.setAttribute('aria-hidden', 'true');
+        marker.textContent = '.';
+        marker.style.cssText =
+          'position:fixed;left:0;bottom:0;font-size:1px;line-height:1px;' +
+          'pointer-events:none;z-index:2147483647';
+        const done = (fn, value) => {
+          clearTimeout(guard);
+          observer.disconnect();
+          marker.remove();
+          fn(value);
+        };
+        const observer = new PerformanceObserver((list) => {
+          if (list.getEntries().some((entry) => entry.identifier === id)) done(resolve);
+        });
+        const guard = setTimeout(
+          () => done(reject, new Error('waitForPresentedFrame: no frame presented in 10 s')),
+          10_000
+        );
+        observer.observe({ type: 'element', buffered: false });
+        document.body.append(marker);
+      })
+  );
+
 // Click a chrome element that sits over the tab's `<webview>` and has only just
-// appeared (or moved) there, until the click's effect shows. The frame wait
-// above closes most of the window, but not all of it: in a just-launched app on
-// a loaded machine the guest has been seen (2026-09-29, `tab-mute`, `downloads`,
+// appeared (or moved) there, until the click's effect shows. The two-rAF wait
+// (`waitForPopoverFrame`, which this helper calls) closes most of the window,
+// but not all of it: in a just-launched app on a loaded machine the guest
+// has been seen (2026-09-29, `tab-mute`, `downloads`,
 // `publisher-identity-selector`, `chrome-input-focus`, 1 run in 5–10) to take
 // the click after two frames — no pointer event reached the chrome, and
-// `document.activeElement` was the `<webview>`. `click` is re-issued only while
-// `landed()` is false, so a toggle is never clicked twice by the retry itself.
+// `document.activeElement` was the `<webview>`. `click` is re-issued only
+// while `landed()` is false, so a toggle is never clicked twice by the retry
+// itself. (`waitForPresentedFrame`, just above, is a separate presentation
+// wait this helper does not use; this note is about the two-rAF wait only.)
 const clickOverGuest = async (window, click, landed, { timeout = 15_000 } = {}) => {
   await expect(async () => {
     if (!(await landed())) {
@@ -276,6 +328,7 @@ module.exports = {
   expect,
   browserWindow,
   waitForPopoverFrame,
+  waitForPresentedFrame,
   clickOverGuest,
   pointAtOverGuest,
   SAMPLE_BZZ_HASH,
