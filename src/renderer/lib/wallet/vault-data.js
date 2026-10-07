@@ -36,6 +36,24 @@ function hostOf(origin) {
   }
 }
 
+/**
+ * An origin with its scheme kept: `http://app.localhost:8765`, `bzz://name.eth`.
+ *
+ * The scheme is not decoration here — it is part of the identity. Every provider
+ * compares origins including scheme and port, so `https://site.example` and
+ * `bzz://site.example` hold two different vault partitions. A prompt that says
+ * only `site.example` is therefore naming something less specific than the thing
+ * being granted.
+ */
+function originLabel(origin) {
+  try {
+    const url = new URL(origin);
+    return url.host ? `${url.protocol}//${url.host}` : origin;
+  } catch {
+    return origin || '—';
+  }
+}
+
 export function initVaultData(opts = {}) {
   const panel = document.getElementById('tab-data');
   if (!panel) return { refresh: () => {} };
@@ -282,11 +300,28 @@ export function initVaultData(opts = {}) {
   const FAVICON_RETRIES = 6;
   const FAVICON_RETRY_MS = 500;
 
-  function paintRequestFavicon(src) {
-    reqFavicon.onerror = () => reqIcon.classList.add('hidden');
+  function paintRequestFavicon(src, generation) {
+    reqFavicon.onerror = () => {
+      if (generation !== requestGeneration) return;
+      reqIcon.classList.remove('has-favicon');
+      reqIcon.classList.add('hidden');
+    };
     reqFavicon.src = src;
     reqIcon.classList.remove('hidden');
     reqIcon.classList.add('has-favicon');
+  }
+
+  /**
+   * Empty the tile. `removeAttribute`, never `src = ''`: an empty src resolves
+   * against the document URL, so the browser loads this page as an image, fails,
+   * and fires `error` — on whatever handler is still attached from the previous
+   * prompt, whose job is to hide the tile. Detach first for the same reason.
+   */
+  function clearRequestFavicon() {
+    reqFavicon.onerror = null;
+    reqFavicon.removeAttribute('src');
+    reqIcon.classList.remove('has-favicon');
+    reqIcon.classList.add('hidden');
   }
 
   /**
@@ -298,24 +333,25 @@ export function initVaultData(opts = {}) {
    * exactly what they will later see, with nothing fetched.
    *
    * Only without one do we fall back to the favicon cache, and that fallback is
-   * why the tile used to be a coin toss. The cache is filled by the tab strip,
-   * which pairs `did-stop-loading` with `page-favicon-updated` before it fetches
-   * anything — so a site calling `vault.connect()` early in its boot raises this
-   * sheet before its own icon has been fetched, and a first visit starts cold
-   * regardless. One lookup at prompt time therefore hit or missed depending on
-   * when the site happened to ask. Re-check for a few seconds while the sheet is
-   * up instead; still never fetch, because this pane must not make a network
-   * request on a site's behalf.
+   * racy by construction: the cache is filled by the tab strip, which pairs
+   * `did-stop-loading` with `page-favicon-updated` before it fetches anything,
+   * so a site calling `vault.connect()` early in its boot raises this sheet
+   * before its own icon has been fetched, and a first visit starts cold
+   * regardless. Re-check for a few seconds while the sheet is up rather than
+   * taking one lookup as final; still never fetch, because this pane must not
+   * make a network request on a site's behalf.
    */
   function showRequestFavicon(site, icon) {
     if (!reqIcon || !reqFavicon) return;
     const generation = ++requestGeneration;
-    reqIcon.classList.remove('has-favicon');
-    reqIcon.classList.add('hidden');
-    reqFavicon.src = '';
+    clearRequestFavicon();
 
-    if (icon) {
-      paintRequestFavicon(icon);
+    // `icon` is main's normalized icon record, not a URL — the launcher flattens
+    // the same field with `p.icon.dataUri`. Handed to `img.src` whole it
+    // stringifies to "[object Object]" and the tile fails every time.
+    const inBand = typeof icon === 'string' ? icon : icon && icon.dataUri;
+    if (inBand) {
+      paintRequestFavicon(inBand, generation);
       return;
     }
     if (!site || !window.electronAPI?.getCachedFavicon) return;
@@ -328,7 +364,7 @@ export function initVaultData(opts = {}) {
         .then((favicon) => {
           if (generation !== requestGeneration) return;
           if (favicon) {
-            paintRequestFavicon(favicon);
+            paintRequestFavicon(favicon, generation);
             return;
           }
           if (++attempts < FAVICON_RETRIES) setTimeout(check, FAVICON_RETRY_MS);
@@ -345,7 +381,7 @@ export function initVaultData(opts = {}) {
     // shown: the wallet's Connect pane names the origin and nothing else, and a
     // page-supplied name sitting above it would be the spoofable half.
     const site = req.origin || req.namespace || '';
-    if (reqSite) reqSite.textContent = hostOf(site) || site;
+    if (reqSite) reqSite.textContent = originLabel(site);
     showRequestFavicon(site, req.icon);
     const fields = (req.requestedScopes || []).flatMap((s) => s.fields || []);
     reqFields.innerHTML = '';
