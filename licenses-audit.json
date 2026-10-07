@@ -86,7 +86,7 @@
     },
     {
       "name": "libradicle",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "type": "native-addon",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/solardev-xyz/libradicle" },
@@ -103,7 +103,7 @@
       "issues": [
         {
           "kind": "notice",
-          "details": "The upstream repository publishes no LICENSE file; the MIT OR Apache-2.0 claim rests on the license field in its Cargo.toml, verified at tag v0.7.1. It statically links Radicle Heartwood (solardev-xyz/heartwood), also MIT OR Apache-2.0 per its workspace Cargo.toml.",
+          "details": "The upstream repository publishes no LICENSE file; the MIT OR Apache-2.0 claim rests on the license field in its Cargo.toml, verified at tag v0.8.0. It statically links Radicle Heartwood (solardev-xyz/heartwood), also MIT OR Apache-2.0 per its workspace Cargo.toml.",
           "recommended_fix": "Ask upstream to commit LICENSE-MIT and LICENSE-APACHE so the claim has a file to point at."
         }
       ]

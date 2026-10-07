@@ -104,11 +104,11 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### libradicle (Native Radicle Addon)
 
 - **Source:** https://github.com/solardev-xyz/libradicle
-- **Version:** `0.7.1` (pin: `src/shared/radicle-addon-version.js` `RADICLE_ADDON_VERSION`)
+- **Version:** `0.8.0` (pin: `src/shared/radicle-addon-version.js` `RADICLE_ADDON_VERSION`)
 - **License:** MIT OR Apache-2.0
 - **Risk:** Green
 - **Integration:** Native addon loaded by the Electron main process
-- **Notes:** Upstream commits **no** `LICENSE` file; the dual-license claim rests on `license = "MIT OR Apache-2.0"` in its `Cargo.toml`, verified at tag `v0.7.1`. It statically links Radicle Heartwood (`solardev-xyz/heartwood`), whose workspace `Cargo.toml` is also `MIT OR Apache-2.0` — no copyleft enters this way.
+- **Notes:** Upstream commits **no** `LICENSE` file; the dual-license claim rests on `license = "MIT OR Apache-2.0"` in its `Cargo.toml`, verified at tag `v0.8.0`. It statically links Radicle Heartwood (`solardev-xyz/heartwood`), whose workspace `Cargo.toml` is also `MIT OR Apache-2.0` — no copyleft enters this way.
 - **Action Required:** MIT/Apache notice in `NOTICES` ✔; ask upstream to commit the license texts.
 
 ### Myotis (Native Wallet-Engine Addon) — _new in 0.8.5_
