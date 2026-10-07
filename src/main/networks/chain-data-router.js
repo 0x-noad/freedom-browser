@@ -1427,10 +1427,11 @@ const blockHex = (block) => `0x${block.toString(16)}`;
 // endpoint whose cap covers it (in registry order; a failure is learned from
 // as a quorum member's is, and the next one is asked) and then, once one has
 // answered, from Blockscout. The two must list the same logs, identical in every field
-// Blockscout reports (blockscout-logs.js logsAgree); the RPC's entries are
-// what the caller gets. The newest `tail` blocks (at most
-// LOG_INDEX_TAIL_BLOCKS, and never more than the quorum can verify) are read
-// from the RPC quorum as an ordinary range-capped scan. Any failure is a
+// Blockscout reports (blockscout-logs.js logsAgree); the RPC's entries, cut
+// to exactly those fields (agreedRpcLogs: no transaction index, which
+// Blockscout does not report), are what the caller gets. The newest `tail`
+// blocks (at most LOG_INDEX_TAIL_BLOCKS, and never more than the quorum can
+// verify) are read from the RPC quorum as an ordinary range-capped scan. Any failure is a
 // SourceUnavailableError and the request goes on to the quorum exactly as
 // without this source: Blockscout down, rate limited or disagreeing (then it
 // is left alone for a while: logIndexCoolUntil), no endpoint to pair it with,
@@ -1490,9 +1491,9 @@ async function requestLogIndex(chainId, method, params, options = {}) {
     if (left < 1000) throw new SourceUnavailableError('Blockscout pairing ran out of time');
     return left;
   };
-  // The RPC's entries are what Ant gets: an answer with one not in the exact
-  // shape Ant reads is not taken (nor credited as covering the span); that
-  // endpoint is not asked to pair again for a while
+  // The RPC's entries (cut by agreedRpcLogs) are what Ant gets: an answer
+  // with one not in the exact shape Ant reads is not taken (nor credited as
+  // covering the span); that endpoint is not asked to pair again for a while
   // (LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS) and the next one is tried. No
   // Blockscout request is spent on it, and Blockscout, not at fault, is not
   // left alone for it.
@@ -1589,7 +1590,9 @@ async function requestLogIndex(chainId, method, params, options = {}) {
       `RPC quorum answered the newest ${tail} blocks with a malformed log entry`
     );
   }
-  const result = [...rpc.result, ...newest];
+  // Only what the pair compared is delivered as verified; the quorum's
+  // entries were compared whole by its members.
+  const result = [...blockscoutLogs.agreedRpcLogs(rpc.result), ...newest];
   if (!includeTrust) return result;
   const agreed = [blockscoutLogs.logIndexHost(chainId), endpointHost(rpc.url)].filter(Boolean);
   return {

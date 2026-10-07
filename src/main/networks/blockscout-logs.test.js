@@ -2,6 +2,7 @@ const {
   BlockscoutError,
   BLOCKSCOUT_MAX_PAGES,
   ERC20_TRANSFER_TOPIC,
+  agreedRpcLogs,
   blockscoutTransfer,
   fetchBlockscoutTransferLogs,
   isLocalHostname,
@@ -211,6 +212,31 @@ describe('the RPC entries must have the exact shape Ant reads', () => {
     const rpc = change(captured.rpc);
     expect(rpcTransferLogsWellFormed(rpc)).toBe(false);
     expect(logsAgree(indexed(), rpc)).toBe(false);
+  });
+});
+
+// What the pair delivers is what it verified: the RPC's entries cut to the
+// fields logsAgree compared with Blockscout's transfers.
+describe('agreedRpcLogs', () => {
+  const indexed = () => captured.blockscout.items.map(blockscoutTransfer);
+
+  test('a wrong transactionIndex still agrees, so it is not delivered', () => {
+    // Blockscout does not report it: nothing in the pair can check it.
+    const rpc = captured.rpc.map((log) => ({ ...log, transactionIndex: '0x3e7' }));
+    expect(logsAgree(indexed(), rpc)).toBe(true);
+    const delivered = agreedRpcLogs(rpc);
+    expect(delivered).toHaveLength(rpc.length);
+    for (const log of delivered) expect(log).not.toHaveProperty('transactionIndex');
+  });
+
+  test('keeps every compared field in the RPC spelling, and nothing else', () => {
+    const rpc = captured.rpc.map((log) => ({ ...log, blockTimestamp: '0x1', extra: 'x' }));
+    const delivered = agreedRpcLogs(rpc);
+    delivered.forEach((log, i) => {
+      const { transactionIndex: _unchecked, blockTimestamp: _t, extra: _x, ...compared } = rpc[i];
+      expect(log).toEqual({ ...compared, removed: false });
+      expect(log.topics).not.toBe(rpc[i].topics);
+    });
   });
 });
 

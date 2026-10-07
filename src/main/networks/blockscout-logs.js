@@ -21,7 +21,8 @@
 // gnosisscan.io, also Blockscout):
 // - a transfer carries its block number and hash, transaction hash, log index
 //   (the block-wide index eth_getLogs reports), token, sender, recipient and
-//   value, but not the transaction index;
+//   value, but not the transaction index (so the pair's answer leaves the
+//   RPC's out: agreedRpcLogs);
 // - transfers come newest first, by (block, log index), 50 to a page.
 //   `next_page_params` is null on the last page; a request carrying
 //   `block_number` and `index` lists only the transfers before that position.
@@ -146,8 +147,9 @@ function canonicalLog(entry) {
 const VALUE_WORD = /^0x[0-9a-f]{64}$/i;
 
 // Whether one of an RPC's eth_getLogs entries has the exact shape Ant reads,
-// as the RPC sent it: these raw entries, not a canonical form of them, are
-// what Ant gets once the pair agrees. A 32-byte blockHash, a value that is
+// as the RPC sent it: these raw entries (cut to the compared fields,
+// agreedRpcLogs), not a canonical form of them, are what Ant gets once the
+// pair agrees. A 32-byte blockHash, a value that is
 // exactly one 32-byte word, and topics that are all 32-byte hashes (no null
 // padding), the address ones (topics[1], topics[2]) zero-padded addresses;
 // canonicalLog checks the rest (a 32-byte transactionHash, not removed, the
@@ -239,6 +241,37 @@ function logsAgree(indexed, rpcResult) {
     expected.delete(key(transfer));
   }
   return expected.size === 0;
+}
+
+// The fields of an RPC's eth_getLogs entry that logsAgree compares with
+// Blockscout's transfer, plus `removed` (always false once well formed).
+const AGREED_LOG_FIELDS = Object.freeze([
+  'address',
+  'topics',
+  'data',
+  'blockNumber',
+  'blockHash',
+  'transactionHash',
+  'logIndex',
+  'removed',
+]);
+
+// An RPC's eth_getLogs answer that agreed with Blockscout (logsAgree), cut to
+// the fields the two compared, in the RPC's own spelling: what the pair
+// verified and nothing else. Blockscout does not report the transaction
+// index, so the RPC's is left out rather than delivered unchecked inside an
+// answer labelled verified; Ant's wallet scan does not read it (it reads the
+// address, topics, data, transaction hash and block number). Any other field
+// an RPC adds is left out for the same reason.
+function agreedRpcLogs(rpcResult) {
+  return rpcResult.map((entry) => {
+    const log = {};
+    for (const field of AGREED_LOG_FIELDS) {
+      if (field === 'removed') log.removed = false;
+      else log[field] = field === 'topics' ? entry.topics.slice() : entry[field];
+    }
+    return log;
+  });
 }
 
 function cooldownFrom(headers) {
@@ -554,6 +587,7 @@ module.exports = {
   ERC20_TRANSFER_TOPIC,
   LOG_INDEX_TOKENS,
   LOG_INDEX_URLS,
+  agreedRpcLogs,
   blockscoutTransfer,
   canonicalLog,
   fetchBlockscoutTransferLogs,

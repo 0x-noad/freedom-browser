@@ -191,8 +191,10 @@ when, and only when, the span is wider than the quorum can verify right now:
 3. The two answers must list the same transfers, identical in every field
    Blockscout reports: token, block number and hash, transaction hash, log
    index, sender, recipient and value. Blockscout does not report the
-   transaction index; what Ant receives is the RPC's entries, followed by the
-   quorum's for the newest blocks. The answer is reported as verified, source
+   transaction index, so nothing checks the RPC's: what Ant receives is the
+   RPC's entries cut to the compared fields (no `transactionIndex`, which
+   Ant's wallet scan does not read), followed by the quorum's entries, whole,
+   for the newest blocks. The answer is reported as verified, source
    `blockscout`.
 
 The token-transfer list has no block-range filter. It lists transfers newest
