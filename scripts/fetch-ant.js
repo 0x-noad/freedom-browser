@@ -277,11 +277,24 @@ async function main() {
     }
 
     console.log('All downloads complete.');
-    process.exit(0);
   } catch (err) {
     console.error('Error:', err);
-    process.exit(1);
+    process.exitCode = 1;
   }
+  // No process.exit() here, on either path (#544). On Node 24, process.exit()
+  // joins V8's background compiler threads without disposing the isolate; a
+  // Maglev/Sparkplug job parked waiting for a main-thread GC at that moment
+  // never wakes, and the exit hangs forever at 0% CPU (nodejs/node#64274,
+  // fix pending in nodejs/node#66171). The macOS e2e-onboarding-identity
+  // leg's Ant step hung after "All downloads complete." in 6 of 1075 jobs
+  // (2026-09-15 to 2026-10-06), and the only exits in that process tree were
+  // this process.exit(0) and npm's own explicit one, which is why CI also
+  // runs this script without npm. A loop of ~10,700 macOS runs did not
+  // reproduce it, so this is the best-supported cause, not a proven one; the
+  // CI step's hang-watchdog will sample stacks if it recurs. Returning ends
+  // the process the normal way, isolate disposed first; nothing here holds
+  // the event loop open (the deadline timers are unref'd, and idle keep-alive
+  // sockets do not keep it alive).
 }
 
 if (require.main === module) {
