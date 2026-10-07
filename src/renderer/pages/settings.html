@@ -1646,9 +1646,10 @@
                   they load faster next time. Pinned and published content doesn't count towards it.
                 </p>
                 <p class="row-help" id="swarm-cache-note">
-                  A new size applies at once. A smaller one removes the oldest cached content
-                  straight away; a cache made by an older Freedom may not give the storage back
-                  right away.
+                  A running node takes a new size at once, and a smaller one removes the oldest
+                  cached content straight away. Picked while the node is stopped, the size applies
+                  when it next starts, and a smaller one frees space only as new content is cached.
+                  A cache made by an older Freedom may not give the storage back right away.
                 </p>
                 <p class="row-help" id="swarm-cache-status" role="status" aria-live="polite"></p>
               </div>
