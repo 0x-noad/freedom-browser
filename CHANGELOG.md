@@ -49,6 +49,7 @@ All notable changes to Freedom will be documented in this file.
 - Remapped shortcuts no longer fire twice on German and other non-US keyboards ([#205](https://github.com/solardev-xyz/freedom-browser/issues/205)):
   - A conflicting saved shortcut resets with a notice
 - The Windows tab strip no longer starts behind an empty gap ([#408](https://github.com/solardev-xyz/freedom-browser/issues/408))
+- A private window's address bar, find bar and bookmark fields stay readable in the light theme ([#605](https://github.com/solardev-xyz/freedom-browser/issues/605))
 - Tor, Radicle, Ant and Myotis start on Windows 11 without the Visual C++ Redistributable ([#563](https://github.com/solardev-xyz/freedom-browser/issues/563))
 - The Linux AppImage starts on Ubuntu 24.04 without `libfuse2`, and is 18 MB smaller ([#564](https://github.com/solardev-xyz/freedom-browser/issues/564))
 - On Wayland, Freedom's windows group under its launcher icon ([#470](https://github.com/solardev-xyz/freedom-browser/pull/470))
