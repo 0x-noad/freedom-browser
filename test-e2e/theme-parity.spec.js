@@ -581,6 +581,11 @@ for (const theme of ['dark', 'light']) {
         await recipes.dappTxApproval(ctx);
         await check('dApp transaction approval', { minSamples: 2 });
         await recipes.dappSign(ctx);
+        // The pointer is still where the send flow's Confirm click left it,
+        // which since #606 gave Sign Message's actions their top margin is
+        // over the Sign button: its `:hover` opacity would be measured
+        // instead of its resting colours.
+        await window.mouse.move(0, 0);
         await check('dApp sign', { minSamples: 2 });
         await recipes.dappConnect(ctx);
         await check('dApp connect', { minSamples: 2 });
