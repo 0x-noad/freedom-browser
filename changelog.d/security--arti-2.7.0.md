@@ -1,2 +1,0 @@
-- Updated bundled nodes:
-  - [Arti](https://gitlab.torproject.org/tpo/core/arti) 2.6.0 to 2.7.0 — upstream Tor client security fixes, including one high-severity fix (half-closed streams could be used to exhaust memory and as a dropped-cells side channel) and medium-severity fixes for consensus parsing and decompression memory use, a stalled directory fetch, and local addresses in DNS answers

@@ -1,2 +1,0 @@
-- Updated bundled nodes:
-  - [libradicle](https://github.com/solardev-xyz/libradicle) 0.7.1 to 0.8.0 — no change to how Radicle behaves in Freedom; the release adds a way for other apps to run the node with a key they supply
