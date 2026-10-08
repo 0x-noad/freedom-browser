@@ -31,9 +31,6 @@ All notable changes to Freedom will be documented in this file.
   - A custom Gnosis Chain setup needs at least two RPC endpoints
   - Blockscout sees the node's wallet address
 - Video and other large files on Swarm start playing sooner ([#501](https://github.com/solardev-xyz/freedom-browser/pull/501))
-- Updated bundled nodes:
-  - [freedom-ipfs](https://github.com/solardev-xyz/freedom-ipfs) 0.4.3 to 0.4.5
-  - [libradicle](https://github.com/solardev-xyz/libradicle) 0.7.1 to 0.8.0
 
 ### Removed
 
@@ -89,6 +86,8 @@ All notable changes to Freedom will be documented in this file.
 - Updated bundled nodes:
   - [Ant](https://github.com/freedom-hq/ant) 0.5.45 to 0.5.61
   - [Arti](https://gitlab.torproject.org/tpo/core/arti) 2.6.0 to 2.7.0
+  - [freedom-ipfs](https://github.com/solardev-xyz/freedom-ipfs) 0.4.3 to 0.4.5
+  - [libradicle](https://github.com/solardev-xyz/libradicle) 0.7.1 to 0.8.0
   - [Myotis](https://github.com/biafra23/myotis) 0.1.11 to 0.1.14
 - Updated runtime dependencies:
   - Electron 44.4.5 to 44.7.0 (Chromium 152.0.7977.130 and Node 24.21.0, unchanged)
