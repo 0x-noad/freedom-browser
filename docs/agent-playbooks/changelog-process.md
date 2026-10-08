@@ -148,7 +148,7 @@ Every shipped `Security` section except `0.7.3` lists at least one actual harden
 
 ### Categorising dependency updates
 
-Dependency updates inside an active major series almost always carry upstream security fixes. Default to **Security** for these (matching `0.6.1`'s `Updated dependencies: Electron 39 to 40, …` placement). Use Changed only when the bump is purely a feature pickup with no security content.
+Dependency updates inside an active major series almost always carry upstream security fixes. Default to **Security** for these (matching `0.6.1`'s `Updated dependencies: Electron 39 to 40, …` placement). Use Changed only when the bump is purely a feature pickup with no security content. That call is made per list, not per package: each category lead (`Updated bundled nodes:`, `Updated runtime dependencies:`, `Updated dev dependencies:`) appears once in a release, so a node without security content joins the Security list rather than opening a second `Updated bundled nodes:` under Changed. The first `0.8.7` draft split freedom-ipfs and libradicle out under Changed, and the two lists read as a duplicate.
 
 **Electron updates always state the bundled Chromium and Node versions.** Security-aware users track CVE coverage by Chromium and Node version, not by Electron version. Look them up in `https://releases.electronjs.org/releases.json` (one entry per Electron version, with `chrome` / `node` / `v8` fields).
 
