@@ -459,6 +459,18 @@ const panelScrollTop = (panel, scroller) => {
   return Math.max(0, Math.round(scroller.scrollTop + offset - margin));
 };
 
+// With the document no longer scrolling, Chromium sends PageDown, Space
+// and End nowhere until something inside `.layout` has focus. Give the
+// scroller focus whenever nothing else holds it: on a section change, once
+// the page has loaded, and when the tab gains focus. A field or nav button
+// that has focus keeps it.
+const focusScrollerIfIdle = () => {
+  if (document.activeElement && document.activeElement !== document.body) return;
+  contentScroller.focus({ preventScroll: true });
+};
+window.addEventListener('focus', focusScrollerIfIdle);
+window.addEventListener('load', () => setTimeout(focusScrollerIfIdle, 0));
+
 let stopPanelScroll = () => {};
 const scrollToPanel = (id) => {
   stopPanelScroll();
@@ -496,6 +508,7 @@ const showSection = (route) => {
   stopPanelScroll();
   contentScroller.scrollTo({ top: 0 });
   if (sub && PANEL_NAV[sub] === section) scrollToPanel(sub);
+  focusScrollerIfIdle();
 };
 
 navItems.forEach((item) => {
@@ -2881,7 +2894,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       // updating is the one action that can end it; the Nodes card still
       // shows the recovery state next to the notice. Pinned by
       // test-e2e/myotis-upgrade-advisory.spec.js.
-      if (!['off', 'disabled'].includes(status.state) && ['SCHEDULED', 'ACTIVE'].includes(status.upgradeAdvisory?.phase))
+      if (
+        !['off', 'disabled'].includes(status.state) &&
+        ['SCHEDULED', 'ACTIVE'].includes(status.upgradeAdvisory?.phase)
+      )
         return status.state === 'ready' ? 'Ready — update Freedom' : 'Update Freedom — open Nodes';
       if (status.state === 'ready') return 'Ready';
       if (status.state === 'syncing') return 'Syncing';

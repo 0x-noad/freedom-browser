@@ -40,6 +40,7 @@ function makePage(offsets) {
   const scroller = {
     scrollTop: 0,
     calls: [],
+    focus: jest.fn(),
     getBoundingClientRect: () => ({ top: SCROLLER_TOP }),
     scrollTo({ top }) {
       this.calls.push(top);
@@ -56,7 +57,8 @@ function makePage(offsets) {
       },
     ])
   );
-  const document = { getElementById: (id) => panels[id] || null };
+  const document = { getElementById: (id) => panels[id] || null, body: {}, activeElement: null };
+  document.activeElement = document.body;
   const getComputedStyle = () => ({ scrollMarginTop: `${MARGIN}px` });
   const window = new EventTarget();
   window.scrollTo = jest.fn();
@@ -76,7 +78,7 @@ function loadPanelScroll(page) {
     'contentScroller',
     'setTimeout',
     'clearTimeout',
-    `${body}\nreturn { panelScrollTop, scrollToPanel, stop: () => stopPanelScroll() };`
+    `${body}\nreturn { panelScrollTop, scrollToPanel, focusScrollerIfIdle, stop: () => stopPanelScroll() };`
   )(page.document, page.window, page.getComputedStyle, page.scroller, setTimeout, clearTimeout);
 }
 
@@ -205,5 +207,35 @@ describe('the settings document itself never scrolls (#604)', () => {
   test('the script scrolls the content container, not the window', () => {
     expect(SCRIPT).not.toMatch(/window\.scrollTo\(/);
     expect(SCRIPT).toMatch(/const contentScroller = document\.querySelector\('\.layout'\)/);
+  });
+});
+
+describe('focusScrollerIfIdle', () => {
+  test('focuses the scroller when nothing in the page has focus, so PageDown scrolls it', () => {
+    const page = makePage({});
+    const { focusScrollerIfIdle } = loadPanelScroll(page);
+
+    focusScrollerIfIdle();
+
+    expect(page.scroller.focus).toHaveBeenCalledWith({ preventScroll: true });
+  });
+
+  test('leaves a focused field or nav button alone', () => {
+    const page = makePage({});
+    const { focusScrollerIfIdle } = loadPanelScroll(page);
+
+    page.document.activeElement = { id: 'settings-search' };
+    focusScrollerIfIdle();
+
+    expect(page.scroller.focus).not.toHaveBeenCalled();
+  });
+
+  test('runs again when the tab gains focus', () => {
+    const page = makePage({});
+    loadPanelScroll(page);
+
+    page.window.dispatchEvent(new Event('focus'));
+
+    expect(page.scroller.focus).toHaveBeenCalledTimes(1);
   });
 });

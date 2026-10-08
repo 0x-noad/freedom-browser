@@ -49,6 +49,22 @@
         overflow-y: auto;
       }
 
+      /* Focused programmatically so PageDown, Space and End scroll it before
+         the user has clicked into the page; not a control, so no ring. */
+      .layout:focus {
+        outline: none;
+      }
+
+      /* Print the whole section, not the first screen of the scroller. */
+      @media print {
+        html,
+        body,
+        .layout {
+          height: auto;
+          overflow: visible;
+        }
+      }
+
       /* Sidebar */
       .sidebar {
         position: sticky;
@@ -1016,7 +1032,7 @@
     </style>
   </head>
   <body>
-    <div class="layout">
+    <div class="layout" tabindex="-1">
       <aside class="sidebar">
         <h2 class="sidebar-title">
           <svg
