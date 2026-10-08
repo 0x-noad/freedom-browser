@@ -529,6 +529,34 @@ for (const theme of ['dark', 'light']) {
       await closeMenus(window);
     });
 
+    // #605: a private window keeps its dark plum chrome in both themes, but
+    // light-theme.css painted its text fields near-white under the private
+    // palette's light lavender text, so a typed URL measured about 1.4:1 on
+    // the light theme. The address bar is checked focused with typed text and
+    // again unfocused behind the find bar; the bookmark dialog covers the
+    // modal fields.
+    test(
+      declare(`private window fields render legibly in ${theme}`),
+      async ({ electronApp, window }) => {
+        test.setTimeout(180_000);
+        const pw = await recipes.privateWindow({ app: electronApp, win: window });
+        const ctx = { app: electronApp, win: pw };
+        const check = (label, opts) => assertSurface(pw, { label, theme, ...opts });
+
+        await pw.click('[data-test="address-input"]');
+        await pw.keyboard.type('https://example.com/typed');
+        await check('private address bar typing', { minSamples: 2 });
+
+        await recipes.findBar(ctx);
+        await check('private find bar', { minSamples: 2 });
+        await pw.keyboard.press('Escape');
+
+        await pw.click('[data-test="add-bookmark-btn"]');
+        await pw.waitForSelector('#add-bookmark-modal[open]');
+        await check('private bookmark dialog', { minSamples: 2 });
+      }
+    );
+
     test(
       declare(`wallet and permission subscreens render legibly in ${theme}`),
       async ({ electronApp, window }) => {
