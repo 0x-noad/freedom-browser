@@ -1930,6 +1930,30 @@ describe('navigation', () => {
         expect(loadedUrl.searchParams.has('streak')).toBe(false);
       });
 
+      // R4-M1: the page context menu's Reload hands its guest to
+      // `hardReloadPage`. From an error page already mid-streak (its URL
+      // carries `streak=1`) that must start over like the toolbar, not reload
+      // the error page and continue the exhausted run.
+      test('page context menu Reload (hardReloadPage with the guest)', async () => {
+        const ctx = await loadNavigationModule();
+        await ctx.mod.initNavigation();
+        onErrorPage(ctx);
+        const midStreak = new URL(ctx.activeRef.tab.webview.getURL());
+        midStreak.searchParams.set('streak', '1');
+        ctx.activeRef.tab.webview.getURL.mockReturnValue(midStreak.toString());
+
+        ctx.mod.hardReloadPage(ctx.activeRef.tab.webview);
+        await flushMicrotasks();
+        expect(ctx.activeRef.tab.webview.reloadIgnoringCache).not.toHaveBeenCalled();
+        expect(ctx.electronAPI.startSwarmProbe).toHaveBeenCalled();
+        settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
+        await flushMicrotasks();
+
+        const loadedUrl = lastErrorPage(ctx);
+        expect(loadedUrl.searchParams.get('retry')).toBe(retry);
+        expect(loadedUrl.searchParams.has('streak')).toBe(false);
+      });
+
       test('re-entering the same URL in the address bar', async () => {
         const ctx = await loadNavigationModule();
         await ctx.mod.initNavigation();

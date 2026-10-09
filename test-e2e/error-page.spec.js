@@ -365,8 +365,9 @@ test('the auto-retry count carries over only within a streak', async ({
 
 // Who started the retry decides whether the streak continues: the error
 // page's own auto-retry carries an exhausted count on, but the toolbar Reload
-// is an explicit retry like Try Again and starts over with a countdown.
-test('the error page retrying itself keeps the streak; the toolbar Reload starts a new one', async ({
+// and the page context menu's Reload are explicit retries like Try Again and
+// start over with a countdown.
+test('the error page retrying itself keeps the streak; the toolbar or context-menu Reload starts a new one', async ({
   electronApp,
   window,
   harness,
@@ -404,6 +405,30 @@ test('the error page retrying itself keeps the streak; the toolbar Reload starts
   // The toolbar Reload from that same exhausted error page.
   await spendAll();
   url = await nextErrorPage(() => window.locator('#reload-btn').click());
+  expect(url.searchParams.has('streak')).toBe(false);
+  await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
+  await expect(page.locator('#auto-retry-stop')).toBeVisible();
+
+  // The page context menu's Reload is the same explicit retry (R4-M1). Exhaust
+  // the streak again first, then reload from the menu raised in the guest.
+  await spendAll();
+  url = await nextErrorPage(() =>
+    page.evaluate((href) => {
+      window.location.href = href;
+    }, `bzz://${SAMPLE_BZZ_HASH}/`)
+  );
+  expect(url.searchParams.get('streak')).toBe('1');
+  await expect(page.locator('#auto-retry')).toHaveText('Stopped trying again automatically.');
+
+  await spendAll();
+  await page.evaluate(() =>
+    document.body.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 40 })
+    )
+  );
+  const reloadItem = window.locator('#page-context-menu [data-action="reload"]');
+  await expect(reloadItem).toBeVisible();
+  url = await nextErrorPage(() => reloadItem.click());
   expect(url.searchParams.has('streak')).toBe(false);
   await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
   await expect(page.locator('#auto-retry-stop')).toBeVisible();

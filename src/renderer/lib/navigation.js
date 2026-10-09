@@ -2617,8 +2617,9 @@ export const reloadPage = () => {
   retryErrorPageOrReload(webview, false);
 };
 
-export const hardReloadPage = () => {
-  const webview = getActiveWebview();
+// The page context menu passes the guest it was raised on (always the active
+// one; a stale menu drops the action before it gets here).
+export const hardReloadPage = (webview = getActiveWebview()) => {
   if (!webview) return;
   retryErrorPageOrReload(webview, true);
 };
