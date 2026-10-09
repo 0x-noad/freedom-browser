@@ -14,16 +14,14 @@
  * still-warming node — it would poll until the overall timeout and strand
  * the user on the error page (#172).
  *
- * A 404 alone is ambiguous, but its body is not: once the manifest has
- * been fetched, the node answers a path the manifest doesn't contain with
- * `path address not found`, while content it can't retrieve is a plain
- * `Not Found`. A quick 404 is re-read with GET (HEAD carries no body) and
- * two such answers in a row end the probe as `path_not_found` instead of
+ * A 404 alone is ambiguous, but its body is not: the node answers a path
+ * the manifest doesn't contain with `path address not found`, and content
+ * it can't retrieve (a node on the path, or the whole site) with a plain
+ * `Not Found`. A quick 404 is re-read with GET (HEAD carries no body), and
+ * `path address not found` ends the probe as `path_not_found` instead of
  * polling out the whole budget on a typo or a stale deep link (#175).
- * Ant only keeps a manifest after a lookup in it succeeds: on a cold node
- * a missing path is a slow `Not Found` forever. So the first 404 on a
- * deep path also looks up the site root once, which loads the manifest
- * and makes the next answer for the path the precise one.
+ * Ant gives that answer on a cold node since v0.5.64 (freedom-hq/ant#154),
+ * which is why one answer is enough and no warm-up lookup is needed.
  *
  * Each probe gets a unique id and an AbortController; callers can cancel via
  * cancelProbe(id). Resolves with one of:
@@ -54,11 +52,11 @@ const DEFAULT_OVERALL_TIMEOUT_MS = 5 * 60_000;
 // this needs to be generous — a too-tight cap (we previously used 3s) will
 // abort every request right before Bee responds, making progress impossible.
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 30_000;
-// A 404 slower than this came from a retrieval attempt, not from a manifest
-// the node already holds, so it isn't worth re-reading for its message.
-const QUICK_404_MS = 2_000;
-// Consecutive `path address not found` answers before giving up on a path.
-const MISSING_PATH_CONFIRMATIONS = 2;
+// A 404 slower than this came from a retrieval that gave up (Ant takes
+// about 10 s or more to call a missing site `Not Found`), so re-reading it
+// would only repeat that wait. A missing path in a site the node can reach
+// answers within a few seconds, cold, and instantly once cached.
+const QUICK_404_MS = 5_000;
 // Cap on the follow-up requests (404 body, peer count).
 const SIDE_REQUEST_TIMEOUT_MS = 5_000;
 // The message Bee and Ant give a manifest lookup that misses.
@@ -101,18 +99,18 @@ function isAbortError(err) {
   return err && (err.name === 'AbortError' || err.code === 'ABORT_ERR');
 }
 
-// A short request beside the probe's own HEAD (404 body, root lookup, peer
-// count): aborted with the probe or after SIDE_REQUEST_TIMEOUT_MS, so a
-// slow node can't stall a probe iteration for a full attempt timeout. Resolves with the parsed JSON body (GET) or `null`,
-// and with `null` on any failure.
-async function sideRequest(fetchImpl, url, signal, method = 'GET') {
+// A short GET beside the probe's own HEAD (404 body, peer count): aborted
+// with the probe or after SIDE_REQUEST_TIMEOUT_MS, so a slow node can't
+// stall a probe iteration for a full attempt timeout. Resolves with the
+// parsed JSON body, or `null` on any failure.
+async function sideRequest(fetchImpl, url, signal) {
   const ctl = new AbortController();
   const relayAbort = () => ctl.abort();
   signal.addEventListener('abort', relayAbort, { once: true });
   const timer = setTimeout(() => ctl.abort(), SIDE_REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetchImpl(url, { method, signal: ctl.signal });
-    if (method !== 'GET' || typeof response?.json !== 'function') return null;
+    const response = await fetchImpl(url, { signal: ctl.signal });
+    if (typeof response?.json !== 'function') return null;
     return await response.json();
   } catch {
     return null;
@@ -184,8 +182,6 @@ function startProbe(hash, opts = {}) {
 
   const started = now();
   let lastStatus = null;
-  let missingPathAnswers = 0;
-  let rootLookedUp = !probePath || probePath === '/';
 
   const run = async () => {
     try {
@@ -248,25 +244,14 @@ function startProbe(hash, opts = {}) {
           // when its peers can't serve the chunk yet (a cold node right
           // after start); the bzz: handler retries the same 5xx set.
           lastStatus = response.status;
-          // Timed on the HEAD alone, before the root lookup below adds its
-          // own round trip.
           const quick = now() - attemptStarted < QUICK_404_MS;
-          if (response.status === 404 && !rootLookedUp) {
-            rootLookedUp = true;
-            await sideRequest(fetchImpl, `${beeUrl}/bzz/${hash}/`, controller.signal, 'HEAD');
-          }
           if (
             response.status === 404 &&
             quick &&
             (await isMissingPath(fetchImpl, target, controller.signal))
           ) {
-            missingPathAnswers++;
-            if (missingPathAnswers >= MISSING_PATH_CONFIRMATIONS) {
-              log.info(`[SwarmProbe] path not in manifest: /bzz/${hash}${probePath}`);
-              return { ok: false, reason: 'path_not_found' };
-            }
-          } else {
-            missingPathAnswers = 0;
+            log.info(`[SwarmProbe] path not in manifest: /bzz/${hash}${probePath}`);
+            return { ok: false, reason: 'path_not_found' };
           }
           if (controller.signal.aborted) return { ok: false, reason: 'aborted' };
         } else {
