@@ -69,6 +69,10 @@ const protocol = explicitProtocol || detectProtocol(url);
 const swarmReason = params.get('reason');
 const swarmStatus = params.get('status');
 const swarmPeers = params.get('peers') === null ? null : Number(params.get('peers'));
+// Set by the chrome only when this failure follows straight on from an
+// error page for the same URL. Without it the content loaded in between (or
+// this is a fresh visit), so an old count must not carry over.
+const continuesRetryStreak = params.get('streak') === '1';
 
 const detailsEl = document.getElementById('details');
 const descriptionEl = document.getElementById('description');
@@ -200,7 +204,8 @@ function describeSwarmFailure() {
 // the network and a node can still gain peers. Each retry runs a fresh
 // probe (up to 5 minutes), so the waits between them stay short; the
 // count lives in sessionStorage because every retry lands on a new copy
-// of this page. A manual "Try Again" starts the count over.
+// of this page. A manual "Try Again", or a load that reached the content in
+// between (no `streak` param), starts the count over.
 const AUTO_RETRY_DELAYS_S = [30, 60, 120, 300, 300, 300];
 // A count older than this belongs to an earlier visit, not this streak.
 const AUTO_RETRY_STREAK_MS = 30 * 60_000;
@@ -235,6 +240,7 @@ function stopAutoRetry(message) {
 
 function scheduleAutoRetry() {
   if (!retryUrl) return;
+  if (!continuesRetryStreak) writeAutoRetryCount(0);
   const count = readAutoRetryCount();
   autoRetryEl.hidden = false;
   if (count >= AUTO_RETRY_DELAYS_S.length) {

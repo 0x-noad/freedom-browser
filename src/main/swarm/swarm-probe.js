@@ -101,14 +101,15 @@ function isAbortError(err) {
   return err && (err.name === 'AbortError' || err.code === 'ABORT_ERR');
 }
 
-// A short request beside the probe's own HEAD: aborted with the probe or
-// after `timeoutMs`. Resolves with the parsed JSON body (GET) or `null`,
+// A short request beside the probe's own HEAD (404 body, root lookup, peer
+// count): aborted with the probe or after SIDE_REQUEST_TIMEOUT_MS, so a
+// slow node can't stall a probe iteration for a full attempt timeout. Resolves with the parsed JSON body (GET) or `null`,
 // and with `null` on any failure.
-async function sideRequest(fetchImpl, url, signal, method = 'GET', timeoutMs = 30_000) {
+async function sideRequest(fetchImpl, url, signal, method = 'GET') {
   const ctl = new AbortController();
   const relayAbort = () => ctl.abort();
   signal.addEventListener('abort', relayAbort, { once: true });
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  const timer = setTimeout(() => ctl.abort(), SIDE_REQUEST_TIMEOUT_MS);
   try {
     const response = await fetchImpl(url, { method, signal: ctl.signal });
     if (method !== 'GET' || typeof response?.json !== 'function') return null;
@@ -121,16 +122,13 @@ async function sideRequest(fetchImpl, url, signal, method = 'GET', timeoutMs = 3
   }
 }
 
-const sideRequestJson = (fetchImpl, url, signal) =>
-  sideRequest(fetchImpl, url, signal, 'GET', SIDE_REQUEST_TIMEOUT_MS);
-
 async function isMissingPath(fetchImpl, url, signal) {
-  const body = await sideRequestJson(fetchImpl, url, signal);
+  const body = await sideRequest(fetchImpl, url, signal);
   return typeof body?.message === 'string' && body.message.toLowerCase() === MISSING_PATH_MESSAGE;
 }
 
 async function countPeers(fetchImpl, beeUrl, signal) {
-  const body = await sideRequestJson(fetchImpl, `${beeUrl}/peers`, signal);
+  const body = await sideRequest(fetchImpl, `${beeUrl}/peers`, signal);
   return Array.isArray(body?.peers) ? body.peers.length : null;
 }
 
@@ -250,11 +248,13 @@ function startProbe(hash, opts = {}) {
           // when its peers can't serve the chunk yet (a cold node right
           // after start); the bzz: handler retries the same 5xx set.
           lastStatus = response.status;
+          // Timed on the HEAD alone, before the root lookup below adds its
+          // own round trip.
+          const quick = now() - attemptStarted < QUICK_404_MS;
           if (response.status === 404 && !rootLookedUp) {
             rootLookedUp = true;
             await sideRequest(fetchImpl, `${beeUrl}/bzz/${hash}/`, controller.signal, 'HEAD');
           }
-          const quick = now() - attemptStarted < QUICK_404_MS;
           if (
             response.status === 404 &&
             quick &&

@@ -1865,6 +1865,55 @@ describe('navigation', () => {
       );
     });
 
+    test('the error page retries the failed deep path, not the site root', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}/docs/page.html`);
+      await flushMicrotasks();
+      settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
+      await flushMicrotasks();
+
+      const loadedUrl = new URL(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]);
+      expect(loadedUrl.searchParams.get('retry')).toBe(`bzz://${VALID_HASH}/docs/page.html`);
+      // A fresh visit, not a retry from an error page: the page starts its
+      // auto-retry count over.
+      expect(loadedUrl.searchParams.has('streak')).toBe(false);
+    });
+
+    test('a retry that fails again straight from its error page continues the streak', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const retry = `bzz://${VALID_HASH}/docs/page.html`;
+      const errorPage = new URL('file:///app/pages/error.html');
+      errorPage.searchParams.set('error', 'swarm_content_not_found');
+      errorPage.searchParams.set('url', retry);
+      errorPage.searchParams.set('retry', retry);
+      ctx.activeRef.tab.webview.getURL.mockReturnValue(errorPage.toString());
+
+      ctx.mod.loadTarget(retry);
+      await flushMicrotasks();
+      settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
+      await flushMicrotasks();
+
+      const loadedUrl = new URL(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]);
+      expect(loadedUrl.searchParams.get('streak')).toBe('1');
+    });
+
+    test('a failure after the content loaded starts a new retry streak', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      ctx.activeRef.tab.webview.getURL.mockReturnValue(`bzz://${VALID_HASH}/docs/page.html`);
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}/docs/page.html`);
+      await flushMicrotasks();
+      settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
+      await flushMicrotasks();
+
+      const loadedUrl = new URL(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]);
+      expect(loadedUrl.searchParams.has('streak')).toBe(false);
+    });
+
     test('routes to swarm_content_not_found error page on timeout', async () => {
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();

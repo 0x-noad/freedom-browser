@@ -411,13 +411,16 @@ const gatewayUrlToBzzUrl = (gatewayUrl) => {
 //     transport URL, since the ENS host can't be loaded by Chromium directly.
 //   - reason / status / peers: why a Swarm probe failed (swarm-probe.js
 //     outcome), so the page can say what happened instead of guessing.
+//   - streak: set when this failure follows straight on from an error page
+//     for the same retry URL, so the page keeps counting its auto-retries;
+//     without it the page starts the count over.
 const buildErrorPageUrl = (errorCode, targetUrl, extras = {}) => {
   const errorUrl = new URL('pages/error.html', window.location.href);
   errorUrl.searchParams.set('error', errorCode);
   errorUrl.searchParams.set('url', targetUrl || '');
   if (extras.protocol) errorUrl.searchParams.set('protocol', extras.protocol);
   if (extras.retry) errorUrl.searchParams.set('retry', extras.retry);
-  for (const key of ['reason', 'status', 'peers']) {
+  for (const key of ['reason', 'status', 'peers', 'streak']) {
     if (extras[key] !== undefined && extras[key] !== null) {
       errorUrl.searchParams.set(key, String(extras[key]));
     }
@@ -1090,6 +1093,29 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
   // formatBzzUrl), so extracting it here covers both.
   const probePath = extractBzzPath(gatewayUrl);
   const errorDisplayUrl = displayUrl || target.displayValue || gatewayUrl;
+  // What "Try Again" (and the error page's auto-retry) loads: the same URL a
+  // successful probe would hand to Chromium, in-manifest path included. A
+  // bare `bzz://<hash>` would retry the site root instead of the page that
+  // failed and silently move the address bar to the homepage.
+  const bzzRetryUrl =
+    target.bzzLoadUrl ||
+    (parseBzzGatewayUrl(gatewayUrl) ? gatewayUrlToBzzUrl(gatewayUrl) : null) ||
+    `bzz://${hash}${probePath || '/'}`;
+  // An error page counts its auto-retries in sessionStorage, but a retry
+  // that *succeeds* lands on a bzz:// page that can't reach that file://
+  // storage to clear it. So the chrome says whether this load continues a
+  // streak: it does only when it starts from an error page for this same
+  // retry URL (an auto-retry or Try Again that failed again). Anything else
+  // (the content loaded in between, a fresh visit) starts the count over.
+  const continuesRetryStreak = (() => {
+    try {
+      const fromUrl = webview.getURL?.();
+      if (!fromUrl || !isErrorPageUrl(fromUrl)) return false;
+      return new URL(fromUrl).searchParams.get('retry') === bzzRetryUrl;
+    } catch {
+      return false;
+    }
+  })();
 
   if (!hash || !electronAPI?.startSwarmProbe) {
     // No hash or no probe support — fall back to the pre-existing behaviour.
@@ -1157,10 +1183,13 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
 
       // Retry URL prefers the ENS-named load URL (so the user's "Try Again"
       // button preserves the ENS host and DevTools/origin stay stable). If
-      // none was supplied, fall back to the hash form, which Chromium can
-      // load directly via the bzz protocol handler.
-      const retryUrl = target.bzzLoadUrl || `bzz://${hash}`;
-      const errorExtras = { protocol: 'swarm', retry: retryUrl };
+      // none was supplied, fall back to the hash form (with its path), which
+      // Chromium can load directly via the bzz protocol handler.
+      const errorExtras = {
+        protocol: 'swarm',
+        retry: bzzRetryUrl,
+        streak: continuesRetryStreak ? 1 : null,
+      };
 
       // If the probe target was an ENS-named bzz URL (`bzz://name.eth/`)
       // and the probe failed (404 / await failure / other content
@@ -1237,12 +1266,12 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
       // their actual destination.
       if (navState.swarmProbeVersion !== myVersion) return;
       navState.pendingSwarmProbeId = null;
-      const retryUrl = target.bzzLoadUrl || `bzz://${hash}`;
       webview.loadURL(
         buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, {
           protocol: 'swarm',
-          retry: retryUrl,
+          retry: bzzRetryUrl,
           reason: 'probe_failed',
+          streak: continuesRetryStreak ? 1 : null,
         })
       );
     });

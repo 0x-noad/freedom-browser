@@ -324,3 +324,41 @@ for (const [outcome, title] of [
     await expect(page.locator('#auto-retry-stop')).toBeHidden();
   });
 }
+
+// An auto-retry that succeeds lands on a bzz:// page, which can't reach the
+// error page's file:// sessionStorage to clear the streak count. So the page
+// only keeps counting when the chrome says this failure follows straight on
+// from an error page for the same URL (`streak=1`); otherwise it starts over.
+test('the auto-retry count carries over only within a streak', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  await harness.setProbeFixture(SAMPLE_BZZ_HASH, { ok: false, reason: 'not_found', peers: 50 });
+  const page = await errorPageFor(electronApp, window, SAMPLE_BZZ_HASH);
+  await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
+  const pageUrl = new URL(page.url());
+  expect(pageUrl.searchParams.get('retry')).toBe(`bzz://${SAMPLE_BZZ_HASH}/`);
+  expect(pageUrl.searchParams.has('streak')).toBe(false);
+
+  const exhaust = (target) =>
+    page.evaluate(
+      ([key, href]) => {
+        sessionStorage.setItem(key, JSON.stringify({ count: 6, at: Date.now() }));
+        window.location.replace(href);
+      },
+      [`freedom:auto-retry:bzz://${SAMPLE_BZZ_HASH}/`, target]
+    );
+
+  // Same streak: six retries already spent, so no more.
+  pageUrl.searchParams.set('streak', '1');
+  await exhaust(pageUrl.toString());
+  await expect(page.locator('#auto-retry')).toHaveText('Stopped trying again automatically.');
+  await expect(page.locator('#auto-retry-stop')).toBeHidden();
+
+  // No streak (the content loaded in between): the old count is dropped.
+  pageUrl.searchParams.delete('streak');
+  await exhaust(pageUrl.toString());
+  await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
+  await expect(page.locator('#auto-retry-stop')).toBeVisible();
+});

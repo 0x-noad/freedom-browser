@@ -10,11 +10,7 @@ jest.mock('../service-registry', () => ({
   getAntApiUrl: mockGetBeeApiUrl,
 }));
 
-const {
-  startProbe,
-  cancelProbe,
-  getActiveProbeCount,
-} = require('./swarm-probe');
+const { startProbe, cancelProbe, getActiveProbeCount } = require('./swarm-probe');
 
 const VALID_HASH = 'a'.repeat(64);
 
@@ -151,6 +147,63 @@ describe('swarm-probe', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  test('the site-root lookup does not count against the quick-404 window', async () => {
+    // The probe's own HEAD answers at once; the root lookup takes 3 s. The
+    // first deep-path 404 is still quick, so two rounds settle it.
+    let fakeNow = 0;
+    const base = `http://127.0.0.1:1633/bzz/${VALID_HASH}`;
+    const fetchImpl = jest.fn().mockImplementation(async (url, opts = {}) => {
+      if (opts.method === 'HEAD' && url === `${base}/`) {
+        fakeNow += 3_000;
+        return makeResponse(200);
+      }
+      if (opts.method === 'HEAD') return makeResponse(404);
+      return { status: 404, json: async () => ({ message: 'path address not found' }) };
+    });
+    const { promise } = startProbe(VALID_HASH, {
+      fetchImpl,
+      sleep: noSleep,
+      now: () => fakeNow,
+      path: '/nope.html',
+    });
+    await expect(promise).resolves.toEqual({ ok: false, reason: 'path_not_found' });
+    expect(headCalls(fetchImpl)).toHaveLength(2);
+  });
+
+  test('a hung site-root lookup is cut off after the side-request cap', async () => {
+    jest.useFakeTimers();
+    try {
+      const base = `http://127.0.0.1:1633/bzz/${VALID_HASH}`;
+      let rootAborted = false;
+      const heads = [404, 200];
+      const fetchImpl = jest.fn().mockImplementation((url, opts = {}) => {
+        if (opts.method === 'HEAD' && url === `${base}/`) {
+          return new Promise((_resolve, reject) => {
+            opts.signal.addEventListener('abort', () => {
+              rootAborted = true;
+              reject(makeAbortError());
+            });
+          });
+        }
+        if (opts.method === 'HEAD') return Promise.resolve(makeResponse(heads.shift()));
+        return Promise.resolve({ status: 404, json: async () => ({ message: 'Not Found' }) });
+      });
+      let outcome = null;
+      startProbe(VALID_HASH, { fetchImpl, sleep: noSleep, path: '/a.html' }).promise.then((o) => {
+        outcome = o;
+      });
+      await jest.advanceTimersByTimeAsync(4_999);
+      expect(rootAborted).toBe(false);
+      expect(outcome).toBeNull();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(rootAborted).toBe(true);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(outcome).toEqual({ ok: true });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('also retries through 500s', async () => {
     const fetchImpl = jest
       .fn()
@@ -259,11 +312,7 @@ describe('swarm-probe', () => {
         new Promise((resolve, reject) => {
           resolveFetch = resolve;
           // Reject if aborted, mirroring real fetch behaviour
-          opts.signal.addEventListener(
-            'abort',
-            () => reject(makeAbortError()),
-            { once: true }
-          );
+          opts.signal.addEventListener('abort', () => reject(makeAbortError()), { once: true });
         })
     );
     const { id, promise } = startProbe(VALID_HASH, { fetchImpl, sleep: noSleep });
@@ -301,9 +350,7 @@ describe('swarm-probe', () => {
       path: '/index.html',
     });
     await expect(promise).resolves.toEqual({ ok: true });
-    expect(fetchImpl.mock.calls[0][0]).toBe(
-      `http://127.0.0.1:1633/bzz/${VALID_HASH}/index.html`
-    );
+    expect(fetchImpl.mock.calls[0][0]).toBe(`http://127.0.0.1:1633/bzz/${VALID_HASH}/index.html`);
   });
 
   test('drops query/fragment from the probe path', async () => {
