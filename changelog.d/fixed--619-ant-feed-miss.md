@@ -1,0 +1,1 @@
+- Reading a Swarm feed at its newest entry no longer fails now and then with a 502 error ([#619](https://github.com/solardev-xyz/freedom-browser/pull/619))
