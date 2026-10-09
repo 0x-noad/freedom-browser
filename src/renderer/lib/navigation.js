@@ -409,12 +409,19 @@ const gatewayUrlToBzzUrl = (gatewayUrl) => {
 //     If the display URL is an ENS-backed form (legacy ens:// or transport
 //     ENS like bzz://name.eth) the retry must point at the resolved
 //     transport URL, since the ENS host can't be loaded by Chromium directly.
+//   - reason / status / peers: why a Swarm probe failed (swarm-probe.js
+//     outcome), so the page can say what happened instead of guessing.
 const buildErrorPageUrl = (errorCode, targetUrl, extras = {}) => {
   const errorUrl = new URL('pages/error.html', window.location.href);
   errorUrl.searchParams.set('error', errorCode);
   errorUrl.searchParams.set('url', targetUrl || '');
   if (extras.protocol) errorUrl.searchParams.set('protocol', extras.protocol);
   if (extras.retry) errorUrl.searchParams.set('retry', extras.retry);
+  for (const key of ['reason', 'status', 'peers']) {
+    if (extras[key] !== undefined && extras[key] !== null) {
+      errorUrl.searchParams.set(key, String(extras[key]));
+    }
+  }
   return errorUrl.toString();
 };
 
@@ -1176,7 +1183,12 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
         const message = awaitResult?.error?.message || 'failed to await probe';
         pushDebug(`[Swarm] Probe await failed: ${message}`);
         invalidateOnContentFailure();
-        webview.loadURL(buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras));
+        webview.loadURL(
+          buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, {
+            ...errorExtras,
+            reason: 'probe_failed',
+          })
+        );
         return;
       }
 
@@ -1209,7 +1221,14 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
 
       pushDebug(`[Swarm] Probe failed (${outcome.reason}) — showing error page`);
       invalidateOnContentFailure();
-      webview.loadURL(buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras));
+      webview.loadURL(
+        buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, {
+          ...errorExtras,
+          reason: outcome.reason,
+          status: outcome.status ?? outcome.lastStatus,
+          peers: outcome.peers,
+        })
+      );
     })
     .catch((err) => {
       pushDebug(`[Swarm] Probe error: ${err?.message || err}`);
@@ -1223,6 +1242,7 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
         buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, {
           protocol: 'swarm',
           retry: retryUrl,
+          reason: 'probe_failed',
         })
       );
     });

@@ -79,9 +79,9 @@ test('the swarm error page does not inherit the previous page title', async ({
     )
     .toMatch(/pages\/error\.html\?error=swarm_content_not_found/);
 
-  // The error page names itself. `swarm_content_not_found` renders the
-  // "Content not ready yet" headline and sets the document title to match.
-  await expect(tabTitle).toHaveText('Content not ready yet', { timeout: 10_000 });
+  // The error page names itself. A `not_found` probe renders the
+  // "Content not found yet" headline and sets the document title to match.
+  await expect(tabTitle).toHaveText('Content not found yet', { timeout: 10_000 });
 });
 
 // The other half of #236: the tab title is what the history entry records at
@@ -247,3 +247,80 @@ test.describe('the error page reads node state from the registry', () => {
     expect(await descriptionFor(window, 'ipfs')).not.toMatch(/node is not running/);
   });
 });
+
+// #618: the page used to say "still connecting to peers … (timeout)" for
+// every probe failure. Each reason now gets its own copy, and only the
+// recoverable ones retry on their own.
+const errorPageFor = async (electronApp, window, hash) => {
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(`bzz://${hash}`);
+  await input.press('Enter');
+  let page;
+  await expect
+    .poll(() => {
+      page = electronApp.windows().find((p) => p.url().includes('/pages/error.html'));
+      return Boolean(page);
+    })
+    .toBe(true);
+  return page;
+};
+
+test('a timeout on a node short of peers says so, and retries on its own', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  await harness.setProbeFixture(SAMPLE_BZZ_HASH, {
+    ok: false,
+    reason: 'not_found',
+    lastStatus: 404,
+    peers: 3,
+  });
+  const page = await errorPageFor(electronApp, window, SAMPLE_BZZ_HASH);
+  await expect(page.locator('#title')).toHaveText('Content not found yet');
+  await expect(page.locator('#description')).toContainText('connected to only 3 peers');
+  await expect(page.locator('#details')).toContainText(
+    'Not found within 5 minutes (last answer: HTTP 404, 3 peers connected)'
+  );
+  await expect(page.locator('#auto-retry')).toHaveText(/Trying again automatically in \d+ s\./);
+
+  await page.locator('#auto-retry-stop').click();
+  await expect(page.locator('#auto-retry')).toHaveText('Stopped trying again automatically.');
+  await expect(page.locator('#auto-retry-stop')).toBeHidden();
+});
+
+test('a well-connected timeout blames the content, not the peers', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  await harness.setProbeFixture(SAMPLE_BZZ_HASH, {
+    ok: false,
+    reason: 'not_found',
+    lastStatus: 'no_response',
+    peers: 120,
+  });
+  const page = await errorPageFor(electronApp, window, SAMPLE_BZZ_HASH);
+  await expect(page.locator('#description')).toContainText('may not have spread');
+  await expect(page.locator('#description')).not.toContainText('peers');
+  await expect(page.locator('#details')).toContainText('no answer within 30 seconds');
+});
+
+for (const [outcome, title] of [
+  [{ ok: false, reason: 'path_not_found' }, 'Page not found'],
+  [{ ok: false, reason: 'other', status: 403 }, "Couldn't load this content"],
+]) {
+  test(`a permanent failure (${outcome.reason}) does not retry`, async ({
+    electronApp,
+    window,
+    harness,
+  }) => {
+    await harness.setProbeFixture(SAMPLE_BZZ_HASH, outcome);
+    const page = await errorPageFor(electronApp, window, SAMPLE_BZZ_HASH);
+    await expect(page.locator('#title')).toHaveText(title);
+    await expect(page.locator('#details')).not.toContainText('timeout');
+    await expect(page.locator('#auto-retry')).toBeHidden();
+    await expect(page.locator('#auto-retry-stop')).toBeHidden();
+  });
+}
