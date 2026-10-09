@@ -21,7 +21,12 @@
  * `path address not found` ends the probe as `path_not_found` instead of
  * polling out the whole budget on a typo or a stale deep link (#175).
  * Ant gives that answer on a cold node since v0.5.64 (freedom-hq/ant#154),
- * which is why one answer is enough and no warm-up lookup is needed.
+ * so no warm-up lookup of the site root is needed. An answer given
+ * instantly comes from a manifest the node already holds and ends the
+ * probe at once. A slower one came from a fresh lookup, which for a
+ * feed-backed site may have landed on an older update than the latest
+ * (a page the site just added), so it ends the probe only when the next
+ * attempt says the same.
  *
  * Each probe gets a unique id and an AbortController; callers can cancel via
  * cancelProbe(id). Resolves with one of:
@@ -52,11 +57,19 @@ const DEFAULT_OVERALL_TIMEOUT_MS = 5 * 60_000;
 // this needs to be generous — a too-tight cap (we previously used 3s) will
 // abort every request right before Bee responds, making progress impossible.
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 30_000;
-// A 404 slower than this came from a retrieval that gave up (Ant takes
-// about 10 s or more to call a missing site `Not Found`), so re-reading it
-// would only repeat that wait. A missing path in a site the node can reach
-// answers within a few seconds, cold, and instantly once cached.
+// A 404 slower than this came from a retrieval that gave up, so re-reading
+// it would only repeat that wait. Measured against Ant v0.5.64 on mainnet
+// in October 2026 (PR #623): a site the network lacks took 10.8 s to answer
+// `Not Found`, a missing path in a reachable site about 2.3-2.5 s cold and
+// under 1 ms once cached. Re-measure on an Ant bump that touches retrieval
+// or replica sweeps: if a missing site starts 404ing under this window, the
+// probe re-reads every such 404 with one extra GET (harmless, just slower).
 const QUICK_404_MS = 5_000;
+// A `path address not found` faster than this came from a manifest the
+// node already held and is final on its own; a slower one (a cold lookup)
+// needs the next attempt to agree. Same October 2026 measurements: cached
+// answers in under 1 ms, cold ones in 2 s or more.
+const WARM_404_MS = 1_000;
 // Cap on the follow-up requests (404 body, peer count).
 const SIDE_REQUEST_TIMEOUT_MS = 5_000;
 // The message Bee and Ant give a manifest lookup that misses.
@@ -182,6 +195,9 @@ function startProbe(hash, opts = {}) {
 
   const started = now();
   let lastStatus = null;
+  // The previous attempt was a cold `path address not found` still awaiting
+  // its confirmation.
+  let coldMissingPath = false;
 
   const run = async () => {
     try {
@@ -228,6 +244,7 @@ function startProbe(hash, opts = {}) {
             // Per-attempt timeout: treat like a transient failure and keep polling.
             log.info(`[SwarmProbe] attempt timed out (${attemptTimeoutMs}ms), retrying`);
             lastStatus = 'no_response';
+            coldMissingPath = false;
           } else {
             // Any other fetch failure (ECONNREFUSED, DNS, TLS, …) means the
             // Bee HTTP API itself is unreachable — bail out immediately so the
@@ -244,16 +261,18 @@ function startProbe(hash, opts = {}) {
           // when its peers can't serve the chunk yet (a cold node right
           // after start); the bzz: handler retries the same 5xx set.
           lastStatus = response.status;
-          const quick = now() - attemptStarted < QUICK_404_MS;
-          if (
+          // Timed on the HEAD alone, before the GET below adds its own trip.
+          const elapsed = now() - attemptStarted;
+          const missingPath =
             response.status === 404 &&
-            quick &&
-            (await isMissingPath(fetchImpl, target, controller.signal))
-          ) {
+            elapsed < QUICK_404_MS &&
+            (await isMissingPath(fetchImpl, target, controller.signal));
+          if (controller.signal.aborted) return { ok: false, reason: 'aborted' };
+          if (missingPath && (elapsed < WARM_404_MS || coldMissingPath)) {
             log.info(`[SwarmProbe] path not in manifest: /bzz/${hash}${probePath}`);
             return { ok: false, reason: 'path_not_found' };
           }
-          if (controller.signal.aborted) return { ok: false, reason: 'aborted' };
+          coldMissingPath = missingPath;
         } else {
           return { ok: false, reason: 'other', status: response.status };
         }

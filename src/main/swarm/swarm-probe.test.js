@@ -121,9 +121,10 @@ describe('swarm-probe', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  test('a cold path miss of a few seconds is still read for its message', async () => {
+  test('a cold path miss of a few seconds is still read, and confirmed once', async () => {
     // Ant answers a missing path on a cold node in about 2.5 s: under the
-    // quick-404 window, so the first answer already settles it.
+    // quick-404 window, so it is read, but a cold answer needs the next
+    // attempt to agree before the probe ends.
     let fakeNow = 0;
     const fetchImpl = fakeNode({
       heads: [404],
@@ -139,7 +140,54 @@ describe('swarm-probe', () => {
       path: '/nope.html',
     });
     await expect(promise).resolves.toEqual({ ok: false, reason: 'path_not_found' });
-    expect(headCalls(fetchImpl)).toHaveLength(1);
+    expect(headCalls(fetchImpl)).toHaveLength(2);
+  });
+
+  test('a cold path miss that the next attempt finds is not final (feed on an older update)', async () => {
+    // A feed-backed site on a cold node: the first lookup can land on an
+    // older update that lacks a page the latest one has.
+    let fakeNow = 0;
+    const fetchImpl = fakeNode({
+      heads: [404, 200],
+      body404: { message: 'path address not found' },
+      onHead: () => {
+        fakeNow += 2_500;
+      },
+    });
+    const { promise } = startProbe(VALID_HASH, {
+      fetchImpl,
+      sleep: noSleep,
+      now: () => fakeNow,
+      path: '/new.html',
+    });
+    await expect(promise).resolves.toEqual({ ok: true });
+    expect(headCalls(fetchImpl)).toHaveLength(2);
+  });
+
+  test('a cold miss needs consecutive confirmation; anything in between resets it', async () => {
+    let fakeNow = 0;
+    const heads = [404, 404, 503, 404, 404];
+    const bodies = ['path address not found', 'Not Found', 'path address not found'];
+    let headIndex = 0;
+    const fetchImpl = jest.fn().mockImplementation(async (_url, opts = {}) => {
+      if (opts.method === 'HEAD') {
+        fakeNow += 2_500;
+        return makeResponse(heads[Math.min(headIndex++, heads.length - 1)]);
+      }
+      return {
+        status: 404,
+        json: async () => ({ message: bodies.shift() ?? 'path address not found' }),
+      };
+    });
+    const { promise } = startProbe(VALID_HASH, {
+      fetchImpl,
+      sleep: noSleep,
+      now: () => fakeNow,
+      path: '/x.html',
+    });
+    await expect(promise).resolves.toEqual({ ok: false, reason: 'path_not_found' });
+    // missing (cold), Not Found (resets), 503 (resets), missing (cold), missing → final.
+    expect(headCalls(fetchImpl)).toHaveLength(5);
   });
 
   test('a hung 404 body read is cut off after the side-request cap', async () => {
