@@ -130,7 +130,31 @@ function hostFor(rawUrl) {
   }
 }
 
+// Addresses the address bar refused (navigation.js `showAddressError`).
+// Retrying can't help, so the button goes.
+const ADDRESS_ERRORS = {
+  invalid_address: {
+    title: 'Not a valid address',
+    description: "Freedom can't open this address. Check it for typos.",
+  },
+  unloadable_swarm_hash: {
+    title: "Can't open this address",
+    description:
+      'This Swarm reference is made only of digits, which the browser reads as a network ' +
+      "address, so it can't be opened as a bzz:// page.",
+  },
+};
+
 async function displayError() {
+  const addressError = ADDRESS_ERRORS[error];
+  if (addressError) {
+    setErrorTitle(addressError.title);
+    descriptionEl.textContent = addressError.description;
+    detailsEl.textContent = url || '';
+    document.getElementById('retry-btn').hidden = true;
+    return;
+  }
+
   const parts = [];
   if (protocolUrl) parts.push(protocolUrl);
 
