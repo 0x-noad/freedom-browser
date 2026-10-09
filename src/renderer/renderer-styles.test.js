@@ -108,6 +108,26 @@ describe('renderer stylesheets', () => {
     }
     expect(broken).toEqual([]);
   });
+
+  test('no font-family is the bare generic `monospace` (#616)', () => {
+    // Electron on macOS resolves a lone `monospace` to Times, so the stack
+    // must name real faces first; `var(--font-mono)` is the shared one.
+    const bare = [];
+    for (const rel of SOURCES) {
+      cssOf(rel)
+        .split('\n')
+        .forEach((line, i) => {
+          if (/font-family:\s*monospace\s*[;}"]/.test(line)) bare.push(`${rel}:${i + 1}`);
+        });
+    }
+    expect(bare).toEqual([]);
+  });
+
+  test('both token files define --font-mono (#616)', () => {
+    for (const rel of ['styles/variables.css', 'pages/styles/theme.css']) {
+      expect(read(rel)).toMatch(/--font-mono:\s*[^;]*monospace;/);
+    }
+  });
 });
 
 describe('renderer colour literals (#261)', () => {

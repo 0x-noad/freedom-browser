@@ -20,6 +20,10 @@
 html {
   color-scheme: dark;
 
+  /* Fixed-width stack for addresses, hashes and keys. Name real faces:
+     a bare `monospace` renders in Times on macOS under Electron (#616). */
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+
   /* Surfaces and ink — history, downloads, payments, links, profiles, settings. */
   --bg: #0d1117;
   --bg-elev: #161b22;
