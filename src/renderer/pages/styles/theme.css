@@ -332,3 +332,13 @@ html[data-theme='light'] {
   --dark-only-display: none;
   --light-only-display: block;
 }
+
+/* The one non-palette rule: the user-agent sheet gives these the bare
+   generic `monospace`, which Electron on macOS renders in Times (#616).
+   Any page rule with a class still wins; this only replaces the default. */
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--font-mono);
+}
