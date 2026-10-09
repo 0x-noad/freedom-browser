@@ -1084,7 +1084,7 @@ const handleEthereumUri = (value) => {
  * the ENS name. The bzz protocol handler resolves the host on every
  * request (cache hit after the renderer already resolved upstream).
  */
-const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
+const startBzzNavigationWithProbe = (webview, target, navState, displayUrl, options = {}) => {
   const gatewayUrl = target.targetUrl;
   const hash = target.swarmHash || extractBzzHash(gatewayUrl);
   // Probe the same in-manifest path the navigation will load. The gateway
@@ -1104,10 +1104,15 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
   // An error page counts its auto-retries in sessionStorage, but a retry
   // that *succeeds* lands on a bzz:// page that can't reach that file://
   // storage to clear it. So the chrome says whether this load continues a
-  // streak: it does only when it starts from an error page for this same
-  // retry URL (an auto-retry or Try Again that failed again). Anything else
-  // (the content loaded in between, a fresh visit) starts the count over.
+  // streak: it does only when the error page itself started it (its
+  // auto-retry, or Try Again, which zeroes the count first; both are a
+  // `location.href` the main process replays as `pageInitiated`) from an
+  // error page for this same retry URL. Anything else starts the count over:
+  // the content loaded in between, a fresh visit, or the user retrying from
+  // the chrome (toolbar Reload, re-typing the URL), which is as explicit a
+  // retry as Try Again and must not inherit an exhausted streak.
   const continuesRetryStreak = (() => {
+    if (!options.pageInitiated) return false;
     try {
       const fromUrl = webview.getURL?.();
       if (!fromUrl || !isErrorPageUrl(fromUrl)) return false;
@@ -1324,6 +1329,8 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // the browser chrome (an intercepted in-page link or a scripted location
   // change replayed through `navigate-to-url`). It leaves any uncommitted
   // address-bar edit in place; see the `clearAddressBarEdit` call below.
+  // Name-resolution continuations carry it on, and the Swarm probe reads it
+  // to tell an error page's own retry from a chrome-driven one.
   //
   // `options.continuesNavigation` — this call is the second leg of a
   // navigation that already ran the entry bookkeeping below (a name
@@ -1818,6 +1825,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
           loadTarget(targetUri, displayOverride || targetUri, capturedWebview, {
             nameResolutionDepth: resolutionDepth + 1,
             continuesNavigation: true,
+            // A page-driven first leg stays page-driven: the Swarm retry
+            // streak (startBzzNavigationWithProbe) keys on it.
+            pageInitiated: !!options.pageInitiated,
           });
           return;
         }
@@ -1883,6 +1893,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
         const innerOptions = {
           nameResolutionDepth: resolutionDepth + 1,
           continuesNavigation: true,
+          // Carried so an error page's auto-retry of `bzz://name.eth/…` still
+          // continues its retry streak once the name resolves.
+          pageInitiated: !!options.pageInitiated,
         };
         if (result.protocol === 'bzz') {
           innerOptions.bzzLoadUrl = transportDisplay;
@@ -2107,7 +2120,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     // Probe the Bee gateway first so the tab spinner stays active while the
     // node's peer set warms up; only load the webview once the content is
     // actually retrievable (or bail to the error page).
-    startBzzNavigationWithProbe(webview, augmented, navState, displayValue);
+    startBzzNavigationWithProbe(webview, augmented, navState, displayValue, {
+      pageInitiated: !!options.pageInitiated,
+    });
     return;
   }
 

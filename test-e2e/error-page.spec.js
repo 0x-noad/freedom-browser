@@ -362,3 +362,49 @@ test('the auto-retry count carries over only within a streak', async ({
   await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
   await expect(page.locator('#auto-retry-stop')).toBeVisible();
 });
+
+// Who started the retry decides whether the streak continues: the error
+// page's own auto-retry carries an exhausted count on, but the toolbar Reload
+// is an explicit retry like Try Again and starts over with a countdown.
+test('the error page retrying itself keeps the streak; the toolbar Reload starts a new one', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  await harness.setProbeFixture(SAMPLE_BZZ_HASH, { ok: false, reason: 'not_found', peers: 50 });
+  const page = await errorPageFor(electronApp, window, SAMPLE_BZZ_HASH);
+  await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
+  const key = `freedom:auto-retry:bzz://${SAMPLE_BZZ_HASH}/`;
+  const spendAll = () =>
+    page.evaluate(
+      (k) => sessionStorage.setItem(k, JSON.stringify({ count: 6, at: Date.now() })),
+      key
+    );
+  // Waits for the next error page to commit. Not keyed on a URL change: a
+  // regression would land on a byte-identical URL, and must fail on the
+  // `streak` assertion, not on a timeout here.
+  const nextErrorPage = async (act) => {
+    const loaded = page.waitForEvent('load');
+    await act();
+    await loaded;
+    return new URL(page.url());
+  };
+
+  // What the auto-retry timer does: a `location.href` to the retry URL, which
+  // goes through the chrome's probe and fails again.
+  await spendAll();
+  let url = await nextErrorPage(() =>
+    page.evaluate((href) => {
+      window.location.href = href;
+    }, `bzz://${SAMPLE_BZZ_HASH}/`)
+  );
+  expect(url.searchParams.get('streak')).toBe('1');
+  await expect(page.locator('#auto-retry')).toHaveText('Stopped trying again automatically.');
+
+  // The toolbar Reload from that same exhausted error page.
+  await spendAll();
+  url = await nextErrorPage(() => window.locator('#reload-btn').click());
+  expect(url.searchParams.has('streak')).toBe(false);
+  await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
+  await expect(page.locator('#auto-retry-stop')).toBeVisible();
+});

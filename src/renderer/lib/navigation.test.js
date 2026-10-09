@@ -1891,13 +1891,57 @@ describe('navigation', () => {
       errorPage.searchParams.set('retry', retry);
       ctx.activeRef.tab.webview.getURL.mockReturnValue(errorPage.toString());
 
-      ctx.mod.loadTarget(retry);
+      // The error page's own auto-retry / Try Again: a `location.href` the
+      // main process replays through `navigate-to-url` as page-initiated.
+      ctx.mod.loadTarget(retry, null, null, { pageInitiated: true });
       await flushMicrotasks();
       settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
       await flushMicrotasks();
 
       const loadedUrl = new URL(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]);
       expect(loadedUrl.searchParams.get('streak')).toBe('1');
+    });
+
+    describe('a retry from the chrome starts a new streak, even from the error page', () => {
+      const retry = `bzz://${VALID_HASH}/docs/page.html`;
+      const onErrorPage = (ctx) => {
+        const errorPage = new URL('file:///app/pages/error.html');
+        errorPage.searchParams.set('error', 'swarm_content_not_found');
+        errorPage.searchParams.set('url', retry);
+        errorPage.searchParams.set('retry', retry);
+        ctx.activeRef.tab.webview.getURL.mockReturnValue(errorPage.toString());
+      };
+      const lastErrorPage = (ctx) =>
+        new URL(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]);
+
+      test('toolbar Reload', async () => {
+        const ctx = await loadNavigationModule();
+        await ctx.mod.initNavigation();
+        onErrorPage(ctx);
+
+        ctx.elements.reloadBtn.dispatch('click', { shiftKey: false });
+        await flushMicrotasks();
+        expect(ctx.electronAPI.startSwarmProbe).toHaveBeenCalled();
+        settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
+        await flushMicrotasks();
+
+        const loadedUrl = lastErrorPage(ctx);
+        expect(loadedUrl.searchParams.get('retry')).toBe(retry);
+        expect(loadedUrl.searchParams.has('streak')).toBe(false);
+      });
+
+      test('re-entering the same URL in the address bar', async () => {
+        const ctx = await loadNavigationModule();
+        await ctx.mod.initNavigation();
+        onErrorPage(ctx);
+
+        ctx.mod.loadTarget(retry, null, null, { commitsAddressBar: true });
+        await flushMicrotasks();
+        settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
+        await flushMicrotasks();
+
+        expect(lastErrorPage(ctx).searchParams.has('streak')).toBe(false);
+      });
     });
 
     test('a failure after the content loaded starts a new retry streak', async () => {
@@ -3063,6 +3107,47 @@ describe('navigation', () => {
       expect(loadedUrls.some((u) => u === `bzz://${HASH}/` || u === `bzz://${HASH}`)).toBe(false);
       expect(loadedUrls.some((u) => u.includes('gateway.example'))).toBe(false);
     });
+
+    test.each([
+      ['the error page retrying itself continues the streak', { pageInitiated: true }, '1'],
+      ['a chrome retry starts a new one', {}, null],
+    ])(
+      'ENS-Swarm retry streak survives the name resolution: %s',
+      async (_label, options, expectedStreak) => {
+        const HASH = 'b'.repeat(64);
+        const ctx = await setupEnsDispatch();
+        ctx.electronAPI.resolveEns.mockResolvedValue({
+          type: 'ok',
+          name: 'meinhard.eth',
+          protocol: 'bzz',
+          decoded: HASH,
+          uri: `bzz://${HASH}`,
+          trust: { level: 'verified', queried: ['a', 'b'], agreed: ['a', 'b'] },
+        });
+        const failProbe = async () => {
+          await flushMicrotasks();
+          const probeId = ctx.swarmProbeState.startCalls.at(-1)?.id;
+          const entry = ctx.swarmProbeState.pendingAwaits.find((p) => p.id === probeId);
+          entry.resolve({ success: true, outcome: { ok: false, reason: 'not_found' } });
+          ctx.swarmProbeState.pendingAwaits = ctx.swarmProbeState.pendingAwaits.filter(
+            (p) => p !== entry
+          );
+          await flushMicrotasks();
+          return new URL(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]);
+        };
+
+        ctx.mod.loadTarget('bzz://meinhard.eth');
+        const firstError = await failProbe();
+        expect(firstError.searchParams.get('retry')).toBeTruthy();
+        expect(firstError.searchParams.has('streak')).toBe(false);
+
+        // The webview now sits on that error page; retry its own retry URL.
+        ctx.activeRef.tab.webview.getURL.mockReturnValue(firstError.toString());
+        ctx.mod.loadTarget(firstError.searchParams.get('retry'), null, null, options);
+        const secondError = await failProbe();
+        expect(secondError.searchParams.get('streak')).toBe(expectedStreak);
+      }
+    );
 
     test('cross-transport assertion: bzz://name.eth where the contenthash is IPFS errors instead of switching transports', async () => {
       // A typed transport scheme is an assertion. If the user typed
