@@ -238,8 +238,28 @@ function stopAutoRetry(message) {
   autoRetryEl.textContent = message;
 }
 
+// Back/Forward onto this page is the user reading history, not a fresh
+// failure: a countdown started then would retry unasked, and its retry
+// (replayed by the chrome as a new navigation) drops the forward entry the
+// user came back from. So no countdown on a history traversal; Try Again
+// still retries.
+const RETRY_PAUSED_TEXT = 'Not trying again automatically. Use Try Again to retry.';
+
+function reachedByHistoryTraversal() {
+  try {
+    return performance.getEntriesByType('navigation')[0]?.type === 'back_forward';
+  } catch {
+    return false;
+  }
+}
+
 function scheduleAutoRetry() {
   if (!retryUrl) return;
+  if (reachedByHistoryTraversal()) {
+    autoRetryEl.hidden = false;
+    autoRetryEl.textContent = RETRY_PAUSED_TEXT;
+    return;
+  }
   if (!continuesRetryStreak) writeAutoRetryCount(0);
   const count = readAutoRetryCount();
   autoRetryEl.hidden = false;
@@ -329,3 +349,13 @@ document.getElementById('retry-btn').onclick = () => {
 autoRetryStopBtn.onclick = () => {
   stopAutoRetry('Stopped trying again automatically.');
 };
+
+// The same applies if Chromium keeps this page in its back/forward cache:
+// a restored page resumes its timers, so stop the countdown on the way out
+// and don't restart it on the way back.
+window.addEventListener('pagehide', () => {
+  if (autoRetryTimer) stopAutoRetry(RETRY_PAUSED_TEXT);
+});
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted && autoRetryTimer) stopAutoRetry(RETRY_PAUSED_TEXT);
+});

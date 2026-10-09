@@ -408,3 +408,43 @@ test('the error page retrying itself keeps the streak; the toolbar Reload starts
   await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
   await expect(page.locator('#auto-retry-stop')).toBeVisible();
 });
+
+// Back onto an error page is the user reading history: a fresh countdown
+// would retry unasked, and the retry (a new navigation) would drop the
+// forward entry the user just came Back from.
+test('going Back onto a retrying error page does not restart the countdown', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  await harness.setContentFixture(`ipfs://${SAMPLE_IPFS_CID}`, {
+    body: '<html><head><title>Elsewhere</title></head><body>elsewhere</body></html>',
+  });
+  await harness.setProbeFixture(SAMPLE_BZZ_HASH, { ok: false, reason: 'not_found', peers: 50 });
+  const page = await errorPageFor(electronApp, window, SAMPLE_BZZ_HASH);
+  await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
+  const errorUrl = page.url();
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(`ipfs://${SAMPLE_IPFS_CID}`);
+  await input.press('Enter');
+  await expect
+    .poll(() => electronApp.windows().some((p) => p.url().startsWith('ipfs://')))
+    .toBe(true);
+
+  await window.locator('#back-btn').click();
+  let back;
+  await expect
+    .poll(() => {
+      back = electronApp.windows().find((p) => p.url() === errorUrl);
+      return Boolean(back);
+    })
+    .toBe(true);
+  await expect(back.locator('#auto-retry')).toHaveText(
+    'Not trying again automatically. Use Try Again to retry.'
+  );
+  await expect(back.locator('#auto-retry-stop')).toBeHidden();
+  // The forward entry is still there to go to.
+  await expect(window.locator('#forward-btn')).toBeEnabled();
+});
