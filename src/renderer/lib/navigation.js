@@ -2057,7 +2057,15 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     // host and reads an all-digit one as an IPv4 number: `bzz://<digits>`
     // is not a URL the webview can load. Vanishingly rare for a real
     // reference (about 1 in 10^13), but say so instead of failing quietly.
-    if (hashMatch && /^[0-9]+$/.test(hashMatch[1])) {
+    // Only a full 64/128-character reference counts: a short numeric host
+    // such as `bzz://1234` has already been rewritten by Chromium's IPv4
+    // parsing (`bzz://0.0.4.210/`) and is not a Swarm reference at all. An
+    // ENS-backed load (`bzzLoadUrl`) is unaffected, because Chromium loads
+    // `bzz://<name>/`, not the resolved digits.
+    if (
+      !options.bzzLoadUrl &&
+      /^bzz:\/\/(?:[0-9]{64}|[0-9]{128})(?:[/?#]|$)/.test(target.displayValue)
+    ) {
       showAddressError('unloadable_swarm_hash', target.displayValue);
       return;
     }

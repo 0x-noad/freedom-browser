@@ -1330,6 +1330,62 @@ describe('navigation', () => {
       expect(url).toContain('pages/error.html?error=unloadable_swarm_hash');
     });
 
+    test('an all-digit 128-character Swarm reference with a path gets the same page', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      ctx.mod.loadTarget(`bzz://${'7'.repeat(128)}/x.html`);
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.startSwarmProbe).not.toHaveBeenCalled();
+      const [url] = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1);
+      expect(url).toContain('pages/error.html?error=unloadable_swarm_hash');
+    });
+
+    test.each([
+      // `bzz://1234` as Chromium canonicalises it: an IPv4 host whose first
+      // octet is a digit. Not a Swarm reference, so not this explanation.
+      'bzz://0.0.4.210/',
+      `bzz://${'3'.repeat(63)}`,
+      `bzz://${'3'.repeat(65)}`,
+    ])(
+      'a digit-led host that is not a full reference (%s) is not called all-digit',
+      async (input) => {
+        const ctx = await loadNavigationModule();
+        await ctx.mod.initNavigation();
+        await flushMicrotasks();
+
+        ctx.mod.loadTarget(input);
+        await flushMicrotasks();
+
+        for (const [url] of ctx.activeRef.tab.webview.loadURL.mock.calls) {
+          expect(url).not.toContain('unloadable_swarm_hash');
+        }
+      }
+    );
+
+    test('an ENS-backed load of an all-digit reference still probes and loads by name', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      const digits = '3'.repeat(64);
+      // Mirrors the ENS recursion: value is the resolved hash, but Chromium
+      // loads `bzz://name.eth/`, which it can parse.
+      ctx.mod.loadTarget(`bzz://${digits}`, 'bzz://name.eth/', null, {
+        bzzLoadUrl: 'bzz://name.eth/',
+        swarmHash: digits,
+        continuesNavigation: true,
+      });
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.startSwarmProbe).toHaveBeenCalled();
+      for (const [url] of ctx.activeRef.tab.webview.loadURL.mock.calls) {
+        expect(url).not.toContain('unloadable_swarm_hash');
+      }
+    });
+
     test('loads the default provider results page for non-URL input', async () => {
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();
