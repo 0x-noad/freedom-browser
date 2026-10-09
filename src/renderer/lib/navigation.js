@@ -401,6 +401,12 @@ const gatewayUrlToBzzUrl = (gatewayUrl) => {
   return `bzz://${parsed.hash}${parsed.path || '/'}${parsed.search}${parsed.fragment}`;
 };
 
+// Input that names one of Freedom's own schemes: `scheme://…`, or a bare
+// `scheme:…` with no whitespace (so a query like "rad: what is it" still
+// searches).
+const EXPLICIT_DWEB_ADDRESS_RE =
+  /^(?:(?:bzz|ipfs|ipns|ens|web3|freedom):\/\/|(?:bzz|ipfs|ipns|ens|web3|freedom|rad|ethereum):\S*$)/i;
+
 // Build a file:// URL for error.html. `targetUrl` is the user-facing URL
 // shown in the address bar and on the page. `extras` can include:
 //   - protocol: explicit protocol hint ('swarm' | 'ipfs' | 'ipns')
@@ -2093,10 +2099,38 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     return;
   }
 
+  // An address the user typed but Freedom can't open lands on an error page
+  // that names it, rather than nowhere or in the search engine.
+  const showAddressError = (errorCode, displayValue) => {
+    pushDebug(`[AddressBar] ${errorCode}: ${displayValue}`);
+    setAddressDisplayForTab(displayValue, targetTabId);
+    const errorUrl = buildErrorPageUrl(errorCode, displayValue);
+    navState.pendingNavigationUrl = errorUrl;
+    navState.hasNavigatedDuringCurrentLoad = false;
+    webview.loadURL(errorUrl);
+    syncBzzBase(null);
+  };
+
   // Try Swarm/bzz
   const target = formatBzzUrl(value, state.bzzRoutePrefix);
   if (target) {
     const hashMatch = target.displayValue.match(/^bzz:\/\/([a-fA-F0-9]+)/);
+    // `bzz:` is a standard scheme, so Chromium parses its host like a web
+    // host and reads an all-digit one as an IPv4 number: `bzz://<digits>`
+    // is not a URL the webview can load. Vanishingly rare for a real
+    // reference (about 1 in 10^13), but say so instead of failing quietly.
+    // Only a full 64/128-character reference counts: a short numeric host
+    // such as `bzz://1234` has already been rewritten by Chromium's IPv4
+    // parsing (`bzz://0.0.4.210/`) and is not a Swarm reference at all. An
+    // ENS-backed load (`bzzLoadUrl`) is unaffected, because Chromium loads
+    // `bzz://<name>/`, not the resolved digits.
+    if (
+      !options.bzzLoadUrl &&
+      /^bzz:\/\/(?:[0-9]{64}|[0-9]{128})(?:[/?#]|$)/.test(target.displayValue)
+    ) {
+      showAddressError('unloadable_swarm_hash', target.displayValue);
+      return;
+    }
     // For ENS-host transport URLs we point pendingNavigationUrl at the
     // ENS-named load URL so the `did-navigate` reconciliation in
     // webcontents-setup matches: Chromium will report `bzz://<name>/`
@@ -2137,6 +2171,14 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     webview.loadURL(value);
     pushDebug(`Loading ${value}`);
     syncBzzBase(null);
+    return;
+  }
+
+  // An explicit dweb scheme is an address, never a query: sending a pasted
+  // `bzz://`/`ipfs://` reference to the search provider leaks it and hides
+  // the real problem (a malformed or unopenable address).
+  if (EXPLICIT_DWEB_ADDRESS_RE.test(value.trim())) {
+    showAddressError('invalid_address', value.trim());
     return;
   }
 
