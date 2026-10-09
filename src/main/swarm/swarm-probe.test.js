@@ -10,17 +10,41 @@ jest.mock('../service-registry', () => ({
   getAntApiUrl: mockGetBeeApiUrl,
 }));
 
-const {
-  startProbe,
-  cancelProbe,
-  getActiveProbeCount,
-} = require('./swarm-probe');
+const { startProbe, cancelProbe, getActiveProbeCount } = require('./swarm-probe');
 
 const VALID_HASH = 'a'.repeat(64);
 
 function makeResponse(status) {
   return { status, ok: status >= 200 && status < 300 };
 }
+
+// A node that answers the probe's HEADs from `heads` (the last one repeats),
+// a GET on a 404 with `body404`, and `/peers` with `peers` entries. A HEAD on
+// the site root (`/bzz/<hash>/`, the manifest warm-up) answers 200.
+function fakeNode({ heads, body404 = { code: 404, message: 'Not Found' }, peers = null, onHead }) {
+  let i = 0;
+  return jest.fn().mockImplementation(async (url, opts = {}) => {
+    if (opts.method === 'HEAD' && url.endsWith(`/bzz/${VALID_HASH}/`)) return makeResponse(200);
+    if (opts.method === 'HEAD') {
+      if (onHead) onHead();
+      return makeResponse(heads[Math.min(i++, heads.length - 1)]);
+    }
+    if (url.endsWith('/peers')) {
+      if (peers === null) return { status: 404, json: async () => ({}) };
+      return {
+        status: 200,
+        json: async () => ({ peers: Array.from({ length: peers }, () => ({})) }),
+      };
+    }
+    return { status: 404, json: async () => body404 };
+  });
+}
+
+// The probe's own HEADs, without the manifest warm-up on the site root.
+const headCalls = (fetchImpl) =>
+  fetchImpl.mock.calls.filter(([url, o]) => o?.method === 'HEAD' && !url.endsWith('/'));
+const urlsOf = (fetchImpl) =>
+  fetchImpl.mock.calls.map(([url, o]) => `${o?.method || 'GET'} ${url}`);
 
 function makeAbortError() {
   const err = new Error('The operation was aborted');
@@ -56,14 +80,128 @@ describe('swarm-probe', () => {
   });
 
   test('polls through 404s until 200', async () => {
-    const fetchImpl = jest
-      .fn()
-      .mockResolvedValueOnce(makeResponse(404))
-      .mockResolvedValueOnce(makeResponse(404))
-      .mockResolvedValueOnce(makeResponse(200));
+    const fetchImpl = fakeNode({ heads: [404, 404, 200] });
     const { promise } = startProbe(VALID_HASH, { fetchImpl, sleep: noSleep });
     await expect(promise).resolves.toEqual({ ok: true });
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(headCalls(fetchImpl)).toHaveLength(3);
+  });
+
+  test('gives up early on a path the manifest does not contain (#175)', async () => {
+    const fetchImpl = fakeNode({
+      heads: [404],
+      body404: { code: 404, message: 'path address not found' },
+    });
+    const { promise } = startProbe(VALID_HASH, { fetchImpl, sleep: noSleep, path: '/nope.html' });
+    await expect(promise).resolves.toEqual({ ok: false, reason: 'path_not_found' });
+    // Two confirmations, each a HEAD plus the GET that reads the message;
+    // the first 404 also looks up the site root once to load the manifest.
+    const base = `http://127.0.0.1:1633/bzz/${VALID_HASH}`;
+    expect(urlsOf(fetchImpl)).toEqual([
+      `HEAD ${base}/nope.html`,
+      `HEAD ${base}/`,
+      `GET ${base}/nope.html`,
+      `HEAD ${base}/nope.html`,
+      `GET ${base}/nope.html`,
+    ]);
+  });
+
+  test('a probe of the site root never adds the warm-up lookup', async () => {
+    const statuses = [404, 200];
+    const fetchImpl = jest
+      .fn()
+      .mockImplementation(async (_url, opts = {}) =>
+        opts.method === 'HEAD'
+          ? makeResponse(statuses.shift())
+          : { status: 404, json: async () => ({}) }
+      );
+    const { promise } = startProbe(VALID_HASH, { fetchImpl, sleep: noSleep, path: '/' });
+    await expect(promise).resolves.toEqual({ ok: true });
+    expect(urlsOf(fetchImpl).filter((u) => u.startsWith('HEAD'))).toHaveLength(2);
+  });
+
+  test('one missing-path answer is not enough: a later Not Found resets it', async () => {
+    const bodies = [
+      { message: 'path address not found' },
+      { message: 'Not Found' },
+      { message: 'path address not found' },
+    ];
+    const fetchImpl = jest.fn().mockImplementation(async (_url, opts = {}) => {
+      if (opts.method === 'HEAD') return makeResponse(bodies.length ? 404 : 200);
+      return { status: 404, json: async () => bodies.shift() };
+    });
+    const { promise } = startProbe(VALID_HASH, { fetchImpl, sleep: noSleep, path: '/a.html' });
+    await expect(promise).resolves.toEqual({ ok: true });
+  });
+
+  test('a slow 404 (a retrieval that failed) is not re-read for its message', async () => {
+    let fakeNow = 0;
+    const fetchImpl = fakeNode({
+      heads: [404, 200],
+      body404: { message: 'path address not found' },
+      onHead: () => {
+        fakeNow += 15_000;
+      },
+    });
+    const { promise } = startProbe(VALID_HASH, { fetchImpl, sleep: noSleep, now: () => fakeNow });
+    await expect(promise).resolves.toEqual({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('the site-root lookup does not count against the quick-404 window', async () => {
+    // The probe's own HEAD answers at once; the root lookup takes 3 s. The
+    // first deep-path 404 is still quick, so two rounds settle it.
+    let fakeNow = 0;
+    const base = `http://127.0.0.1:1633/bzz/${VALID_HASH}`;
+    const fetchImpl = jest.fn().mockImplementation(async (url, opts = {}) => {
+      if (opts.method === 'HEAD' && url === `${base}/`) {
+        fakeNow += 3_000;
+        return makeResponse(200);
+      }
+      if (opts.method === 'HEAD') return makeResponse(404);
+      return { status: 404, json: async () => ({ message: 'path address not found' }) };
+    });
+    const { promise } = startProbe(VALID_HASH, {
+      fetchImpl,
+      sleep: noSleep,
+      now: () => fakeNow,
+      path: '/nope.html',
+    });
+    await expect(promise).resolves.toEqual({ ok: false, reason: 'path_not_found' });
+    expect(headCalls(fetchImpl)).toHaveLength(2);
+  });
+
+  test('a hung site-root lookup is cut off after the side-request cap', async () => {
+    jest.useFakeTimers();
+    try {
+      const base = `http://127.0.0.1:1633/bzz/${VALID_HASH}`;
+      let rootAborted = false;
+      const heads = [404, 200];
+      const fetchImpl = jest.fn().mockImplementation((url, opts = {}) => {
+        if (opts.method === 'HEAD' && url === `${base}/`) {
+          return new Promise((_resolve, reject) => {
+            opts.signal.addEventListener('abort', () => {
+              rootAborted = true;
+              reject(makeAbortError());
+            });
+          });
+        }
+        if (opts.method === 'HEAD') return Promise.resolve(makeResponse(heads.shift()));
+        return Promise.resolve({ status: 404, json: async () => ({ message: 'Not Found' }) });
+      });
+      let outcome = null;
+      startProbe(VALID_HASH, { fetchImpl, sleep: noSleep, path: '/a.html' }).promise.then((o) => {
+        outcome = o;
+      });
+      await jest.advanceTimersByTimeAsync(4_999);
+      expect(rootAborted).toBe(false);
+      expect(outcome).toBeNull();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(rootAborted).toBe(true);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(outcome).toEqual({ ok: true });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('also retries through 500s', async () => {
@@ -120,9 +258,12 @@ describe('swarm-probe', () => {
   test('resolves not_found after overall timeout', async () => {
     let fakeNow = 0;
     const now = () => fakeNow;
-    const fetchImpl = jest.fn().mockImplementation(async () => {
-      fakeNow += 1000;
-      return makeResponse(404);
+    const fetchImpl = fakeNode({
+      heads: [404],
+      peers: 3,
+      onHead: () => {
+        fakeNow += 1000;
+      },
     });
     const { promise } = startProbe(VALID_HASH, {
       fetchImpl,
@@ -130,10 +271,38 @@ describe('swarm-probe', () => {
       now,
       overallTimeoutMs: 2500,
     });
-    await expect(promise).resolves.toEqual({ ok: false, reason: 'not_found' });
+    await expect(promise).resolves.toEqual({
+      ok: false,
+      reason: 'not_found',
+      lastStatus: 404,
+      peers: 3,
+    });
     // 3 attempts: after each, fakeNow goes 1000 -> 2000 -> 3000.
     // Overall timeout (2500) trips after the third attempt.
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(headCalls(fetchImpl)).toHaveLength(3);
+    expect(fetchImpl.mock.calls.at(-1)[0]).toBe('http://127.0.0.1:1633/peers');
+  });
+
+  test('not_found reports a 5xx, a silent node and an unknown peer count', async () => {
+    let fakeNow = 0;
+    const fetchImpl = jest.fn().mockImplementation(async (url) => {
+      if (url.endsWith('/peers')) throw new Error('boom');
+      fakeNow += 1000;
+      if (fakeNow < 2000) return makeResponse(503);
+      throw makeAbortError();
+    });
+    const { promise } = startProbe(VALID_HASH, {
+      fetchImpl,
+      sleep: noSleep,
+      now: () => fakeNow,
+      overallTimeoutMs: 2500,
+    });
+    await expect(promise).resolves.toEqual({
+      ok: false,
+      reason: 'not_found',
+      lastStatus: 'no_response',
+      peers: null,
+    });
   });
 
   test('cancelProbe aborts an in-flight probe', async () => {
@@ -143,11 +312,7 @@ describe('swarm-probe', () => {
         new Promise((resolve, reject) => {
           resolveFetch = resolve;
           // Reject if aborted, mirroring real fetch behaviour
-          opts.signal.addEventListener(
-            'abort',
-            () => reject(makeAbortError()),
-            { once: true }
-          );
+          opts.signal.addEventListener('abort', () => reject(makeAbortError()), { once: true });
         })
     );
     const { id, promise } = startProbe(VALID_HASH, { fetchImpl, sleep: noSleep });
@@ -185,9 +350,7 @@ describe('swarm-probe', () => {
       path: '/index.html',
     });
     await expect(promise).resolves.toEqual({ ok: true });
-    expect(fetchImpl.mock.calls[0][0]).toBe(
-      `http://127.0.0.1:1633/bzz/${VALID_HASH}/index.html`
-    );
+    expect(fetchImpl.mock.calls[0][0]).toBe(`http://127.0.0.1:1633/bzz/${VALID_HASH}/index.html`);
   });
 
   test('drops query/fragment from the probe path', async () => {

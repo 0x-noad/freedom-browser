@@ -14,13 +14,31 @@
  * still-warming node — it would poll until the overall timeout and strand
  * the user on the error page (#172).
  *
+ * A 404 alone is ambiguous, but its body is not: once the manifest has
+ * been fetched, the node answers a path the manifest doesn't contain with
+ * `path address not found`, while content it can't retrieve is a plain
+ * `Not Found`. A quick 404 is re-read with GET (HEAD carries no body) and
+ * two such answers in a row end the probe as `path_not_found` instead of
+ * polling out the whole budget on a typo or a stale deep link (#175).
+ * Ant only keeps a manifest after a lookup in it succeeds: on a cold node
+ * a missing path is a slow `Not Found` forever. So the first 404 on a
+ * deep path also looks up the site root once, which loads the manifest
+ * and makes the next answer for the path the precise one.
+ *
  * Each probe gets a unique id and an AbortController; callers can cancel via
  * cancelProbe(id). Resolves with one of:
  *   { ok: true }
  *   { ok: false, reason: 'bee_unreachable' }   // API refused/failed to connect
- *   { ok: false, reason: 'not_found' }         // overall timeout reached
+ *   { ok: false, reason: 'not_found', lastStatus, peers }
+ *                                              // overall timeout reached
+ *   { ok: false, reason: 'path_not_found' }    // manifest has no such path
  *   { ok: false, reason: 'other', status }     // unexpected HTTP status
  *   { ok: false, reason: 'aborted' }           // cancelProbe() called
+ *
+ * `lastStatus` is the node's last answer before the timeout (404, a 5xx,
+ * or 'no_response' when the attempt itself timed out) and `peers` its
+ * connected peer count then (null when the node didn't say), so the error
+ * page can tell a node short of peers from content the network lacks.
  */
 
 const crypto = require('crypto');
@@ -36,6 +54,15 @@ const DEFAULT_OVERALL_TIMEOUT_MS = 5 * 60_000;
 // this needs to be generous — a too-tight cap (we previously used 3s) will
 // abort every request right before Bee responds, making progress impossible.
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 30_000;
+// A 404 slower than this came from a retrieval attempt, not from a manifest
+// the node already holds, so it isn't worth re-reading for its message.
+const QUICK_404_MS = 2_000;
+// Consecutive `path address not found` answers before giving up on a path.
+const MISSING_PATH_CONFIRMATIONS = 2;
+// Cap on the follow-up requests (404 body, peer count).
+const SIDE_REQUEST_TIMEOUT_MS = 5_000;
+// The message Bee and Ant give a manifest lookup that misses.
+const MISSING_PATH_MESSAGE = 'path address not found';
 
 // Validate that a bzz reference is a 64- or 128-char hex string.
 // Matches the check used in request-rewriter.js.
@@ -72,6 +99,37 @@ function createAbortableSleep(ms, signal) {
 
 function isAbortError(err) {
   return err && (err.name === 'AbortError' || err.code === 'ABORT_ERR');
+}
+
+// A short request beside the probe's own HEAD (404 body, root lookup, peer
+// count): aborted with the probe or after SIDE_REQUEST_TIMEOUT_MS, so a
+// slow node can't stall a probe iteration for a full attempt timeout. Resolves with the parsed JSON body (GET) or `null`,
+// and with `null` on any failure.
+async function sideRequest(fetchImpl, url, signal, method = 'GET') {
+  const ctl = new AbortController();
+  const relayAbort = () => ctl.abort();
+  signal.addEventListener('abort', relayAbort, { once: true });
+  const timer = setTimeout(() => ctl.abort(), SIDE_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetchImpl(url, { method, signal: ctl.signal });
+    if (method !== 'GET' || typeof response?.json !== 'function') return null;
+    return await response.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', relayAbort);
+  }
+}
+
+async function isMissingPath(fetchImpl, url, signal) {
+  const body = await sideRequest(fetchImpl, url, signal);
+  return typeof body?.message === 'string' && body.message.toLowerCase() === MISSING_PATH_MESSAGE;
+}
+
+async function countPeers(fetchImpl, beeUrl, signal) {
+  const body = await sideRequest(fetchImpl, `${beeUrl}/peers`, signal);
+  return Array.isArray(body?.peers) ? body.peers.length : null;
 }
 
 // A double-dot path segment in any of the forms WHATWG URL normalizes:
@@ -125,6 +183,9 @@ function startProbe(hash, opts = {}) {
   }
 
   const started = now();
+  let lastStatus = null;
+  let missingPathAnswers = 0;
+  let rootLookedUp = !probePath || probePath === '/';
 
   const run = async () => {
     try {
@@ -148,10 +209,12 @@ function startProbe(hash, opts = {}) {
         controller.signal.addEventListener('abort', relayAbort, { once: true });
         const attemptTimer = setTimeout(() => attemptCtl.abort(), attemptTimeoutMs);
 
+        const target = `${beeUrl}/bzz/${hash}${probePath}`;
+        const attemptStarted = now();
         let response = null;
         let fetchError = null;
         try {
-          response = await fetchImpl(`${beeUrl}/bzz/${hash}${probePath}`, {
+          response = await fetchImpl(target, {
             method: 'HEAD',
             signal: attemptCtl.signal,
           });
@@ -168,6 +231,7 @@ function startProbe(hash, opts = {}) {
           if (isAbortError(fetchError)) {
             // Per-attempt timeout: treat like a transient failure and keep polling.
             log.info(`[SwarmProbe] attempt timed out (${attemptTimeoutMs}ms), retrying`);
+            lastStatus = 'no_response';
           } else {
             // Any other fetch failure (ECONNREFUSED, DNS, TLS, …) means the
             // Bee HTTP API itself is unreachable — bail out immediately so the
@@ -183,12 +247,37 @@ function startProbe(hash, opts = {}) {
           // Content not (yet) resolvable — keep polling. Ant answers 503
           // when its peers can't serve the chunk yet (a cold node right
           // after start); the bzz: handler retries the same 5xx set.
+          lastStatus = response.status;
+          // Timed on the HEAD alone, before the root lookup below adds its
+          // own round trip.
+          const quick = now() - attemptStarted < QUICK_404_MS;
+          if (response.status === 404 && !rootLookedUp) {
+            rootLookedUp = true;
+            await sideRequest(fetchImpl, `${beeUrl}/bzz/${hash}/`, controller.signal, 'HEAD');
+          }
+          if (
+            response.status === 404 &&
+            quick &&
+            (await isMissingPath(fetchImpl, target, controller.signal))
+          ) {
+            missingPathAnswers++;
+            if (missingPathAnswers >= MISSING_PATH_CONFIRMATIONS) {
+              log.info(`[SwarmProbe] path not in manifest: /bzz/${hash}${probePath}`);
+              return { ok: false, reason: 'path_not_found' };
+            }
+          } else {
+            missingPathAnswers = 0;
+          }
+          if (controller.signal.aborted) return { ok: false, reason: 'aborted' };
         } else {
           return { ok: false, reason: 'other', status: response.status };
         }
 
         if (now() - started >= overallTimeoutMs) {
-          return { ok: false, reason: 'not_found' };
+          const peers = await countPeers(fetchImpl, beeUrl, controller.signal);
+          if (controller.signal.aborted) return { ok: false, reason: 'aborted' };
+          log.info(`[SwarmProbe] gave up: last answer ${lastStatus}, ${peers ?? '?'} peers`);
+          return { ok: false, reason: 'not_found', lastStatus, peers };
         }
       }
     } finally {

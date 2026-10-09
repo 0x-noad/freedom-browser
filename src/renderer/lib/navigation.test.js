@@ -1973,6 +1973,123 @@ describe('navigation', () => {
       );
     });
 
+    test('the error page retries the failed deep path, not the site root', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}/docs/page.html`);
+      await flushMicrotasks();
+      settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
+      await flushMicrotasks();
+
+      const loadedUrl = new URL(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]);
+      expect(loadedUrl.searchParams.get('retry')).toBe(`bzz://${VALID_HASH}/docs/page.html`);
+      // A fresh visit, not a retry from an error page: the page starts its
+      // auto-retry count over.
+      expect(loadedUrl.searchParams.has('streak')).toBe(false);
+    });
+
+    test('a retry that fails again straight from its error page continues the streak', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const retry = `bzz://${VALID_HASH}/docs/page.html`;
+      const errorPage = new URL('file:///app/pages/error.html');
+      errorPage.searchParams.set('error', 'swarm_content_not_found');
+      errorPage.searchParams.set('url', retry);
+      errorPage.searchParams.set('retry', retry);
+      ctx.activeRef.tab.webview.getURL.mockReturnValue(errorPage.toString());
+
+      // The error page's own auto-retry / Try Again: a `location.href` the
+      // main process replays through `navigate-to-url` as page-initiated.
+      ctx.mod.loadTarget(retry, null, null, { pageInitiated: true });
+      await flushMicrotasks();
+      settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
+      await flushMicrotasks();
+
+      const loadedUrl = new URL(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]);
+      expect(loadedUrl.searchParams.get('streak')).toBe('1');
+    });
+
+    describe('a retry from the chrome starts a new streak, even from the error page', () => {
+      const retry = `bzz://${VALID_HASH}/docs/page.html`;
+      const onErrorPage = (ctx) => {
+        const errorPage = new URL('file:///app/pages/error.html');
+        errorPage.searchParams.set('error', 'swarm_content_not_found');
+        errorPage.searchParams.set('url', retry);
+        errorPage.searchParams.set('retry', retry);
+        ctx.activeRef.tab.webview.getURL.mockReturnValue(errorPage.toString());
+      };
+      const lastErrorPage = (ctx) =>
+        new URL(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]);
+
+      test('toolbar Reload', async () => {
+        const ctx = await loadNavigationModule();
+        await ctx.mod.initNavigation();
+        onErrorPage(ctx);
+
+        ctx.elements.reloadBtn.dispatch('click', { shiftKey: false });
+        await flushMicrotasks();
+        expect(ctx.electronAPI.startSwarmProbe).toHaveBeenCalled();
+        settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
+        await flushMicrotasks();
+
+        const loadedUrl = lastErrorPage(ctx);
+        expect(loadedUrl.searchParams.get('retry')).toBe(retry);
+        expect(loadedUrl.searchParams.has('streak')).toBe(false);
+      });
+
+      // R4-M1: the page context menu's Reload hands its guest to
+      // `hardReloadPage`. From an error page already mid-streak (its URL
+      // carries `streak=1`) that must start over like the toolbar, not reload
+      // the error page and continue the exhausted run.
+      test('page context menu Reload (hardReloadPage with the guest)', async () => {
+        const ctx = await loadNavigationModule();
+        await ctx.mod.initNavigation();
+        onErrorPage(ctx);
+        const midStreak = new URL(ctx.activeRef.tab.webview.getURL());
+        midStreak.searchParams.set('streak', '1');
+        ctx.activeRef.tab.webview.getURL.mockReturnValue(midStreak.toString());
+
+        ctx.mod.hardReloadPage(ctx.activeRef.tab.webview);
+        await flushMicrotasks();
+        expect(ctx.activeRef.tab.webview.reloadIgnoringCache).not.toHaveBeenCalled();
+        expect(ctx.electronAPI.startSwarmProbe).toHaveBeenCalled();
+        settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
+        await flushMicrotasks();
+
+        const loadedUrl = lastErrorPage(ctx);
+        expect(loadedUrl.searchParams.get('retry')).toBe(retry);
+        expect(loadedUrl.searchParams.has('streak')).toBe(false);
+      });
+
+      test('re-entering the same URL in the address bar', async () => {
+        const ctx = await loadNavigationModule();
+        await ctx.mod.initNavigation();
+        onErrorPage(ctx);
+
+        ctx.mod.loadTarget(retry, null, null, { commitsAddressBar: true });
+        await flushMicrotasks();
+        settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
+        await flushMicrotasks();
+
+        expect(lastErrorPage(ctx).searchParams.has('streak')).toBe(false);
+      });
+    });
+
+    test('a failure after the content loaded starts a new retry streak', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      ctx.activeRef.tab.webview.getURL.mockReturnValue(`bzz://${VALID_HASH}/docs/page.html`);
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}/docs/page.html`);
+      await flushMicrotasks();
+      settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
+      await flushMicrotasks();
+
+      const loadedUrl = new URL(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]);
+      expect(loadedUrl.searchParams.has('streak')).toBe(false);
+    });
+
     test('routes to swarm_content_not_found error page on timeout', async () => {
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();
@@ -3122,6 +3239,47 @@ describe('navigation', () => {
       expect(loadedUrls.some((u) => u === `bzz://${HASH}/` || u === `bzz://${HASH}`)).toBe(false);
       expect(loadedUrls.some((u) => u.includes('gateway.example'))).toBe(false);
     });
+
+    test.each([
+      ['the error page retrying itself continues the streak', { pageInitiated: true }, '1'],
+      ['a chrome retry starts a new one', {}, null],
+    ])(
+      'ENS-Swarm retry streak survives the name resolution: %s',
+      async (_label, options, expectedStreak) => {
+        const HASH = 'b'.repeat(64);
+        const ctx = await setupEnsDispatch();
+        ctx.electronAPI.resolveEns.mockResolvedValue({
+          type: 'ok',
+          name: 'meinhard.eth',
+          protocol: 'bzz',
+          decoded: HASH,
+          uri: `bzz://${HASH}`,
+          trust: { level: 'verified', queried: ['a', 'b'], agreed: ['a', 'b'] },
+        });
+        const failProbe = async () => {
+          await flushMicrotasks();
+          const probeId = ctx.swarmProbeState.startCalls.at(-1)?.id;
+          const entry = ctx.swarmProbeState.pendingAwaits.find((p) => p.id === probeId);
+          entry.resolve({ success: true, outcome: { ok: false, reason: 'not_found' } });
+          ctx.swarmProbeState.pendingAwaits = ctx.swarmProbeState.pendingAwaits.filter(
+            (p) => p !== entry
+          );
+          await flushMicrotasks();
+          return new URL(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]);
+        };
+
+        ctx.mod.loadTarget('bzz://meinhard.eth');
+        const firstError = await failProbe();
+        expect(firstError.searchParams.get('retry')).toBeTruthy();
+        expect(firstError.searchParams.has('streak')).toBe(false);
+
+        // The webview now sits on that error page; retry its own retry URL.
+        ctx.activeRef.tab.webview.getURL.mockReturnValue(firstError.toString());
+        ctx.mod.loadTarget(firstError.searchParams.get('retry'), null, null, options);
+        const secondError = await failProbe();
+        expect(secondError.searchParams.get('streak')).toBe(expectedStreak);
+      }
+    );
 
     test('cross-transport assertion: bzz://name.eth where the contenthash is IPFS errors instead of switching transports', async () => {
       // A typed transport scheme is an assertion. If the user typed
