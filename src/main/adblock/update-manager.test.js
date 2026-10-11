@@ -256,6 +256,25 @@ describe('runUpdateOnce', () => {
     expect(opts.activate).not.toHaveBeenCalled();
   });
 
+  test('a feed read that never answers ends the cycle as feed_unavailable', async () => {
+    const opts = io({ readFeed: () => new Promise(() => {}), timeoutMs: 20 });
+    const result = await runUpdateOnce(opts);
+    expect(result).toEqual({ status: 'feed_unavailable' });
+    expect(opts.downloadBlob).not.toHaveBeenCalled();
+  });
+
+  test('a list download that never answers ends the cycle, leaving prior state', async () => {
+    const opts = io({
+      readFeed: async () => signedManifest(2),
+      downloadBlob: jest.fn(() => new Promise(() => {})),
+      timeoutMs: 20,
+    });
+    const result = await runUpdateOnce(opts);
+    expect(result).toEqual({ status: 'download_failed', reason: 'ads' });
+    expect(fs.existsSync(path.join(root, 'updated'))).toBe(false);
+    expect(opts.activate).not.toHaveBeenCalled();
+  });
+
   test('rolls back to last-known-good when the engine rebuild fails', async () => {
     // First: a good apply at version 2.
     await runUpdateOnce(io({ readFeed: async () => signedManifest(2) }));

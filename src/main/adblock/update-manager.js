@@ -26,8 +26,23 @@ const {
 const { verifyManifest, desktopListsFor } = require('./update-manifest');
 const { refreshEngine, getEnabledFeedCategories } = require('./service');
 
+// The feed read and each list download go through the local Ant node, and
+// bee-js sets no deadline of its own: it waits as long as Ant does. A stuck
+// retrieval must end the cycle (as feed_unavailable / download_failed, which
+// the scheduler retries soon) rather than hold it, so each call gets this
+// long; an abandoned request is left to finish in the background.
+const IO_TIMEOUT_MS = 2 * 60 * 1000;
+
 function sha256Hex(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+function withTimeout(promise, ms) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms / 1000} s`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 // ── Default Swarm-backed IO (replaced in tests) ──────────────────────────
@@ -77,6 +92,7 @@ function readAppliedState(updatedDir) {
  * @param {(ref: string) => Promise<Buffer>} [io.downloadBlob]
  * @param {string} [io.root] - override userData/adblock (tests)
  * @param {() => Promise<void>} [io.activate] - override refreshEngine (tests)
+ * @param {number} [io.timeoutMs] - override IO_TIMEOUT_MS (tests)
  * @returns {Promise<{status: string, version?: number, reason?: string}>}
  */
 async function runUpdateOnce(io = {}) {
@@ -86,6 +102,7 @@ async function runUpdateOnce(io = {}) {
   const root = io.root || getUpdateRoot();
   const sigAddress = io.sigAddress || MANIFEST_SIG_ADDRESS;
   const trustConfigured = io.trustConfigured ?? isTrustAnchorConfigured();
+  const timeoutMs = io.timeoutMs ?? IO_TIMEOUT_MS;
 
   if (!trustConfigured) return { status: 'dormant' };
   if (loadSettings().adblockEnabled === false) return { status: 'disabled' };
@@ -102,7 +119,7 @@ async function runUpdateOnce(io = {}) {
 
   let manifest;
   try {
-    manifest = await readFeed();
+    manifest = await withTimeout(readFeed(), timeoutMs);
   } catch (err) {
     log.info(`[adblock-update] feed read failed: ${err.message}`);
     return { status: 'feed_unavailable' };
@@ -161,7 +178,7 @@ async function runUpdateOnce(io = {}) {
     }
     if (!blob) {
       try {
-        blob = await downloadBlob(entry.ref);
+        blob = await withTimeout(downloadBlob(entry.ref), timeoutMs);
       } catch (err) {
         log.warn(`[adblock-update] download failed for ${entry.category}: ${err.message}`);
         return { status: 'download_failed', reason: entry.category };
