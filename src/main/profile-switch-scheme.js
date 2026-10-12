@@ -373,21 +373,21 @@ function readProfileSwitchAckTime(userDataDir, fsImpl = fs) {
 // is the running profile acknowledging a single-instance hand-over; which
 // launch it answers is unknown, so it closes the oldest one in flight: at
 // worst this switch then waits out its budget, it never ends early. Launches
-// still unfinished after one whole switch budget before `sinceMs` are past any
-// wait (crashed, killed) and are dropped, before such an unattributed outcome
-// is matched too, so a dead launch's leftover `received` cannot absorb the
-// running profile's `failed` and turn a fast fail into the full wait (R6-M1).
-// A pid-attributed late outcome of such a launch still closes only its own
-// launch (R5-M1). And a `failed` is only taken as this
-// switch's once some launch said `received` since it started: this switch's
-// own launch always does first, so a failure landing before that is someone
-// else's.
+// that said `received` more than one whole switch budget before such an
+// unattributed outcome (measured from the outcome's own time, R1-M1) are past
+// any wait (crashed, killed) and are dropped before it is matched, so a dead
+// launch's leftover `received` cannot absorb the running profile's `failed`
+// and turn a fast fail into the full wait (R6-M1), while a historical outcome
+// still closes a launch that was live when it landed, not a newer one. A
+// pid-attributed late outcome of such a launch still closes only its own
+// launch (R5-M1). And a `failed` is only taken as this switch's once some
+// launch said `received` since it started: this switch's own launch always
+// does first, so a failure landing before that is someone else's.
 function profileSwitchStateSince(acks, sinceMs, lookbackMs = PROFILE_SWITCH_ACK_TIMEOUT_MS) {
   const launchPids = new Set();
   for (const ack of acks) {
     if (ack.state === 'received' && ack.pid != null) launchPids.add(ack.pid);
   }
-  const staleBefore = sinceMs - lookbackMs;
   let inFlight = []; // { at, pid }, oldest first
   let receivedSince = false;
   let failed = false;
@@ -407,16 +407,20 @@ function profileSwitchStateSince(acks, sinceMs, lookbackMs = PROFILE_SWITCH_ACK_
       }
       if (index >= 0) inFlight.splice(index, 1);
     } else {
-      // Drop the launches already past any wait first, so this closes one
-      // that is still live and not a crashed one whose received is still on
-      // disk (R6-M1).
-      inFlight = inFlight.filter((launch) => launch.at >= staleBefore);
+      // Drop the launches already past any wait when this outcome landed
+      // first, so this closes one that was still live then and not a crashed
+      // one whose received is still on disk (R6-M1). Measured from the
+      // outcome's own time, not this switch's: an older outcome answered a
+      // launch that was live back then, not the one live now (R1-M1).
+      const deadBefore = ack.at - lookbackMs;
+      inFlight = inFlight.filter((launch) => launch.at >= deadBefore);
       inFlight.shift();
     }
     if (ack.at < sinceMs) continue;
     if (ack.state === 'done') return 'done';
     failed = true;
   }
+  const staleBefore = sinceMs - lookbackMs;
   const stillGoing = inFlight.filter((launch) => launch.at >= staleBefore).length;
   if (failed && receivedSince && stillGoing === 0) return 'failed';
   return acks.some((ack) => ack.at >= sinceMs) ? 'received' : null;

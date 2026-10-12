@@ -572,6 +572,26 @@ describe('x-freedom-profile scheme', () => {
       ).toBe('received');
     });
 
+    test("profileSwitchStateSince: a historical holder outcome closes a launch live at its own time, not this switch's (R1-M1)", () => {
+      const acks = (...list) => list.map(([at, state, pid]) => ({ at, state, pid }));
+      // L1 and L2 handed over long before this switch; the holder answered L1
+      // at 5500 (L2 was live then) and L2 slowly at 10300, after this switch's
+      // own launch (pid 3) said received. That last failure is L2's, so this
+      // switch keeps waiting for its own launch.
+      const records = acks(
+        [3000, 'received', 1],
+        [5000, 'received', 2],
+        [5500, 'done', 99],
+        [10100, 'received', 3],
+        [10300, 'failed', 99]
+      );
+      expect(profileSwitchStateSince(records, 10000)).toBe('received');
+      // The holder then answering this switch's own launch ends it.
+      expect(profileSwitchStateSince([...records, ...acks([10400, 'failed', 99])], 10000)).toBe(
+        'failed'
+      );
+    });
+
     test('waitForProfileSwitchAck fails fast past a dead launch record (R6-M1)', async () => {
       writeProfileSwitchAck(dir, { state: 'received', now: Date.now() - 20000 });
       const since = Date.now();
