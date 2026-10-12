@@ -214,9 +214,13 @@ function conceal() {
 // request puts the home view back when it is answered or dismissed; at that
 // point the panel goes back to how full screen had it (concealed if it is
 // still open), instead of staying over the page until the user dismisses it.
+// Only a request that is what brings the panel into view marks it: a panel
+// already in view over the full-screen page (shown again with the shortcut,
+// or opened there by the user) is the user's choice and stays when the
+// request is done. A mark from an earlier request still in flight is kept.
 function revealForRequest() {
+  if (fullscreen && (concealed || !isOpen)) revealedForRequest = true;
   reveal();
-  if (fullscreen) revealedForRequest = true;
 }
 
 function watchHomeView(el) {

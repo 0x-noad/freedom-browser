@@ -217,6 +217,36 @@ test.describe('with the bookmarks bar on and the sidebar open', () => {
     await expect(window.locator('#sidebar')).toBeVisible();
     await expect(window.locator('#sidebar')).not.toHaveClass(/collapsed/);
   });
+
+  // R3-M1: a panel the user already brought back with the shortcut is their
+  // choice; a request answered while it is up must not hide it again.
+  test('a sidebar shown with the shortcut stays in view after a request is answered', async ({
+    window,
+    electronApp,
+  }) => {
+    await window.locator('#wallet-toggle-btn').click();
+    await expect(window.locator('#sidebar')).not.toHaveClass(/collapsed/);
+    await clickMenuItem(electronApp, 'fullscreen');
+    await expectChromeHidden(window, electronApp);
+
+    await window.evaluate(() => document.body.focus());
+    await window.keyboard.press('ControlOrMeta+Shift+W');
+    await expect(window.locator('#sidebar')).toBeVisible();
+
+    await window.evaluate(async () => {
+      const consent = await import('./lib/radicle-consent.js');
+      consent.showRadicleConnect('bzz://myapp.eth', 'fullscreen-test').catch(() => {});
+    });
+    await expect(window.locator('#sidebar-radicle-consent')).toBeVisible();
+    await window.locator('#radicle-consent-reject').click();
+    await expect(window.locator('#sidebar-radicle-consent')).toBeHidden();
+
+    await expect(window.locator('#sidebar-identity')).toBeVisible();
+    await expect(window.locator('#sidebar')).toBeVisible();
+    await expect(window.locator('#sidebar')).not.toHaveClass(/fullscreen-concealed/);
+    await expect(window.locator(CHROME.toolbar)).toBeHidden();
+    await window.screenshot({ path: test.info().outputPath('fullscreen-shortcut-kept.png') });
+  });
 });
 
 test.describe('with the bookmarks bar off', () => {
@@ -315,7 +345,9 @@ const clickMenuLabel = (electronApp, label) =>
 const activeTitle = (window) =>
   window.evaluate(async () => {
     try {
-      return await document.querySelector('webview:not(.hidden)').executeJavaScript('document.title');
+      return await document
+        .querySelector('webview:not(.hidden)')
+        .executeJavaScript('document.title');
     } catch {
       return null;
     }

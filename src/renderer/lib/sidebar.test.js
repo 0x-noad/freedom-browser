@@ -290,6 +290,41 @@ describe('sidebar concealed by browser full screen', () => {
     expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
   });
 
+  // R3-M1: a request answered over a panel the user already chose to show
+  // must not hide it on the way out.
+  test('a panel the user brought back stays in view after a request is answered', async () => {
+    const { sidebar, elements, showHome } = await loadSidebar();
+    showHome(true);
+    sidebar.setFullscreenConcealed(true);
+    sidebar.toggle();
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+
+    showHome(false);
+    sidebar.open();
+    showHome(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+
+    showHome(false);
+    sidebar.openForConsent();
+    showHome(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+    expect(sidebar.isVisible()).toBe(true);
+  });
+
+  test('a panel the user opened in full screen stays in view after a request is answered', async () => {
+    const { sidebar, elements, showHome } = await loadSidebar();
+    sidebar.close();
+    showHome(true);
+    sidebar.setFullscreenConcealed(true);
+    sidebar.toggle();
+    expect(sidebar.isVisible()).toBe(true);
+
+    showHome(false);
+    sidebar.open();
+    showHome(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+
   test('a request outside full screen leaves the panel alone', async () => {
     const { sidebar, elements, showHome } = await loadSidebar();
     showHome(false);
