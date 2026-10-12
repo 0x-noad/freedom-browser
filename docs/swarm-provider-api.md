@@ -277,14 +277,14 @@ manifest on record:
   between fetches (2 s, then 10 s, 30 s and 60 s), though, and a call inside
   the backoff window fails with `4900` straight away without refetching.
 
-A "Don't allow" on the consent sheet *is* cached for the document: every
-later non-public call, including `swarm_requestAccess`, rejects with `4001`
-straight away and no sheet is shown, until the page reloads or navigates. (The one exception: if the sheet
-was declined from a call other than `swarm_requestAccess`, the first
-`swarm_requestAccess` after it re-checks the manifest and can show the sheet
-once more.) The decline is not stored beyond the document, so a "Connect"
-button that calls `swarm_requestAccess` again after a `4001` should tell the
-user to reload rather than expect a fresh sheet.
+A "Don't allow" on the consent sheet _is_ cached for the document: every later
+non-public call, including `swarm_requestAccess`, rejects with `4001` straight
+away and no sheet is shown, until the page reloads or navigates. (The one
+exception: if the sheet was declined from a call other than
+`swarm_requestAccess`, the first `swarm_requestAccess` after it re-checks the
+manifest and can show the sheet once more.) The decline is not stored beyond the
+document, so a "Connect" button that calls `swarm_requestAccess` again after a
+`4001` should tell the user to reload rather than expect a fresh sheet.
 
 When a fetched manifest names capabilities the user has not yet approved,
 Freedom shows one consent sheet covering all of them. Approving a capability
