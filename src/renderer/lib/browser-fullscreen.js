@@ -13,13 +13,18 @@
  * (sidebar.js `setFullscreenConcealed`), so leaving full screen puts back
  * exactly what was there before.
  *
- * Escape leaves full screen when nothing in the chrome claimed it first — a
- * menu, the find bar, a modal dialog each close on their own Escape and mark
- * it `defaultPrevented`. Escape typed into the page is claimed in the main
- * process instead, since the page's keys never reach this document.
+ * Escape does not leave full screen, as in Chrome's and Firefox's F11 mode:
+ * it stays the page's (a modal's close, an editor's normal mode, a game's
+ * pause) and the chrome's (its menus, find bar and dialogs). The full-screen
+ * binding, View → Exit Full Screen and macOS's green button leave.
+ *
+ * The state report is listened for from the moment the chrome's script runs
+ * (`listenForFullscreenChanges`), not from `initBrowserFullscreen`: main
+ * re-sends the state on `did-finish-load`, which can land while the chrome's
+ * async start-up is still awaiting settings, and a report with no listener
+ * yet is simply lost. One that arrives early is held and applied on init.
  */
 
-import { isModalDialogOpen } from './modal-dialog.js';
 import { formatAccelerator, getEffectiveAccelerator } from './shortcuts.js';
 
 const BODY_CLASS = 'browser-fullscreen';
@@ -28,10 +33,15 @@ export const EXIT_HINT_MS = 4000;
 
 let active = false;
 let hintTimer = null;
+let listening = false;
+let applyState = null;
+let pendingState = null;
 
 const exitHintText = (platform) => {
   const key = formatAccelerator(getEffectiveAccelerator('view.fullscreen'), platform);
-  return key ? `Press ${key} or Esc to exit full screen` : 'Press Esc to exit full screen';
+  return key
+    ? `Press ${key} to exit full screen`
+    : 'Use View → Exit Full Screen to leave full screen';
 };
 
 const hideHint = (hint) => {
@@ -49,6 +59,19 @@ const showHint = (hint, platform) => {
 };
 
 export const isBrowserFullscreen = () => active;
+
+/**
+ * Start listening for the window's full-screen reports. Call as early as the
+ * chrome's script runs; a report before `initBrowserFullscreen` is held.
+ */
+export function listenForFullscreenChanges(api = window.electronAPI) {
+  if (listening || !api?.onFullscreenChanged) return;
+  listening = true;
+  api.onFullscreenChanged((isFullScreen) => {
+    if (applyState) applyState(isFullScreen);
+    else pendingState = isFullScreen;
+  });
+}
 
 /**
  * @param {object} deps
@@ -79,17 +102,13 @@ export function initBrowserFullscreen({
     }
   };
 
-  window.electronAPI?.onFullscreenChanged?.(apply);
-
-  // Registered before navigation.js's own window-level Escape (stop loading),
-  // so a press that leaves full screen does only that.
-  window.addEventListener('keydown', (event) => {
-    if (!active || event.key !== 'Escape') return;
-    if (event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return;
-    if (event.isComposing || event.defaultPrevented || isModalDialogOpen()) return;
-    event.preventDefault();
-    window.electronAPI?.toggleFullscreen?.();
-  });
+  applyState = apply;
+  listenForFullscreenChanges();
+  if (pendingState !== null) {
+    const held = pendingState;
+    pendingState = null;
+    apply(held);
+  }
 
   return { apply };
 }

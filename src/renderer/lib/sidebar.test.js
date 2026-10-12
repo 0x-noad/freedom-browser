@@ -27,7 +27,12 @@ async function loadSidebar() {
     electronAPI: { getSettings: jest.fn().mockResolvedValue({ enableIdentityWallet: true }) },
     addEventListener: jest.fn(),
   };
-  global.CustomEvent = class { constructor(type, init) { this.type = type; Object.assign(this, init); } };
+  global.CustomEvent = class {
+    constructor(type, init) {
+      this.type = type;
+      Object.assign(this, init);
+    }
+  };
 
   // Imported after resetModules, so this is the same lock instance the
   // sidebar module subscribes to.
@@ -78,7 +83,12 @@ describe('sidebar ownership during a signature flight', () => {
     elements['wallet-toggle-btn'].dispatch('click');
     sidebar.close();
     sidebar.toggle();
-    document.handlers.keydown({ ctrlKey: true, shiftKey: true, key: 'W', preventDefault: jest.fn() });
+    document.handlers.keydown({
+      ctrlKey: true,
+      shiftKey: true,
+      key: 'W',
+      preventDefault: jest.fn(),
+    });
 
     expect(sidebar.isVisible()).toBe(true);
     expect(elements.sidebar.classList.contains('collapsed')).toBe(false);
@@ -175,6 +185,19 @@ describe('sidebar concealed by browser full screen', () => {
     // A second press is an ordinary close.
     sidebar.toggle();
     expect(sidebar.isVisible()).toBe(false);
+  });
+
+  test('a panel closed while hidden opens into view on the next toggle', async () => {
+    const { sidebar, elements } = await loadSidebar();
+    sidebar.setFullscreenConcealed(true);
+
+    // e.g. Identity & Wallet switched off and on again in Settings.
+    sidebar.close();
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+
+    sidebar.toggle();
+    expect(sidebar.isVisible()).toBe(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
   });
 
   test('a panel holding a device confirmation stays in view', async () => {

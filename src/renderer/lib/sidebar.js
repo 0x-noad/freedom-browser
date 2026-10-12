@@ -168,6 +168,9 @@ export function openForConsent() {
  */
 export function close() {
   if (refuseSidebarClose()) return;
+  // A closed panel is no longer hidden by full screen: the next toggle()
+  // opens it into view rather than into a still-concealed panel.
+  reveal();
   if (isOpen) {
     isOpen = false;
     applyState();

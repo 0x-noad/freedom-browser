@@ -1,15 +1,19 @@
 /* Browser full screen (#78): while the window is full screen the chrome steps
    aside and the active tab's webview fills it (lib/browser-fullscreen.js).
    Hidden, not closed: the bookmarks bar keeps its own setting and the sidebar
-   stays open underneath, so leaving full screen restores both as they were. */
+   stays open underneath, so leaving full screen restores both as they were.
+   The toolbar comes back while a site's permission prompt is up: the prompt
+   is anchored under the address bar inside it, and a hidden toolbar would
+   leave the request unanswerable (and the page waiting) until full screen
+   ends. The address bar also shows whose request it is. */
 body.browser-fullscreen .title-bar,
-body.browser-fullscreen .toolbar,
+body.browser-fullscreen .toolbar:not(:has(.permission-prompt:not([hidden]))),
 body.browser-fullscreen .bookmarks,
 body.browser-fullscreen .sidebar.fullscreen-concealed {
   display: none !important;
 }
 
-/* "Press F11 or Esc to exit full screen", shown for a few seconds on entry. */
+/* "Press F11 to exit full screen", shown for a few seconds on entry. */
 .fullscreen-exit-hint {
   position: fixed;
   top: 24px;

@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const { loadSettings } = require('../settings-store');
 const { TEST_HARNESS_RENDERER_ARG } = require('../test-mode');
+const { attachFullscreenChromeSync } = require('../browser-fullscreen');
 
 let currentWindowTitle = 'Freedom';
 
@@ -149,9 +150,8 @@ function createMainWindow(initialUrl = null, options = {}) {
     }
   });
 
-  // Hide the chrome while the window is full screen (#78). Required here,
-  // not at the top: browser-fullscreen.js itself requires this module.
-  require('../browser-fullscreen').attachFullscreenChromeSync(window);
+  // Hide the chrome while the window is full screen (#78).
+  attachFullscreenChromeSync(window);
 
   window.on('page-title-updated', (event) => {
     event.preventDefault();

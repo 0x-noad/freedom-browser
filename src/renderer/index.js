@@ -1,15 +1,9 @@
 // Renderer process entry point
-import {
-  updateRegistry,
-  applySettingsToState,
-} from './lib/state.js';
+import { updateRegistry, applySettingsToState } from './lib/state.js';
 import { initAntUi, updateAntStatusLine, updateAntToggleState } from './lib/ant-ui.js';
 import { initIpfsUi, updateIpfsStatusLine, updateIpfsToggleState } from './lib/ipfs-ui.js';
 import { initMyotisUi } from './lib/myotis-ui.js';
-import {
-  initRadicleUi,
-  updateRadicleStatusLine,
-} from './lib/radicle-ui.js';
+import { initRadicleUi, updateRadicleStatusLine } from './lib/radicle-ui.js';
 import { initTorUi, updateTorStatusLine } from './lib/tor-ui.js';
 import {
   initMenus,
@@ -77,7 +71,7 @@ import {
 import { pushDebug } from './lib/debug.js';
 import { initOnboarding } from './lib/onboarding.js';
 import { initSidebar, setFullscreenConcealed } from './lib/sidebar.js';
-import { initBrowserFullscreen } from './lib/browser-fullscreen.js';
+import { initBrowserFullscreen, listenForFullscreenChanges } from './lib/browser-fullscreen.js';
 import { renderSubscreenHeaders } from './lib/subscreen-header.js';
 import { initRadicleConsent } from './lib/radicle-consent.js';
 import { initRadicleAlias } from './lib/radicle-alias.js';
@@ -748,6 +742,11 @@ const closeAllOverlays = () => {
 // Don't close autocomplete here - mirrors browser behavior where address bar stays open
 electronAPI.onCloseMenus?.(closeAllMenus);
 
+// The window's full-screen state (#78): listened for now, before start-up's
+// first await, so main's did-finish-load report can't land unheard. It is
+// held until initBrowserFullscreen below applies it.
+listenForFullscreenChanges();
+
 // Internal pages can deep-link into the sidebar publish-setup checklist.
 electronAPI.onOpenPublishSetup?.(openPublishSetupFlow);
 
@@ -850,8 +849,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     openSettings: () => loadTarget('freedom://settings/about/updates'),
   });
   initBookmarks();
-  // Before initNavigation: its window-level Escape (stop loading) stands down
-  // for the press that leaves full screen.
   initBrowserFullscreen({
     setSidebarConcealed: setFullscreenConcealed,
     closeMenus: closeAllOverlays,

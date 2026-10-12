@@ -14,7 +14,6 @@ const { isExternalProtocolUrl, trackUserGestures } = require('./external-protoco
 const { requestOpenExternal } = require('./permissions/permissions-manager');
 const { claimPopup, reportBlockedPopup } = require('./popup-blocker');
 const { attachTabSwitchKeys } = require('./tab-switch-keys');
-const { attachFullscreenEscape } = require('./browser-fullscreen');
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -234,11 +233,6 @@ function registerWebContentsHandlers() {
     // the key, so they work wherever focus is — see tab-switch-keys.js (#556).
     if (type === 'window' || type === 'webview') {
       attachTabSwitchKeys(contents);
-    }
-
-    // Escape typed into a page leaves browser full screen (#78).
-    if (type === 'webview') {
-      attachFullscreenEscape(contents);
     }
 
     // For webview contents, fix dark defaults and intercept navigation

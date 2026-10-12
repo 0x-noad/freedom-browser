@@ -4,20 +4,29 @@
 // used to make only the *window* full screen, with the tab strip, toolbar,
 // bookmarks bar and sidebar still stacked over the page. Now the chrome steps
 // aside and the active tab's webview fills the window, and leaving full screen
-// (the same three, plus Escape) puts back exactly the chrome that was there.
+// (the same three) puts back exactly the chrome that was there. Escape does
+// not leave, as in Chrome's and Firefox's F11 mode: it stays the page's (a
+// modal's close, an editor's normal mode) and the chrome's own.
 //
 // Every entry point is driven for real: the toolbar button by a click, the
 // View-menu item through the live application menu, F11 through the chrome's
 // keydown fallback (synthetic CDP keys never reach native menu accelerators,
 // see zoom.spec.js), and Escape in the page through `sendInputEvent` on the
-// guest's own webContents — where `before-input-event` sees it, the same as an
-// OS key press (see tab-switch-shortcut.spec.js).
+// guest's own webContents, the same path an OS key press takes (see
+// tab-switch-shortcut.spec.js).
 //
 // Under xvfb there is no window manager, so the window is not actually
 // resized; Electron still enters full screen and fires the events the chrome
 // follows, and the assertions are on the chrome's layout inside the window.
 
 const { test, expect, SAMPLE_BZZ_HASH } = require('./fixtures');
+const {
+  FIXTURE_BODY: PERMISSION_FIXTURE_BODY,
+  clickAsk,
+  readOut,
+  answerPrompt,
+  gotoPermissionFixture,
+} = require('./permission-fixtures');
 
 const PAGE = `bzz://${SAMPLE_BZZ_HASH}/`;
 const PAGE_BODY =
@@ -148,7 +157,7 @@ test.describe('with the bookmarks bar on and the sidebar open', () => {
     // Hidden, not closed: the sidebar is still open underneath.
     await expect(window.locator('#sidebar')).not.toHaveClass(/collapsed/);
     await expect(window.locator('[data-test="fullscreen-exit-hint"]')).toHaveText(
-      'Press F11 or Esc to exit full screen'
+      'Press F11 to exit full screen'
     );
 
     await clickMenuItem(electronApp, 'fullscreen');
@@ -181,7 +190,7 @@ test.describe('with the bookmarks bar on and the sidebar open', () => {
 test.describe('with the bookmarks bar off', () => {
   test.use({ seedSettings: { showBookmarkBar: false } });
 
-  test('F11 enters and Escape in the chrome leaves; the bar stays off', async ({
+  test('F11 enters and leaves, Escape in the chrome does not; the bar stays off', async ({
     window,
     electronApp,
     harness,
@@ -194,21 +203,18 @@ test.describe('with the bookmarks bar off', () => {
     await expectChromeHidden(window, electronApp);
 
     // The address bar went away with the toolbar, so the chrome's own
-    // document now has the keyboard: its Escape leaves full screen.
+    // document now has the keyboard. Its Escape is not a way out (F11 is).
     await window.keyboard.press('Escape');
+    expect(await windowFullScreen(electronApp)).toBe(true);
+    await expect(window.locator(CHROME.toolbar)).toBeHidden();
+
+    await window.keyboard.press('F11');
     await expectChromeShown(window, electronApp);
     await expect(window.locator(CHROME.bookmarks)).toBeHidden();
-
-    // F11 again leaves too.
-    await window.locator('[data-test="address-input"]').click();
-    await window.keyboard.press('F11');
-    await expectChromeHidden(window, electronApp);
-    await window.keyboard.press('F11');
-    await expectChromeShown(window, electronApp);
   });
 });
 
-test('Escape in the page leaves full screen and is not also handed to the page', async ({
+test("Escape in the page is the page's and does not leave full screen", async ({
   window,
   electronApp,
   harness,
@@ -217,17 +223,50 @@ test('Escape in the page leaves full screen and is not also handed to the page',
   await clickMenuItem(electronApp, 'fullscreen');
   await expectChromeHidden(window, electronApp);
 
-  await pressEscapeInPage(window, electronApp);
-  await expectChromeShown(window, electronApp);
-  expect(await pageEval(window, 'window.escapes')).toBe(0);
-
-  // Out of full screen, Escape is the page's again.
+  // A web app's modal, an editor's normal mode, a game's pause menu: the
+  // page gets every Escape and the browser stays full screen.
   await pressEscapeInPage(window, electronApp);
   await expect.poll(() => pageEval(window, 'window.escapes')).toBe(1);
-  expect(await windowFullScreen(electronApp)).toBe(false);
+  await pressEscapeInPage(window, electronApp);
+  await expect.poll(() => pageEval(window, 'window.escapes')).toBe(2);
+  expect(await windowFullScreen(electronApp)).toBe(true);
+  await expect(window.locator(CHROME.toolbar)).toBeHidden();
+
+  await clickMenuItem(electronApp, 'fullscreen');
+  await expectChromeShown(window, electronApp);
 });
 
-test('Escape closes the find bar first and leaves full screen on the next press', async ({
+test('a permission request in full screen shows its prompt and can be answered', async ({
+  window,
+  electronApp,
+  harness,
+}) => {
+  await harness.setContentFixture(`bzz://${SAMPLE_BZZ_HASH}/`, { body: PERMISSION_FIXTURE_BODY });
+  await gotoPermissionFixture(window);
+  await clickMenuItem(electronApp, 'fullscreen');
+  await expectChromeHidden(window, electronApp);
+
+  // The prompt is anchored under the address bar, so the toolbar comes back
+  // for as long as the request is open; the tab strip stays hidden.
+  await clickAsk(window);
+  const prompt = window.locator('[data-test="permission-prompt"]');
+  await expect(prompt).toBeVisible();
+  const box = await prompt.boundingBox();
+  expect(box.width).toBeGreaterThan(0);
+  expect(box.height).toBeGreaterThan(0);
+  await expect(window.locator(CHROME.toolbar)).toBeVisible();
+  await expect(window.locator(CHROME.tabBar)).toBeHidden();
+  expect(await windowFullScreen(electronApp)).toBe(true);
+  await window.screenshot({ path: test.info().outputPath('fullscreen-permission-prompt.png') });
+
+  await answerPrompt(window, 'allow');
+  await expect(prompt).toBeHidden();
+  await expect.poll(() => readOut(window), { timeout: 5_000 }).toBe('granted');
+  // Answered: the page has the screen again, still in full screen.
+  await expectChromeHidden(window, electronApp);
+});
+
+test('Escape closes the find bar and stays in full screen', async ({
   window,
   electronApp,
   harness,
@@ -246,9 +285,11 @@ test('Escape closes the find bar first and leaves full screen on the next press'
   expect(await windowFullScreen(electronApp)).toBe(true);
   await expect(window.locator(CHROME.toolbar)).toBeHidden();
 
-  // The find bar hands the keyboard back to the page; Escape there leaves.
+  // The find bar hands the keyboard back to the page; Escape there is the
+  // page's.
   await pressEscapeInPage(window, electronApp);
-  await expectChromeShown(window, electronApp);
+  await expect.poll(() => pageEval(window, 'window.escapes')).toBe(1);
+  expect(await windowFullScreen(electronApp)).toBe(true);
 });
 
 test("a page's own Fullscreen API still works, inside browser full screen too", async ({
@@ -314,12 +355,14 @@ test("Escape in a page's own full screen leaves only that, not the browser's", a
   await expect.poll(fullscreenElement).toBe(null);
   await expectChromeHidden(window, electronApp);
 
-  // The next one is the browser's.
+  // The next one is the page's; the browser stays full screen.
   await pressEscapeInPage(window, electronApp);
-  await expectChromeShown(window, electronApp);
+  await expect.poll(() => pageEval(window, 'window.escapes')).toBeGreaterThan(0);
+  expect(await windowFullScreen(electronApp)).toBe(true);
+  await expectChromeHidden(window, electronApp);
 });
 
-test("Escape closes the page's context menu first, then leaves full screen", async ({
+test("Escape closes the page's context menu and stays in full screen", async ({
   window,
   electronApp,
   harness,
@@ -342,7 +385,4 @@ test("Escape closes the page's context menu first, then leaves full screen", asy
   await expect(pageMenu).toBeHidden();
   expect(await windowFullScreen(electronApp)).toBe(true);
   await expect(window.locator(CHROME.toolbar)).toBeHidden();
-
-  await pressEscapeInPage(window, electronApp);
-  await expectChromeShown(window, electronApp);
 });

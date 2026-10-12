@@ -1,22 +1,19 @@
 /**
  * Browser full screen hides the chrome (#78): the renderer half. The main
  * process reports the window's state; this module flips the body class the
- * stylesheet hides the chrome on, hides an open sidebar, shows the exit hint,
- * and lets the chrome's own unclaimed Escape leave full screen.
+ * stylesheet hides the chrome on, hides an open sidebar and shows the exit
+ * hint. Escape is left alone: it stays the page's and the chrome's.
  */
 
 const { createDocument, createElement } = require('../../../test/helpers/fake-dom.js');
 
-async function load({ platform = 'linux', overrides = {}, modalOpen = false } = {}) {
+async function load({ platform = 'linux', overrides = {}, early = [] } = {}) {
   jest.resetModules();
   jest.useFakeTimers();
 
   const hint = createElement('div');
   hint.hidden = true;
   const document = createDocument({ elementsById: { 'fullscreen-exit-hint': hint } });
-  document.querySelector = jest.fn((selector) =>
-    selector === 'dialog[open]' && modalOpen ? {} : null
-  );
   global.document = document;
 
   let onChange = null;
@@ -38,6 +35,9 @@ async function load({ platform = 'linux', overrides = {}, modalOpen = false } = 
   const shortcuts = await import('./shortcuts.js');
   shortcuts.configureShortcuts({ platform, overrides });
   const mod = await import('./browser-fullscreen.js');
+  // index.js listens as soon as its script runs, before start-up's awaits.
+  mod.listenForFullscreenChanges();
+  early.forEach((state) => onChange(state));
   const setSidebarConcealed = jest.fn();
   const closeMenus = jest.fn();
   mod.initBrowserFullscreen({ setSidebarConcealed, closeMenus, platform });
@@ -106,7 +106,7 @@ describe('following the window into and out of full screen', () => {
     const t = await load();
     t.change(true);
     expect(t.hint.hidden).toBe(false);
-    expect(t.hint.textContent).toBe('Press F11 or Esc to exit full screen');
+    expect(t.hint.textContent).toBe('Press F11 to exit full screen');
     jest.advanceTimersByTime(t.mod.EXIT_HINT_MS);
     expect(t.hint.hidden).toBe(true);
   });
@@ -114,7 +114,7 @@ describe('following the window into and out of full screen', () => {
   test('the hint follows a remap and the platform format', async () => {
     const t = await load({ platform: 'darwin', overrides: { 'view.fullscreen': 'Cmd+Ctrl+F' } });
     t.change(true);
-    expect(t.hint.textContent).toBe('Press ⌃⌘F or Esc to exit full screen');
+    expect(t.hint.textContent).toBe('Press ⌃⌘F to exit full screen');
   });
 
   test('leaving takes the hint down at once', async () => {
@@ -125,38 +125,29 @@ describe('following the window into and out of full screen', () => {
   });
 });
 
-describe("the chrome's Escape", () => {
-  test('leaves full screen and is claimed', async () => {
-    const t = await load();
-    t.change(true);
-    const event = t.press();
-    expect(event.preventDefault).toHaveBeenCalled();
-    expect(t.electronAPI.toggleFullscreen).toHaveBeenCalledTimes(1);
+describe('a report that arrives before start-up reaches init', () => {
+  test('is held and applied on init, not lost', async () => {
+    const t = await load({ early: [true] });
+    expect(t.electronAPI.onFullscreenChanged).toHaveBeenCalledTimes(1);
+    expect(t.body.classList.contains('browser-fullscreen')).toBe(true);
+    expect(t.setSidebarConcealed).toHaveBeenLastCalledWith(true);
+    expect(t.hint.hidden).toBe(false);
   });
 
-  test('does nothing outside full screen', async () => {
+  test('only the latest one counts', async () => {
+    const t = await load({ early: [true, false] });
+    expect(t.body.classList.contains('browser-fullscreen')).toBe(false);
+    expect(t.setSidebarConcealed).not.toHaveBeenCalled();
+  });
+});
+
+describe('Escape', () => {
+  test("is not claimed: it stays the page's and the chrome's (#78 review)", async () => {
     const t = await load();
+    t.change(true);
     const event = t.press();
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(t.electronAPI.toggleFullscreen).not.toHaveBeenCalled();
-  });
-
-  test.each([
-    ['a menu or the find bar already took it', { defaultPrevented: true }],
-    ['it carries a modifier', { shiftKey: true }],
-    ['an IME is composing', { isComposing: true }],
-    ['it is another key', { key: 'Enter' }],
-  ])('stands down when %s', async (_label, init) => {
-    const t = await load();
-    t.change(true);
-    t.press(init);
-    expect(t.electronAPI.toggleFullscreen).not.toHaveBeenCalled();
-  });
-
-  test('stands down for an open modal dialog', async () => {
-    const t = await load({ modalOpen: true });
-    t.change(true);
-    t.press();
-    expect(t.electronAPI.toggleFullscreen).not.toHaveBeenCalled();
+    expect(t.mod.isBrowserFullscreen()).toBe(true);
   });
 });
