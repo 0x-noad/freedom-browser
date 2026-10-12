@@ -365,7 +365,7 @@ test('the auto-retry count carries over only within a streak', async ({
 
 // Who started the retry decides whether the streak continues: the error
 // page's own auto-retry carries an exhausted count on, but the toolbar Reload
-// and the page context menu's Reload are explicit retries like Try Again and
+// and the page context menu's Reload are explicit retries like Try again and
 // start over with a countdown.
 test('the error page retrying itself keeps the streak; the toolbar or context-menu Reload starts a new one', async ({
   electronApp,
