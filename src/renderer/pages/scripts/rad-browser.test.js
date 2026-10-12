@@ -133,6 +133,14 @@ describe('rad-browser.html CSP (#661)', () => {
     expect(directives['style-src']).toEqual(["'self'"]);
   });
 
+  test('README images still load from every source they did before', () => {
+    // The old policy left img-src open; tightening default-src must not
+    // silently break http:// badges or dweb-hosted README images.
+    expect(directives['img-src']).toEqual(
+      expect.arrayContaining(["'self'", 'data:', 'https:', 'http:', 'ipfs:', 'ipns:', 'bzz:', 'rad:'])
+    );
+  });
+
   test('reads only radapi: and the public seed', () => {
     expect(directives['connect-src']).toEqual(["'self'", 'radapi:', 'https://seed.radicle.xyz']);
   });
