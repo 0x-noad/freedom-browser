@@ -158,7 +158,7 @@ describe('myotis-ui', () => {
     expect(ctx.elements.state.textContent).toBe('Ready');
     expect(ctx.elements.peers.textContent).toBe('7');
     expect(ctx.elements.block.textContent).toBe('2345');
-    expect(ctx.elements.version.textContent).toBe('Myotis v0.1.7');
+    expect(ctx.elements.version.textContent).toBe('Myotis 0.1.7');
 
     ctx.elements.button.dispatch('click');
     await flushMicrotasks();
