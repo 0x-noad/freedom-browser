@@ -94,10 +94,10 @@ async function switchToProfile(profileId) {
   // A switch can take a few seconds before it lands or fails (on GNOME
   // Wayland it waits for the other profile to confirm an xdg-open switch, and
   // one that does not land then tries the focus-request file), and the native
-  // menu is closed by then. Show the wait as an indeterminate progress bar on
-  // the window: its taskbar/dock entry where the desktop draws one.
+  // menu is closed by then. Show the wait as a progress bar on the window's
+  // taskbar/dock entry, where the desktop draws one (setSwitchBusy).
   const busyWindow = switchFeedbackWindow();
-  setSwitchBusy(busyWindow, true);
+  const stopBusy = setSwitchBusy(busyWindow);
   try {
     // openOrFocusProfile resolves with { error } (it does NOT throw) when the
     // profile is running but never acknowledged the focus request. The native
@@ -116,7 +116,7 @@ async function switchToProfile(profileId) {
       err?.message || 'The profile could not be opened.'
     );
   } finally {
-    setSwitchBusy(busyWindow, false);
+    stopBusy();
   }
 }
 
@@ -128,13 +128,48 @@ function switchFeedbackWindow() {
   }
 }
 
-function setSwitchBusy(win, busy) {
-  try {
-    if (!win || win.isDestroyed?.()) return;
-    win.setProgressBar?.(busy ? 2 : -1);
-  } catch {
-    // Feedback only.
+// How long the Linux bar takes to fill to SWITCH_BUSY_LINUX_CAP: about the
+// longest a switch waits (profile-switch-scheme.js's 6 s ack budget, then up to
+// 1.8 s of focus-request file hand-off).
+const SWITCH_BUSY_LINUX_FILL_MS = 8000;
+const SWITCH_BUSY_LINUX_CAP = 0.9;
+const SWITCH_BUSY_LINUX_TICK_MS = 250;
+
+// Show a switch in progress on `win`; returns the function that clears it.
+// Windows and macOS draw a progress value above 1 as an indeterminate bar.
+// Linux does not: Electron sets it on the Unity LauncherEntry (Ubuntu Dock,
+// KDE's task manager), which has no indeterminate mode ("Indeterminate mode is
+// not supported", Electron 44's setProgressBar docs), so a 2 there would read
+// as a full, finished bar. On Linux the bar instead fills with the time spent
+// waiting and stops short of full, so it never reads as done.
+function setSwitchBusy(win, { platform = process.platform } = {}) {
+  const set = (value) => {
+    try {
+      if (!win || win.isDestroyed?.()) return false;
+      win.setProgressBar?.(value);
+      return true;
+    } catch {
+      // Feedback only.
+      return false;
+    }
+  };
+  if (platform !== 'linux') {
+    set(2);
+    return () => set(-1);
   }
+  const startedAt = Date.now();
+  const fill = () =>
+    Math.min(SWITCH_BUSY_LINUX_CAP, (Date.now() - startedAt) / SWITCH_BUSY_LINUX_FILL_MS);
+  // Start visibly above zero: a 0 bar is drawn as nothing on some docks.
+  set(Math.max(0.05, fill()));
+  const timer = setInterval(() => {
+    if (!set(Math.max(0.05, fill()))) clearInterval(timer);
+  }, SWITCH_BUSY_LINUX_TICK_MS);
+  timer.unref?.();
+  return () => {
+    clearInterval(timer);
+    set(-1);
+  };
 }
 
 // Build the Profiles menu dynamically from the catalog, mirroring the

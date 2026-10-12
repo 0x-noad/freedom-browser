@@ -141,8 +141,9 @@ function secondInstanceUrls(argv, { settingsUrl }) {
 // token Electron has just set for this launch.
 //
 // A launch carrying an `x-freedom-profile:` switch (an in-app switch through
-// xdg-open) is acknowledged in userDataDir once the window was raised, so the
-// profile that asked can tell a switch that landed from one that did not.
+// xdg-open) is acknowledged in userDataDir: `done` once the window was raised,
+// `failed` when raising it threw, so the profile that asked can tell a switch
+// that landed from one that did not without waiting out its budget.
 function createSecondInstanceHandler({
   app,
   settingsUrl,
@@ -155,10 +156,10 @@ function createSecondInstanceHandler({
   return (_event, argv) => {
     const urls = secondInstanceUrls(argv, { settingsUrl });
     const isSwitch = Array.isArray(argv) && argv.slice(1).some(isProfileSwitchArg);
-    const ackSwitch = () => {
+    const ackSwitch = (state = 'done') => {
       if (!isSwitch || !userDataDir) return;
       try {
-        writeSwitchAck(userDataDir, { state: 'done' });
+        writeSwitchAck(userDataDir, { state });
       } catch (error) {
         logger?.warn?.(
           '[profile] Could not acknowledge a profile switch:',
@@ -175,6 +176,9 @@ function createSecondInstanceHandler({
         focusWindow(urls);
       } catch (error) {
         logger?.error?.('[profile] Could not focus this profile for a second launch:', error);
+        // Tell a waiting switch at once, rather than leaving it at `received`
+        // until its time runs out: it then reports the failure itself.
+        ackSwitch('failed');
         return;
       }
       ackSwitch();

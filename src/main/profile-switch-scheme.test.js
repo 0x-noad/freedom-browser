@@ -12,6 +12,7 @@ const {
   parseProfileSwitchArgv,
   parseProfileSwitchUrl,
   readProfileSwitchAck,
+  readProfileSwitchAcks,
   readProfileSwitchAckTime,
   shouldSwitchProfileViaXdgOpen,
   switchProfileViaXdgOpen,
@@ -364,18 +365,60 @@ describe('x-freedom-profile scheme', () => {
       ).resolves.toBe(true);
     });
 
-    test('reads an ack without a state as done, and rejects unknown states', () => {
-      fs.writeFileSync(
-        path.join(dir, 'profile-switch-ack.json'),
-        JSON.stringify({ handledAtMs: 5 })
-      );
+    test('reads an ack without a state as done, and skips unknown states', () => {
+      const acks = path.join(dir, 'profile-switch-acks');
+      fs.mkdirSync(acks);
+      fs.writeFileSync(path.join(acks, '5-1-1-done.json'), JSON.stringify({ handledAtMs: 5 }));
       expect(readProfileSwitchAck(dir)).toEqual({ at: 5, state: 'done' });
       fs.writeFileSync(
-        path.join(dir, 'profile-switch-ack.json'),
-        JSON.stringify({ handledAtMs: 5, state: 'bogus' })
+        path.join(acks, '6-1-2-bogus.json'),
+        JSON.stringify({ handledAtMs: 6, state: 'bogus' })
       );
-      expect(readProfileSwitchAck(dir)).toBeNull();
+      fs.writeFileSync(path.join(acks, '7-1-3-done.json'), 'not json');
+      expect(readProfileSwitchAcks(dir)).toEqual([{ at: 5, state: 'done' }]);
       expect(() => writeProfileSwitchAck(dir, { state: 'bogus' })).toThrow();
+    });
+
+    test('overlapping switches to one profile do not overwrite each other (R3-M3)', async () => {
+      // Switch A started at 2000, switch B at 2050. A's launch is done at 2100,
+      // and B's launch says received at 2101, before A's waiter polls again.
+      // With one shared file, B's record replaced A's `done` and A waited out
+      // its whole budget.
+      writeProfileSwitchAck(dir, { state: 'received', now: 2010 });
+      writeProfileSwitchAck(dir, { state: 'done', now: 2100 });
+      writeProfileSwitchAck(dir, { state: 'received', now: 2101 });
+      expect(readProfileSwitchAcks(dir)).toEqual([
+        { at: 2010, state: 'received' },
+        { at: 2100, state: 'done' },
+        { at: 2101, state: 'received' },
+      ]);
+      const started = Date.now();
+      await expect(
+        waitForProfileSwitchAck(dir, 2000, { timeoutMs: 5000, pollIntervalMs: 10 })
+      ).resolves.toBe(true);
+      expect(Date.now() - started).toBeLessThan(1000);
+    });
+
+    test('several records written in the same millisecond all survive', () => {
+      writeProfileSwitchAck(dir, { state: 'done', now: 4000 });
+      writeProfileSwitchAck(dir, { state: 'received', now: 4000 });
+      writeProfileSwitchAck(dir, { state: 'received', now: 4000 });
+      expect(readProfileSwitchAcks(dir)).toHaveLength(3);
+      // A done since the switch started wins over a later received.
+      return expect(
+        waitForProfileSwitchAck(dir, 4000, { timeoutMs: 50, pollIntervalMs: 10 })
+      ).resolves.toBe(true);
+    });
+
+    test('a write sweeps records too old for any waiting switch', () => {
+      const now = Date.now();
+      writeProfileSwitchAck(dir, { state: 'done', now: now - 5 * 60 * 1000 });
+      writeProfileSwitchAck(dir, { state: 'received', now: now - 1000 });
+      writeProfileSwitchAck(dir, { state: 'done', now });
+      expect(readProfileSwitchAcks(dir).map((ack) => ack.at)).toEqual([now - 1000, now]);
+      expect(
+        fs.readdirSync(path.join(dir, 'profile-switch-acks')).filter((n) => n.endsWith('.tmp'))
+      ).toEqual([]);
     });
 
     test('times out with no ack at all', async () => {

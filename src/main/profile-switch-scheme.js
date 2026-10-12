@@ -41,14 +41,14 @@ const PACKAGED_DESKTOP_NAME = require('../../package.json').desktopName;
 // stuck, and the switch falls back to the file hand-off.
 const XDG_MIME_TIMEOUT_MS = 1000;
 
-// The switch's outcome, written into the target profile's userData dir: by the
-// switch launch itself as soon as it starts (`received`), and once it is over
-// by the running profile when the launch raised its window through the
+// The switch's outcome, written into the target profile's userData dir (one
+// file per record, see Confirmation below): by the switch launch itself as
+// soon as it starts (`received`), and once it is over by the running profile when the launch raised its window through the
 // single-instance hand-over (`done`), or by the launch when it had to use the
 // focus-request file instead (`done` or `failed`; profile-instance-handoff.js).
 // The in-app switch waits for it: xdg-open itself confirms only that it
 // started something.
-const PROFILE_SWITCH_ACK_FILE = 'profile-switch-ack.json';
+const PROFILE_SWITCH_ACK_DIR = 'profile-switch-acks';
 const PROFILE_SWITCH_STATES = new Set(['received', 'done', 'failed']);
 // xdg-open, then a fresh Freedom process up to its first lines of main-process
 // code: a few hundred ms normally, more on a cold disk. A launch that has not
@@ -58,6 +58,8 @@ const PROFILE_SWITCH_RECEIVE_TIMEOUT_MS = 3000;
 // unanswered, its focus-request file (1.8 s), on top of the start-up above.
 const PROFILE_SWITCH_ACK_TIMEOUT_MS = 6000;
 const PROFILE_SWITCH_ACK_POLL_MS = 100;
+// Records older than this are swept on the next write: well past any wait.
+const PROFILE_SWITCH_ACK_MAX_AGE_MS = 60 * 1000;
 
 function isProfileSwitchArg(arg) {
   return typeof arg === 'string' && arg.slice(0, PREFIX.length).toLowerCase() === PREFIX;
@@ -266,9 +268,37 @@ async function shouldSwitchProfileViaXdgOpen({
 }
 
 // --- Confirmation -----------------------------------------------------------
+//
+// Every record is its own file under PROFILE_SWITCH_ACK_DIR, never one shared
+// file: two switches to the same profile can overlap (two menu clicks, a dock
+// click during a menu switch), and with a single file the second launch's
+// `received` could overwrite the first one's `done` between two polls and
+// leave the first waiter running out its budget (R3-M3). Records only ever get
+// added, so a waiter sees every state written since it started.
 
-function profileSwitchAckPath(userDataDir) {
-  return path.join(userDataDir, PROFILE_SWITCH_ACK_FILE);
+function profileSwitchAckDir(userDataDir) {
+  return path.join(userDataDir, PROFILE_SWITCH_ACK_DIR);
+}
+
+let ackSequence = 0;
+
+// Drop records too old for any switch still waiting on them. Best effort.
+function sweepProfileSwitchAcks(dir, now, fsImpl) {
+  let names;
+  try {
+    names = fsImpl.readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const match = /^(\d+)-/.exec(name);
+    if (!match || now - Number(match[1]) <= PROFILE_SWITCH_ACK_MAX_AGE_MS) continue;
+    try {
+      fsImpl.unlinkSync(path.join(dir, name));
+    } catch {
+      // Someone else swept it, or it is in use; next time.
+    }
+  }
 }
 
 // Record the switch's progress (`received`, `done` or `failed`, see above).
@@ -277,28 +307,64 @@ function writeProfileSwitchAck(
   { state = 'done', now = Date.now(), fsImpl = fs } = {}
 ) {
   if (!PROFILE_SWITCH_STATES.has(state)) throw new Error(`Invalid switch state: ${state}`);
-  const target = profileSwitchAckPath(userDataDir);
-  const tmp = `${target}.${process.pid}.${now}.${state}.tmp`;
+  const dir = profileSwitchAckDir(userDataDir);
+  fsImpl.mkdirSync(dir, { recursive: true });
+  sweepProfileSwitchAcks(dir, now, fsImpl);
+  ackSequence += 1;
+  const name = `${now}-${process.pid}-${ackSequence}-${state}`;
+  const target = path.join(dir, `${name}.json`);
+  const tmp = path.join(dir, `${name}.tmp`);
   fsImpl.writeFileSync(tmp, JSON.stringify({ handledAtMs: now, state, pid: process.pid }), 'utf-8');
   fsImpl.renameSync(tmp, target);
 }
 
-// The last recorded { at, state }, or null. An ack without a state (none is
-// written that way, but keep it readable) counts as `done`.
-function readProfileSwitchAck(userDataDir, fsImpl = fs) {
+// Every record as { at, state }, oldest first. A record without a state (none
+// is written that way, but keep it readable) counts as `done`; unreadable or
+// unknown ones are skipped.
+function readProfileSwitchAcks(userDataDir, fsImpl = fs) {
+  const dir = profileSwitchAckDir(userDataDir);
+  let names;
   try {
-    const ack = JSON.parse(fsImpl.readFileSync(profileSwitchAckPath(userDataDir), 'utf-8'));
-    const at = Number(ack?.handledAtMs);
-    if (!Number.isFinite(at)) return null;
-    const state = ack?.state === undefined ? 'done' : ack.state;
-    return PROFILE_SWITCH_STATES.has(state) ? { at, state } : null;
+    names = fsImpl.readdirSync(dir);
   } catch {
-    return null;
+    return [];
   }
+  const acks = [];
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    try {
+      const ack = JSON.parse(fsImpl.readFileSync(path.join(dir, name), 'utf-8'));
+      const at = Number(ack?.handledAtMs);
+      if (!Number.isFinite(at)) continue;
+      const state = ack?.state === undefined ? 'done' : ack.state;
+      if (PROFILE_SWITCH_STATES.has(state)) acks.push({ at, state });
+    } catch {
+      // Skip it.
+    }
+  }
+  return acks.sort((a, b) => a.at - b.at);
+}
+
+// The latest record, or null.
+function readProfileSwitchAck(userDataDir, fsImpl = fs) {
+  const acks = readProfileSwitchAcks(userDataDir, fsImpl);
+  return acks.length ? acks[acks.length - 1] : null;
 }
 
 function readProfileSwitchAckTime(userDataDir, fsImpl = fs) {
   return readProfileSwitchAck(userDataDir, fsImpl)?.at ?? null;
+}
+
+// Where the records written since `sinceMs` leave a switch: `done` if any
+// launch raised the window since (an overlapping switch to the same profile
+// counts: the window the user asked for is in front), else `failed` if one
+// failed, else `received`, else null.
+function profileSwitchStateSince(acks, sinceMs) {
+  const states = new Set(acks.filter((ack) => ack.at >= sinceMs).map((ack) => ack.state));
+  for (const state of ['done', 'failed', 'received']) {
+    if (states.has(state)) return state;
+  }
+  return null;
 }
 
 // Resolves true once the profile in `userDataDir` recorded a switch `done` at
@@ -315,8 +381,7 @@ async function waitForProfileSwitchAck(userDataDir, sinceMs, options = {}) {
   const deadline = startedAt + timeoutMs;
   const receiveDeadline = startedAt + Math.min(receiveTimeoutMs, timeoutMs);
   for (;;) {
-    const ack = readProfileSwitchAck(userDataDir, fsImpl);
-    const current = ack !== null && ack.at >= sinceMs ? ack.state : null;
+    const current = profileSwitchStateSince(readProfileSwitchAcks(userDataDir, fsImpl), sinceMs);
     if (current === 'done') return true;
     if (current === 'failed') return false;
     const now = Date.now();
@@ -356,7 +421,7 @@ async function switchProfileViaXdgOpen(target, deps = {}) {
 
 module.exports = {
   PACKAGED_DESKTOP_NAME,
-  PROFILE_SWITCH_ACK_FILE,
+  PROFILE_SWITCH_ACK_DIR,
   PROFILE_SWITCH_ACK_TIMEOUT_MS,
   PROFILE_SWITCH_RECEIVE_TIMEOUT_MS,
   PROFILE_SWITCH_MIME_TYPE,
@@ -371,6 +436,7 @@ module.exports = {
   parseProfileSwitchUrl,
   queryDefaultSchemeHandler,
   readProfileSwitchAck,
+  readProfileSwitchAcks,
   readProfileSwitchAckTime,
   shouldSwitchProfileViaXdgOpen,
   switchProfileViaXdgOpen,

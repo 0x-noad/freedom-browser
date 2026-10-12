@@ -243,7 +243,7 @@ describe('profile instance hand-off (Linux single-instance lock, #142)', () => {
       );
     });
 
-    test('only a switch is acknowledged, and not when the focus failed', () => {
+    test('only a switch is acknowledged, and one whose focus threw as failed (R3-M2)', () => {
       const plain = handler();
       plain.handle({}, ['/opt/Freedom/freedom', '--profile=work']);
       expect(plain.writeSwitchAck).not.toHaveBeenCalled();
@@ -254,7 +254,16 @@ describe('profile instance hand-off (Linux single-instance lock, #142)', () => {
         }),
       });
       failing.handle({}, ['/opt/Freedom/freedom', 'x-freedom-profile:work']);
-      expect(failing.writeSwitchAck).not.toHaveBeenCalled();
+      expect(failing.writeSwitchAck).toHaveBeenCalledTimes(1);
+      expect(failing.writeSwitchAck).toHaveBeenCalledWith('/p/work', { state: 'failed' });
+
+      const plainFailing = handler({
+        focusWindow: jest.fn(() => {
+          throw new Error('window destroyed');
+        }),
+      });
+      plainFailing.handle({}, ['/opt/Freedom/freedom', '--profile=work']);
+      expect(plainFailing.writeSwitchAck).not.toHaveBeenCalled();
     });
 
     test('a switch during cold start is acknowledged once queued for the first window', () => {
