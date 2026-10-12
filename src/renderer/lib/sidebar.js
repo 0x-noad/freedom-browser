@@ -23,11 +23,14 @@ let concealed = false;
 // panel is back on its home view (see watchHomeView).
 let fullscreen = false;
 let revealedForRequest = false;
-// Whether a request (an approval, a consent prompt, a vault unlock) has put
-// its screen up in the panel and not yet been answered: set when a request
-// opens the panel, cleared once the panel is back on its home view. Entering
-// full screen leaves such a panel in view, so the request is not left hanging
-// out of sight (see conceal()).
+// Whether a screen opened through open()/openForConsent() is up in the panel
+// and the panel has not yet gone back to its home view: set by every such
+// caller, cleared once the home view returns. That covers requests (an
+// approval, a consent prompt, a vault unlock) and also screens the user
+// opened, such as Send from an ethereum: link or the Publish setup flow.
+// Entering full screen leaves such a panel in view, so a request is not left
+// hanging out of sight, and a user-opened screen likewise stays until the
+// panel is back on its home view (see conceal()).
 let requestOpened = false;
 
 // DOM references
@@ -203,12 +206,14 @@ export function close() {
  * Hide (or show again) an open sidebar for browser full screen, leaving it
  * open underneath so leaving full screen restores it as it was (#78). A
  * sidebar holding a device confirmation stays in view: that prompt cannot be
- * recalled (see refuseSidebarClose). So does one showing a request that is
- * still unanswered (a dApp connect or approval, a Radicle consent, a vault
- * unlock): it is marked as revealed for that request, so it steps aside once
- * the request is answered, as one arriving in full screen does. Anything that opens the panel while it
- * is hidden — an approval request, the shortcut — shows it again, so a
- * request arriving in full screen is never answered out of sight.
+ * recalled (see refuseSidebarClose). So does one showing a screen opened
+ * through open()/openForConsent() that has not yet given way to the home view:
+ * an unanswered request (a dApp connect or approval, a Radicle consent, a vault
+ * unlock), but also a user-opened screen such as Send or Publish setup. It is
+ * marked as revealed for that screen, so it steps aside once the home view
+ * comes back, as one opened in full screen does. Anything that opens the
+ * panel while it is hidden (an approval request, the shortcut) shows it
+ * again, so a request arriving in full screen is never answered out of sight.
  */
 export function setFullscreenConcealed(on) {
   fullscreen = Boolean(on);
@@ -216,8 +221,9 @@ export function setFullscreenConcealed(on) {
   conceal();
 }
 
-// A request's screen is up in the panel: one opened it and the home view has
-// not come back since. Without a home view to watch there is no way to tell
+// A screen opened through open()/openForConsent() (a request, or a
+// user-opened one like Send) is up in the panel and the home view has not
+// come back since. Without a home view to watch there is no way to tell
 // when the request is over, so no request counts as up.
 function isRequestUp() {
   return requestOpened && Boolean(homeView?.classList.contains('hidden'));
@@ -228,9 +234,10 @@ function conceal() {
   sidebar?.classList.toggle('fullscreen-concealed', concealed);
 }
 
-// An approval or consent request shows the panel over a full-screen page. The
-// request's screen replaces the panel's home view while it is up, and every
-// request puts the home view back when it is answered or dismissed; at that
+// open()/openForConsent() show the panel over a full-screen page, for a request
+// (an approval, a consent) or a screen the user opened (Send, Publish setup).
+// That screen replaces the panel's home view while it is up, and each one
+// puts the home view back when it is answered or dismissed; at that
 // point the panel goes back to how full screen had it (concealed if it is
 // still open), instead of staying over the page until the user dismisses it.
 // Only a request that is what brings the panel into view marks it: a panel
