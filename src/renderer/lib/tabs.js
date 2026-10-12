@@ -106,17 +106,41 @@ const namedTargets = new Map();
 // opener) means no gesture-less reuse at all — fail closed.
 const namedTargetOpeners = new Map();
 
-// Stack of recently closed tabs for Ctrl+Shift+T (reopen closed tab)
+// Stack of recently closed tabs for Ctrl+Shift+T (reopen closed tab).
+// Each entry carries an id (so the app menu's History > Recently Closed can
+// name the one to reopen, #584) and when it closed (so the menu can merge
+// the lists of several windows newest first).
 const closedTabsStack = [];
 const MAX_CLOSED_TABS = 20;
+let nextClosedTabId = 1;
 
-// Push current tab state to the main process for menu item enable/disable
-const pushTabMenuState = () => {
+const activeWebviewCan = (method) => {
+  const webview = tabState.tabs.find((t) => t.id === tabState.activeTabId)?.webview;
+  try {
+    return !!webview?.[method]?.();
+  } catch {
+    // Guest not attached yet (or already gone).
+    return false;
+  }
+};
+
+// Push current tab state to the main process for menu item enable/disable.
+// Exported so navigation.js can re-push when Back/Forward availability
+// changes on a commit.
+export const pushTabMenuState = () => {
   const activeIndex = tabState.tabs.findIndex((t) => t.id === tabState.activeTabId);
   electronAPI?.updateTabMenuState?.({
     tabCount: tabState.tabs.length,
     activeIndex,
     hasClosedTabs: closedTabsStack.length > 0,
+    canGoBack: activeWebviewCan('canGoBack'),
+    canGoForward: activeWebviewCan('canGoForward'),
+    // PRIVATE MODE GUARD (history menu): a private window's closed tabs
+    // never reach the app menu's Recently Closed list. The main process
+    // drops a private sender's list too (src/main/menu.js).
+    closedTabs: isPrivateWindow()
+      ? []
+      : closedTabsStack.map(({ id, url, title, closedAt }) => ({ id, url, title, closedAt })),
   });
 };
 
@@ -1616,7 +1640,12 @@ export const closeTab = (tabId) => {
   // never be resurrected from a normal window's Cmd/Ctrl+Shift+T.
   const tabUrl = tab.url || tab.navigationState?.currentPageUrl;
   if (tabUrl && tabUrl !== 'about:blank' && tabUrl !== homeUrl && !isPrivateStartUrl(tabUrl)) {
-    closedTabsStack.push({ url: tabUrl, title: tab.title });
+    closedTabsStack.push({
+      id: nextClosedTabId++,
+      url: tabUrl,
+      title: tab.title,
+      closedAt: Date.now(),
+    });
     if (closedTabsStack.length > MAX_CLOSED_TABS) {
       closedTabsStack.shift();
     }
@@ -1726,9 +1755,17 @@ const closeTabsToRight = (tabId) => {
   pushDebug(`Closed ${tabsToClose.length} tabs to the right`);
 };
 
-// Reopen the last closed tab
-export const reopenLastClosedTab = () => {
-  const entry = closedTabsStack.pop();
+// Reopen the last closed tab — or, given an entry id (the app menu's
+// History > Recently Closed rows), that entry. An id no longer on the stack
+// (reopened meanwhile) does nothing rather than reopening something else.
+export const reopenLastClosedTab = (entryId) => {
+  let entry;
+  if (entryId === undefined || entryId === null) {
+    entry = closedTabsStack.pop();
+  } else {
+    const index = closedTabsStack.findIndex((candidate) => candidate.id === entryId);
+    entry = index === -1 ? undefined : closedTabsStack.splice(index, 1)[0];
+  }
   if (!entry) {
     pushDebug('No closed tabs to reopen');
     return;
@@ -2537,8 +2574,8 @@ export const initTabs = async () => {
     moveTab('right');
   });
 
-  electronAPI?.onReopenClosedTab?.(() => {
-    reopenLastClosedTab();
+  electronAPI?.onReopenClosedTab?.((entryId) => {
+    reopenLastClosedTab(entryId);
   });
 
   // Keyboard shortcuts (fallback for when menu doesn't handle it).

@@ -293,10 +293,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('tab:move-right', handler);
     return () => ipcRenderer.removeListener('tab:move-right', handler);
   },
+  // The app menu's History > Recently Closed rows name the entry to reopen
+  // (#584); Reopen Closed Tab sends none and takes the most recent.
   onReopenClosedTab: (callback) => {
-    const handler = () => callback();
+    const handler = (_event, entryId) => callback(entryId);
     ipcRenderer.on('tab:reopen-closed', handler);
     return () => ipcRenderer.removeListener('tab:reopen-closed', handler);
+  },
+  onHistoryBack: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('history:back', handler);
+    return () => ipcRenderer.removeListener('history:back', handler);
+  },
+  onHistoryForward: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('history:forward', handler);
+    return () => ipcRenderer.removeListener('history:forward', handler);
   },
   onOpenFindBar: (callback) => {
     const handler = () => callback();

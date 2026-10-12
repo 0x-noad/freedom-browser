@@ -55,6 +55,7 @@ import {
   getTabById,
   getTabIdForWebview,
   isActiveTab,
+  pushTabMenuState,
 } from './tabs.js';
 import {
   homeUrl,
@@ -962,6 +963,9 @@ export const setPageSecure = (secure) => {
 };
 
 const updateNavigationState = () => {
+  // The app menu's History > Back/Forward rows (#584) follow the toolbar
+  // buttons: same moment, same canGoBack/canGoForward read.
+  pushTabMenuState?.();
   const webview = getActiveWebview();
   if (!webview) {
     if (backBtn) backBtn.disabled = true;
@@ -3599,6 +3603,15 @@ export const initNavigation = () => {
   // IPC handler for toggle bookmark bar
   electronAPI?.onToggleBookmarkBar?.(() => {
     toggleBookmarkBar();
+  });
+
+  // App menu History > Back / Forward (#584): the same traversal the toolbar
+  // buttons run, so an ENS-backed entry is re-verified the same way (#86).
+  electronAPI?.onHistoryBack?.(() => {
+    goBackInHistory(getActiveWebview());
+  });
+  electronAPI?.onHistoryForward?.(() => {
+    goForwardInHistory(getActiveWebview());
   });
 
   // Keyboard shortcuts — resolved through the shared shortcut registry so
