@@ -135,10 +135,32 @@ describe('rad-browser.html CSP (#661)', () => {
 
   test('README images still load from every source they did before', () => {
     // The old policy left img-src open; tightening default-src must not
-    // silently break http:// badges or dweb-hosted README images.
+    // silently break http:// badges or web3:-hosted README images.
     expect(directives['img-src']).toEqual(
-      expect.arrayContaining(["'self'", 'data:', 'https:', 'http:', 'ipfs:', 'ipns:', 'bzz:', 'rad:'])
+      expect.arrayContaining(["'self'", 'data:', 'https:', 'http:', 'web3:'])
     );
+  });
+
+  test('img-src lists exactly the schemes DOMPurify lets through', () => {
+    // README HTML goes through DOMPurify before it reaches the DOM, so an
+    // image URL only loads if both DOMPurify keeps it and img-src allows
+    // it. Read DOMPurify's own default URI filter out of the vendored
+    // build, so a DOMPurify bump that changes it fails here.
+    const purify = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'vendor', 'purify.min.js'),
+      'utf8'
+    );
+    const literal = purify.match(/\/(\^\(\?:\(\?:\(\?:f\|ht\)tps\?\|[^\n]*?\$\)\))\/i/);
+    expect(literal).not.toBeNull();
+    const allowedUri = new RegExp(literal[1], 'i');
+    const keeps = (scheme) => allowedUri.test(`${scheme}//host/logo.png`);
+    // data: is let through for <img> separately (DATA_URI_TAGS).
+    const listed = directives['img-src'].filter((s) => s.endsWith(':') && s !== 'data:');
+    for (const scheme of listed) expect([scheme, keeps(scheme)]).toEqual([scheme, true]);
+    // Every dweb scheme Freedom serves that DOMPurify keeps must be listed.
+    for (const scheme of ['web3:', 'ipfs:', 'ipns:', 'bzz:', 'rad:']) {
+      expect([scheme, listed.includes(scheme)]).toEqual([scheme, keeps(scheme)]);
+    }
   });
 
   test('reads only radapi: and the public seed', () => {

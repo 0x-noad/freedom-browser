@@ -296,8 +296,9 @@ has no inline scripts, no inline handlers and no `eval`.
 
 **Follow-up (#661).** The policy was later tightened to `default-src 'self'`
 with `style-src 'self'` (no inline styles), `img-src 'self' data: https:
-http: ipfs: ipns: bzz: rad:` so README images load from every source they
-did before, and `connect-src 'self' radapi: https://seed.radicle.xyz`,
+http: web3:` so README images load from every source they did before
+(DOMPurify already strips `ipfs:`/`ipns:`/`bzz:`/`rad:` image URLs; `web3:` is
+the one dweb scheme it keeps), and `connect-src 'self' radapi: https://seed.radicle.xyz`,
 after a seed's non-numeric `seeding` value was found reaching `innerHTML`
 unescaped in both repository lists.
 
