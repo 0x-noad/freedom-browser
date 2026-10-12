@@ -11,6 +11,7 @@ const {
   parseDesktopEntryExec,
   parseProfileSwitchArgv,
   parseProfileSwitchUrl,
+  profileSwitchStateSince,
   readProfileSwitchAck,
   readProfileSwitchAcks,
   readProfileSwitchAckTime,
@@ -316,6 +317,7 @@ describe('x-freedom-profile scheme', () => {
     });
 
     test('gives up at once on a switch the launch recorded as failed (R2-M1/M2)', async () => {
+      writeProfileSwitchAck(dir, { state: 'received', now: 2100 });
       setTimeout(() => writeProfileSwitchAck(dir, { state: 'failed', now: 2500 }), 20);
       const started = Date.now();
       await expect(
@@ -397,6 +399,77 @@ describe('x-freedom-profile scheme', () => {
         waitForProfileSwitchAck(dir, 2000, { timeoutMs: 5000, pollIntervalMs: 10 })
       ).resolves.toBe(true);
       expect(Date.now() - started).toBeLessThan(1000);
+    });
+
+    test("an earlier overlapping launch's failure does not end a later switch's wait (R4-M1)", async () => {
+      // Launch L1 said received at 2010; waiter W2 started at 2050 and its own
+      // launch L2 said received at 2060; L1's file focus then failed at 2100.
+      // W2 keeps waiting for L2, which raises the window at 2200.
+      writeProfileSwitchAck(dir, { state: 'received', now: 2010 });
+      writeProfileSwitchAck(dir, { state: 'received', now: 2060 });
+      writeProfileSwitchAck(dir, { state: 'failed', now: 2100 });
+      setTimeout(() => writeProfileSwitchAck(dir, { state: 'done', now: 2200 }), 80);
+      await expect(
+        waitForProfileSwitchAck(dir, 2050, { timeoutMs: 3000, pollIntervalMs: 10 })
+      ).resolves.toBe(true);
+    });
+
+    test("an earlier launch failing before this switch's own launch arrived does not end the wait (R4-M1)", async () => {
+      // L1 said received at 2010 and fails at 2100, after W2 started (2050)
+      // but before W2's own launch L2 got as far as received (2150).
+      writeProfileSwitchAck(dir, { state: 'received', now: 2010 });
+      writeProfileSwitchAck(dir, { state: 'failed', now: 2100 });
+      setTimeout(() => writeProfileSwitchAck(dir, { state: 'received', now: 2150 }), 40);
+      setTimeout(() => writeProfileSwitchAck(dir, { state: 'done', now: 2200 }), 80);
+      await expect(
+        waitForProfileSwitchAck(dir, 2050, { timeoutMs: 3000, pollIntervalMs: 10 })
+      ).resolves.toBe(true);
+    });
+
+    test('profileSwitchStateSince: failed only once every received launch finished', () => {
+      const acks = (...list) => list.map(([at, state]) => ({ at, state }));
+      expect(profileSwitchStateSince([], 0)).toBeNull();
+      expect(profileSwitchStateSince(acks([5, 'received']), 0)).toBe('received');
+      // A failure before any launch said received since is not this switch's.
+      expect(profileSwitchStateSince(acks([5, 'failed']), 0)).toBe('received');
+      expect(profileSwitchStateSince(acks([5, 'received'], [6, 'failed']), 0)).toBe('failed');
+      expect(
+        profileSwitchStateSince(acks([5, 'received'], [6, 'received'], [7, 'failed']), 0)
+      ).toBe('received');
+      expect(
+        profileSwitchStateSince(
+          acks([5, 'received'], [6, 'received'], [7, 'failed'], [8, 'failed']),
+          0
+        )
+      ).toBe('failed');
+      expect(profileSwitchStateSince(acks([5, 'received'], [6, 'failed'], [7, 'done']), 0)).toBe(
+        'done'
+      );
+      // Records before the switch started do not count.
+      expect(profileSwitchStateSince(acks([1, 'failed'], [5, 'received']), 3)).toBe('received');
+      // A launch that said received just before this switch started is still
+      // in flight: an earlier launch's failure after it does not end the wait.
+      expect(profileSwitchStateSince(acks([1, 'received'], [5, 'failed']), 3)).toBe('received');
+      expect(
+        profileSwitchStateSince(
+          acks([1, 'received'], [4, 'received'], [5, 'failed'], [6, 'failed']),
+          3
+        )
+      ).toBe('failed');
+      expect(
+        profileSwitchStateSince(acks([1, 'received'], [4, 'received'], [5, 'failed']), 3)
+      ).toBe('received');
+      expect(
+        profileSwitchStateSince(
+          acks([1, 'received'], [4, 'received'], [5, 'failed'], [6, 'failed']),
+          3
+        )
+      ).toBe('failed');
+      // ...but not one older than a whole switch budget.
+      expect(
+        profileSwitchStateSince(acks([1, 'received'], [4, 'received'], [5, 'failed']), 3, 1)
+      ).toBe('failed');
+      expect(profileSwitchStateSince(acks([1, 'done']), 3)).toBeNull();
     });
 
     test('several records written in the same millisecond all survive', () => {
@@ -501,6 +574,36 @@ describe('x-freedom-profile scheme', () => {
       ).resolves.toBe(false);
       expect(d.queryDefaultHandler).not.toHaveBeenCalled();
       expect(d.shell.openExternal).not.toHaveBeenCalled();
+    });
+
+    test('a second switch to the same profile while one is in flight shares it (R4-M1)', async () => {
+      let release;
+      const d = deps({
+        waitForAck: jest.fn(
+          () =>
+            new Promise((resolve) => {
+              release = resolve;
+            })
+        ),
+      });
+      const first = switchProfileViaXdgOpen(work, d);
+      const second = switchProfileViaXdgOpen(work, d);
+      expect(second).toBe(first);
+      await new Promise((resolve) => setImmediate(resolve));
+      release(true);
+      await expect(first).resolves.toBe(true);
+      await expect(second).resolves.toBe(true);
+      expect(d.shell.openExternal).toHaveBeenCalledTimes(1);
+      // Once it settled, the next switch launches again.
+      const d2 = deps();
+      await expect(switchProfileViaXdgOpen(work, d2)).resolves.toBe(true);
+      expect(d2.shell.openExternal).toHaveBeenCalledTimes(1);
+      // A switch to another profile is never held up by it.
+      const d3 = deps({ waitForAck: jest.fn(() => new Promise(() => {})) });
+      switchProfileViaXdgOpen({ id: 'home', userDataDir: '/p/home' }, d3);
+      const d4 = deps();
+      await expect(switchProfileViaXdgOpen(work, d4)).resolves.toBe(true);
+      expect(d4.shell.openExternal).toHaveBeenCalledTimes(1);
     });
 
     test('reports failure when xdg-open refuses it, so the caller falls back', async () => {

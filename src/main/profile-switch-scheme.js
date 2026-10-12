@@ -357,14 +357,38 @@ function readProfileSwitchAckTime(userDataDir, fsImpl = fs) {
 
 // Where the records written since `sinceMs` leave a switch: `done` if any
 // launch raised the window since (an overlapping switch to the same profile
-// counts: the window the user asked for is in front), else `failed` if one
-// failed, else `received`, else null.
-function profileSwitchStateSince(acks, sinceMs) {
-  const states = new Set(acks.filter((ack) => ack.at >= sinceMs).map((ack) => ack.state));
-  for (const state of ['done', 'failed', 'received']) {
-    if (states.has(state)) return state;
+// counts: the window the user asked for is in front); else `failed` once one
+// failed since and every switch launch still in flight has finished; else
+// `received`, else null.
+//
+// The records carry no per-launch id, so "in flight" is counted: each switch
+// launch writes one `received` as it starts and at most one `done`/`failed`.
+// An earlier, overlapping launch's `failed` thus does not end the wait while a
+// later launch is still going (R4-M1). Launches that started shortly before
+// `sinceMs` count too (their `received` may predate this switch while their
+// `failed` does not), back to one whole switch budget: older ones are past
+// any wait, finished or not. And a `failed` is only taken as this switch's
+// once some launch said `received` since it started: this switch's own launch
+// always does first, so a failure landing before that is someone else's.
+function profileSwitchStateSince(acks, sinceMs, lookbackMs = PROFILE_SWITCH_ACK_TIMEOUT_MS) {
+  let received = 0;
+  let receivedSince = false;
+  let finished = 0;
+  let failed = false;
+  for (const ack of acks) {
+    if (ack.at < sinceMs - lookbackMs) continue;
+    if (ack.state === 'received') {
+      received += 1;
+      if (ack.at >= sinceMs) receivedSince = true;
+      continue;
+    }
+    finished += 1;
+    if (ack.at < sinceMs) continue;
+    if (ack.state === 'done') return 'done';
+    failed = true;
   }
-  return null;
+  if (failed && receivedSince && finished >= received) return 'failed';
+  return acks.some((ack) => ack.at >= sinceMs) ? 'received' : null;
 }
 
 // Resolves true once the profile in `userDataDir` recorded a switch `done` at
@@ -397,7 +421,26 @@ async function waitForProfileSwitchAck(userDataDir, sinceMs, options = {}) {
 // confirmed (the profile was deleted or quit meanwhile, the launch went
 // somewhere else); the caller then uses the profile-focus file hand-off,
 // which reports a switch that cannot land.
-async function switchProfileViaXdgOpen(target, deps = {}) {
+//
+// Switches to the same profile made while one is in flight (two menu clicks;
+// switchToProfile has no guard of its own) share that one launch and its
+// outcome, rather than racing a second launch whose records the first one's
+// would be mixed up with (R4-M1).
+const xdgOpenSwitchesInFlight = new Map();
+
+function switchProfileViaXdgOpen(target, deps = {}) {
+  const key = typeof target?.userDataDir === 'string' ? target.userDataDir : null;
+  if (key && xdgOpenSwitchesInFlight.has(key)) return xdgOpenSwitchesInFlight.get(key);
+  const pending = runProfileSwitchViaXdgOpen(target, deps);
+  if (!key) return pending;
+  const shared = pending.finally(() => {
+    if (xdgOpenSwitchesInFlight.get(key) === shared) xdgOpenSwitchesInFlight.delete(key);
+  });
+  xdgOpenSwitchesInFlight.set(key, shared);
+  return shared;
+}
+
+async function runProfileSwitchViaXdgOpen(target, deps = {}) {
   let url;
   try {
     url = buildProfileSwitchUrl(target?.id);
@@ -434,6 +477,7 @@ module.exports = {
   parseProfileSwitchArgv,
   parseDesktopEntryExec,
   parseProfileSwitchUrl,
+  profileSwitchStateSince,
   queryDefaultSchemeHandler,
   readProfileSwitchAck,
   readProfileSwitchAcks,
