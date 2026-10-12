@@ -263,17 +263,32 @@ fetches the manifest when the page calls `swarm_requestAccess`, and checks it
 before the first non-public method call in each document. The result is
 cached per document (the tab plus its committed navigation): later calls in
 the same document reuse it, and a manifest redeployed while the page is open
-is not re-read until the page reloads or navigates. A failed fetch is not
-cached, so the next call retries it. A "Don't allow" on the consent sheet
-*is* cached for the document: every later non-public call, including
-`swarm_requestAccess`, rejects with `4001` straight away and no sheet is
-shown, until the page reloads or navigates. (The one exception: if the sheet
+is not re-read until the page reloads or navigates. What a failed fetch (a
+network error or a 5xx) does depends on whether the origin already has a
+manifest on record:
+
+- **No manifest on record yet** (first contact): the failure is treated as
+  "no manifest", and that result is cached for the document like any other.
+  `swarm_requestAccess` falls back to the plain connect prompt (a `connect`
+  event, no capability grants), and the manifest is not fetched again until
+  the page reloads or navigates.
+- **A manifest on record**: the call fails with `4900` and the failure is not
+  cached in the document, so a later call asks again. Freedom backs off
+  between fetches (2 s, then 10 s, 30 s and 60 s), though, and a call inside
+  the backoff window fails with `4900` straight away without refetching.
+
+A "Don't allow" on the consent sheet *is* cached for the document: every
+later non-public call, including `swarm_requestAccess`, rejects with `4001`
+straight away and no sheet is shown, until the page reloads or navigates. (The one exception: if the sheet
 was declined from a call other than `swarm_requestAccess`, the first
 `swarm_requestAccess` after it re-checks the manifest and can show the sheet
 once more.) The decline is not stored beyond the document, so a "Connect"
 button that calls `swarm_requestAccess` again after a `4001` should tell the
-user to reload rather than expect a fresh sheet. Freedom then shows one consent sheet for every capability the user has not yet approved.
-Approving a capability grants everything it needs in one step:
+user to reload rather than expect a fresh sheet.
+
+When a fetched manifest names capabilities the user has not yet approved,
+Freedom shows one consent sheet covering all of them. Approving a capability
+grants everything it needs in one step:
 
 | Capability  | Grants                                                                                         |
 | ----------- | ---------------------------------------------------------------------------------------------- |
