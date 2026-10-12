@@ -760,14 +760,57 @@ describe('profile resolver', () => {
       return { app, resolveProfile, ids };
     }
 
-    test('means --profile=<id> for a registered profile', () => {
+    test('means --profile=<id> for a registered profile that is open', () => {
       const { app, resolveProfile } = setUp();
+      const isProfileLocked = jest.fn(() => true);
       const profile = resolveProfile(app, {
         argv: ['freedom', 'x-freedom-profile:work'],
         env: {},
         platform: 'linux',
+        isProfileLocked,
       });
       expect(profile.id).toBe('work');
+      expect(profile.switchOnly).toBe(true);
+      expect(isProfileLocked).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'work', userDataDir: expect.any(String) })
+      );
+    });
+
+    test('refuses a registered profile that is not open: it never cold-starts one', () => {
+      const { app, resolveProfile } = setUp();
+      expect(() =>
+        resolveProfile(app, {
+          argv: ['freedom', 'x-freedom-profile:work'],
+          env: {},
+          platform: 'linux',
+          isProfileLocked: () => false,
+        })
+      ).toThrow(expect.objectContaining({ code: 'PROFILE_SWITCH_REJECTED' }));
+      // The real lock check, with nothing holding `work`'s lock, agrees.
+      expect(() =>
+        resolveProfile(app, {
+          argv: ['freedom', 'x-freedom-profile:work'],
+          env: {},
+          platform: 'linux',
+        })
+      ).toThrow(expect.objectContaining({ code: 'PROFILE_SWITCH_REJECTED' }));
+    });
+
+    test('does not mark the profile "last opened"', () => {
+      const { app, resolveProfile } = setUp();
+      const { resolveLastOpenedProfileId } = require('./profile-resolver');
+      expect(resolveLastOpenedProfileId(app.getPath('userData'))).toBe('default');
+      resolveProfile(app, {
+        argv: ['freedom', 'x-freedom-profile:work'],
+        env: {},
+        platform: 'linux',
+        isProfileLocked: () => true,
+        now: '2026-05-28T00:00:00.000Z',
+      });
+      expect(resolveLastOpenedProfileId(app.getPath('userData'))).toBe('default');
+      // A plain launch afterwards still opens `default`.
+      const next = resolveProfile(app, { argv: ['freedom'], env: {}, platform: 'linux' });
+      expect(next.id).toBe('default');
     });
 
     test('never creates a profile, and never falls back to another one', () => {
@@ -782,7 +825,12 @@ describe('profile resolver', () => {
       ]) {
         let error = null;
         try {
-          resolveProfile(app, { argv: ['freedom', arg], env: {}, platform: 'linux' });
+          resolveProfile(app, {
+            argv: ['freedom', arg],
+            env: {},
+            platform: 'linux',
+            isProfileLocked: () => true,
+          });
         } catch (caught) {
           error = caught;
         }

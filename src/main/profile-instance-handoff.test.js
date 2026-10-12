@@ -33,21 +33,41 @@ function readyQueue() {
 
 describe('profile instance hand-off (Linux single-instance lock, #142)', () => {
   describe('handOverToRunningProfile', () => {
-    test('a launch of a running profile hands over when the running process holds the lock', () => {
+    test('a launch of a running profile hands over when the running process answers the probe and holds the lock', () => {
       const app = makeApp({ lock: false });
-      expect(handOverToRunningProfile(app, { platform: 'linux' })).toBe(true);
+      const probe = jest.fn(() => true);
+      expect(handOverToRunningProfile(app, { platform: 'linux', probe })).toBe(true);
+      expect(probe).toHaveBeenCalledTimes(1);
       expect(app.requestSingleInstanceLock).toHaveBeenCalledTimes(1);
     });
 
-    test('falls back to the file hand-off when nothing holds the lock', () => {
+    test('never asks for the lock unless the running process answered the probe', () => {
+      // Chromium SIGKILLs a lock holder that does not acknowledge within 20 s
+      // (a modal error box, a busy main thread): no answer, no lock request.
+      for (const probe of [
+        undefined,
+        jest.fn(() => false),
+        jest.fn(() => {
+          throw new Error('EACCES');
+        }),
+      ]) {
+        const app = makeApp({ lock: false });
+        expect(handOverToRunningProfile(app, { platform: 'linux', probe })).toBe(false);
+        expect(app.requestSingleInstanceLock).not.toHaveBeenCalled();
+      }
+    });
+
+    test('falls back to the file hand-off when the holder went away after answering', () => {
       const app = makeApp({ lock: true });
-      expect(handOverToRunningProfile(app, { platform: 'linux' })).toBe(false);
+      expect(handOverToRunningProfile(app, { platform: 'linux', probe: () => true })).toBe(false);
     });
 
     test('is inert on macOS and Windows', () => {
       for (const platform of ['darwin', 'win32']) {
         const app = makeApp({ lock: false });
-        expect(handOverToRunningProfile(app, { platform })).toBe(false);
+        const probe = jest.fn(() => true);
+        expect(handOverToRunningProfile(app, { platform, probe })).toBe(false);
+        expect(probe).not.toHaveBeenCalled();
         expect(app.requestSingleInstanceLock).not.toHaveBeenCalled();
       }
     });
@@ -92,18 +112,22 @@ describe('profile instance hand-off (Linux single-instance lock, #142)', () => {
       const app = overrides.app || makeApp();
       const focusWindow = overrides.focusWindow || jest.fn();
       const firstWindowLinks = overrides.firstWindowLinks || readyQueue();
-      const logger = { error: jest.fn() };
+      const logger = { error: jest.fn(), warn: jest.fn() };
+      const writeSwitchAck = overrides.writeSwitchAck || jest.fn();
       return {
         app,
         focusWindow,
         firstWindowLinks,
         logger,
+        writeSwitchAck,
         handle: createSecondInstanceHandler({
           app,
           settingsUrl: SETTINGS_URL,
           firstWindowLinks,
           focusWindow,
           logger,
+          userDataDir: '/p/work',
+          writeSwitchAck,
         }),
       };
     }
@@ -116,10 +140,46 @@ describe('profile instance hand-off (Linux single-instance lock, #142)', () => {
       expect(focusWindow).toHaveBeenCalledWith([]);
     });
 
-    test('an x-freedom-profile switch raises the window and opens nothing', () => {
-      const { handle, focusWindow } = handler();
+    test('an x-freedom-profile switch raises the window, opens nothing, then acknowledges', () => {
+      const { handle, focusWindow, writeSwitchAck } = handler();
       handle({}, ['/opt/Freedom/freedom', 'x-freedom-profile:work']);
       expect(focusWindow).toHaveBeenCalledWith([]);
+      expect(writeSwitchAck).toHaveBeenCalledWith('/p/work');
+      expect(focusWindow.mock.invocationCallOrder[0]).toBeLessThan(
+        writeSwitchAck.mock.invocationCallOrder[0]
+      );
+    });
+
+    test('only a switch is acknowledged, and not when the focus failed', () => {
+      const plain = handler();
+      plain.handle({}, ['/opt/Freedom/freedom', '--profile=work']);
+      expect(plain.writeSwitchAck).not.toHaveBeenCalled();
+
+      const failing = handler({
+        focusWindow: jest.fn(() => {
+          throw new Error('window destroyed');
+        }),
+      });
+      failing.handle({}, ['/opt/Freedom/freedom', 'x-freedom-profile:work']);
+      expect(failing.writeSwitchAck).not.toHaveBeenCalled();
+    });
+
+    test('a switch during cold start is acknowledged once queued for the first window', () => {
+      const { handle, writeSwitchAck } = handler({
+        firstWindowLinks: createFirstWindowLinkQueue(),
+      });
+      handle({}, ['/opt/Freedom/freedom', 'x-freedom-profile:work']);
+      expect(writeSwitchAck).toHaveBeenCalledTimes(1);
+    });
+
+    test('an ack that cannot be written is logged, not thrown into Electron', () => {
+      const { handle, logger } = handler({
+        writeSwitchAck: jest.fn(() => {
+          throw new Error('ENOSPC');
+        }),
+      });
+      expect(() => handle({}, ['/opt/Freedom/freedom', 'x-freedom-profile:work'])).not.toThrow();
+      expect(logger.warn).toHaveBeenCalledTimes(1);
     });
 
     test('opens the links the launch was given, checked like any launch', () => {

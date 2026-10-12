@@ -56,10 +56,18 @@ to pass on:
 - Picking a profile launcher from the Activities overview search while that
   profile is open.
 
-Click the notification, or switch from the profile menu or the dock instead. An
-AppImage without desktop integration, or a source build, has no
-`freedom.desktop` for `xdg-open` to start, so a switch from its profile menu
-falls back to the older focus request and shows the notification.
+Click the notification, or switch from the profile menu or the dock instead.
+The profile menu uses `xdg-open` only when the installed `freedom.desktop`
+starts the very Freedom you are running. An AppImage without desktop
+integration, a source build, or an AppImage running beside an installed
+`.deb` (whose `freedom.desktop` starts the `.deb`'s binary) falls back to the
+older focus request and shows the notification.
+
+The profile-switch scheme only ever brings an already-open profile to the
+front. Any program can run `xdg-open x-freedom-profile:<id>`, including a page
+in another browser once you confirm its prompt, so it opens no links, never
+starts a profile that is closed, and leaves the profile a plain `freedom`
+launch opens unchanged.
 
 ## Using an external node
 

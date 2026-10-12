@@ -14,14 +14,23 @@
  * profile-focus file hand-off (profile-focus-handoff.js) has no way to carry
  * the token.
  *
+ * A launch only asks for that lock after the running profile has answered an
+ * instance-lock probe through the focus-request files, from its main thread,
+ * saying it listens on the lock (profile-focus-handoff.js). Asking blind is
+ * not safe: Chromium waits up to 20 s for the holder to acknowledge and then
+ * SIGKILLs it, so a profile showing a modal error box or busy on its main
+ * thread would be killed by a dock click. The probe also means no launch ever
+ * takes the lock while a cold-starting profile has not yet taken it itself.
+ *
  * The file hand-off stays as the fallback: on macOS and Windows (which keep
  * their own, working, activation paths), and on Linux whenever the running
- * process does not hold the lock (an older Freedom version still running
- * across an upgrade, or the narrow race between taking the profile lock and
- * this one).
+ * process does not answer the probe or does not hold the lock (an older
+ * Freedom version still running across an upgrade, a blocked main thread,
+ * a profile still cold-starting).
  */
 
 const { buildColdStartUrls } = require('./launch-urls');
+const { isProfileSwitchArg, writeProfileSwitchAck } = require('./profile-switch-scheme');
 
 // For a launch whose profile is locked by a running process: true when the
 // launch was handed to that process through the single-instance lock (the
@@ -29,10 +38,21 @@ const { buildColdStartUrls } = require('./launch-urls');
 //
 // `requestSingleInstanceLock()` returning false *is* the hand-over: Electron
 // has passed this process's argv (and activation token) to the lock holder.
-// Returning true means no running process listens on it; this process then
-// holds the lock only until it exits a moment later.
-function handOverToRunningProfile(app, { platform = process.platform } = {}) {
+// Returning true means the holder went away since it answered the probe; this
+// process then holds the lock only until it exits a moment later.
+//
+// `probe` (requestInstanceLockProbeSync bound to the profile) must answer true
+// first: see the header for why the lock is never asked for blind.
+function handOverToRunningProfile(app, { platform = process.platform, probe } = {}) {
   if (platform !== 'linux') return false;
+  if (typeof probe !== 'function') return false;
+  let listening;
+  try {
+    listening = probe() === true;
+  } catch {
+    listening = false;
+  }
+  if (!listening) return false;
   return !app.requestSingleInstanceLock();
 }
 
@@ -50,16 +70,45 @@ function secondInstanceUrls(argv, { settingsUrl }) {
 // most recently focused window and raises it. focusWindow is called in the
 // same turn as the event when the app is ready, so it activates with the
 // token Electron has just set for this launch.
-function createSecondInstanceHandler({ app, settingsUrl, firstWindowLinks, focusWindow, logger }) {
+//
+// A launch carrying an `x-freedom-profile:` switch (an in-app switch through
+// xdg-open) is acknowledged in userDataDir once the window was raised, so the
+// profile that asked can tell a switch that landed from one that did not.
+function createSecondInstanceHandler({
+  app,
+  settingsUrl,
+  firstWindowLinks,
+  focusWindow,
+  logger,
+  userDataDir = null,
+  writeSwitchAck = writeProfileSwitchAck,
+}) {
   return (_event, argv) => {
     const urls = secondInstanceUrls(argv, { settingsUrl });
-    if (firstWindowLinks.queue(urls)) return;
+    const isSwitch = Array.isArray(argv) && argv.slice(1).some(isProfileSwitchArg);
+    const ackSwitch = () => {
+      if (!isSwitch || !userDataDir) return;
+      try {
+        writeSwitchAck(userDataDir);
+      } catch (error) {
+        logger?.warn?.(
+          '[profile] Could not acknowledge a profile switch:',
+          error?.message || error
+        );
+      }
+    };
+    if (firstWindowLinks.queue(urls)) {
+      ackSwitch();
+      return;
+    }
     const focus = () => {
       try {
         focusWindow(urls);
       } catch (error) {
         logger?.error?.('[profile] Could not focus this profile for a second launch:', error);
+        return;
       }
+      ackSwitch();
     };
     if (app.isReady()) focus();
     else app.whenReady().then(focus);
@@ -67,9 +116,11 @@ function createSecondInstanceHandler({ app, settingsUrl, firstWindowLinks, focus
 }
 
 // Take this profile's single-instance lock and listen for later launches of
-// it. Returns whether this process now holds the lock; when it does not
-// (Linux only: see the race above), later launches fall back to the file
-// hand-off, which this process keeps watching either way.
+// it. Returns whether this process now holds the lock; when it does not,
+// it answers instance-lock probes with "no" and later launches fall back to
+// the file hand-off, which this process keeps watching either way. (No other
+// launch asks for the lock before this process says it holds it, so this
+// should not fail; the fallback is for the unforeseen.)
 function listenForProfileRelaunches(app, options = {}) {
   const platform = options.platform || process.platform;
   if (platform !== 'linux') return false;

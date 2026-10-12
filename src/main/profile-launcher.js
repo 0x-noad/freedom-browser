@@ -79,9 +79,10 @@ function launchProfile(activeProfile, profileId, options = {}) {
 // for testing.
 //
 // Returns one of:
-//   { focused: true }              — a running profile acknowledged the focus,
-//                                    or (GNOME Wayland) xdg-open accepted the
-//                                    switch, which has no ack of its own
+//   { focused: true }              — a running profile acknowledged the focus
+//                                    (on GNOME Wayland possibly through an
+//                                    xdg-open switch, which it acknowledges
+//                                    once its window is raised)
 //   { focused: false, launch }     — cold-started a new process
 //   { focused: false, error }      — the profile is running but did not respond
 //                                    to the focus request (we don't cold-start a
@@ -117,11 +118,13 @@ async function openOrFocusProfile(activeProfile, profileId, options = {}) {
   // its single-instance lock (profile-switch-scheme.js, #142). Everywhere
   // else, and whenever that path is unavailable, the focus-request file below
   // does the switch. An --open-settings switch keeps to the file: the scheme
-  // carries a profile id and nothing else.
+  // carries a profile id and nothing else. A switch the running profile never
+  // confirms (deleted or quit meanwhile, the launch went elsewhere) falls
+  // through to the file too, which reports one that cannot land.
   if (target?.isLocked && !options.openSettings) {
     const switchViaXdgOpen =
       options.switchViaXdgOpen || require('./profile-switch-scheme').switchProfileViaXdgOpen;
-    if (await switchViaXdgOpen(target.id)) {
+    if (await switchViaXdgOpen(target)) {
       return { focused: true };
     }
   }

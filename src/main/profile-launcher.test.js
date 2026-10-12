@@ -266,8 +266,11 @@ describe('profile launcher', () => {
           spawn,
         });
         expect(result).toEqual({ focused: true });
-        // The catalog's canonical id, not the caller's input.
-        expect(switchViaXdgOpen).toHaveBeenCalledWith('work');
+        // The catalog's target (canonical id, its dir for the ack), not the
+        // caller's input.
+        expect(switchViaXdgOpen).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'work', userDataDir: '/p/work' })
+        );
         expect(requestFocus).not.toHaveBeenCalled();
         expect(spawn).not.toHaveBeenCalled();
       });
@@ -284,6 +287,26 @@ describe('profile launcher', () => {
         expect(result).toEqual({ focused: true });
         expect(switchViaXdgOpen).toHaveBeenCalledTimes(1);
         expect(requestFocus).toHaveBeenCalledTimes(1);
+      });
+
+      test('an unconfirmed xdg-open switch falls back to the file, which reports it', async () => {
+        const switchViaXdgOpen = jest.fn(async () => false);
+        const requestFocus = jest.fn(async () => ({
+          ok: false,
+          requestWritten: true,
+          timedOut: true,
+          error: 'The running profile did not respond',
+        }));
+        const spawn = jest.fn();
+        const result = await openOrFocusProfile(activeProfile, 'work', {
+          getFocusTarget: running(),
+          switchViaXdgOpen,
+          requestFocus,
+          spawn,
+        });
+        expect(result).toEqual({ focused: false, error: 'The running profile did not respond' });
+        expect(requestFocus).toHaveBeenCalledTimes(1);
+        expect(spawn).not.toHaveBeenCalled();
       });
 
       test('an --open-settings switch keeps to the file hand-off', async () => {

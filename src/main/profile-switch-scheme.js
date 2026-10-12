@@ -13,14 +13,19 @@
  * (index.js), which passes the token along with its argv.
  *
  * The scheme is registered for the whole desktop (package.json's Linux
- * `mimeTypes`), so anything that can run xdg-open can send one. It means
- * exactly `--profile=<id>` for a profile that already exists in the catalog
- * and nothing else: no URL is opened, no profile is created, anything that is
- * not a canonical profile id is refused (profile-resolver.js). It is ignored on
- * macOS and Windows, which never register it.
+ * `mimeTypes`), so anything that can run xdg-open can send one — including a
+ * page in another browser, behind that browser's own confirmation. It means
+ * exactly "raise the already-open profile <id>" and nothing else: no URL is
+ * opened, no profile is created or cold-started, its "last opened" mark is
+ * left alone, and anything that is not a canonical id of a registered,
+ * currently running profile is refused (profile-resolver.js, index.js). It is
+ * ignored on macOS and Windows, which never register it.
  */
 
 const { execFile } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { sanitizeProfileId } = require('./profile-catalog');
 
 const PROFILE_SWITCH_SCHEME = 'x-freedom-profile';
@@ -33,6 +38,16 @@ const PREFIX = `${PROFILE_SWITCH_SCHEME}:`;
 const PACKAGED_DESKTOP_NAME = require('../../package.json').desktopName;
 
 const XDG_MIME_TIMEOUT_MS = 2000;
+
+// The running profile writes this file in its userData dir when a launch
+// carrying an `x-freedom-profile:` switch has reached it and raised its window
+// (profile-instance-handoff.js). The in-app switch waits for it: xdg-open
+// itself confirms only that it started something.
+const PROFILE_SWITCH_ACK_FILE = 'profile-switch-ack.json';
+// xdg-open, then a fresh Freedom process up to its profile-lock check, then
+// the hand-over: a few hundred ms normally, more on a cold disk.
+const PROFILE_SWITCH_ACK_TIMEOUT_MS = 6000;
+const PROFILE_SWITCH_ACK_POLL_MS = 100;
 
 function isProfileSwitchArg(arg) {
   return typeof arg === 'string' && arg.slice(0, PREFIX.length).toLowerCase() === PREFIX;
@@ -90,18 +105,133 @@ function queryDefaultSchemeHandler(mimeType) {
   });
 }
 
+// --- Is the scheme's handler this very app? ---------------------------------
+//
+// xdg-mime naming `freedom.desktop` is not enough: with a .deb installed, an
+// AppImage (or a second install of another version) would have xdg-open start
+// *that* binary against the same userData root, where it runs its own
+// migrations and catalog writes before handing over. So the desktop entry's
+// Exec program must resolve to the executable this process runs from (the
+// AppImage file itself for an AppImage, which runs from a temporary mount).
+
+function desktopEntryDirs({ env = process.env, homedir = os.homedir() } = {}) {
+  const dataHome = env?.XDG_DATA_HOME || path.join(homedir, '.local', 'share');
+  const dataDirs = String(env?.XDG_DATA_DIRS || '/usr/local/share:/usr/share')
+    .split(':')
+    .filter(Boolean);
+  return [dataHome, ...dataDirs]
+    .filter((dir) => path.isAbsolute(dir))
+    .map((dir) => path.join(dir, 'applications'));
+}
+
+// The `Exec` value of a desktop entry's [Desktop Entry] group, or null.
+function parseDesktopEntryExec(text) {
+  let inMainGroup = false;
+  for (const rawLine of String(text).split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.startsWith('[')) {
+      inMainGroup = line === '[Desktop Entry]';
+      continue;
+    }
+    if (!inMainGroup) continue;
+    const match = /^Exec\s*=\s*(.*)$/.exec(line);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+// The program (first argument) of an Exec value, unquoted per the desktop
+// entry spec, or null when it can't be read.
+function execProgram(execValue) {
+  const value = String(execValue || '').trimStart();
+  if (!value) return null;
+  if (value[0] !== '"') {
+    const program = value.split(/\s+/)[0];
+    return program || null;
+  }
+  let program = '';
+  for (let i = 1; i < value.length; i += 1) {
+    const char = value[i];
+    if (char === '\\' && i + 1 < value.length) {
+      program += value[i + 1];
+      i += 1;
+    } else if (char === '"') {
+      return program || null;
+    } else {
+      program += char;
+    }
+  }
+  return null;
+}
+
+function resolveExecProgram(program, { env = process.env, fsImpl = fs } = {}) {
+  if (!program) return null;
+  if (path.isAbsolute(program)) return program;
+  if (program.includes('/')) return null;
+  for (const dir of String(env?.PATH || '').split(':')) {
+    if (!path.isAbsolute(dir)) continue;
+    const candidate = path.join(dir, program);
+    try {
+      fsImpl.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // Not here.
+    }
+  }
+  return null;
+}
+
+// Whether the installed `desktopName` entry (looked up in the XDG data dirs,
+// first match wins, like xdg-open does) starts this executable.
+function desktopEntryRunsThisApp({
+  desktopName = PACKAGED_DESKTOP_NAME,
+  env = process.env,
+  homedir = os.homedir(),
+  execPath = process.execPath,
+  fsImpl = fs,
+} = {}) {
+  const self = env?.APPIMAGE || execPath;
+  let selfReal;
+  try {
+    selfReal = fsImpl.realpathSync(self);
+  } catch {
+    return false;
+  }
+  for (const dir of desktopEntryDirs({ env, homedir })) {
+    let text;
+    try {
+      text = fsImpl.readFileSync(path.join(dir, desktopName), 'utf-8');
+    } catch {
+      continue;
+    }
+    const program = resolveExecProgram(execProgram(parseDesktopEntryExec(text)), {
+      env,
+      fsImpl,
+    });
+    if (!program) return false;
+    try {
+      return fsImpl.realpathSync(program) === selfReal;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 // Whether an in-app switch to a running profile should go through xdg-open.
 // Only where it is both needed and known to arrive: a Wayland session (X11
 // lets the running profile raise itself), a packaged build, and an installed
-// desktop entry that xdg-mime names as the scheme's handler — an AppImage
-// without desktop integration, a tarball or `npm start` has none, and there
-// xdg-open would fail or open something else while the switch did nothing.
+// desktop entry that xdg-mime names as the scheme's handler and that starts
+// this same executable — an AppImage without desktop integration, a tarball
+// or `npm start` has none, and a different install's entry would start a
+// different binary.
 async function shouldSwitchProfileViaXdgOpen({
   platform = process.platform,
   env = process.env,
   isPackaged,
   queryDefaultHandler = queryDefaultSchemeHandler,
   desktopName = PACKAGED_DESKTOP_NAME,
+  runsThisApp = desktopEntryRunsThisApp,
 } = {}) {
   if (platform !== 'linux') return false;
   if (
@@ -117,41 +247,98 @@ async function shouldSwitchProfileViaXdgOpen({
   } catch {
     return false;
   }
-  return typeof handler === 'string' && handler.trim() === desktopName;
-}
-
-// Hand a switch to the running profile `profileId` over through xdg-open.
-// Resolves true once xdg-open accepted it, false when this path does not apply
-// or failed (the caller then uses the profile-focus file hand-off).
-async function switchProfileViaXdgOpen(profileId, deps = {}) {
-  let url;
+  if (typeof handler !== 'string' || handler.trim() !== desktopName) return false;
   try {
-    url = buildProfileSwitchUrl(profileId);
+    return runsThisApp({ desktopName, env }) === true;
   } catch {
     return false;
   }
+}
+
+// --- Confirmation -----------------------------------------------------------
+
+function profileSwitchAckPath(userDataDir) {
+  return path.join(userDataDir, PROFILE_SWITCH_ACK_FILE);
+}
+
+// Called by the running profile once a switch launch has raised its window.
+function writeProfileSwitchAck(userDataDir, { now = Date.now(), fsImpl = fs } = {}) {
+  const target = profileSwitchAckPath(userDataDir);
+  const tmp = `${target}.${process.pid}.${now}.tmp`;
+  fsImpl.writeFileSync(tmp, JSON.stringify({ handledAtMs: now, pid: process.pid }), 'utf-8');
+  fsImpl.renameSync(tmp, target);
+}
+
+function readProfileSwitchAckTime(userDataDir, fsImpl = fs) {
+  try {
+    const ack = JSON.parse(fsImpl.readFileSync(profileSwitchAckPath(userDataDir), 'utf-8'));
+    const at = Number(ack?.handledAtMs);
+    return Number.isFinite(at) ? at : null;
+  } catch {
+    return null;
+  }
+}
+
+// Resolves true once the profile in `userDataDir` acknowledged a switch
+// handled at or after `sinceMs`, false after `timeoutMs`.
+async function waitForProfileSwitchAck(userDataDir, sinceMs, options = {}) {
+  const timeoutMs = options.timeoutMs ?? PROFILE_SWITCH_ACK_TIMEOUT_MS;
+  const pollMs = options.pollIntervalMs ?? PROFILE_SWITCH_ACK_POLL_MS;
+  const fsImpl = options.fsImpl || fs;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const at = readProfileSwitchAckTime(userDataDir, fsImpl);
+    if (at !== null && at >= sinceMs) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+// Hand a switch to the running profile `target` ({ id, userDataDir }) over
+// through xdg-open. Resolves true once the running profile confirmed it raised
+// its window, false when this path does not apply, failed, or was never
+// confirmed (the profile was deleted or quit meanwhile, the launch went
+// somewhere else); the caller then uses the profile-focus file hand-off,
+// which reports a switch that cannot land.
+async function switchProfileViaXdgOpen(target, deps = {}) {
+  let url;
+  try {
+    url = buildProfileSwitchUrl(target?.id);
+  } catch {
+    return false;
+  }
+  if (typeof target?.userDataDir !== 'string' || !target.userDataDir) return false;
   const electron = deps.shell && deps.isPackaged !== undefined ? null : require('electron');
   const shell = deps.shell || electron.shell;
   const isPackaged = deps.isPackaged !== undefined ? deps.isPackaged : electron.app.isPackaged;
   const useXdgOpen = await shouldSwitchProfileViaXdgOpen({ ...deps, isPackaged });
   if (!useXdgOpen) return false;
+  const sinceMs = (deps.now || Date.now)();
   try {
     await shell.openExternal(url);
-    return true;
   } catch {
     return false;
   }
+  return (deps.waitForAck || waitForProfileSwitchAck)(target.userDataDir, sinceMs, deps.ackOptions);
 }
 
 module.exports = {
   PACKAGED_DESKTOP_NAME,
+  PROFILE_SWITCH_ACK_FILE,
   PROFILE_SWITCH_MIME_TYPE,
   PROFILE_SWITCH_SCHEME,
   buildProfileSwitchUrl,
+  desktopEntryDirs,
+  desktopEntryRunsThisApp,
+  execProgram,
   isProfileSwitchArg,
   parseProfileSwitchArgv,
+  parseDesktopEntryExec,
   parseProfileSwitchUrl,
   queryDefaultSchemeHandler,
+  readProfileSwitchAckTime,
   shouldSwitchProfileViaXdgOpen,
   switchProfileViaXdgOpen,
+  waitForProfileSwitchAck,
+  writeProfileSwitchAck,
 };

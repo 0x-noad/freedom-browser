@@ -131,24 +131,41 @@ function resolveFallbackProfileId(appRoot) {
   return ids[0] || null;
 }
 
-function isRegisteredProfileId(appRoot, profileId) {
+function findRegisteredProfile(appRoot, profileId) {
   try {
-    return (loadCatalog(appRoot).profiles || []).some((profile) => profile?.id === profileId);
+    return (loadCatalog(appRoot).profiles || []).find((profile) => profile?.id === profileId) || null;
+  } catch {
+    return null;
+  }
+}
+
+function rejectProfileSwitch(reason) {
+  const error = new Error(`Refused an x-freedom-profile switch to ${reason}`);
+  error.code = PROFILE_SWITCH_REJECTED;
+  throw error;
+}
+
+function isRunning(isLocked, profile) {
+  try {
+    return isLocked(profile) === true;
   } catch {
     return false;
   }
 }
 
 // The profile an `x-freedom-profile:<id>` launch switches to: `id` only when
-// it is a canonical id already registered in the catalog. Anything else is
-// refused rather than mapped to some other profile or created.
-function resolveProfileSwitchId(appRoot, profileSwitch) {
-  if (profileSwitch.id && isRegisteredProfileId(appRoot, profileSwitch.id)) {
-    return profileSwitch.id;
+// it is a canonical id already registered in the catalog *and* that profile is
+// open right now. The scheme exists to raise a running profile; anything that
+// can run xdg-open (a page in another browser included) may send it, so it
+// must not cold-start one, with its nodes. Anything else is refused rather
+// than mapped to some other profile or created.
+function resolveProfileSwitchId(appRoot, profileSwitch, { isDev = false, isLocked = isProfileLocked } = {}) {
+  const record = profileSwitch.id ? findRegisteredProfile(appRoot, profileSwitch.id) : null;
+  if (!record?.dir) rejectProfileSwitch('an unknown profile');
+  if (!isRunning(isLocked, { id: record.id, userDataDir: record.dir, isDev })) {
+    rejectProfileSwitch(`"${record.id}", which is not open`);
   }
-  const error = new Error('Refused an x-freedom-profile switch to an unknown profile');
-  error.code = PROFILE_SWITCH_REJECTED;
-  throw error;
+  return record.id;
 }
 
 function hasRegisteredProfiles(appRoot) {
@@ -209,9 +226,15 @@ function resolveProfile(app, options = {}) {
   const profileSwitch = explicitProfile
     ? null
     : parseProfileSwitchArgv(argv, { platform: options.platform || process.platform });
+  const switchId = profileSwitch
+    ? resolveProfileSwitchId(appRoot, profileSwitch, {
+        isDev,
+        isLocked: options.isProfileLocked || isProfileLocked,
+      })
+    : null;
   const profileInput =
     explicitProfile ||
-    (profileSwitch && resolveProfileSwitchId(appRoot, profileSwitch)) ||
+    switchId ||
     env.FREEDOM_PROFILE ||
     resolveLastOpenedProfileId(appRoot) ||
     resolveFallbackProfileId(appRoot) ||
@@ -238,11 +261,15 @@ function resolveProfile(app, options = {}) {
     checkoutHash,
     defaultProfileDir,
     dev: isDev,
-    markOpened: true,
+    // A switch hands over to the open profile and exits: it is not an
+    // opening of its own, so it leaves "last opened" (what a plain `freedom`
+    // launch picks) alone.
+    markOpened: !switchId,
     now: options.now,
   });
 
   return {
+    ...(switchId ? { switchOnly: true } : {}),
     id: metadata.id,
     displayName: metadata.displayName,
     source: 'catalog',

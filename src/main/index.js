@@ -91,6 +91,7 @@ const {
   releaseProfileLock,
 } = require('./profile-lock');
 const {
+  requestInstanceLockProbeSync,
   requestProfileFocusSync,
   startProfileFocusRequestWatcher,
 } = require('./profile-focus-handoff');
@@ -114,9 +115,15 @@ try {
 } catch (error) {
   if (isLockUnavailableError(error)) {
     // Linux: through the running profile's single-instance lock when it
-    // listens on one, which carries this launch's XDG activation token along
-    // (#142); otherwise through the focus-request file below.
-    if (handOverToRunningProfile(app)) {
+    // answers a probe saying it listens on one, which carries this launch's
+    // XDG activation token along (#142); otherwise through the focus-request
+    // file below. Never the lock without the probe: see
+    // profile-instance-handoff.js.
+    if (
+      handOverToRunningProfile(app, {
+        probe: () => requestInstanceLockProbeSync(activeProfile),
+      })
+    ) {
       app.exit(0);
       process.exit(0);
     }
@@ -133,6 +140,15 @@ try {
   }
   throw error;
 }
+// An `x-freedom-profile:` switch only raises a profile that is already open
+// (profile-switch-scheme.js). It got here because that profile quit between
+// the resolver's check and the lock: don't cold-start it in its place.
+if (activeProfile.switchOnly) {
+  console.warn(`[profile] Refused an x-freedom-profile switch to "${activeProfile.id}": not open`);
+  releaseProfileLock(activeProfileLock, { logger: console });
+  app.exit(0);
+  process.exit(0);
+}
 // Deep-link the profile manager's edit button lands an opened profile on. The
 // intent crosses process boundaries as a boolean (focus request field / the
 // `--open-settings` launch flag); this is the only place it becomes a URL.
@@ -142,6 +158,8 @@ let focusCurrentProfileWindow = null;
 // `open-url`, a second launch's focus request during cold start). bootstrap()
 // drains them into that window's initial tabs; see createFirstWindowLinkQueue.
 const firstWindowLinks = createFirstWindowLinkQueue();
+// Set once this process holds its single-instance lock (Linux, #142, below).
+let listeningOnInstanceLock = false;
 const profileFocusWatcher = startProfileFocusRequestWatcher(
   activeProfile,
   (request) => {
@@ -165,17 +183,20 @@ const profileFocusWatcher = startProfileFocusRequestWatcher(
       setTimeout(() => app.quit(), 0);
       return Promise.resolve();
     },
+    // The answer to a second launch's instance-lock probe (#142).
+    isListeningOnInstanceLock: () => listeningOnInstanceLock,
   }
 );
 
 // Linux: later launches of this profile arrive as 'second-instance' with the
 // launch's XDG activation token (profile-instance-handoff.js, #142). The
 // focus-request watcher above stays the fallback for launches that cannot
-// reach this lock.
-listenForProfileRelaunches(app, {
+// reach this lock, or that this process does not answer the probe for.
+listeningOnInstanceLock = listenForProfileRelaunches(app, {
   settingsUrl: PROFILE_SETTINGS_DEEPLINK,
   firstWindowLinks,
   focusWindow: (urls) => focusCurrentProfileWindow(urls),
+  userDataDir: activeProfile.userDataDir,
   logger: console,
 });
 

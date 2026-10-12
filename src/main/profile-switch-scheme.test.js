@@ -1,12 +1,21 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const pkg = require('../../package.json');
 const {
   PACKAGED_DESKTOP_NAME,
   PROFILE_SWITCH_MIME_TYPE,
   buildProfileSwitchUrl,
+  desktopEntryRunsThisApp,
+  execProgram,
+  parseDesktopEntryExec,
   parseProfileSwitchArgv,
   parseProfileSwitchUrl,
+  readProfileSwitchAckTime,
   shouldSwitchProfileViaXdgOpen,
   switchProfileViaXdgOpen,
+  waitForProfileSwitchAck,
+  writeProfileSwitchAck,
 } = require('./profile-switch-scheme');
 const { extractLaunchUrls, relaunchArgs } = require('./launch-urls');
 
@@ -122,6 +131,7 @@ describe('x-freedom-profile scheme', () => {
       env: { XDG_SESSION_TYPE: 'wayland' },
       isPackaged: true,
       queryDefaultHandler: jest.fn(async () => 'freedom.desktop'),
+      runsThisApp: jest.fn(() => true),
       ...overrides,
     });
 
@@ -174,6 +184,140 @@ describe('x-freedom-profile scheme', () => {
         )
       ).resolves.toBe(false);
     });
+
+    test('not when freedom.desktop starts some other install (a .deb beside this AppImage)', async () => {
+      await expect(
+        shouldSwitchProfileViaXdgOpen(waylandPackaged({ runsThisApp: () => false }))
+      ).resolves.toBe(false);
+      await expect(
+        shouldSwitchProfileViaXdgOpen(
+          waylandPackaged({
+            runsThisApp: () => {
+              throw new Error('EACCES');
+            },
+          })
+        )
+      ).resolves.toBe(false);
+    });
+  });
+
+  describe('desktopEntryRunsThisApp', () => {
+    let root;
+    beforeEach(() => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-desktop-'));
+    });
+    afterEach(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    function install(dataDir, exec) {
+      const dir = path.join(root, dataDir, 'applications');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'freedom.desktop'),
+        `[Desktop Entry]\nName=Freedom\nExec=${exec}\n[Desktop Action new]\nExec=/somewhere/else\n`
+      );
+    }
+    function binary(rel) {
+      const file = path.join(root, rel);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, '#!/bin/sh\n');
+      fs.chmodSync(file, 0o755);
+      return file;
+    }
+    const env = (extra = {}) => ({
+      XDG_DATA_HOME: path.join(root, 'home-share'),
+      XDG_DATA_DIRS: `${path.join(root, 'usr-local-share')}:${path.join(root, 'usr-share')}`,
+      PATH: path.join(root, 'bin'),
+      ...extra,
+    });
+
+    test('true when the entry starts this executable (quoted, through a symlink, or on PATH)', () => {
+      const exe = binary('opt/Freedom/freedom');
+      install('usr-share', `"${exe}" %U`);
+      expect(desktopEntryRunsThisApp({ env: env(), execPath: exe })).toBe(true);
+
+      fs.mkdirSync(path.join(root, 'bin'));
+      fs.symlinkSync(exe, path.join(root, 'bin', 'freedom'));
+      install('usr-share', 'freedom %U');
+      expect(desktopEntryRunsThisApp({ env: env(), execPath: exe })).toBe(true);
+    });
+
+    test('false when it starts another install of Freedom', () => {
+      const deb = binary('opt/Freedom/freedom');
+      const appImageMount = binary('mnt/.mount_Freedom/freedom');
+      const appImage = binary('Downloads/Freedom.AppImage');
+      install('usr-share', `"${deb}" %U`);
+      expect(
+        desktopEntryRunsThisApp({ env: env({ APPIMAGE: appImage }), execPath: appImageMount })
+      ).toBe(false);
+      expect(desktopEntryRunsThisApp({ env: env(), execPath: appImageMount })).toBe(false);
+    });
+
+    test('an AppImage matches its own integrated entry by the AppImage file, not its mount', () => {
+      const appImageMount = binary('mnt/.mount_Freedom/freedom');
+      const appImage = binary('Downloads/Freedom.AppImage');
+      install('home-share', `${appImage} %U`);
+      expect(
+        desktopEntryRunsThisApp({ env: env({ APPIMAGE: appImage }), execPath: appImageMount })
+      ).toBe(true);
+    });
+
+    test('the first entry in the XDG data dirs wins, as for xdg-open', () => {
+      const exe = binary('opt/Freedom/freedom');
+      const other = binary('opt/Other/freedom');
+      install('home-share', `"${other}" %U`);
+      install('usr-share', `"${exe}" %U`);
+      expect(desktopEntryRunsThisApp({ env: env(), execPath: exe })).toBe(false);
+    });
+
+    test('false with no entry, or an Exec it cannot resolve', () => {
+      const exe = binary('opt/Freedom/freedom');
+      expect(desktopEntryRunsThisApp({ env: env(), execPath: exe })).toBe(false);
+      install('usr-share', 'not-on-path %U');
+      expect(desktopEntryRunsThisApp({ env: env(), execPath: exe })).toBe(false);
+      install('usr-share', './freedom %U');
+      expect(desktopEntryRunsThisApp({ env: env(), execPath: exe })).toBe(false);
+    });
+
+    test('reads Exec from [Desktop Entry] only, and unquotes it', () => {
+      expect(
+        parseDesktopEntryExec('[Desktop Action x]\nExec=/a\n[Desktop Entry]\nExec = "/b c" %U\n')
+      ).toBe('"/b c" %U');
+      expect(execProgram('"/b c" %U')).toBe('/b c');
+      expect(execProgram('"/b\\"c" %U')).toBe('/b"c');
+      expect(execProgram('"/unterminated')).toBe(null);
+      expect(execProgram('/opt/x --flag')).toBe('/opt/x');
+    });
+  });
+
+  describe('switch acknowledgement', () => {
+    let dir;
+    beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-switch-ack-'));
+    });
+    afterEach(() => {
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    test('waits for an ack written at or after the switch started', async () => {
+      writeProfileSwitchAck(dir, { now: 1000 });
+      // An old ack (an earlier switch) does not count.
+      await expect(
+        waitForProfileSwitchAck(dir, 2000, { timeoutMs: 50, pollIntervalMs: 10 })
+      ).resolves.toBe(false);
+      setTimeout(() => writeProfileSwitchAck(dir, { now: 2500 }), 20);
+      await expect(
+        waitForProfileSwitchAck(dir, 2000, { timeoutMs: 2000, pollIntervalMs: 10 })
+      ).resolves.toBe(true);
+      expect(readProfileSwitchAckTime(dir)).toBe(2500);
+    });
+
+    test('times out with no ack at all', async () => {
+      await expect(
+        waitForProfileSwitchAck(dir, 0, { timeoutMs: 30, pollIntervalMs: 10 })
+      ).resolves.toBe(false);
+    });
   });
 
   describe('switchProfileViaXdgOpen', () => {
@@ -182,14 +326,48 @@ describe('x-freedom-profile scheme', () => {
       env: { XDG_SESSION_TYPE: 'wayland' },
       isPackaged: true,
       queryDefaultHandler: async () => 'freedom.desktop',
+      runsThisApp: () => true,
       shell: { openExternal: jest.fn(async () => {}) },
+      waitForAck: jest.fn(async () => true),
+      now: () => 1234,
       ...overrides,
     });
+    const work = { id: 'work', userDataDir: '/p/work' };
 
-    test('opens x-freedom-profile:<id> through shell.openExternal', async () => {
+    test('opens x-freedom-profile:<id> through shell.openExternal and waits for the ack', async () => {
       const d = deps();
-      await expect(switchProfileViaXdgOpen('work', d)).resolves.toBe(true);
+      await expect(switchProfileViaXdgOpen(work, d)).resolves.toBe(true);
       expect(d.shell.openExternal).toHaveBeenCalledWith('x-freedom-profile:work');
+      expect(d.waitForAck).toHaveBeenCalledWith('/p/work', 1234, undefined);
+    });
+
+    test('a switch the running profile never confirms is a failure, not a success', async () => {
+      // The profile was deleted or quit meanwhile, or the launch went to
+      // another install: xdg-open still succeeds.
+      const d = deps({ waitForAck: jest.fn(async () => false) });
+      await expect(switchProfileViaXdgOpen(work, d)).resolves.toBe(false);
+      expect(d.shell.openExternal).toHaveBeenCalledTimes(1);
+    });
+
+    test('with the real ack wait, an ack the running profile writes completes the switch', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-switch-ack-'));
+      try {
+        const d = deps({
+          waitForAck: undefined,
+          now: undefined,
+          ackOptions: { timeoutMs: 2000, pollIntervalMs: 10 },
+          shell: {
+            openExternal: jest.fn(async () => {
+              setTimeout(() => writeProfileSwitchAck(dir), 20);
+            }),
+          },
+        });
+        await expect(switchProfileViaXdgOpen({ id: 'work', userDataDir: dir }, d)).resolves.toBe(
+          true
+        );
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     test('does nothing when the path does not apply', async () => {
@@ -200,15 +378,19 @@ describe('x-freedom-profile scheme', () => {
         deps({ isPackaged: false }),
         deps({ queryDefaultHandler: async () => 'other.desktop' }),
       ]) {
-        await expect(switchProfileViaXdgOpen('work', d)).resolves.toBe(false);
+        await expect(switchProfileViaXdgOpen(work, d)).resolves.toBe(false);
         expect(d.shell.openExternal).not.toHaveBeenCalled();
       }
     });
 
     test('never builds a URL from a non-canonical id', async () => {
       const d = deps({ queryDefaultHandler: jest.fn(async () => 'freedom.desktop') });
-      await expect(switchProfileViaXdgOpen('../work', d)).resolves.toBe(false);
-      await expect(switchProfileViaXdgOpen('https://evil.example', d)).resolves.toBe(false);
+      await expect(switchProfileViaXdgOpen({ id: '../work', userDataDir: '/p' }, d)).resolves.toBe(
+        false
+      );
+      await expect(
+        switchProfileViaXdgOpen({ id: 'https://evil.example', userDataDir: '/p' }, d)
+      ).resolves.toBe(false);
       expect(d.queryDefaultHandler).not.toHaveBeenCalled();
       expect(d.shell.openExternal).not.toHaveBeenCalled();
     });
@@ -217,7 +399,7 @@ describe('x-freedom-profile scheme', () => {
       const d = deps({
         shell: { openExternal: jest.fn(async () => Promise.reject(new Error('no handler'))) },
       });
-      await expect(switchProfileViaXdgOpen('work', d)).resolves.toBe(false);
+      await expect(switchProfileViaXdgOpen(work, d)).resolves.toBe(false);
     });
   });
 });
