@@ -94,11 +94,15 @@ The shim rejects a request that has had no answer with
   the [permission manifest](#permission-manifests) sheet, which any
   non-public method can open.
 
-The budget covers the whole request, prompt included. A user who takes
-longer than 60 s on the connect prompt or the manifest sheet gets a
+The budget covers the whole request, prompt included, and is set by the
+method called, not by which prompt it ends up waiting on. A user who takes
+longer than 60 s on a prompt opened by a 60 s method (the connect prompt
+from `swarm_requestAccess`, or the manifest sheet opened by
+`swarm_requestAccess`, `swarm_getUploadStatus` or another 60 s method) gets a
 `-32603 Request timed out` on the page even though the decision, once made,
 still takes effect (the grant lands); call `swarm_requestAccess` again, or
-retry the call, to pick it up. The node-side bounds named elsewhere (15 s to
+retry the call, to pick it up. A 300 s method that opens the manifest sheet
+(a `swarm_publishData`, say) keeps waiting for up to 300 s. The node-side bounds named elsewhere (15 s to
 mine a GSOC topic, 30 s for a subscription to establish) cover only that
 stage, not the request end to end.
 
@@ -260,7 +264,15 @@ before the first non-public method call in each document. The result is
 cached per document (the tab plus its committed navigation): later calls in
 the same document reuse it, and a manifest redeployed while the page is open
 is not re-read until the page reloads or navigates. A failed fetch is not
-cached, so the next call retries it. Freedom then shows one consent sheet for every capability the user has not yet approved.
+cached, so the next call retries it. A "Don't allow" on the consent sheet
+*is* cached for the document: every later non-public call, including
+`swarm_requestAccess`, rejects with `4001` straight away and no sheet is
+shown, until the page reloads or navigates. (The one exception: if the sheet
+was declined from a call other than `swarm_requestAccess`, the first
+`swarm_requestAccess` after it re-checks the manifest and can show the sheet
+once more.) The decline is not stored beyond the document, so a "Connect"
+button that calls `swarm_requestAccess` again after a `4001` should tell the
+user to reload rather than expect a fresh sheet. Freedom then shows one consent sheet for every capability the user has not yet approved.
 Approving a capability grants everything it needs in one step:
 
 | Capability  | Grants                                                                                         |
