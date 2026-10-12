@@ -14,6 +14,9 @@ const IN_FLIGHT_TITLE = 'Finish the confirmation on your device first';
 // State
 let isOpen = false;
 let featureEnabled = false;
+// Browser full screen hides an open sidebar without closing it (#78): a close
+// fires 'sidebar-closed', whose cascade tears down any screen the panel holds.
+let concealed = false;
 
 // DOM references
 let sidebar;
@@ -99,6 +102,12 @@ export function toggle() {
   // Collapsing is a close: it hides a live device confirmation just as the
   // X does. Opening is always allowed (it is how the user gets back to a
   // confirmation the panel is holding).
+  // A sidebar hidden by full screen is still open; the toggle brings it back
+  // into view rather than closing what the user cannot see.
+  if (isOpen && concealed) {
+    reveal();
+    return;
+  }
   if (isOpen && refuseSidebarClose()) return;
   const wasOpen = isOpen;
   isOpen = !isOpen;
@@ -116,6 +125,7 @@ export function toggle() {
  */
 export function open() {
   if (!featureEnabled) return;
+  reveal();
   if (!isOpen) {
     isOpen = true;
     applyState();
@@ -145,6 +155,7 @@ function refuseSidebarClose() {
  * provider prompts must render without the identity-wallet flag.
  */
 export function openForConsent() {
+  reveal();
   if (!isOpen) {
     isOpen = true;
     applyState();
@@ -163,6 +174,25 @@ export function close() {
     // Dispatch event so other modules can clean up
     document.dispatchEvent(new CustomEvent('sidebar-closed'));
   }
+}
+
+/**
+ * Hide (or show again) an open sidebar for browser full screen, leaving it
+ * open underneath so leaving full screen restores it as it was (#78). A
+ * sidebar holding a device confirmation stays in view: that prompt cannot be
+ * recalled (see refuseSidebarClose). Anything that opens the panel while it
+ * is hidden — an approval request, the shortcut — shows it again, so a
+ * request arriving in full screen is never answered out of sight.
+ */
+export function setFullscreenConcealed(on) {
+  concealed = Boolean(on) && isOpen && !isSignatureInFlight();
+  sidebar?.classList.toggle('fullscreen-concealed', concealed);
+}
+
+function reveal() {
+  if (!concealed) return;
+  concealed = false;
+  sidebar?.classList.remove('fullscreen-concealed');
 }
 
 /**

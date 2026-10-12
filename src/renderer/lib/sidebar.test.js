@@ -118,3 +118,69 @@ describe('sidebar ownership during a signature flight', () => {
     expect(elements['wallet-toggle-btn'].disabled).toBe(true);
   });
 });
+
+// Browser full screen hides an open panel without closing it (#78): a close
+// would fire 'sidebar-closed' and its closeAllSubscreens() cascade, and
+// leaving full screen has to find the panel exactly as it was.
+describe('sidebar concealed by browser full screen', () => {
+  afterEach(() => {
+    delete global.document;
+    delete global.window;
+    delete global.CustomEvent;
+  });
+
+  test('an open panel is hidden, not closed, and shown again on leaving', async () => {
+    const { sidebar, elements, document } = await loadSidebar();
+    const before = closedEvents(document);
+
+    sidebar.setFullscreenConcealed(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(true);
+    expect(sidebar.isVisible()).toBe(true);
+    expect(elements.sidebar.classList.contains('collapsed')).toBe(false);
+    expect(closedEvents(document)).toBe(before);
+
+    sidebar.setFullscreenConcealed(false);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+    expect(sidebar.isVisible()).toBe(true);
+  });
+
+  test('a closed panel is left alone', async () => {
+    const { sidebar, elements } = await loadSidebar();
+    sidebar.close();
+    sidebar.setFullscreenConcealed(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+
+  test('a request to open the panel shows it again instead of doing nothing', async () => {
+    const { sidebar, elements } = await loadSidebar();
+    sidebar.setFullscreenConcealed(true);
+    sidebar.open();
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+
+    sidebar.setFullscreenConcealed(true);
+    sidebar.openForConsent();
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+
+  test('the toggle shows a hidden panel rather than closing it unseen', async () => {
+    const { sidebar, elements, document } = await loadSidebar();
+    const before = closedEvents(document);
+    sidebar.setFullscreenConcealed(true);
+
+    sidebar.toggle();
+    expect(sidebar.isVisible()).toBe(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+    expect(closedEvents(document)).toBe(before);
+
+    // A second press is an ordinary close.
+    sidebar.toggle();
+    expect(sidebar.isVisible()).toBe(false);
+  });
+
+  test('a panel holding a device confirmation stays in view', async () => {
+    const { sidebar, flight, elements } = await loadSidebar();
+    flight.beginSignatureFlight({ id: 'ledger-send' });
+    sidebar.setFullscreenConcealed(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+});

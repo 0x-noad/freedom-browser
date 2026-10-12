@@ -918,7 +918,7 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + popup-close + ant-api-guard E2E
+      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + popup-close + ant-api-guard + browser-fullscreen E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/tabs.spec.js \
@@ -932,7 +932,8 @@ jobs:
             test-e2e/dweb-link-gesture.spec.js \
             test-e2e/popup-blocker.spec.js \
             test-e2e/popup-close.spec.js \
-            test-e2e/ant-api-guard.spec.js
+            test-e2e/ant-api-guard.spec.js \
+            test-e2e/browser-fullscreen.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

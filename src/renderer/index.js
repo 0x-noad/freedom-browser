@@ -76,7 +76,8 @@ import {
 } from './lib/chrome-input-context-menu.js';
 import { pushDebug } from './lib/debug.js';
 import { initOnboarding } from './lib/onboarding.js';
-import { initSidebar } from './lib/sidebar.js';
+import { initSidebar, setFullscreenConcealed } from './lib/sidebar.js';
+import { initBrowserFullscreen } from './lib/browser-fullscreen.js';
 import { renderSubscreenHeaders } from './lib/subscreen-header.js';
 import { initRadicleConsent } from './lib/radicle-consent.js';
 import { initRadicleAlias } from './lib/radicle-alias.js';
@@ -849,6 +850,12 @@ window.addEventListener('DOMContentLoaded', async () => {
     openSettings: () => loadTarget('freedom://settings/about/updates'),
   });
   initBookmarks();
+  // Before initNavigation: its window-level Escape (stop loading) stands down
+  // for the press that leaves full screen.
+  initBrowserFullscreen({
+    setSidebarConcealed: setFullscreenConcealed,
+    closeMenus: closeAllOverlays,
+  }); // Full screen hides the chrome (#78)
   initNavigation(); // Sets up event handler with tabs module
   initSitePermissionsUi(); // Permission prompt + address-bar indicator
   initPopupBlockerUi(); // Pop-up-blocked address-bar icon (#442)

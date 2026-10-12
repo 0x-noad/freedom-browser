@@ -33,6 +33,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   maximizeWindow: () => ipcRenderer.send('window:maximize'),
   toggleFullscreen: () => ipcRenderer.send('window:toggle-fullscreen'),
+  onFullscreenChanged: (callback) => {
+    const handler = (_event, isFullScreen) => callback(isFullScreen === true);
+    ipcRenderer.on('window:fullscreen-changed', handler);
+    return () => ipcRenderer.removeListener('window:fullscreen-changed', handler);
+  },
   newWindow: () => ipcRenderer.send('window:new'),
   newPrivateWindow: () => ipcRenderer.send('window:new-private'),
   openUrlInNewWindow: (url) => ipcRenderer.send('window:new-with-url', url),

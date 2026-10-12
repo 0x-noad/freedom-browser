@@ -149,6 +149,10 @@ function createMainWindow(initialUrl = null, options = {}) {
     }
   });
 
+  // Hide the chrome while the window is full screen (#78). Required here,
+  // not at the top: browser-fullscreen.js itself requires this module.
+  require('../browser-fullscreen').attachFullscreenChromeSync(window);
+
   window.on('page-title-updated', (event) => {
     event.preventDefault();
     window.setTitle(titleForThisWindow());
