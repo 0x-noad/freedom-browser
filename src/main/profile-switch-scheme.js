@@ -374,7 +374,11 @@ function readProfileSwitchAckTime(userDataDir, fsImpl = fs) {
 // launch it answers is unknown, so it closes the oldest one in flight: at
 // worst this switch then waits out its budget, it never ends early. Launches
 // still unfinished after one whole switch budget before `sinceMs` are past any
-// wait (crashed, killed) and are dropped. And a `failed` is only taken as this
+// wait (crashed, killed) and are dropped, before such an unattributed outcome
+// is matched too, so a dead launch's leftover `received` cannot absorb the
+// running profile's `failed` and turn a fast fail into the full wait (R6-M1).
+// A pid-attributed late outcome of such a launch still closes only its own
+// launch (R5-M1). And a `failed` is only taken as this
 // switch's once some launch said `received` since it started: this switch's
 // own launch always does first, so a failure landing before that is someone
 // else's.
@@ -383,7 +387,8 @@ function profileSwitchStateSince(acks, sinceMs, lookbackMs = PROFILE_SWITCH_ACK_
   for (const ack of acks) {
     if (ack.state === 'received' && ack.pid != null) launchPids.add(ack.pid);
   }
-  const inFlight = []; // { at, pid }, oldest first
+  const staleBefore = sinceMs - lookbackMs;
+  let inFlight = []; // { at, pid }, oldest first
   let receivedSince = false;
   let failed = false;
   for (const ack of acks) {
@@ -401,14 +406,18 @@ function profileSwitchStateSince(acks, sinceMs, lookbackMs = PROFILE_SWITCH_ACK_
         }
       }
       if (index >= 0) inFlight.splice(index, 1);
-    } else if (inFlight.length) {
+    } else {
+      // Drop the launches already past any wait first, so this closes one
+      // that is still live and not a crashed one whose received is still on
+      // disk (R6-M1).
+      inFlight = inFlight.filter((launch) => launch.at >= staleBefore);
       inFlight.shift();
     }
     if (ack.at < sinceMs) continue;
     if (ack.state === 'done') return 'done';
     failed = true;
   }
-  const stillGoing = inFlight.filter((launch) => launch.at >= sinceMs - lookbackMs).length;
+  const stillGoing = inFlight.filter((launch) => launch.at >= staleBefore).length;
   if (failed && receivedSince && stillGoing === 0) return 'failed';
   return acks.some((ack) => ack.at >= sinceMs) ? 'received' : null;
 }

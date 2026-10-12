@@ -4,6 +4,7 @@ const path = require('path');
 const pkg = require('../../package.json');
 const {
   PACKAGED_DESKTOP_NAME,
+  PROFILE_SWITCH_ACK_DIR,
   PROFILE_SWITCH_MIME_TYPE,
   buildProfileSwitchUrl,
   desktopEntryRunsThisApp,
@@ -467,8 +468,9 @@ describe('x-freedom-profile scheme', () => {
       ).toBe('failed');
       // ...but not one older than a whole switch budget that never finished.
       expect(profileSwitchStateSince(acks([1, 'received'], [4, 'received'], [6, 'failed']), 3, 1))
-        // Without pids the failure may be either launch's: keep waiting.
-        .toBe('received');
+        // The launch at 1 is past any wait, so the failure is the one at 4's
+        // (R6-M1).
+        .toBe('failed');
       const byPid = (...list) => list.map(([at, state, pid]) => ({ at, state, pid }));
       expect(
         profileSwitchStateSince(
@@ -509,17 +511,84 @@ describe('x-freedom-profile scheme', () => {
         )
       ).toBe('failed');
       // The running profile's ack (a pid that never said received) closes the
-      // oldest launch in flight, so it never ends this switch's wait early.
+      // oldest launch still in flight, so it never ends this switch's wait
+      // early...
+      expect(
+        profileSwitchStateSince(
+          acks([5000, 'received', 10], [10100, 'received', 11], [10200, 'failed', 99]),
+          10000
+        )
+      ).toBe('received');
+      // ...but a launch older than a whole budget is past any wait and is not
+      // the oldest one in flight any more (R6-M1).
       expect(
         profileSwitchStateSince(
           acks([3500, 'received', 10], [10100, 'received', 11], [10200, 'failed', 99]),
           10000
         )
-      ).toBe('received');
+      ).toBe('failed');
       expect(
         profileSwitchStateSince(acks([10100, 'received', 11], [10200, 'failed', 99]), 10000)
       ).toBe('failed');
       expect(profileSwitchStateSince(acks([1, 'done']), 3)).toBeNull();
+    });
+
+    test("profileSwitchStateSince: a dead launch's received does not absorb the running profile's failed (R6-M1)", () => {
+      const received = 'received';
+      const failed = 'failed';
+      // The reviewer's exact sequence: a crashed launch still inside the 60 s
+      // sweep, this switch's own launch handed over, the holder's focusWindow
+      // threw.
+      const records = [
+        { at: -20000, state: received, pid: 1 },
+        { at: 10100, state: received, pid: 2 },
+        { at: 10300, state: failed, pid: 99 },
+      ];
+      expect(profileSwitchStateSince(records, 10000)).toBe('failed');
+      // Same as without the dead record.
+      expect(profileSwitchStateSince(records.slice(1), 10000)).toBe('failed');
+      // A live overlapping launch inside the budget still keeps the wait going.
+      expect(
+        profileSwitchStateSince(
+          [
+            { at: -20000, state: received, pid: 1 },
+            { at: 9000, state: received, pid: 3 },
+            { at: 10100, state: received, pid: 2 },
+            { at: 10300, state: failed, pid: 99 },
+          ],
+          10000
+        )
+      ).toBe('received');
+      // The dead launch's own late failure still closes only itself (R5-M1).
+      expect(
+        profileSwitchStateSince(
+          [
+            { at: -20000, state: received, pid: 1 },
+            { at: 10100, state: received, pid: 2 },
+            { at: 10200, state: failed, pid: 1 },
+          ],
+          10000
+        )
+      ).toBe('received');
+    });
+
+    test('waitForProfileSwitchAck fails fast past a dead launch record (R6-M1)', async () => {
+      writeProfileSwitchAck(dir, { state: 'received', now: Date.now() - 20000 });
+      const since = Date.now();
+      setTimeout(() => writeProfileSwitchAck(dir, { state: 'received', now: Date.now() }), 20);
+      setTimeout(() => {
+        // The running profile's failed, from a pid that never said received.
+        const file = path.join(dir, PROFILE_SWITCH_ACK_DIR, `holder-${Date.now()}.json`);
+        fs.writeFileSync(
+          file,
+          JSON.stringify({ state: 'failed', handledAtMs: Date.now(), pid: 424242 })
+        );
+      }, 60);
+      const started = Date.now();
+      await expect(
+        waitForProfileSwitchAck(dir, since, { timeoutMs: 3000, pollIntervalMs: 10 })
+      ).resolves.toBe(false);
+      expect(Date.now() - started).toBeLessThan(1500);
     });
 
     test('several records written in the same millisecond all survive', () => {
