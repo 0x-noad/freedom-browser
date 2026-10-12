@@ -318,7 +318,7 @@ function writeProfileSwitchAck(
   fsImpl.renameSync(tmp, target);
 }
 
-// Every record as { at, state }, oldest first. A record without a state (none
+// Every record as { at, state, pid }, oldest first (pid null when absent). A record without a state (none
 // is written that way, but keep it readable) counts as `done`; unreadable or
 // unknown ones are skipped.
 function readProfileSwitchAcks(userDataDir, fsImpl = fs) {
@@ -337,7 +337,8 @@ function readProfileSwitchAcks(userDataDir, fsImpl = fs) {
       const at = Number(ack?.handledAtMs);
       if (!Number.isFinite(at)) continue;
       const state = ack?.state === undefined ? 'done' : ack.state;
-      if (PROFILE_SWITCH_STATES.has(state)) acks.push({ at, state });
+      const pid = Number.isInteger(ack?.pid) ? ack.pid : null;
+      if (PROFILE_SWITCH_STATES.has(state)) acks.push({ at, state, pid });
     } catch {
       // Skip it.
     }
@@ -361,33 +362,54 @@ function readProfileSwitchAckTime(userDataDir, fsImpl = fs) {
 // failed since and every switch launch still in flight has finished; else
 // `received`, else null.
 //
-// The records carry no per-launch id, so "in flight" is counted: each switch
-// launch writes one `received` as it starts and at most one `done`/`failed`.
-// An earlier, overlapping launch's `failed` thus does not end the wait while a
-// later launch is still going (R4-M1). Launches that started shortly before
-// `sinceMs` count too (their `received` may predate this switch while their
-// `failed` does not), back to one whole switch budget: older ones are past
-// any wait, finished or not. And a `failed` is only taken as this switch's
-// once some launch said `received` since it started: this switch's own launch
-// always does first, so a failure landing before that is someone else's.
+// Each switch launch writes one `received` as it starts and at most one
+// `done`/`failed`, so a later, overlapping launch keeps the wait going after an
+// earlier one failed (R4-M1). In-flight launches are matched up by pid: a
+// launch writes its `received` and, when it falls back to the focus-request
+// file, its outcome from the same process. Every record is read for that, not
+// only recent ones, so a slow launch whose `received` predates this switch by
+// more than a budget cannot have its late `failed` taken for this switch's own
+// launch finishing (R5-M1). An outcome from a pid that never said `received`
+// is the running profile acknowledging a single-instance hand-over; which
+// launch it answers is unknown, so it closes the oldest one in flight: at
+// worst this switch then waits out its budget, it never ends early. Launches
+// still unfinished after one whole switch budget before `sinceMs` are past any
+// wait (crashed, killed) and are dropped. And a `failed` is only taken as this
+// switch's once some launch said `received` since it started: this switch's
+// own launch always does first, so a failure landing before that is someone
+// else's.
 function profileSwitchStateSince(acks, sinceMs, lookbackMs = PROFILE_SWITCH_ACK_TIMEOUT_MS) {
-  let received = 0;
+  const launchPids = new Set();
+  for (const ack of acks) {
+    if (ack.state === 'received' && ack.pid != null) launchPids.add(ack.pid);
+  }
+  const inFlight = []; // { at, pid }, oldest first
   let receivedSince = false;
-  let finished = 0;
   let failed = false;
   for (const ack of acks) {
-    if (ack.at < sinceMs - lookbackMs) continue;
     if (ack.state === 'received') {
-      received += 1;
+      inFlight.push({ at: ack.at, pid: ack.pid ?? null });
       if (ack.at >= sinceMs) receivedSince = true;
       continue;
     }
-    finished += 1;
+    if (ack.pid != null && launchPids.has(ack.pid)) {
+      let index = -1;
+      for (let i = inFlight.length - 1; i >= 0; i -= 1) {
+        if (inFlight[i].pid === ack.pid) {
+          index = i;
+          break;
+        }
+      }
+      if (index >= 0) inFlight.splice(index, 1);
+    } else if (inFlight.length) {
+      inFlight.shift();
+    }
     if (ack.at < sinceMs) continue;
     if (ack.state === 'done') return 'done';
     failed = true;
   }
-  if (failed && receivedSince && finished >= received) return 'failed';
+  const stillGoing = inFlight.filter((launch) => launch.at >= sinceMs - lookbackMs).length;
+  if (failed && receivedSince && stillGoing === 0) return 'failed';
   return acks.some((ack) => ack.at >= sinceMs) ? 'received' : null;
 }
 

@@ -371,13 +371,13 @@ describe('x-freedom-profile scheme', () => {
       const acks = path.join(dir, 'profile-switch-acks');
       fs.mkdirSync(acks);
       fs.writeFileSync(path.join(acks, '5-1-1-done.json'), JSON.stringify({ handledAtMs: 5 }));
-      expect(readProfileSwitchAck(dir)).toEqual({ at: 5, state: 'done' });
+      expect(readProfileSwitchAck(dir)).toEqual({ at: 5, state: 'done', pid: null });
       fs.writeFileSync(
         path.join(acks, '6-1-2-bogus.json'),
         JSON.stringify({ handledAtMs: 6, state: 'bogus' })
       );
       fs.writeFileSync(path.join(acks, '7-1-3-done.json'), 'not json');
-      expect(readProfileSwitchAcks(dir)).toEqual([{ at: 5, state: 'done' }]);
+      expect(readProfileSwitchAcks(dir)).toEqual([{ at: 5, state: 'done', pid: null }]);
       expect(() => writeProfileSwitchAck(dir, { state: 'bogus' })).toThrow();
     });
 
@@ -390,9 +390,9 @@ describe('x-freedom-profile scheme', () => {
       writeProfileSwitchAck(dir, { state: 'done', now: 2100 });
       writeProfileSwitchAck(dir, { state: 'received', now: 2101 });
       expect(readProfileSwitchAcks(dir)).toEqual([
-        { at: 2010, state: 'received' },
-        { at: 2100, state: 'done' },
-        { at: 2101, state: 'received' },
+        { at: 2010, state: 'received', pid: process.pid },
+        { at: 2100, state: 'done', pid: process.pid },
+        { at: 2101, state: 'received', pid: process.pid },
       ]);
       const started = Date.now();
       await expect(
@@ -465,9 +465,59 @@ describe('x-freedom-profile scheme', () => {
           3
         )
       ).toBe('failed');
-      // ...but not one older than a whole switch budget.
+      // ...but not one older than a whole switch budget that never finished.
+      expect(profileSwitchStateSince(acks([1, 'received'], [4, 'received'], [6, 'failed']), 3, 1))
+        // Without pids the failure may be either launch's: keep waiting.
+        .toBe('received');
+      const byPid = (...list) => list.map(([at, state, pid]) => ({ at, state, pid }));
       expect(
-        profileSwitchStateSince(acks([1, 'received'], [4, 'received'], [5, 'failed']), 3, 1)
+        profileSwitchStateSince(
+          byPid([1, 'received', 10], [4, 'received', 11], [6, 'failed', 11]),
+          3,
+          1
+        )
+      ).toBe('failed');
+    });
+
+    test('profileSwitchStateSince: a slow launch older than the budget keeps its own failure (R5-M1)', () => {
+      const acks = (...list) => list.map(([at, state, pid]) => ({ at, state, pid }));
+      // L0 (pid 10) said received 6.5 s before this switch started and fails
+      // only after this switch's own launch (pid 11) said received.
+      expect(
+        profileSwitchStateSince(
+          acks([3500, 'received', 10], [10100, 'received', 11], [10200, 'failed', 10]),
+          10000
+        )
+      ).toBe('received');
+      // This switch's own launch failing still ends the wait.
+      expect(
+        profileSwitchStateSince(
+          acks(
+            [3500, 'received', 10],
+            [10100, 'received', 11],
+            [10200, 'failed', 10],
+            [10300, 'failed', 11]
+          ),
+          10000
+        )
+      ).toBe('failed');
+      // Its failure landing first ends it too: L0 is past any wait, unfinished.
+      expect(
+        profileSwitchStateSince(
+          acks([3500, 'received', 10], [10100, 'received', 11], [10200, 'failed', 11]),
+          10000
+        )
+      ).toBe('failed');
+      // The running profile's ack (a pid that never said received) closes the
+      // oldest launch in flight, so it never ends this switch's wait early.
+      expect(
+        profileSwitchStateSince(
+          acks([3500, 'received', 10], [10100, 'received', 11], [10200, 'failed', 99]),
+          10000
+        )
+      ).toBe('received');
+      expect(
+        profileSwitchStateSince(acks([10100, 'received', 11], [10200, 'failed', 99]), 10000)
       ).toBe('failed');
       expect(profileSwitchStateSince(acks([1, 'done']), 3)).toBeNull();
     });
