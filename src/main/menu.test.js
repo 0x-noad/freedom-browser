@@ -333,6 +333,27 @@ describe('menu', () => {
     );
   });
 
+  test('shows a native-menu profile switch in progress on the window until it settles (R2-M2)', async () => {
+    let settle;
+    const openOrFocusProfile = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        })
+    );
+    const targetWindow = { setProgressBar: jest.fn(), isDestroyed: () => false };
+    const { capturedTemplate } = loadMenuModule('linux', { openOrFocusProfile, targetWindow });
+    const beta = findTopLabel(capturedTemplate, 'Profiles').submenu.find(
+      (item) => item.label === 'Beta'
+    );
+
+    const clicked = beta.click();
+    expect(targetWindow.setProgressBar).toHaveBeenLastCalledWith(2);
+    settle({ focused: true });
+    await clicked;
+    expect(targetWindow.setProgressBar).toHaveBeenLastCalledWith(-1);
+  });
+
   test('File menu no longer includes the profile management entry', () => {
     for (const platform of ['darwin', 'win32', 'linux']) {
       const { capturedTemplate } = loadMenuModule(platform);

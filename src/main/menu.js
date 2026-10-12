@@ -91,6 +91,13 @@ async function switchToProfile(profileId) {
   const activeProfile = getActiveProfile();
   if (!activeProfile || activeProfile.source !== 'catalog') return;
   if (!profileId || profileId === activeProfile.id) return;
+  // A switch can take a few seconds before it lands or fails (on GNOME
+  // Wayland it waits for the other profile to confirm an xdg-open switch, and
+  // one that does not land then tries the focus-request file), and the native
+  // menu is closed by then. Show the wait as an indeterminate progress bar on
+  // the window: its taskbar/dock entry where the desktop draws one.
+  const busyWindow = switchFeedbackWindow();
+  setSwitchBusy(busyWindow, true);
   try {
     // openOrFocusProfile resolves with { error } (it does NOT throw) when the
     // profile is running but never acknowledged the focus request. The native
@@ -108,6 +115,25 @@ async function switchToProfile(profileId) {
       'Could not switch profile',
       err?.message || 'The profile could not be opened.'
     );
+  } finally {
+    setSwitchBusy(busyWindow, false);
+  }
+}
+
+function switchFeedbackWindow() {
+  try {
+    return getTargetWindow();
+  } catch {
+    return null;
+  }
+}
+
+function setSwitchBusy(win, busy) {
+  try {
+    if (!win || win.isDestroyed?.()) return;
+    win.setProgressBar?.(busy ? 2 : -1);
+  } catch {
+    // Feedback only.
   }
 }
 

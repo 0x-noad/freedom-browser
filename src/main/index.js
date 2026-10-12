@@ -96,8 +96,9 @@ const {
   startProfileFocusRequestWatcher,
 } = require('./profile-focus-handoff');
 const {
-  handOverToRunningProfile,
+  handleLockedProfileLaunch,
   listenForProfileRelaunches,
+  recordProfileSwitch,
 } = require('./profile-instance-handoff');
 const {
   buildColdStartUrls,
@@ -109,6 +110,9 @@ const {
 // against the schemes Freedom opens. A cold start opens them in its first
 // window; a second launch of an already-open profile hands them over below.
 const launchUrls = extractLaunchUrls(process.argv);
+// An in-app switch in another profile is waiting on this `x-freedom-profile:`
+// launch; tell it the launch arrived (profile-switch-scheme.js).
+recordProfileSwitch(activeProfile, 'received', { logger: console });
 let activeProfileLock = null;
 try {
   activeProfileLock = acquireProfileLock(activeProfile, { logger: console });
@@ -117,24 +121,16 @@ try {
     // Linux: through the running profile's single-instance lock when it
     // answers a probe saying it listens on one, which carries this launch's
     // XDG activation token along (#142); otherwise through the focus-request
-    // file below. Never the lock without the probe: see
-    // profile-instance-handoff.js.
-    if (
-      handOverToRunningProfile(app, {
-        probe: () => requestInstanceLockProbeSync(activeProfile),
-      })
-    ) {
-      app.exit(0);
-      process.exit(0);
-    }
-    const profileName = activeProfile.displayName || activeProfile.id || 'selected';
-    const focusResult = requestProfileFocusSync(activeProfile, { urls: launchUrls });
-    if (!focusResult.ok) {
-      dialog.showErrorBox(
-        'Freedom profile is already open',
-        `The "${profileName}" profile is already open, but Freedom could not focus it.\n\nClose that Freedom window or launch a different profile.`
-      );
-    }
+    // file. Never the lock without the probe: see profile-instance-handoff.js.
+    handleLockedProfileLaunch({
+      app,
+      profile: activeProfile,
+      launchUrls,
+      probe: () => requestInstanceLockProbeSync(activeProfile),
+      requestFocus: requestProfileFocusSync,
+      showError: (title, message) => dialog.showErrorBox(title, message),
+      logger: console,
+    });
     app.exit(0);
     process.exit(0);
   }
@@ -145,6 +141,7 @@ try {
 // the resolver's check and the lock: don't cold-start it in its place.
 if (activeProfile.switchOnly) {
   console.warn(`[profile] Refused an x-freedom-profile switch to "${activeProfile.id}": not open`);
+  recordProfileSwitch(activeProfile, 'failed', { logger: console });
   releaseProfileLock(activeProfileLock, { logger: console });
   app.exit(0);
   process.exit(0);

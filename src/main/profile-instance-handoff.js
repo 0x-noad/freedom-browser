@@ -56,6 +56,75 @@ function handOverToRunningProfile(app, { platform = process.platform, probe } = 
   return !app.requestSingleInstanceLock();
 }
 
+// Record how an `x-freedom-profile:` switch launch is getting on, in the
+// target profile's userData dir, for the in-app switch waiting on it
+// (profile-switch-scheme.js). Best effort: the waiting side times out anyway.
+function recordProfileSwitch(
+  profile,
+  state,
+  { writeSwitchAck = writeProfileSwitchAck, logger } = {}
+) {
+  if (!profile?.switchOnly || !profile.userDataDir) return;
+  try {
+    writeSwitchAck(profile.userDataDir, { state });
+  } catch (error) {
+    logger?.warn?.(
+      `[profile] Could not record a profile switch as ${state}:`,
+      error?.message || error
+    );
+  }
+}
+
+// Everything a launch does when it finds its profile locked by a running
+// process; the caller exits afterwards. Through the single-instance lock when
+// the holder answers the probe (it then acknowledges a switch itself), else
+// through the focus-request file.
+//
+// An `x-freedom-profile:` switch launch is a short-lived helper of an in-app
+// switch in another profile, which waits for its outcome and runs the file
+// hand-off itself when it fails. So when such a launch has to fall back to the
+// file, it records whether that focus landed (sparing the switching profile a
+// second focus) and never shows an error box of its own: the switching profile
+// reports a switch that cannot land, once. That also keeps a page in another
+// browser firing the scheme from popping up a Freedom dialog.
+function handleLockedProfileLaunch({
+  app,
+  profile,
+  launchUrls = [],
+  probe,
+  requestFocus,
+  showError,
+  writeSwitchAck = writeProfileSwitchAck,
+  logger,
+  platform = process.platform,
+}) {
+  if (handOverToRunningProfile(app, { platform, probe })) return;
+  let focusResult;
+  try {
+    focusResult = requestFocus(profile, { urls: launchUrls });
+  } catch (error) {
+    focusResult = { ok: false, error: error?.message || String(error) };
+  }
+  const ok = focusResult?.ok === true;
+  if (profile?.switchOnly) {
+    recordProfileSwitch(profile, ok ? 'done' : 'failed', { writeSwitchAck, logger });
+    if (!ok) {
+      logger?.warn?.(
+        `[profile] An x-freedom-profile switch could not focus "${profile.id}"; ` +
+          'the profile that asked for it reports the failure'
+      );
+    }
+    return;
+  }
+  if (!ok) {
+    const profileName = profile?.displayName || profile?.id || 'selected';
+    showError(
+      'Freedom profile is already open',
+      `The "${profileName}" profile is already open, but Freedom could not focus it.\n\nClose that Freedom window or launch a different profile.`
+    );
+  }
+}
+
 // What a 'second-instance' launch asks the running profile to open: Profile
 // settings for a Profiles-manager launch carrying --open-settings, else the
 // links among its arguments (checked like any other launch's). A plain launch
@@ -89,7 +158,7 @@ function createSecondInstanceHandler({
     const ackSwitch = () => {
       if (!isSwitch || !userDataDir) return;
       try {
-        writeSwitchAck(userDataDir);
+        writeSwitchAck(userDataDir, { state: 'done' });
       } catch (error) {
         logger?.warn?.(
           '[profile] Could not acknowledge a profile switch:',
@@ -137,7 +206,9 @@ function listenForProfileRelaunches(app, options = {}) {
 
 module.exports = {
   createSecondInstanceHandler,
+  handleLockedProfileLaunch,
   handOverToRunningProfile,
   listenForProfileRelaunches,
+  recordProfileSwitch,
   secondInstanceUrls,
 };

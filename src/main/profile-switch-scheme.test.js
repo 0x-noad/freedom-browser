@@ -11,6 +11,7 @@ const {
   parseDesktopEntryExec,
   parseProfileSwitchArgv,
   parseProfileSwitchUrl,
+  readProfileSwitchAck,
   readProfileSwitchAckTime,
   shouldSwitchProfileViaXdgOpen,
   switchProfileViaXdgOpen,
@@ -311,6 +312,70 @@ describe('x-freedom-profile scheme', () => {
         waitForProfileSwitchAck(dir, 2000, { timeoutMs: 2000, pollIntervalMs: 10 })
       ).resolves.toBe(true);
       expect(readProfileSwitchAckTime(dir)).toBe(2500);
+    });
+
+    test('gives up at once on a switch the launch recorded as failed (R2-M1/M2)', async () => {
+      setTimeout(() => writeProfileSwitchAck(dir, { state: 'failed', now: 2500 }), 20);
+      const started = Date.now();
+      await expect(
+        waitForProfileSwitchAck(dir, 2000, { timeoutMs: 5000, pollIntervalMs: 10 })
+      ).resolves.toBe(false);
+      expect(Date.now() - started).toBeLessThan(1000);
+    });
+
+    test('stops waiting early when the launch never even arrived', async () => {
+      const started = Date.now();
+      await expect(
+        waitForProfileSwitchAck(dir, 0, {
+          receiveTimeoutMs: 40,
+          timeoutMs: 5000,
+          pollIntervalMs: 10,
+        })
+      ).resolves.toBe(false);
+      expect(Date.now() - started).toBeLessThan(1000);
+    });
+
+    test('a launch that arrived gets the whole budget to finish', async () => {
+      writeProfileSwitchAck(dir, { state: 'received', now: 2100 });
+      setTimeout(() => writeProfileSwitchAck(dir, { state: 'done', now: 2600 }), 120);
+      await expect(
+        waitForProfileSwitchAck(dir, 2000, {
+          receiveTimeoutMs: 30,
+          timeoutMs: 2000,
+          pollIntervalMs: 10,
+        })
+      ).resolves.toBe(true);
+      // ...but not past it.
+      writeProfileSwitchAck(dir, { state: 'received', now: 3000 });
+      await expect(
+        waitForProfileSwitchAck(dir, 3000, {
+          receiveTimeoutMs: 10,
+          timeoutMs: 60,
+          pollIntervalMs: 10,
+        })
+      ).resolves.toBe(false);
+    });
+
+    test('a received or failed record from an earlier switch does not count', async () => {
+      writeProfileSwitchAck(dir, { state: 'failed', now: 1000 });
+      setTimeout(() => writeProfileSwitchAck(dir, { state: 'done', now: 2500 }), 20);
+      await expect(
+        waitForProfileSwitchAck(dir, 2000, { timeoutMs: 2000, pollIntervalMs: 10 })
+      ).resolves.toBe(true);
+    });
+
+    test('reads an ack without a state as done, and rejects unknown states', () => {
+      fs.writeFileSync(
+        path.join(dir, 'profile-switch-ack.json'),
+        JSON.stringify({ handledAtMs: 5 })
+      );
+      expect(readProfileSwitchAck(dir)).toEqual({ at: 5, state: 'done' });
+      fs.writeFileSync(
+        path.join(dir, 'profile-switch-ack.json'),
+        JSON.stringify({ handledAtMs: 5, state: 'bogus' })
+      );
+      expect(readProfileSwitchAck(dir)).toBeNull();
+      expect(() => writeProfileSwitchAck(dir, { state: 'bogus' })).toThrow();
     });
 
     test('times out with no ack at all', async () => {

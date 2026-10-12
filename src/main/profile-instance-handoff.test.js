@@ -1,8 +1,10 @@
 const { EventEmitter } = require('events');
 const {
   createSecondInstanceHandler,
+  handleLockedProfileLaunch,
   handOverToRunningProfile,
   listenForProfileRelaunches,
+  recordProfileSwitch,
 } = require('./profile-instance-handoff');
 const { createFirstWindowLinkQueue } = require('./launch-urls');
 
@@ -32,6 +34,97 @@ function readyQueue() {
 }
 
 describe('profile instance hand-off (Linux single-instance lock, #142)', () => {
+  describe('handleLockedProfileLaunch (R2-M1)', () => {
+    const SWITCH = { id: 'work', userDataDir: '/p/work', switchOnly: true };
+    const PLAIN = { id: 'work', displayName: 'Work', userDataDir: '/p/work' };
+    const run = ({ profile, lock = false, probe = () => false, focusOk = true } = {}) => {
+      const deps = {
+        app: makeApp({ lock }),
+        profile,
+        launchUrls: [],
+        probe: jest.fn(probe),
+        requestFocus: jest.fn(() => ({ ok: focusOk, error: focusOk ? undefined : 'timed out' })),
+        showError: jest.fn(),
+        writeSwitchAck: jest.fn(),
+        logger: { warn: jest.fn() },
+        platform: 'linux',
+      };
+      handleLockedProfileLaunch(deps);
+      return deps;
+    };
+
+    test('a hand-over through the lock leaves the file and the ack to the holder', () => {
+      const deps = run({ profile: SWITCH, probe: () => true, lock: false });
+      expect(deps.requestFocus).not.toHaveBeenCalled();
+      expect(deps.writeSwitchAck).not.toHaveBeenCalled();
+      expect(deps.showError).not.toHaveBeenCalled();
+    });
+
+    test('a switch launch that falls back to the file records the focus it got, so the switching profile does not focus again', () => {
+      const deps = run({ profile: SWITCH, focusOk: true });
+      expect(deps.requestFocus).toHaveBeenCalledTimes(1);
+      expect(deps.writeSwitchAck).toHaveBeenCalledWith('/p/work', { state: 'done' });
+      expect(deps.showError).not.toHaveBeenCalled();
+    });
+
+    test('a switch launch whose file focus fails records it and shows no dialog of its own', () => {
+      const deps = run({ profile: SWITCH, focusOk: false });
+      expect(deps.writeSwitchAck).toHaveBeenCalledWith('/p/work', { state: 'failed' });
+      expect(deps.showError).not.toHaveBeenCalled();
+      expect(deps.logger.warn).toHaveBeenCalled();
+    });
+
+    test('a switch launch whose file focus throws counts it as failed', () => {
+      const deps = {
+        app: makeApp(),
+        profile: SWITCH,
+        probe: () => false,
+        requestFocus: () => {
+          throw new Error('EACCES');
+        },
+        showError: jest.fn(),
+        writeSwitchAck: jest.fn(),
+        platform: 'linux',
+      };
+      handleLockedProfileLaunch(deps);
+      expect(deps.writeSwitchAck).toHaveBeenCalledWith('/p/work', { state: 'failed' });
+      expect(deps.showError).not.toHaveBeenCalled();
+    });
+
+    test('an ordinary launch still reports a focus that failed, and writes no switch ack', () => {
+      const deps = run({ profile: PLAIN, focusOk: false });
+      expect(deps.showError).toHaveBeenCalledWith(
+        'Freedom profile is already open',
+        expect.stringContaining('"Work" profile is already open')
+      );
+      expect(deps.writeSwitchAck).not.toHaveBeenCalled();
+      const ok = run({ profile: PLAIN, focusOk: true });
+      expect(ok.showError).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('recordProfileSwitch', () => {
+    test('records only for a switch launch, and never throws', () => {
+      const writeSwitchAck = jest.fn();
+      recordProfileSwitch({ id: 'work', userDataDir: '/p/work' }, 'received', { writeSwitchAck });
+      expect(writeSwitchAck).not.toHaveBeenCalled();
+      recordProfileSwitch({ id: 'work', userDataDir: '/p/work', switchOnly: true }, 'received', {
+        writeSwitchAck,
+      });
+      expect(writeSwitchAck).toHaveBeenCalledWith('/p/work', { state: 'received' });
+      const logger = { warn: jest.fn() };
+      expect(() =>
+        recordProfileSwitch({ userDataDir: '/p/work', switchOnly: true }, 'failed', {
+          writeSwitchAck: () => {
+            throw new Error('EROFS');
+          },
+          logger,
+        })
+      ).not.toThrow();
+      expect(logger.warn).toHaveBeenCalled();
+    });
+  });
+
   describe('handOverToRunningProfile', () => {
     test('a launch of a running profile hands over when the running process answers the probe and holds the lock', () => {
       const app = makeApp({ lock: false });
@@ -144,7 +237,7 @@ describe('profile instance hand-off (Linux single-instance lock, #142)', () => {
       const { handle, focusWindow, writeSwitchAck } = handler();
       handle({}, ['/opt/Freedom/freedom', 'x-freedom-profile:work']);
       expect(focusWindow).toHaveBeenCalledWith([]);
-      expect(writeSwitchAck).toHaveBeenCalledWith('/p/work');
+      expect(writeSwitchAck).toHaveBeenCalledWith('/p/work', { state: 'done' });
       expect(focusWindow.mock.invocationCallOrder[0]).toBeLessThan(
         writeSwitchAck.mock.invocationCallOrder[0]
       );

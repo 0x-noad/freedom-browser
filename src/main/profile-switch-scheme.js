@@ -37,15 +37,25 @@ const PREFIX = `${PROFILE_SWITCH_SCHEME}:`;
 // see linux-desktop-name.js and scripts/linux-desktop-entry.test.js).
 const PACKAGED_DESKTOP_NAME = require('../../package.json').desktopName;
 
-const XDG_MIME_TIMEOUT_MS = 2000;
+// xdg-mime is a short shell script; a query that takes longer than this is
+// stuck, and the switch falls back to the file hand-off.
+const XDG_MIME_TIMEOUT_MS = 1000;
 
-// The running profile writes this file in its userData dir when a launch
-// carrying an `x-freedom-profile:` switch has reached it and raised its window
-// (profile-instance-handoff.js). The in-app switch waits for it: xdg-open
-// itself confirms only that it started something.
+// The switch's outcome, written into the target profile's userData dir: by the
+// switch launch itself as soon as it starts (`received`), and once it is over
+// by the running profile when the launch raised its window through the
+// single-instance hand-over (`done`), or by the launch when it had to use the
+// focus-request file instead (`done` or `failed`; profile-instance-handoff.js).
+// The in-app switch waits for it: xdg-open itself confirms only that it
+// started something.
 const PROFILE_SWITCH_ACK_FILE = 'profile-switch-ack.json';
-// xdg-open, then a fresh Freedom process up to its profile-lock check, then
-// the hand-over: a few hundred ms normally, more on a cold disk.
+const PROFILE_SWITCH_STATES = new Set(['received', 'done', 'failed']);
+// xdg-open, then a fresh Freedom process up to its first lines of main-process
+// code: a few hundred ms normally, more on a cold disk. A launch that has not
+// said `received` by then never arrived (the scheme went to something else).
+const PROFILE_SWITCH_RECEIVE_TIMEOUT_MS = 3000;
+// The whole switch: the launch's instance-lock probe (1 s) and, when that goes
+// unanswered, its focus-request file (1.8 s), on top of the start-up above.
 const PROFILE_SWITCH_ACK_TIMEOUT_MS = 6000;
 const PROFILE_SWITCH_ACK_POLL_MS = 100;
 
@@ -261,35 +271,57 @@ function profileSwitchAckPath(userDataDir) {
   return path.join(userDataDir, PROFILE_SWITCH_ACK_FILE);
 }
 
-// Called by the running profile once a switch launch has raised its window.
-function writeProfileSwitchAck(userDataDir, { now = Date.now(), fsImpl = fs } = {}) {
+// Record the switch's progress (`received`, `done` or `failed`, see above).
+function writeProfileSwitchAck(
+  userDataDir,
+  { state = 'done', now = Date.now(), fsImpl = fs } = {}
+) {
+  if (!PROFILE_SWITCH_STATES.has(state)) throw new Error(`Invalid switch state: ${state}`);
   const target = profileSwitchAckPath(userDataDir);
-  const tmp = `${target}.${process.pid}.${now}.tmp`;
-  fsImpl.writeFileSync(tmp, JSON.stringify({ handledAtMs: now, pid: process.pid }), 'utf-8');
+  const tmp = `${target}.${process.pid}.${now}.${state}.tmp`;
+  fsImpl.writeFileSync(tmp, JSON.stringify({ handledAtMs: now, state, pid: process.pid }), 'utf-8');
   fsImpl.renameSync(tmp, target);
 }
 
-function readProfileSwitchAckTime(userDataDir, fsImpl = fs) {
+// The last recorded { at, state }, or null. An ack without a state (none is
+// written that way, but keep it readable) counts as `done`.
+function readProfileSwitchAck(userDataDir, fsImpl = fs) {
   try {
     const ack = JSON.parse(fsImpl.readFileSync(profileSwitchAckPath(userDataDir), 'utf-8'));
     const at = Number(ack?.handledAtMs);
-    return Number.isFinite(at) ? at : null;
+    if (!Number.isFinite(at)) return null;
+    const state = ack?.state === undefined ? 'done' : ack.state;
+    return PROFILE_SWITCH_STATES.has(state) ? { at, state } : null;
   } catch {
     return null;
   }
 }
 
-// Resolves true once the profile in `userDataDir` acknowledged a switch
-// handled at or after `sinceMs`, false after `timeoutMs`.
+function readProfileSwitchAckTime(userDataDir, fsImpl = fs) {
+  return readProfileSwitchAck(userDataDir, fsImpl)?.at ?? null;
+}
+
+// Resolves true once the profile in `userDataDir` recorded a switch `done` at
+// or after `sinceMs`; false as soon as one is recorded `failed`, when none was
+// even `received` within `receiveTimeoutMs`, or after `timeoutMs`. Failing
+// early keeps the caller's own fallback (and its error, if any) from waiting
+// out the whole budget.
 async function waitForProfileSwitchAck(userDataDir, sinceMs, options = {}) {
   const timeoutMs = options.timeoutMs ?? PROFILE_SWITCH_ACK_TIMEOUT_MS;
+  const receiveTimeoutMs = options.receiveTimeoutMs ?? PROFILE_SWITCH_RECEIVE_TIMEOUT_MS;
   const pollMs = options.pollIntervalMs ?? PROFILE_SWITCH_ACK_POLL_MS;
   const fsImpl = options.fsImpl || fs;
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  const receiveDeadline = startedAt + Math.min(receiveTimeoutMs, timeoutMs);
   for (;;) {
-    const at = readProfileSwitchAckTime(userDataDir, fsImpl);
-    if (at !== null && at >= sinceMs) return true;
-    if (Date.now() >= deadline) return false;
+    const ack = readProfileSwitchAck(userDataDir, fsImpl);
+    const current = ack !== null && ack.at >= sinceMs ? ack.state : null;
+    if (current === 'done') return true;
+    if (current === 'failed') return false;
+    const now = Date.now();
+    if (now >= deadline) return false;
+    if (current === null && now >= receiveDeadline) return false;
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
 }
@@ -325,6 +357,8 @@ async function switchProfileViaXdgOpen(target, deps = {}) {
 module.exports = {
   PACKAGED_DESKTOP_NAME,
   PROFILE_SWITCH_ACK_FILE,
+  PROFILE_SWITCH_ACK_TIMEOUT_MS,
+  PROFILE_SWITCH_RECEIVE_TIMEOUT_MS,
   PROFILE_SWITCH_MIME_TYPE,
   PROFILE_SWITCH_SCHEME,
   buildProfileSwitchUrl,
@@ -336,6 +370,7 @@ module.exports = {
   parseDesktopEntryExec,
   parseProfileSwitchUrl,
   queryDefaultSchemeHandler,
+  readProfileSwitchAck,
   readProfileSwitchAckTime,
   shouldSwitchProfileViaXdgOpen,
   switchProfileViaXdgOpen,
