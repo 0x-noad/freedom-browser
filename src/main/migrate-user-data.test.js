@@ -666,6 +666,8 @@ describe('legacy Kubo repo cleanup (Kubo → freedom-ipfs upgrade)', () => {
   });
 
   test('retry: a failed rename stops the run with a marker left, the next launch finishes', () => {
+    // Both runs in the same millisecond, same pid: batch names must still differ.
+    jest.spyOn(Date, 'now').mockReturnValue(1700000000000);
     const ipfsData = writeKuboRepo({ withFreedomIpfs: true });
     const mod = loadMigrationModule(userDataDir);
     const realRename = fs.renameSync.bind(fs);

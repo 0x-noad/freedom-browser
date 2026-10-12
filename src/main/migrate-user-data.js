@@ -516,9 +516,11 @@ function setAsideLegacyKuboRepo(options = {}) {
       fs.readdirSync(ipfsData).filter((name) => name !== FREEDOM_IPFS_DIR)
     );
     // One batch dir per run: an earlier set-aside may still be waiting for
-    // its purge, and its entries carry the same names.
-    const batch = path.join(getKuboSetAsideDir(), `${Date.now()}-${process.pid}`);
-    fs.mkdirSync(batch, { recursive: true });
+    // its purge, and its entries carry the same names. mkdtemp adds a random
+    // suffix, so two runs in the same millisecond (and pid) never share one.
+    const setAside = getKuboSetAsideDir();
+    fs.mkdirSync(setAside, { recursive: true });
+    const batch = fs.mkdtempSync(path.join(setAside, `${Date.now()}-${process.pid}-`));
     log.info(`[Migration] Setting aside legacy Kubo repo in ${ipfsData} for removal`);
     for (const name of entries) {
       fs.renameSync(path.join(ipfsData, name), path.join(batch, name));
