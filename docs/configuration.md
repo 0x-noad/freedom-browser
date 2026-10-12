@@ -36,7 +36,7 @@ Freedom reads a few launch options that choose the profile, plus links to open. 
 | `--profile-dir <path>` | Uses the folder `<path>` as the whole profile, outside the catalog.       |
 | `<url> ...`            | Positional arguments: links to open as tabs (up to 16, see below).        |
 
-A profile id is lower-cased and every run of characters other than `a-z`, `0-9`, `_` and `-` becomes `-`, so `--profile "Work Stuff"` opens `work-stuff`.
+A profile id is trimmed and lower-cased, every run of characters other than `a-z`, `0-9`, `_` and `-` becomes `-`, and leading and trailing dashes are dropped, so `--profile "Work Stuff"` opens `work-stuff` and `--profile -work-` opens `work`. An id containing `/` or `\`, an id of `.` or `..`, or one left empty after this (`--profile ---`) is refused: Freedom shows "Freedom profile could not open" and exits instead of opening a profile.
 
 `--profile-dir` keeps everything (browser data, vault and managed node data) in `<path>`; a relative path resolves against the current directory. That profile is not registered in the profile catalog: it does not appear in `freedom://profiles` or the profile switcher, other profiles cannot be opened or managed from its window, and **Settings → Nodes** cannot change its node modes or endpoints. Its id and name come from the folder name. The "use the Swarm node already on `1633`?" answer is kept in `external-node-decisions.json` in that directory (see [Node Endpoints](#node-endpoints)).
 
@@ -54,11 +54,15 @@ freedom --profile work https://example.com
 # Linux AppImage
 ./Freedom-*.AppImage --profile work bzz://<reference>
 
-# macOS: -n starts a new instance, needed when Freedom is already running another profile
+# macOS: keep -n. Without it, `open` only brings an already-running Freedom
+# (any profile) to the front and drops everything after --args. With -n the
+# new instance opens `work`, or hands the link to it if `work` is already open.
 open -n -a Freedom --args --profile=work https://example.com
 
-# Windows (per-user install)
+# Windows (per-user install), Command Prompt
 "%LOCALAPPDATA%\Programs\freedom-browser\Freedom.exe" --profile work https://example.com
+# Windows, PowerShell
+& "$env:LOCALAPPDATA\Programs\freedom-browser\Freedom.exe" --profile work https://example.com
 
 # A profile kept in a folder of its own, outside the catalog
 freedom --profile-dir ~/freedom-scratch
@@ -73,7 +77,7 @@ In a packaged build, catalog profiles live in the app data directory (`~/.config
 
 Inside Freedom, `bzz://`, `ipfs://`, `ipns://`, `web3://`, `rad://`, and `.onion` URLs always resolve through the active profile's node and network settings and storage.
 
-A link handed over by another app (the Linux packages register Freedom as the handler for `ipfs:`, `ipns:` and `bzz:` links) carries no profile choice of its own, so it follows the order in [Command-Line Flags](#command-line-flags): it opens in the most recently opened profile. If that profile is already running, the link becomes a new tab in its most recently focused normal (non-private) window; otherwise Freedom starts that profile with the link. To open a link in a specific profile, launch Freedom with `--profile <id>` and the URL, or navigate to it inside that profile's window.
+A link handed over by another app (the Linux `.deb` and pacman packages register Freedom as the handler for `ipfs:`, `ipns:` and `bzz:` links; the AppImage, macOS and Windows builds register no handler, so there such links reach Freedom only if you pass them on the command line) carries no profile choice of its own, so it follows the order in [Command-Line Flags](#command-line-flags): it opens in the most recently opened profile. If that profile is already running, the link becomes a new tab in its most recently focused normal (non-private) window; otherwise Freedom starts that profile with the link. To open a link in a specific profile, launch Freedom with `--profile <id>` and the URL, or navigate to it inside that profile's window.
 
 ## Ethereum Name Resolution
 
