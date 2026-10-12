@@ -1316,6 +1316,14 @@ function revokeInScope(origin, permission, scope) {
     if (clearPrivateDecisionIn(privatePartition, key, permission)) changed = true;
   }
 
+  // File System Access grants (#671) aren't a per-permission decision, so
+  // only a whole-origin revoke drops them: from every scope profile-wide,
+  // from the asking window's own scope when window-scoped.
+  if (wholeOrigin) {
+    const fsScope = windowScoped ? { privatePartition } : undefined;
+    if (fileSystemAccess.clearOriginFileSystemGrants(key, fsScope)) changed = true;
+  }
+
   if (windowScoped) {
     clearDismissCountsIn(dismissScope(privatePartition), key, permission);
   } else {

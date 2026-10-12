@@ -174,6 +174,26 @@ describe('file System Access grants', () => {
       expect(check(file, 'writable')).toBe(false);
     });
 
+    test('a late first write is refused, and picking the file again recovers', () => {
+      // Chromium runs no check when the save picker returns, so a page that
+      // renders for longer than the window before createWritable() misses it.
+      const file = savePick('export.od');
+      age(file, 61 * 1000);
+      expect(check(file, 'writable')).toBe(false);
+      // A second save pick truncates the file again.
+      savePick('export.od');
+      expect(check(file, 'writable')).toBe(true);
+    });
+
+    test('known edge: an empty file emptied moments ago and then opened is writable too', () => {
+      // `touch notes.md`, then the open picker: the same on-disk state a
+      // save picker leaves, which nothing in Electron tells apart. Pinned
+      // so the documented limit can't widen silently.
+      const file = write('notes.md', '');
+      expect(check(file, 'readable')).toBe(true);
+      expect(check(file, 'writable')).toBe(true);
+    });
+
     test('a non-empty or missing file is never taken for a save', () => {
       expect(check(write('full.od', 'x'), 'writable')).toBe(false);
       expect(check(path.join(filesDir, 'missing.od'), 'writable')).toBe(false);
@@ -215,6 +235,16 @@ describe('file System Access grants', () => {
       request(dir, 'writable');
       expect(check(filesDir, 'writable', { isDirectory: true })).toBe(false);
       expect(check(`${dir}-other`, 'writable', { isDirectory: true })).toBe(false);
+    });
+
+    test('a child whose name starts with ".." is inside the folder', () => {
+      const dir = path.join(filesDir, 'store');
+      fs.mkdirSync(dir);
+      request(dir, 'writable');
+      expect(check(write('store/..notes', 'x'), 'writable')).toBe(true);
+      expect(check(path.join(dir, '..cache'), 'writable', { isDirectory: true })).toBe(true);
+      // A real `..` segment still climbs out.
+      expect(check(path.join(dir, '..', 'outside.od'), 'writable')).toBe(false);
     });
 
     test('a folder handle the site restored from storage is refused', () => {
@@ -285,6 +315,46 @@ describe('file System Access grants', () => {
     ctx.mod.revokeAll();
     expect(check(dir, 'writable', { isDirectory: true })).toBe(false);
     expect(check(dir, 'writable', { isDirectory: true, session: privateSession })).toBe(false);
+  });
+
+  describe("removing a site's permissions", () => {
+    const grantFolder = (session) => {
+      const dir = path.join(filesDir, 'store');
+      fs.mkdirSync(dir, { recursive: true });
+      request(dir, 'writable', { session });
+      return dir;
+    };
+    const canWrite = (dir, opts = {}) => check(dir, 'writable', { isDirectory: true, ...opts });
+
+    test("Settings' per-site Remove drops that origin's grants everywhere, and only its", () => {
+      const dir = grantFolder(normalSession);
+      request(dir, 'writable', { session: privateSession });
+      request(dir, 'writable', { url: 'https://other.example/x' });
+      expect(ctx.mod.revokeOrigin(SITE)).toBe(true);
+      expect(canWrite(dir)).toBe(false);
+      expect(canWrite(dir, { session: privateSession })).toBe(false);
+      expect(canWrite(dir, { origin: OTHER_SITE })).toBe(true);
+    });
+
+    test("the address-bar Remove drops only the asking window's scope", () => {
+      const dir = grantFolder(normalSession);
+      request(dir, 'writable', { session: privateSession });
+
+      ctx.mod.revokeOrigin(SITE, { windowScoped: true, privatePartition: PARTITION });
+      expect(canWrite(dir, { session: privateSession })).toBe(false);
+      expect(canWrite(dir)).toBe(true);
+
+      request(dir, 'writable', { session: privateSession });
+      ctx.mod.revokeOrigin(SITE, { windowScoped: true, privatePartition: null });
+      expect(canWrite(dir)).toBe(false);
+      expect(canWrite(dir, { session: privateSession })).toBe(true);
+    });
+
+    test('removing a single permission leaves file grants alone', () => {
+      const dir = grantFolder(normalSession);
+      ctx.mod.revokeDecision(SITE, 'camera');
+      expect(canWrite(dir)).toBe(true);
+    });
   });
 
   test('a sensitive path Electron flags is refused, in every session', () => {

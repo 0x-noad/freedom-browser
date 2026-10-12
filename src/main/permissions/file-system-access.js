@@ -42,15 +42,34 @@
  *                      the save the user just made. Nothing else in
  *                      Electron tells the two pickers apart.
  *
+ * That save inference is a heuristic with two known edges, both because
+ * Electron gives us no signal at pick time (Chromium runs no check when the
+ * save picker returns; the first one comes with the page's first
+ * `createWritable()`):
+ *
+ *   - A save whose first write comes more than SAVE_PICK_WINDOW_MS after
+ *     the pick (a page that renders a long export first, or a network file
+ *     whose server clock is that far off) is refused with NotAllowedError.
+ *     Picking the file again in the save dialog truncates it again and
+ *     opens a fresh window.
+ *   - An empty file the user created or emptied within that window and
+ *     then opened (not saved) with the open picker is indistinguishable
+ *     from a save, so it is writable too. There is no content in it for a
+ *     site to destroy, and the window is kept short for this reason.
+ *
  * Everything else is refused: writing to a file the user only opened
- * (Chrome asks first; Electron's boolean check cannot), a folder handle the
- * site restored from storage, and paths Electron treats as sensitive
- * (`file-system-access-restricted`: system folders, the home folder
- * itself, the profile — see `onRestrictedPath`).
+ * (Chrome asks first; Electron's boolean check cannot) unless it is in the
+ * just-saved state above, a folder handle the site restored from storage,
+ * and paths Electron treats as sensitive (`file-system-access-restricted`:
+ * system folders, the home folder itself, the profile — see
+ * `onRestrictedPath`).
+ *
+ * Grants are dropped by "Revoke all", by removing the origin's permissions
+ * (Settings' per-site Remove, or the address-bar popover's Remove for the
+ * asking window's scope), and when a private window closes.
  *
  * Grants are never persisted. The normal profile's last until the app
- * quits, a private window's until it closes; "Revoke all" in Settings
- * drops them too.
+ * quits (or are revoked, see above), a private window's until it closes.
  */
 
 const fs = require('fs');
@@ -109,7 +128,10 @@ function recordGrant(scopeKey, origin, filePath, isDirectory, access) {
 
 function isInside(parent, child) {
   const rel = path.relative(parent, child);
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  if (rel === '' || path.isAbsolute(rel)) return false;
+  // Only a leading `..` SEGMENT climbs out; a child named `..notes` is
+  // still inside.
+  return rel !== '..' && !rel.startsWith(`..${path.sep}`);
 }
 
 function isGranted(scopeKey, origin, filePath, isDirectory, access) {
@@ -219,6 +241,27 @@ function clearPrivateFileSystemGrants(partition) {
   return grants.delete(partition);
 }
 
+/**
+ * Drop one origin's grants (its permissions were removed). With no
+ * `scope` the origin is dropped from every scope (Settings, profile-wide);
+ * with `{ privatePartition }` only from that scope — the normal profile
+ * when the partition is null.
+ *
+ * @returns {boolean} whether anything was dropped
+ */
+function clearOriginFileSystemGrants(origin, scope) {
+  if (!origin) return false;
+  let dropped = false;
+  if (scope === undefined) {
+    for (const origins of grants.values()) {
+      if (origins.delete(origin)) dropped = true;
+    }
+    return dropped;
+  }
+  const origins = grants.get(scopeKeyFor(scope?.privatePartition));
+  return origins ? origins.delete(origin) : false;
+}
+
 /** Drop every grant, in every scope ("Revoke all"). */
 function clearAllFileSystemGrants() {
   grants.clear();
@@ -230,5 +273,6 @@ module.exports = {
   checkFileSystemAccess,
   onRestrictedPath,
   clearPrivateFileSystemGrants,
+  clearOriginFileSystemGrants,
   clearAllFileSystemGrants,
 };
