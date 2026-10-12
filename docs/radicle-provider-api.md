@@ -1,7 +1,7 @@
 # Radicle Provider API (`window.radicle`) — Draft Specification
 
 **Status:** Draft v0.1 (first implementation iteration)
-**Companion:** the Swarm Provider API (`window.swarm`) SWIP, whose
+**Companion:** the [Swarm Provider API](swarm-provider-api.md) (`window.swarm`), whose
 request/response pattern, error model, and permission architecture this
 document follows.
 

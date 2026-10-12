@@ -79,6 +79,7 @@ Do not post credentials, seed phrases, private keys, or sensitive logs in public
 - [Swarm content retrieval and migration](docs/protocols/swarm.md)
 - [IPFS/IPNS content retrieval and migration](docs/protocols/ipfs.md)
 - [Contract-hosted applications (ERC-8244)](docs/protocols/onchain-apps.md)
+- [Swarm provider API](docs/swarm-provider-api.md)
 - [Radicle provider API](docs/radicle-provider-api.md)
 - [Native IPFS desktop integration](docs/freedom-ipfs-native-desktop.md)
 - [Changelog](CHANGELOG.md)
