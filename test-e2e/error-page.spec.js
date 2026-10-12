@@ -467,7 +467,7 @@ test('going Back onto a retrying error page does not restart the countdown', asy
     })
     .toBe(true);
   await expect(back.locator('#auto-retry')).toHaveText(
-    'Not trying again automatically. Use Try Again to retry.'
+    'Not trying again automatically. Use Try again to retry.'
   );
   await expect(back.locator('#auto-retry-stop')).toBeHidden();
   // The forward entry is still there to go to.
