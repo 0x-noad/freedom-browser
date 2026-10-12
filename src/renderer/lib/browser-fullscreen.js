@@ -96,6 +96,16 @@ export function initBrowserFullscreen({
       // A menu anchored to the toolbar would float over the page with
       // nothing under it once the toolbar is gone.
       closeMenus();
+      // The toolbar stays in view while it holds focus (fullscreen.css), so
+      // that Ctrl+L and a new tab's address bar can be typed into. Entering
+      // from the address bar, or from a toolbar button, would otherwise keep
+      // it on screen: let go of that focus, leaving the keyboard with the
+      // chrome's document as hiding the toolbar outright used to.
+      const toolbar = document.querySelector?.('.toolbar');
+      const focused = document.activeElement;
+      if (toolbar && focused && focused !== document.body && toolbar.contains?.(focused)) {
+        focused.blur?.();
+      }
       showHint(hint, platform);
     } else {
       hideHint(hint);

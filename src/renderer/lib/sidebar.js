@@ -17,11 +17,18 @@ let featureEnabled = false;
 // Browser full screen hides an open sidebar without closing it (#78): a close
 // fires 'sidebar-closed', whose cascade tears down any screen the panel holds.
 let concealed = false;
+// Whether the window is in browser full screen, and whether the panel is in
+// view only because a request (an approval, a consent prompt) opened it there.
+// Such a panel steps aside again once the request is over, i.e. once the
+// panel is back on its home view (see watchHomeView).
+let fullscreen = false;
+let revealedForRequest = false;
 
 // DOM references
 let sidebar;
 let toggleBtn;
 let closeBtn;
+let homeView;
 
 /**
  * Initialize the sidebar module
@@ -61,6 +68,8 @@ export function initSidebar() {
 
   // Apply initial state (sidebar starts closed)
   applyState();
+
+  watchHomeView(document.getElementById('sidebar-identity'));
 
   // Keep the close/toggle chrome in step with the shared signature lock, so
   // it is visibly dead while a device confirmation owns the panel rather
@@ -104,6 +113,7 @@ export function toggle() {
   // confirmation the panel is holding).
   // A sidebar hidden by full screen is still open; the toggle brings it back
   // into view rather than closing what the user cannot see.
+  revealedForRequest = false;
   if (isOpen && concealed) {
     reveal();
     return;
@@ -125,7 +135,7 @@ export function toggle() {
  */
 export function open() {
   if (!featureEnabled) return;
-  reveal();
+  revealForRequest();
   if (!isOpen) {
     isOpen = true;
     applyState();
@@ -155,7 +165,7 @@ function refuseSidebarClose() {
  * provider prompts must render without the identity-wallet flag.
  */
 export function openForConsent() {
-  reveal();
+  revealForRequest();
   if (!isOpen) {
     isOpen = true;
     applyState();
@@ -171,6 +181,7 @@ export function close() {
   // A closed panel is no longer hidden by full screen: the next toggle()
   // opens it into view rather than into a still-concealed panel.
   reveal();
+  revealedForRequest = false;
   if (isOpen) {
     isOpen = false;
     applyState();
@@ -188,8 +199,43 @@ export function close() {
  * request arriving in full screen is never answered out of sight.
  */
 export function setFullscreenConcealed(on) {
-  concealed = Boolean(on) && isOpen && !isSignatureInFlight();
+  fullscreen = Boolean(on);
+  revealedForRequest = false;
+  conceal();
+}
+
+function conceal() {
+  concealed = fullscreen && isOpen && !isSignatureInFlight();
   sidebar?.classList.toggle('fullscreen-concealed', concealed);
+}
+
+// An approval or consent request shows the panel over a full-screen page. The
+// request's screen replaces the panel's home view while it is up, and every
+// request puts the home view back when it is answered or dismissed; at that
+// point the panel goes back to how full screen had it (concealed if it is
+// still open), instead of staying over the page until the user dismisses it.
+function revealForRequest() {
+  reveal();
+  if (fullscreen) revealedForRequest = true;
+}
+
+function watchHomeView(el) {
+  homeView = el;
+  if (!homeView || typeof MutationObserver !== 'function') return;
+  new MutationObserver(onHomeViewChange).observe(homeView, {
+    attributes: true,
+    attributeFilter: ['class'],
+  });
+}
+
+function onHomeViewChange() {
+  // Read the settled state, not the records: a request that hands straight
+  // over to another (unlock, then connect) shows and hides the home view in
+  // one go, and the panel is still in use.
+  if (!revealedForRequest || !fullscreen) return;
+  if (homeView.classList.contains('hidden')) return;
+  revealedForRequest = false;
+  conceal();
 }
 
 function reveal() {

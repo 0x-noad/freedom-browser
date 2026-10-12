@@ -7,7 +7,7 @@
 
 const { createDocument, createElement } = require('../../../test/helpers/fake-dom.js');
 
-async function load({ platform = 'linux', overrides = {}, early = [] } = {}) {
+async function load({ platform = 'linux', overrides = {}, early = [], focused = null } = {}) {
   jest.resetModules();
   jest.useFakeTimers();
 
@@ -15,6 +15,16 @@ async function load({ platform = 'linux', overrides = {}, early = [] } = {}) {
   hint.hidden = true;
   const document = createDocument({ elementsById: { 'fullscreen-exit-hint': hint } });
   global.document = document;
+  // A toolbar holding one control, and where the keyboard is.
+  const toolbar = createElement('header');
+  const addressInput = createElement('input');
+  addressInput.blur = jest.fn();
+  toolbar.appendChild(addressInput);
+  const pageControl = createElement('div');
+  pageControl.blur = jest.fn();
+  document.querySelector = jest.fn((selector) => (selector === '.toolbar' ? toolbar : null));
+  document.activeElement =
+    focused === 'address' ? addressInput : focused === 'other' ? pageControl : document.body;
 
   let onChange = null;
   const keydown = [];
@@ -65,6 +75,8 @@ async function load({ platform = 'linux', overrides = {}, early = [] } = {}) {
     electronAPI,
     setSidebarConcealed,
     closeMenus,
+    addressInput,
+    pageControl,
     change: (state) => onChange(state),
     press,
   };
@@ -122,6 +134,31 @@ describe('following the window into and out of full screen', () => {
     t.change(true);
     t.change(false);
     expect(t.hint.hidden).toBe(true);
+  });
+});
+
+// R2-M1: the toolbar folds away but stays focusable, and comes back while it
+// holds focus (fullscreen.css), so Ctrl+L / a new tab's address bar can be
+// typed into. Entering from inside it must not keep it on screen.
+describe('focus on entering', () => {
+  test('leaves the toolbar', async () => {
+    const t = await load({ focused: 'address' });
+    t.change(true);
+    expect(t.addressInput.blur).toHaveBeenCalledTimes(1);
+  });
+
+  test('is left where it is when it is not in the toolbar', async () => {
+    const t = await load({ focused: 'other' });
+    t.change(true);
+    expect(t.pageControl.blur).not.toHaveBeenCalled();
+  });
+
+  test('is left alone on leaving', async () => {
+    const t = await load();
+    t.change(true);
+    document.activeElement = t.addressInput;
+    t.change(false);
+    expect(t.addressInput.blur).not.toHaveBeenCalled();
   });
 });
 

@@ -185,6 +185,38 @@ test.describe('with the bookmarks bar on and the sidebar open', () => {
     await expect(window.locator('#sidebar')).not.toHaveClass(/collapsed/);
     await expect(window.locator(CHROME.toolbar)).toBeHidden();
   });
+
+  // R2-M2: a panel shown over the page for a request steps aside again once
+  // the request is answered, instead of staying over the page until the
+  // shortcut or leaving full screen.
+  test('a sidebar shown for a consent request hides again once it is answered', async ({
+    window,
+    electronApp,
+  }) => {
+    await window.locator('#wallet-toggle-btn').click();
+    await expect(window.locator('#sidebar')).not.toHaveClass(/collapsed/);
+    await clickMenuItem(electronApp, 'fullscreen');
+    await expectChromeHidden(window, electronApp);
+
+    await window.evaluate(async () => {
+      const consent = await import('./lib/radicle-consent.js');
+      consent.showRadicleConnect('bzz://myapp.eth', 'fullscreen-test').catch(() => {});
+    });
+    await expect(window.locator('#sidebar-radicle-consent')).toBeVisible();
+    await expect(window.locator('#sidebar')).toBeVisible();
+    await window.screenshot({ path: test.info().outputPath('fullscreen-consent-shown.png') });
+
+    await window.locator('#radicle-consent-reject').click();
+    await expect(window.locator('#sidebar-radicle-consent')).toBeHidden();
+    await expectChromeHidden(window, electronApp);
+    await window.screenshot({ path: test.info().outputPath('fullscreen-consent-answered.png') });
+
+    // Still open underneath: leaving full screen shows it as it was.
+    await clickMenuItem(electronApp, 'fullscreen');
+    await expectChromeShown(window, electronApp);
+    await expect(window.locator('#sidebar')).toBeVisible();
+    await expect(window.locator('#sidebar')).not.toHaveClass(/collapsed/);
+  });
 });
 
 test.describe('with the bookmarks bar off', () => {
@@ -264,6 +296,87 @@ test('a permission request in full screen shows its prompt and can be answered',
   await expect.poll(() => readOut(window), { timeout: 5_000 }).toBe('granted');
   // Answered: the page has the screen again, still in full screen.
   await expectChromeHidden(window, electronApp);
+});
+
+// The live application-menu item with this label (Focus Address Bar has no id).
+const clickMenuLabel = (electronApp, label) =>
+  electronApp.evaluate(({ Menu }, wanted) => {
+    const find = (items) => {
+      for (const item of items) {
+        if (item.label === wanted) return item;
+        const nested = item.submenu && find(item.submenu.items);
+        if (nested) return nested;
+      }
+      return null;
+    };
+    find(Menu.getApplicationMenu()?.items ?? [])?.click();
+  }, label);
+
+const activeTitle = (window) =>
+  window.evaluate(async () => {
+    try {
+      return await document.querySelector('webview:not(.hidden)').executeJavaScript('document.title');
+    } catch {
+      return null;
+    }
+  });
+
+// R2-M1: the address bar has to take the keyboard in full screen. With the
+// toolbar display:none, Ctrl+L and a new tab's address bar focused nothing and
+// the typed URL was lost, stranding a new tab on the new-tab page.
+test('Focus Address Bar and New Tab can be typed into in full screen', async ({
+  window,
+  electronApp,
+  harness,
+}) => {
+  const OTHER = `bzz://${'b'.repeat(64)}/`;
+  await harness.setContentFixture(OTHER, {
+    body: '<!doctype html><title>Other fixture</title><p>other</p>',
+  });
+  await loadPage(window, harness);
+  await clickMenuItem(electronApp, 'fullscreen');
+  await expectChromeHidden(window, electronApp);
+  const input = window.locator('[data-test="address-input"]');
+
+  // Focus Address Bar (Ctrl+L): the toolbar drops down with the bar focused.
+  await clickMenuLabel(electronApp, 'Focus Address Bar');
+  await expect(input).toBeFocused();
+  await expect(window.locator(CHROME.toolbar)).toBeVisible();
+  await expect(window.locator(CHROME.tabBar)).toBeHidden();
+  await window.screenshot({ path: test.info().outputPath('fullscreen-focus-address-bar.png') });
+  // Escape gives it up; the toolbar folds away and full screen stays.
+  await window.keyboard.press('Escape');
+  await expect(input).not.toBeFocused();
+  await expect(window.locator(CHROME.toolbar)).toBeHidden();
+  expect(await windowFullScreen(electronApp)).toBe(true);
+
+  // New Tab (Ctrl+T): the typed URL lands in the address bar and loads.
+  await clickMenuItem(electronApp, 'new-tab');
+  await expect(input).toBeFocused();
+  await expect(window.locator(CHROME.toolbar)).toBeVisible();
+  await window.keyboard.type(OTHER);
+  await expect(input).toHaveValue(OTHER);
+  await window.keyboard.press('Enter');
+  await expect.poll(() => activeTitle(window), { timeout: 15_000 }).toBe('Other fixture');
+  expect(await windowFullScreen(electronApp)).toBe(true);
+
+  // The page takes the keyboard back and has the whole window again.
+  await window.evaluate(() => document.querySelector('webview:not(.hidden)').focus());
+  await expectChromeHidden(window, electronApp);
+});
+
+// Entering from the address bar must not leave the toolbar up because it
+// still holds focus (the F11 test below enters from there too).
+test('entering full screen from the address bar hides the toolbar', async ({
+  window,
+  electronApp,
+  harness,
+}) => {
+  await loadPage(window, harness);
+  await window.locator('[data-test="address-input"]').click();
+  await clickMenuItem(electronApp, 'fullscreen');
+  await expectChromeHidden(window, electronApp);
+  await expect(window.locator('[data-test="address-input"]')).not.toBeFocused();
 });
 
 test('Escape closes the find bar and stays in full screen', async ({

@@ -1,16 +1,34 @@
 /* Browser full screen (#78): while the window is full screen the chrome steps
    aside and the active tab's webview fills it (lib/browser-fullscreen.js).
    Hidden, not closed: the bookmarks bar keeps its own setting and the sidebar
-   stays open underneath, so leaving full screen restores both as they were.
-   The toolbar comes back while a site's permission prompt is up: the prompt
-   is anchored under the address bar inside it, and a hidden toolbar would
-   leave the request unanswerable (and the page waiting) until full screen
-   ends. The address bar also shows whose request it is. */
+   stays open underneath, so leaving full screen restores both as they were. */
 body.browser-fullscreen .title-bar,
-body.browser-fullscreen .toolbar:not(:has(.permission-prompt:not([hidden]))),
 body.browser-fullscreen .bookmarks,
 body.browser-fullscreen .sidebar.fullscreen-concealed {
   display: none !important;
+}
+
+/* The toolbar is folded to nothing rather than display:none, so its controls
+   stay focusable: Ctrl+L, and the address bar Ctrl+T's new tab focuses, have
+   to reach a real input or the typed URL goes nowhere (a display:none input
+   refuses focus). It comes back while it holds focus, the way the address bar
+   drops down in Chrome's F11 mode, and while a site's permission prompt is
+   up: the prompt is anchored under the address bar inside it, and a hidden
+   toolbar would leave the request unanswerable (and the page waiting) until
+   full screen ends. The address bar also shows whose request it is. Clicking
+   the page takes focus back and the toolbar folds away again. */
+body.browser-fullscreen .toolbar:not(:focus-within):not(:has(.permission-prompt:not([hidden]))) {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  overflow: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 /* "Press F11 to exit full screen", shown for a few seconds on entry. */
