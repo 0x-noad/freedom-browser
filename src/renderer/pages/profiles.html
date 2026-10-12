@@ -137,12 +137,14 @@
       }
 
       /* Error state: the icon + one-line message of History's and Downloads'
-         empty states, across the whole grid (#606 item 7). */
+         empty states, across the whole grid (#606 item 7). In the subtitle's
+         --text-muted rather than their --text-meta, which is 3.3:1 on the dark
+         page: an error is read, not skimmed past. */
       .empty-state {
         grid-column: 1 / -1;
         text-align: center;
         padding: 64px;
-        color: var(--text-meta);
+        color: var(--text-muted);
       }
 
       .empty-state svg {
