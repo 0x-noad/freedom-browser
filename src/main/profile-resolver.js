@@ -18,6 +18,12 @@ const {
   waitForCatalogWriteLockIdle,
 } = require('./profile-catalog');
 const { isProfileLocked } = require('./profile-lock');
+const { parseProfileSwitchArgv } = require('./profile-switch-scheme');
+
+// A launch carrying an `x-freedom-profile:` switch (profile-switch-scheme.js)
+// that names no registered profile. index.js exits quietly on it: whatever
+// sent it gets neither a window nor a new profile.
+const PROFILE_SWITCH_REJECTED = 'PROFILE_SWITCH_REJECTED';
 
 // Pre-profile dev builds wrote node/identity data directly into the repo
 // checkout (`<repoRoot>/bee-data`, `identity-data`, etc.). The profile system
@@ -125,6 +131,26 @@ function resolveFallbackProfileId(appRoot) {
   return ids[0] || null;
 }
 
+function isRegisteredProfileId(appRoot, profileId) {
+  try {
+    return (loadCatalog(appRoot).profiles || []).some((profile) => profile?.id === profileId);
+  } catch {
+    return false;
+  }
+}
+
+// The profile an `x-freedom-profile:<id>` launch switches to: `id` only when
+// it is a canonical id already registered in the catalog. Anything else is
+// refused rather than mapped to some other profile or created.
+function resolveProfileSwitchId(appRoot, profileSwitch) {
+  if (profileSwitch.id && isRegisteredProfileId(appRoot, profileSwitch.id)) {
+    return profileSwitch.id;
+  }
+  const error = new Error('Refused an x-freedom-profile switch to an unknown profile');
+  error.code = PROFILE_SWITCH_REJECTED;
+  throw error;
+}
+
 function hasRegisteredProfiles(appRoot) {
   try {
     return (loadCatalog(appRoot).profiles || []).length > 0;
@@ -177,8 +203,15 @@ function resolveProfile(app, options = {}) {
   const appRoot = isDev
     ? resolveDevAppRoot(app, env, repoRoot)
     : app.getPath('userData');
+  // An explicit --profile wins over an `x-freedom-profile:` switch; xdg-open,
+  // the only thing that sends one, never passes both.
+  const explicitProfile = getArgValue(argv, 'profile');
+  const profileSwitch = explicitProfile
+    ? null
+    : parseProfileSwitchArgv(argv, { platform: options.platform || process.platform });
   const profileInput =
-    getArgValue(argv, 'profile') ||
+    explicitProfile ||
+    (profileSwitch && resolveProfileSwitchId(appRoot, profileSwitch)) ||
     env.FREEDOM_PROFILE ||
     resolveLastOpenedProfileId(appRoot) ||
     resolveFallbackProfileId(appRoot) ||
@@ -454,6 +487,7 @@ async function deleteProfileForActiveApp(profileId, expectedDisplayName) {
 
 module.exports = {
   LEGACY_DEV_DATA_DIRS,
+  PROFILE_SWITCH_REJECTED,
   LEGACY_DEV_DATA_WARNING_FILE,
   applyProfile,
   createProfileForActiveApp,

@@ -747,4 +747,76 @@ describe('profile resolver', () => {
       env: {},
     })).toThrow('Invalid profile id');
   });
+  describe('x-freedom-profile switch (Linux, #142)', () => {
+    function setUp() {
+      const userDataDir = track(makeTempDir());
+      const app = createAppMock({ isPackaged: true, userDataDir });
+      const { resolveProfile } = require('./profile-resolver');
+      // Register `default` and `work`; `default` was opened last.
+      resolveProfile(app, { argv: ['freedom', '--profile=work'], env: {}, now: '2026-05-26T00:00:00.000Z' });
+      resolveProfile(app, { argv: ['freedom', '--profile=default'], env: {}, now: '2026-05-27T00:00:00.000Z' });
+      const catalogPath = path.join(userDataDir, 'profile-registry.json');
+      const ids = () => JSON.parse(fs.readFileSync(catalogPath, 'utf-8')).profiles.map((p) => p.id);
+      return { app, resolveProfile, ids };
+    }
+
+    test('means --profile=<id> for a registered profile', () => {
+      const { app, resolveProfile } = setUp();
+      const profile = resolveProfile(app, {
+        argv: ['freedom', 'x-freedom-profile:work'],
+        env: {},
+        platform: 'linux',
+      });
+      expect(profile.id).toBe('work');
+    });
+
+    test('never creates a profile, and never falls back to another one', () => {
+      const { app, resolveProfile, ids } = setUp();
+      for (const arg of [
+        'x-freedom-profile:stranger',
+        'x-freedom-profile:Work',
+        'x-freedom-profile:..',
+        'x-freedom-profile:%2e%2e',
+        'x-freedom-profile:work/../default',
+        'x-freedom-profile:',
+      ]) {
+        let error = null;
+        try {
+          resolveProfile(app, { argv: ['freedom', arg], env: {}, platform: 'linux' });
+        } catch (caught) {
+          error = caught;
+        }
+        expect([arg, error?.code]).toEqual([arg, 'PROFILE_SWITCH_REJECTED']);
+      }
+      expect(() =>
+        resolveProfile(app, {
+          argv: ['freedom', 'x-freedom-profile:work', 'x-freedom-profile:default'],
+          env: {},
+          platform: 'linux',
+        })
+      ).toThrow(expect.objectContaining({ code: 'PROFILE_SWITCH_REJECTED' }));
+      expect(ids()).toEqual(['default', 'work']);
+    });
+
+    test('an explicit --profile wins over it', () => {
+      const { app, resolveProfile } = setUp();
+      const profile = resolveProfile(app, {
+        argv: ['freedom', '--profile=default', 'x-freedom-profile:stranger'],
+        env: {},
+        platform: 'linux',
+      });
+      expect(profile.id).toBe('default');
+    });
+
+    test('is ignored on macOS and Windows: an ordinary launch', () => {
+      const { app, resolveProfile, ids } = setUp();
+      for (const platform of ['darwin', 'win32']) {
+        for (const arg of ['x-freedom-profile:work', 'x-freedom-profile:stranger']) {
+          const profile = resolveProfile(app, { argv: ['freedom', arg], env: {}, platform });
+          expect(profile.id).toBe('default');
+        }
+      }
+      expect(ids()).toEqual(['default', 'work']);
+    });
+  });
 });

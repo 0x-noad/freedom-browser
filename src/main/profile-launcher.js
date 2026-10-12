@@ -79,7 +79,9 @@ function launchProfile(activeProfile, profileId, options = {}) {
 // for testing.
 //
 // Returns one of:
-//   { focused: true }              — a running profile acknowledged the focus
+//   { focused: true }              — a running profile acknowledged the focus,
+//                                    or (GNOME Wayland) xdg-open accepted the
+//                                    switch, which has no ack of its own
 //   { focused: false, launch }     — cold-started a new process
 //   { focused: false, error }      — the profile is running but did not respond
 //                                    to the focus request (we don't cold-start a
@@ -108,6 +110,21 @@ async function openOrFocusProfile(activeProfile, profileId, options = {}) {
     options.requestFocus || require('./profile-focus-handoff').requestProfileFocusAsyncAwait;
 
   const target = resolveFocusTarget(profileId);
+  // GNOME on Wayland raises the running profile's window only with an XDG
+  // activation token, which this process can mint for it only through
+  // shell.openExternal: xdg-open launches `freedom x-freedom-profile:<id>`
+  // with the token, and that launch hands it to the running profile through
+  // its single-instance lock (profile-switch-scheme.js, #142). Everywhere
+  // else, and whenever that path is unavailable, the focus-request file below
+  // does the switch. An --open-settings switch keeps to the file: the scheme
+  // carries a profile id and nothing else.
+  if (target?.isLocked && !options.openSettings) {
+    const switchViaXdgOpen =
+      options.switchViaXdgOpen || require('./profile-switch-scheme').switchProfileViaXdgOpen;
+    if (await switchViaXdgOpen(target.id)) {
+      return { focused: true };
+    }
+  }
   if (target?.isLocked) {
     const focus = await requestFocus(target, { openSettings: options.openSettings === true });
     if (focus?.ok) {

@@ -62,11 +62,22 @@ const {
 if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
   migrateUserData({ logger: console });
 }
-const { initializeProfile, warnAboutLegacyDevData } = require('./profile-resolver');
+const {
+  initializeProfile,
+  PROFILE_SWITCH_REJECTED,
+  warnAboutLegacyDevData,
+} = require('./profile-resolver');
 let activeProfile = null;
 try {
   activeProfile = initializeProfile(app);
 } catch (error) {
+  // An `x-freedom-profile:` switch (Linux, profile-switch-scheme.js) naming no
+  // registered profile: do nothing at all rather than open some other one.
+  if (error?.code === PROFILE_SWITCH_REJECTED) {
+    console.warn(`[profile] ${error.message}`);
+    app.exit(0);
+    process.exit(0);
+  }
   dialog.showErrorBox(
     'Freedom profile could not open',
     `Freedom could not initialize the selected profile.\n\n${error?.message || error}`
@@ -84,6 +95,10 @@ const {
   startProfileFocusRequestWatcher,
 } = require('./profile-focus-handoff');
 const {
+  handOverToRunningProfile,
+  listenForProfileRelaunches,
+} = require('./profile-instance-handoff');
+const {
   buildColdStartUrls,
   createFirstWindowLinkQueue,
   extractLaunchUrls,
@@ -98,6 +113,13 @@ try {
   activeProfileLock = acquireProfileLock(activeProfile, { logger: console });
 } catch (error) {
   if (isLockUnavailableError(error)) {
+    // Linux: through the running profile's single-instance lock when it
+    // listens on one, which carries this launch's XDG activation token along
+    // (#142); otherwise through the focus-request file below.
+    if (handOverToRunningProfile(app)) {
+      app.exit(0);
+      process.exit(0);
+    }
     const profileName = activeProfile.displayName || activeProfile.id || 'selected';
     const focusResult = requestProfileFocusSync(activeProfile, { urls: launchUrls });
     if (!focusResult.ok) {
@@ -145,6 +167,17 @@ const profileFocusWatcher = startProfileFocusRequestWatcher(
     },
   }
 );
+
+// Linux: later launches of this profile arrive as 'second-instance' with the
+// launch's XDG activation token (profile-instance-handoff.js, #142). The
+// focus-request watcher above stays the fallback for launches that cannot
+// reach this lock.
+listenForProfileRelaunches(app, {
+  settingsUrl: PROFILE_SETTINGS_DEEPLINK,
+  firstWindowLinks,
+  focusWindow: (urls) => focusCurrentProfileWindow(urls),
+  logger: console,
+});
 
 // macOS hands a link to the running app through `open-url` rather than argv,
 // including the one that launches it, which can arrive before `ready`. Those
