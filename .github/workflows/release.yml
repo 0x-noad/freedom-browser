@@ -214,13 +214,20 @@ jobs:
     timeout-minutes: 120
     # The signing and notarization secrets live in the `release-signing`
     # environment, whose deployment policy admits only `main`, `release/*` and
-    # `v*` tags (#657), so a workflow pushed to any other branch cannot read
-    # the Developer ID certificate. Only a signed run asks for it, with the
-    # same condition as SIGNED below: an unsigned run gets an empty name, which
-    # GitHub treats as no environment at all, so unsigned pipeline tests keep
-    # working from any branch. A signed dispatch from another branch is
-    # rejected before the job starts. Keep this the only job that references
-    # those secrets (pinned by scripts/ci/release-signing-env.test.js).
+    # `v*` tags (#657), so a run on any other ref is refused them. That policy
+    # checks the ref's name only, and the run uses that ref's copy of this
+    # file, so it is only as tight as the rulesets on who may create or push
+    # those refs: do not loosen the `v*` / `release/**` rulesets or widen the
+    # policy without tightening the other side. release-process.md Appendix B
+    # lists what the rulesets cover and what is still open (pushes to an
+    # existing `release/*` branch, self-merged PRs to `main`, and the
+    # repository-level copies of these secrets until an admin deletes them).
+    # Only a signed run asks for the environment, with the same condition as
+    # SIGNED below: an unsigned run gets an empty name, which GitHub treats as
+    # no environment at all, so unsigned pipeline tests keep working from any
+    # branch. A signed dispatch from another branch is rejected before the job
+    # starts. Keep this the only job that references those secrets (pinned by
+    # scripts/ci/release-signing-env.test.js).
     environment:
       name: ${{ (github.event_name != 'workflow_dispatch' || inputs.signed) && 'release-signing' || '' }}
     env:
