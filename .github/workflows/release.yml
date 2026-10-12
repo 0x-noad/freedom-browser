@@ -39,8 +39,11 @@ run-name: >-
 #
 # Required secrets for a signed macOS build, held in the `release-signing`
 # environment (Settings → Environments → release-signing), whose deployment
-# policy admits only `main`, `release/*` and `v*` tags (#657); Linux and
-# Windows need none:
+# policy admits only `main`, `release/*` and `v*` tags (#657). That policy
+# matches the ref's name only and the run uses that ref's copy of this file,
+# so it is as tight as the rulesets on who may create or push those refs;
+# see release-process.md Appendix B for what they cover and what is still
+# open. Linux and Windows need none:
 #   CSC_LINK                    Developer ID Application cert, .p12 exported
 #                               from Keychain, base64-encoded
 #   CSC_KEY_PASSWORD            password set on that .p12 export

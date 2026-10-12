@@ -4,7 +4,8 @@
  *
  * The five Developer ID / notarization secrets live in the GitHub Environment
  * `release-signing`, whose deployment policy admits only `main`, `release/*`
- * and `v*` tags (docs/agent-playbooks/release-process.md). That only protects
+ * and `v*` tags by name (docs/agent-playbooks/release-process.md, Appendix B,
+ * covers the rulesets that decide who may create those refs). That only protects
  * them if every job that reads them is a job that asks for that environment:
  * a job without one reads the repository-level secret of the same name, and
  * once those are deleted it reads an empty string, so a misplaced reference
@@ -21,7 +22,9 @@
  *    run is signed — the same condition as its `SIGNED` env, so a signed run
  *    can never go without the environment and an unsigned one (a pipeline
  *    test from a feature branch) never needs it;
- * 3. no other job mentions `release-signing` (an environment, or anything else).
+ * 3. no other job mentions `release-signing` (an environment, or anything
+ *    else), and every other job's `environment:` is a plain literal name, so
+ *    one built at runtime (`vars.*`, `format()`) cannot name it unseen.
  */
 
 const fs = require('fs');
@@ -174,17 +177,57 @@ describe('macOS signing secrets are scoped to release-signing (#657)', () => {
   });
 
   test('no other job asks for release-signing', () => {
+    // Inside a job, not in prose such as the `signed` input's description.
+    // A literal mention anywhere in another job is an offender outright.
     const offenders = [];
     for (const file of yamlFiles()) {
       const text = withoutComments(fs.readFileSync(path.join(repoRoot, file), 'utf8'));
       const jobs = jobOfLine(text);
       text.split('\n').forEach((l, i) => {
-        // Inside a job, not in prose such as the `signed` input's description.
         if (!/release-signing/.test(l) || jobs[i] === null) return;
         if (file === '.github/workflows/release.yml' && jobs[i] === 'mac-arm64') return;
         offenders.push(`${file}:${i + 1} [${jobs[i] ?? '-'}] ${l.trim()}`);
       });
     }
+    expect(offenders).toEqual([]);
+  });
+
+  test('every other job environment is a plain literal name', () => {
+    // The substring check above cannot see a name built at runtime
+    // (`${{ vars.SIGNING_ENV }}`, `format('release-{0}', 'signing')`, a block
+    // scalar). So allowlist the shape instead: outside mac-arm64, a job's
+    // `environment:` (string form, or the object form's `name:`) must be a
+    // plain literal this test can read, and not release-signing. That fails
+    // closed at runtime anyway (the branch policy still applies), so this
+    // pins the invariant "only mac-arm64 uses the environment", not a hole.
+    const LITERAL = /^(['"]?)([A-Za-z0-9_.-]+)\1$/;
+    const offenders = [];
+    let seen = 0;
+    for (const file of yamlFiles()) {
+      const lines = withoutComments(fs.readFileSync(path.join(repoRoot, file), 'utf8')).split('\n');
+      const jobs = jobOfLine(lines.join('\n'));
+      lines.forEach((l, i) => {
+        const env = jobs[i] !== null && l.match(/^ {4}environment:\s*(.*)$/);
+        if (!env) return;
+        seen += 1;
+        if (file === '.github/workflows/release.yml' && jobs[i] === 'mac-arm64') return;
+        let value = env[1].trim();
+        if (value === '') {
+          // Object form: the name is the `name:` key in the indented block.
+          const nameLine = lines
+            .slice(i + 1)
+            .filter((x) => x.trim() !== '')
+            .find((x) => /^ {6}name:/.test(x) || !/^ {6}/.test(x));
+          const name = nameLine && nameLine.match(/^ {6}name:\s*(.*)$/);
+          value = name ? name[1].trim() : '';
+        }
+        const literal = value.match(LITERAL);
+        if (!literal || literal[2] === 'release-signing') {
+          offenders.push(`${file}:${i + 1} [${jobs[i]}] environment: ${value || '(no name)'}`);
+        }
+      });
+    }
+    expect(seen).toBeGreaterThan(0); // mac-arm64's own; the scan must not go blind
     expect(offenders).toEqual([]);
   });
 });
