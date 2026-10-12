@@ -15,6 +15,8 @@ const {
 
 const SITE = 'bzz://ontodag.gwei/';
 const SITE_URL = 'bzz://ontodag.gwei/index.html';
+// SITE's permission key, as Settings' site list names it.
+const SITE_KEY = 'ontodag.gwei';
 const OTHER_SITE = 'https://other.example/';
 const PARTITION = 'private-fsa-partition';
 
@@ -51,10 +53,13 @@ describe('file System Access grants', () => {
   let ctx;
   let normalSession;
   let privateSession;
+  let renderer;
 
   const load = () => {
+    renderer = { send: jest.fn() };
     ctx = loadMainModule(require.resolve('./permissions-manager'), {
       userDataDir,
+      webContentsList: [renderer],
       electronOverrides: {
         systemPreferences: { askForMediaAccess: jest.fn(() => Promise.resolve(true)) },
       },
@@ -372,6 +377,98 @@ describe('file System Access grants', () => {
     const dir = path.join(filesDir, 'store');
     fs.mkdirSync(dir);
     request(dir, 'writable');
-    expect(ctx.mod.getDecisionsForOrigin(SITE)).toEqual({});
+    // Nothing written to permissions.json for it.
+    expect(fs.existsSync(path.join(userDataDir, 'permissions.json'))).toBe(false);
+  });
+
+  // A site whose only grants are files/folders must still be listed
+  // somewhere the user can take them back (R2-M1): Settings' site list
+  // and the address-bar indicator/popover.
+  describe('listing grants', () => {
+    const grantFolder = (opts) => {
+      const dir = path.join(filesDir, 'store');
+      fs.mkdirSync(dir, { recursive: true });
+      request(dir, 'writable', opts);
+      return dir;
+    };
+    const canWrite = (dir, opts = {}) => check(dir, 'writable', { isDirectory: true, ...opts });
+    const settingsList = () => ctx.ipcMain.invoke('permissions:get-all');
+
+    test('Settings lists a site holding only file grants, so Remove site and Revoke all reach it', async () => {
+      expect(await settingsList()).toEqual({});
+      const dir = grantFolder();
+      expect(await settingsList()).toEqual({ [SITE_KEY]: { fileSystem: 'allow' } });
+
+      ctx.mod.revokeOrigin(SITE);
+      expect(canWrite(dir)).toBe(false);
+      expect(await settingsList()).toEqual({});
+    });
+
+    test("an opened file lists its site too, beside the site's stored decisions", async () => {
+      expect(ctx.mod.allowSitePermission(SITE, 'popups')).toBe(true);
+      const file = write('notes.txt', 'hello');
+      expect(check(file, 'readable')).toBe(true);
+      expect(await settingsList()).toEqual({
+        [SITE_KEY]: { popups: 'allow', fileSystem: 'allow' },
+      });
+      // Removing the file row leaves the stored decision.
+      ctx.mod.revokeDecision(SITE, 'fileSystem');
+      expect(await settingsList()).toEqual({ [SITE_KEY]: { popups: 'allow' } });
+    });
+
+    test("Settings never lists a private window's grants", async () => {
+      grantFolder({ session: privateSession });
+      expect(await settingsList()).toEqual({});
+    });
+
+    test("the popover lists the asking window's own grants as a session allow", () => {
+      grantFolder({ session: privateSession });
+      expect(ctx.mod.getDecisionsForOrigin(SITE)).toEqual({});
+      expect(ctx.mod.getDecisionsForOrigin(SITE, PARTITION)).toEqual({
+        fileSystem: { decision: 'allow', remembered: false },
+      });
+      grantFolder();
+      expect(ctx.mod.getDecisionsForOrigin(SITE)).toEqual({
+        fileSystem: { decision: 'allow', remembered: false },
+      });
+    });
+
+    test("removing the fileSystem row takes the grants back, in the row's scope", async () => {
+      const dir = grantFolder();
+      request(dir, 'writable', { session: privateSession });
+
+      // The popover's Remove in the private window.
+      expect(
+        ctx.mod.revokeDecision(SITE, 'fileSystem', {
+          windowScoped: true,
+          privatePartition: PARTITION,
+        })
+      ).toBe(true);
+      expect(canWrite(dir, { session: privateSession })).toBe(false);
+      expect(canWrite(dir)).toBe(true);
+
+      // Settings' row Remove, profile-wide.
+      request(dir, 'writable', { session: privateSession });
+      expect(ctx.mod.revokeDecision(SITE, 'fileSystem')).toBe(true);
+      expect(canWrite(dir)).toBe(false);
+      expect(canWrite(dir, { session: privateSession })).toBe(false);
+      expect(await settingsList()).toEqual({});
+    });
+
+    test('a site gaining its first grant tells the listings to refresh, once', () => {
+      const changed = () =>
+        renderer.send.mock.calls.filter(([channel]) => channel === 'permissions:changed').length;
+      const file = write('notes.txt', 'hello');
+      expect(check(file, 'readable')).toBe(true);
+      expect(changed()).toBe(1);
+      // Later checks and further paths for the same site add no noise.
+      check(file, 'readable');
+      check(write('other.txt', 'x'), 'readable');
+      expect(changed()).toBe(1);
+      // A grant in another scope is a new listing there.
+      check(file, 'readable', { session: privateSession });
+      expect(changed()).toBe(2);
+      for (const call of renderer.send.mock.calls) expect(call[1]).toEqual({});
+    });
   });
 });

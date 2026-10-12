@@ -64,9 +64,13 @@
  * system folders, the home folder itself, the profile — see
  * `onRestrictedPath`).
  *
- * Grants are dropped by "Revoke all", by removing the origin's permissions
- * (Settings' per-site Remove, or the address-bar popover's Remove for the
- * asking window's scope), and when a private window closes.
+ * Grants are listed as one `fileSystem` row per origin ("Files and folders
+ * you picked"): Settings' site list shows the normal profile's (never a
+ * private window's), and the address-bar indicator/popover shows the
+ * asking window's own. They are dropped by "Revoke all", by removing the
+ * origin (Settings' Remove site) or that row (Settings' or the popover's
+ * Remove — the popover's for the asking window's scope only), and when a
+ * private window closes.
  *
  * Grants are never persisted. The normal profile's last until the app
  * quits (or are revoked, see above), a private window's until it closes.
@@ -114,8 +118,24 @@ function originGrants(scopeKey, origin, create = false) {
   return paths || null;
 }
 
+// Called when an origin gains its first grant in a scope, so the surfaces
+// that list grants (Settings, the address-bar indicator) can refresh.
+let originGrantedListener = null;
+
+function setOriginGrantedListener(listener) {
+  originGrantedListener = typeof listener === 'function' ? listener : null;
+}
+
 function recordGrant(scopeKey, origin, filePath, isDirectory, access) {
+  const isNewOrigin = !originGrants(scopeKey, origin);
   const paths = originGrants(scopeKey, origin, true);
+  if (isNewOrigin && originGrantedListener) {
+    try {
+      originGrantedListener();
+    } catch {
+      // a listing refresh must never break the grant itself
+    }
+  }
   let entry = paths.get(filePath);
   // A path that turned from a file into a folder (or back) is a different
   // entry; Chromium revokes the old grant in that case too.
@@ -262,6 +282,26 @@ function clearOriginFileSystemGrants(origin, scope) {
   return origins ? origins.delete(origin) : false;
 }
 
+/**
+ * Whether `origin` holds any grant in one scope (the normal profile when
+ * `privatePartition` is null).
+ */
+function hasFileSystemGrants(origin, privatePartition = null) {
+  if (!origin) return false;
+  return (originGrants(scopeKeyFor(privatePartition), origin)?.size || 0) > 0;
+}
+
+/**
+ * The origins holding grants in the normal profile, for Settings' site
+ * list. Private windows' grants are deliberately not listed there: they
+ * would put a private window's origins on a normal-profile page.
+ */
+function getNormalProfileGrantOrigins() {
+  const origins = grants.get(scopeKeyFor(null));
+  if (!origins) return [];
+  return [...origins].filter(([, paths]) => paths.size > 0).map(([origin]) => origin);
+}
+
 /** Drop every grant, in every scope ("Revoke all"). */
 function clearAllFileSystemGrants() {
   grants.clear();
@@ -275,4 +315,7 @@ module.exports = {
   clearPrivateFileSystemGrants,
   clearOriginFileSystemGrants,
   clearAllFileSystemGrants,
+  hasFileSystemGrants,
+  getNormalProfileGrantOrigins,
+  setOriginGrantedListener,
 };

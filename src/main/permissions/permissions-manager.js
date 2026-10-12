@@ -509,6 +509,29 @@ function broadcastChanged() {
   broadcastToAllWebContents(IPC.PERMISSIONS_CHANGED, {});
 }
 
+// The key File System Access grants (#671) are listed and removed under. It
+// is never a stored decision: the grants live in file-system-access.js.
+const FILE_SYSTEM_KEY = 'fileSystem';
+
+// A site gaining its first file/folder grant shows up in Settings' site
+// list and the address-bar indicator, so tell them to refresh. The payload
+// carries no origin (a private window's included).
+fileSystemAccess.setOriginGrantedListener(broadcastChanged);
+
+/**
+ * Settings' site list: the stored decisions, plus a `fileSystem: 'allow'`
+ * row for every origin holding File System Access grants in the normal
+ * profile — otherwise a site whose only grants are files/folders is listed
+ * nowhere and its Remove site / Revoke all are unreachable.
+ */
+function getAllSitePermissions() {
+  const all = store.getAllDecisions();
+  for (const origin of fileSystemAccess.getNormalProfileGrantOrigins()) {
+    all[origin] = { ...(all[origin] || {}), [FILE_SYSTEM_KEY]: 'allow' };
+  }
+  return all;
+}
+
 /**
  * macOS gate for camera/microphone: after the user allows a site, the OS
  * must also allow Freedom itself. Returns the storage keys the OS
@@ -1224,6 +1247,11 @@ function getDecisionsForOrigin(origin, privatePartition = null) {
   if (!key) return {};
 
   const result = {};
+  // File System Access grants (#671) in this window's scope, as one row so
+  // the indicator shows and its Remove can take them back.
+  if (fileSystemAccess.hasFileSystemGrants(key, privatePartition)) {
+    result[FILE_SYSTEM_KEY] = { decision: 'allow', remembered: false };
+  }
   const stored = store.getAllDecisions()[key] || {};
   for (const [permission, decision] of Object.entries(stored)) {
     result[permission] = { decision, remembered: true };
@@ -1316,10 +1344,10 @@ function revokeInScope(origin, permission, scope) {
     if (clearPrivateDecisionIn(privatePartition, key, permission)) changed = true;
   }
 
-  // File System Access grants (#671) aren't a per-permission decision, so
-  // only a whole-origin revoke drops them: from every scope profile-wide,
-  // from the asking window's own scope when window-scoped.
-  if (wholeOrigin) {
+  // File System Access grants (#671) aren't a stored decision; they go with
+  // the whole origin or with their own `fileSystem` row: from every scope
+  // profile-wide, from the asking window's own scope when window-scoped.
+  if (wholeOrigin || permission === FILE_SYSTEM_KEY) {
     const fsScope = windowScoped ? { privatePartition } : undefined;
     if (fileSystemAccess.clearOriginFileSystemGrants(key, fsScope)) changed = true;
   }
@@ -1391,7 +1419,7 @@ function registerPermissionsIpc() {
   });
 
   ipcMain.handle(IPC.PERMISSIONS_GET_ALL, () => {
-    return store.getAllDecisions();
+    return getAllSitePermissions();
   });
 
   // The indicator/popover query is answered for the asking window's own
@@ -1445,6 +1473,7 @@ module.exports = {
   siteOriginForWebContents,
   allowSitePermission,
   getDecisionsForOrigin,
+  getAllSitePermissions,
   clearPrivateDecisions,
   revokeDecision,
   revokeOrigin,
