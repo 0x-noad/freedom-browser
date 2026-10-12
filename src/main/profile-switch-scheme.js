@@ -374,8 +374,9 @@ function readProfileSwitchAckTime(userDataDir, fsImpl = fs) {
 // launch it answers is unknown, so it closes the oldest one in flight: at
 // worst this switch then waits out its budget, it never ends early. Launches
 // that said `received` more than one whole switch budget before such an
-// unattributed outcome (measured from the outcome's own time, R1-M1) are past
-// any wait (crashed, killed) and are dropped before it is matched, so a dead
+// unattributed outcome (measured from the outcome's own time, R1-M1, but never
+// later than this switch's own cutoff, R2-M1) are past any wait (crashed,
+// killed) and are dropped before it is matched, so a dead
 // launch's leftover `received` cannot absorb the running profile's `failed`
 // and turn a fast fail into the full wait (R6-M1), while a historical outcome
 // still closes a launch that was live when it landed, not a newer one. A
@@ -410,9 +411,12 @@ function profileSwitchStateSince(acks, sinceMs, lookbackMs = PROFILE_SWITCH_ACK_
       // Drop the launches already past any wait when this outcome landed
       // first, so this closes one that was still live then and not a crashed
       // one whose received is still on disk (R6-M1). Measured from the
-      // outcome's own time, not this switch's: an older outcome answered a
-      // launch that was live back then, not the one live now (R1-M1).
-      const deadBefore = ack.at - lookbackMs;
+      // outcome's own time when that predates this switch: an older outcome
+      // answered a launch that was live back then, not the one live now
+      // (R1-M1). Never later than this switch's own cutoff, though: a launch
+      // still live for this switch is not dead, so a late answer to it must
+      // close it and not this switch's own launch (R2-M1).
+      const deadBefore = Math.min(ack.at, sinceMs) - lookbackMs;
       inFlight = inFlight.filter((launch) => launch.at >= deadBefore);
       inFlight.shift();
     }
