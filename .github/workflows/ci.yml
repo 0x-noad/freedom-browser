@@ -1223,6 +1223,7 @@ jobs:
             test-e2e/find-in-page.spec.js \
             test-e2e/tab-mute.spec.js \
             test-e2e/private-windows.spec.js \
+            test-e2e/page-providers-early.spec.js \
             test-e2e/private-tab-color.spec.js \
             test-e2e/chrome-input-focus.spec.js \
             test-e2e/sidebar-subscreen-headers.spec.js \
