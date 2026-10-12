@@ -1,0 +1,1 @@
+- A Radicle seed can no longer inject markup into the repository browser through a repository's seeder count ([#661](https://github.com/solardev-xyz/freedom-browser/issues/661))

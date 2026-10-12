@@ -294,6 +294,12 @@ execution on an internal page.
 `radapi:`, public seeds and README images, and uses inline styles. The page
 has no inline scripts, no inline handlers and no `eval`.
 
+**Follow-up (#661).** The policy was later tightened to `default-src 'self'`
+with `style-src 'self'` (no inline styles), `img-src 'self' data: https:`
+for README images, and `connect-src 'self' radapi: https://seed.radicle.xyz`,
+after a seed's non-numeric `seeding` value was found reaching `innerHTML`
+unescaped in both repository lists.
+
 ## Open items
 
 > **Status update:** every open item below has since been addressed in a follow-up PR (see the Summary table). The sections are kept as the original findings; only the parts of O-4 listed in the table remain open, tracked in [#431](https://github.com/solardev-xyz/freedom-browser/issues/431).
