@@ -365,7 +365,7 @@ const {
   registerPrivateCleanup,
 } = require('./private/private-windows');
 const { initUpdater } = require('./updater');
-const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
+const { setupApplicationMenu, stopHistoryMenuRefresh, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
 const { registerClientCertificateHandler } = require('./client-certificate');
 const {
@@ -729,6 +729,9 @@ const SHUTDOWN_WATCHDOG_MS = 20_000;
 // place that decides when quitting is allowed.
 async function windDown() {
   const myotisStopped = myotisManager.stopAllMyotis({ shutdown: true });
+  // Before any window closes: a window's 'closed' event arms a History-menu
+  // refresh that would otherwise fire after closeHistoryDb() and reopen it.
+  stopHistoryMenuRefresh();
 
   // Close all DevTools first to prevent crashes during cleanup
   log.info('[App] Closing all DevTools...');

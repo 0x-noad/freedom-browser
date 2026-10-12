@@ -1050,6 +1050,41 @@ describe('History menu', () => {
       jest.runOnlyPendingTimers();
       expect(rowLabels(historyOf(ctx.capturedTemplate))).not.toContain('Recently Closed');
     });
+
+    test('after stopHistoryMenuRefresh (quit), a window close or history write never reads the database', () => {
+      jest.useFakeTimers();
+      const winListeners = {};
+      const win = makeWindow(1, {
+        on: jest.fn((event, handler) => {
+          winListeners[event] = handler;
+        }),
+      });
+      const ctx = loadMenuModule('linux', { targetWindow: win, historyRows: rows(2) });
+      ctx.app.emit('browser-window-created', {}, win);
+      pushClosed(ctx, win, [closed(1, 'https://a.test/', 1)]);
+      jest.runOnlyPendingTimers();
+      const builds = ctx.setApplicationMenu.mock.calls.length;
+
+      // A refresh already armed when the quit starts is dropped too.
+      ctx.historyMock.rows = rows(1);
+      ctx.emitHistoryChanged();
+      ctx.mod.stopHistoryMenuRefresh();
+      ctx.historyMock.getRecentHistory.mockClear();
+
+      // windDown destroys the window, then closes history.sqlite.
+      winListeners.closed();
+      ctx.emitHistoryChanged();
+      jest.advanceTimersByTime(ctx.mod.HISTORY_MENU_REFRESH_DELAY_MS * 4);
+
+      expect(jest.getTimerCount()).toBe(0);
+      expect(ctx.historyMock.getRecentHistory).not.toHaveBeenCalled();
+      expect(ctx.setApplicationMenu.mock.calls).toHaveLength(builds);
+
+      // Any other rebuild during shutdown (an updater state change) still
+      // stays off the database.
+      ctx.mod.setupApplicationMenu();
+      expect(ctx.historyMock.getRecentHistory).not.toHaveBeenCalled();
+    });
   });
 
   describe('refresh on history changes', () => {

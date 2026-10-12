@@ -676,6 +676,9 @@ function openVisitedEntry(url) {
 }
 
 function collectHistoryMenuData() {
+  // After stopHistoryMenuRefresh() (app wind-down) the history database is
+  // about to be, or already is, closed; reading it here would reopen it.
+  if (historyMenuStopped) return { closed: [], visited: [] };
   return { closed: getRecentlyClosed(), visited: getRecentlyVisited() };
 }
 
@@ -1058,9 +1061,10 @@ let historyRefreshTimer = null;
 let historyRefreshPending = false;
 let historySubmenuOpen = false;
 let lastHistorySignature = null;
+let historyMenuStopped = false;
 
 function scheduleHistoryMenuRefresh() {
-  if (historyRefreshTimer) return;
+  if (historyMenuStopped || historyRefreshTimer) return;
   historyRefreshTimer = setTimeout(() => {
     historyRefreshTimer = null;
     refreshHistoryMenu();
@@ -1068,8 +1072,21 @@ function scheduleHistoryMenuRefresh() {
   historyRefreshTimer.unref?.();
 }
 
+// Called by the quit path before it closes windows and the history
+// database: drops a pending refresh and ignores later triggers (a window's
+// 'closed' event, a late history write), so no timer can fire after
+// closeDb() and reopen history.sqlite, or rebuild the menu, mid-shutdown.
+function stopHistoryMenuRefresh() {
+  historyMenuStopped = true;
+  historyRefreshPending = false;
+  if (historyRefreshTimer) {
+    clearTimeout(historyRefreshTimer);
+    historyRefreshTimer = null;
+  }
+}
+
 function refreshHistoryMenu() {
-  if (!Menu.getApplicationMenu()) return;
+  if (historyMenuStopped || !Menu.getApplicationMenu()) return;
   if (historySubmenuOpen) {
     historyRefreshPending = true;
     return;
@@ -1180,6 +1197,7 @@ module.exports = {
   HISTORY_LABEL_MAX,
   HISTORY_MENU_REFRESH_DELAY_MS,
   setupApplicationMenu,
+  stopHistoryMenuRefresh,
   updateTabMenuItems,
   updateFullscreenMenuItem,
 };
