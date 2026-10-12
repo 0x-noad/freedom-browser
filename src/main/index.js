@@ -58,6 +58,8 @@ const {
   migrateBeeDataToAntData,
   migrateUserData,
   purgeSetAsideBeeData,
+  purgeSetAsideLegacyKuboData,
+  setAsideLegacyKuboRepo,
 } = require('./migrate-user-data');
 if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
   migrateUserData({ logger: console });
@@ -412,6 +414,10 @@ async function bootstrap() {
   // gigabytes of Bee-only state are only set aside here; they are deleted
   // off the main thread once the first window has painted (below, #526).
   migrateBeeDataToAntData();
+  // Move the pre-0.8.0 Kubo repo out of ipfs-data/ (keeping the live
+  // ipfs-data/freedom-ipfs/), before IPFS starts below. Like the Bee-only
+  // state, it is only renamed aside here and deleted after first paint (#101).
+  setAsideLegacyKuboRepo();
 
   const defaultSession = session.defaultSession;
   await defaultSession.clearCache();
@@ -618,6 +624,7 @@ async function bootstrap() {
   // finished) are picked up on the next launch.
   mainWindow.once('ready-to-show', () => {
     void purgeSetAsideBeeData({ logger: log });
+    void purgeSetAsideLegacyKuboData({ logger: log });
   });
 
   if (!TEST_MODE) {
