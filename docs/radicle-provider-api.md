@@ -35,8 +35,14 @@ The provider exists for everything that is **not** a public read:
 
 ## Provider object
 
-Injected into the page realm of every web page before `DOMContentLoaded`,
-alongside `window.swarm`:
+Injected into the page realm of web pages alongside `window.swarm`, and the
+same way: an inline `<script>` Freedom inserts when the document fires
+`DOMContentLoaded`. It is therefore absent while the page parses (classic,
+`defer` and module scripts all run before that event; check from a `window`
+`DOMContentLoaded` or `load` listener), and never appears on a page whose
+Content Security Policy forbids inline scripts. See
+[Availability](./swarm-provider-api.md#availability) for the details, which
+apply unchanged:
 
 ```javascript
 window.radicle.request({ method: string, params?: object }): Promise<any>

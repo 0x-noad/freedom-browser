@@ -28,8 +28,24 @@ pinned by `swarm-provider-ipc.test.js`.
 
 ## Availability
 
-`window.swarm` is injected into the top-level document of every web page
-before `DOMContentLoaded`, except:
+`window.swarm` is added to the top-level document of web pages by an inline
+`<script>` that Freedom inserts when the document fires `DOMContentLoaded`
+(or at once, if the preload runs after parsing finished). Two consequences:
+
+- **It is not there while the page parses.** Classic top-level scripts,
+  `defer` scripts and module scripts all run before `DOMContentLoaded` and
+  see `window.swarm === undefined`. Look for it from a `DOMContentLoaded`
+  listener on `window` (bubble phase), a `load` listener, or any later
+  callback; Freedom's own listener sits on `document` and was registered
+  before any page script, so it has run by then.
+- **A Content Security Policy that forbids inline scripts blocks it.** If the
+  page's `script-src` (or `default-src`) does not allow inline scripts
+  (`'unsafe-inline'`, which is ignored once the policy also lists a nonce or
+  hash), Chromium refuses the injected `<script>` and `window.swarm` never
+  appears; a CSP violation is logged instead. This applies to `bzz://` apps
+  and `https` sites alike.
+
+It is also not injected into:
 
 - **private windows** (no provider at all, same as `window.ethereum` and
   `window.radicle`);
@@ -40,7 +56,8 @@ before `DOMContentLoaded`, except:
 
 When **Settings → Advanced → Enable Identity & Wallet** is off, the object is
 still present but every call fails with `4900` ("Swarm provider is not
-available"). Detect Freedom with `window.swarm?.isFreedomBrowser === true`.
+available"). Detect Freedom with `window.swarm?.isFreedomBrowser === true`,
+checked no earlier than `DOMContentLoaded` (see above).
 
 ## Provider object
 
@@ -72,7 +89,18 @@ The shim rejects a request that has had no answer with
   `swarm_updateFeed`, `swarm_writeFeedEntry`, `swarm_writeSingleOwnerChunk`,
   `swarm_getSigningIdentity`, `swarm_getMessagingIdentity` and
   `swarm_subscribe` (these may wait on a consent prompt or a node write);
-- **60 s** for everything else.
+- **60 s** for everything else, including `swarm_requestAccess` and any
+  other call that has to wait on a consent prompt: the connect prompt, or
+  the [permission manifest](#permission-manifests) sheet, which any
+  non-public method can open.
+
+The budget covers the whole request, prompt included. A user who takes
+longer than 60 s on the connect prompt or the manifest sheet gets a
+`-32603 Request timed out` on the page even though the decision, once made,
+still takes effect (the grant lands); call `swarm_requestAccess` again, or
+retry the call, to pick it up. The node-side bounds named elsewhere (15 s to
+mine a GSOC topic, 30 s for a subscription to establish) cover only that
+stage, not the request end to end.
 
 A timed-out request may still complete on the node. A response that settles
 after the page navigated away is never delivered to the new document.
@@ -128,8 +156,8 @@ and no `data`.
 The four setup reasons (`node-stopped`, `node-not-ready`, `ultra-light-mode`,
 `no-usable-stamps`) on a write method also open Freedom's publish setup screen
 for the user. Reads only ever report `node-stopped`. A `4900` without `data`
-means the provider is disabled, or (message "Could not refresh this app's
-permission manifest") the app's permission manifest could not be fetched.
+means the provider is disabled, or (message "Could not refresh this app’s
+permission manifest", with a typographic apostrophe U+2019) the app's permission manifest could not be fetched.
 
 **`-32602`**
 
@@ -137,7 +165,7 @@ permission manifest") the app's permission manifest could not be fetched.
 | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `invalid_params`                                                                                                | Any (generic shape error)                                                                                                |
 | `unsupported_option` (+ `data.option`)                                                                          | Methods that take `options`: it must be absent or `{}`                                                                   |
-| `payload_too_large` (+ `limit`, `actual`)                                                                       | Publish, chunk and message writes; `swarm_writeFeedEntry` (no `limit`)                                                   |
+| `payload_too_large` (+ `limit`, `actual`)                                                                       | Publish, chunk and message writes; `swarm_writeFeedEntry` (neither `limit` nor `actual`)                                 |
 | `missing_content_type`                                                                                          | `swarm_publishData`                                                                                                      |
 | `empty_files`, `too_many_files`, `invalid_path`, `duplicate_path`, `invalid_index_document`                     | `swarm_publishFiles`                                                                                                     |
 | `invalid_reference`, `invalid_span`, `invalid_identifier`, `invalid_owner`                                      | Chunk methods, `swarm_updateFeed`, feed reads                                                                            |
@@ -150,8 +178,14 @@ permission manifest") the app's permission manifest could not be fetched.
 
 **`-32603`** carries a `data.reason` only for `gsoc_mining_timeout` and
 `gsoc_mining_failed` (deriving a GSOC topic's signer failed or ran past 15 s).
-Bee 5xx responses and network errors are always `-32603`, never `-32602`, so
-a caller can tell "this chunk does not exist" from "the node had a problem".
+Bee 5xx responses and network errors are `-32603`, with two exceptions where
+the node reports a missing entry as a 500: feed reads (and the next-index
+lookup behind feed writes) treat any Bee 500 like a 404, so a node-internal
+500 surfaces as `-32602 feed_empty` / `entry_not_found`; chunk reads map a
+500 whose body is exactly `read chunk failed` to `-32602 chunk_not_found`.
+So a `-32602` "not found" on a feed read means "not found, or the node
+failed while looking"; retrying once is cheap if the feed is expected to
+exist.
 
 ## Permission tiers
 
@@ -221,9 +255,12 @@ A `bzz://` site can declare the capabilities it needs up front in a
 ```
 
 `name` is at most 32 characters; at least one capability is required. Freedom
-fetches the manifest when the page calls `swarm_requestAccess` (and, for an
-origin that already has a manifest record, before any non-public method) and
-shows one consent sheet for every capability the user has not yet approved.
+fetches the manifest when the page calls `swarm_requestAccess`, and checks it
+before the first non-public method call in each document. The result is
+cached per document (the tab plus its committed navigation): later calls in
+the same document reuse it, and a manifest redeployed while the page is open
+is not re-read until the page reloads or navigates. A failed fetch is not
+cached, so the next call retries it. Freedom then shows one consent sheet for every capability the user has not yet approved.
 Approving a capability grants everything it needs in one step:
 
 | Capability  | Grants                                                                                         |
@@ -309,7 +346,8 @@ Reported by `swarm_getCapabilities` under `limits`:
 
 Not reported there:
 
-- **Permission-free read budget**, per origin over a rolling 60 s window,
+- **Permission-free read budget**, per origin over a fixed 60 s window that
+  starts at the first read and resets 60 s later (not a rolling window),
   shared by `swarm_readChunk`, `swarm_readSingleOwnerChunk`,
   `swarm_readFeedEntry` and `swarm_listFeeds`: 600 requests / 5 MiB when the
   origin is connected, 120 requests / 512 KiB when it is not. Exceeding it is
@@ -318,7 +356,9 @@ Not reported there:
 - **New GSOC topics**: 16 per origin per 60 s (only topics that have to be
   mined count; cached topics are free). Exceeding it is `-32602 rate_limited`
   with `retryAfterMs`.
-- **Feed names**: 1–64 characters, no `/`, no control characters.
+- **Feed names**: 1–64 UTF-16 code units (JavaScript `string.length`, so
+  a character outside the Basic Multilingual Plane, such as most emoji,
+  counts as 2), no `/`, no characters below U+0020.
 - **Messaging topics**: 1–256 UTF-8 bytes, no control characters.
 
 ## Methods
@@ -331,8 +371,23 @@ Hex strings are case-insensitive and have no `0x` prefix unless noted
 #### `swarm_requestAccess` → `{ connected: true, origin, capabilities: ['publish'] }`
 
 Prompts the user to connect the origin (once). Calling it again when already
-connected returns the same shape without a prompt. On a first approval the
-`connect` event fires. Rejection: `4001`.
+connected returns the same shape without a prompt. Rejection: `4001`.
+
+When the origin has no connection yet, what the user sees depends on whether
+it serves a [permission manifest](#permission-manifests):
+
+- **No manifest**: the connect prompt. Approving it connects the origin and
+  fires the `connect` event.
+- **Manifest**: the manifest sheet instead. _Allow all_ connects the origin
+  and grants every listed capability, including its auto-approval.
+  _Connect, but ask each time_ connects the origin only: no identity, feed
+  or messaging grant, no auto-approvals, so each publish, feed write,
+  signing or messaging action still prompts as if there were no manifest.
+  _Don’t allow_ is `4001`. In both approving cases the call resolves with
+  the usual shape, but **no `connect` event fires**: treat the resolved
+  promise, not the event, as the signal that the origin is connected, and
+  read `swarm_getCapabilities` rather than assuming the manifest's
+  capabilities were granted.
 
 #### `swarm_getCapabilities` → capability object (public)
 
@@ -379,7 +434,7 @@ must be one of the paths. Errors: `empty_files`, `too_many_files`,
 ```javascript
 { tagUid, split, seen, stored, sent, synced,
   progress: 0..100,          // sent / split
-  done: boolean }            // sent >= split
+  done: boolean }            // split > 0 && sent >= split
 ```
 
 Progress is measured by chunks _sent_, not _synced_, because sync can lag
@@ -461,8 +516,12 @@ Pass exactly one of:
   if there is none).
 - `topic` (64 hex) and `owner` (required): any feed on Swarm.
 
-Without `index`, returns the latest entry. `nextIndex` is the index the next
-write would use, or `null` when unknown. Errors: `feed_empty` (no entries),
+Without `index`, returns the latest entry, and `nextIndex` is the index the
+next write would use as reported by the node, or `null` if the node did not
+report one. With `index`, `nextIndex` is always `index + 1`, whether or not
+that slot is taken; it is **not** the next free index (reading index 0 of a
+ten-entry feed returns `nextIndex: 1`). To append, use `swarm_writeFeedEntry`
+without `index`, or read without `index` first. Errors: `feed_empty` (no entries),
 `entry_not_found` (no entry at `index`), `invalid_topic`, `invalid_owner`,
 `invalid_feed_name`, `rate_limited`.
 
@@ -539,7 +598,7 @@ is unknown or not the caller's.
 
 | Event        | Payload      | When                                                                 |
 | ------------ | ------------ | -------------------------------------------------------------------- |
-| `connect`    | `{ origin }` | The user approved a first `swarm_requestAccess` prompt               |
+| `connect`    | `{ origin }` | The user approved the connect prompt (not the manifest sheet)        |
 | `disconnect` | `{ origin }` | The user disconnected the origin; sent to the page in the active tab |
 | `message`    | see below    | A subscribed message arrived                                         |
 
@@ -552,7 +611,8 @@ is unknown or not the caller's.
 }
 ```
 
-`connect` is not emitted when the origin was already connected. `disconnect`
+`connect` is not emitted when the origin was already connected, nor when the
+connection came from approving the [manifest sheet](#permission-manifests). `disconnect`
 goes to whatever page is in the active tab, so compare `data.origin` with your
 own; it is not emitted when only one tier is revoked (e.g. messaging in
 Settings) or when a manifest change withdraws a grant. Do not treat the events as the only source of truth: a call
@@ -561,6 +621,11 @@ failing with `4100` means the grant is gone.
 ## Example
 
 ```javascript
+// window.swarm appears at DOMContentLoaded, not while the page parses (and
+// module/defer scripts run before that event), so wait for `load` if needed.
+if (!window.swarm && document.readyState !== 'complete') {
+  await new Promise((resolve) => window.addEventListener('load', resolve, { once: true }));
+}
 if (!window.swarm?.isFreedomBrowser) throw new Error('Open this app in Freedom');
 
 const caps = await window.swarm.getCapabilities();
