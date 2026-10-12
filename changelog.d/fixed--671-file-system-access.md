@@ -1,0 +1,2 @@
+- A site can read a file you open and save back to one you pick in its save or folder dialog ([#671](https://github.com/solardev-xyz/freedom-browser/issues/671))
+  - System folders and your home folder itself stay refused

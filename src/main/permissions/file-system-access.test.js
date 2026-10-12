@@ -1,0 +1,307 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const {
+  createTempUserDataDir,
+  loadMainModule,
+  removeTempUserDataDir,
+} = require('../../../test/helpers/main-process-test-utils');
+
+// File System Access (#671). Electron answers every File System Access
+// operation from the session's permission CHECK handler (per path, origin
+// only, webContents null) and raises a REQUEST only after a directory
+// picker — the shapes below are the ones Electron 44.7.0 actually sends,
+// recorded from a probe page driven through a stub file-chooser portal.
+
+const SITE = 'bzz://ontodag.gwei/';
+const SITE_URL = 'bzz://ontodag.gwei/index.html';
+const OTHER_SITE = 'https://other.example/';
+const PARTITION = 'private-fsa-partition';
+
+function makeFakeSession() {
+  const session = {
+    requestHandler: null,
+    checkHandler: null,
+    listeners: new Map(),
+    setPermissionRequestHandler: jest.fn((handler) => {
+      session.requestHandler = handler;
+    }),
+    setPermissionCheckHandler: jest.fn((handler) => {
+      session.checkHandler = handler;
+    }),
+    on: jest.fn((event, listener) => {
+      session.listeners.set(event, listener);
+    }),
+  };
+  return session;
+}
+
+function makeGuest(url) {
+  const { EventEmitter } = require('events');
+  const guest = new EventEmitter();
+  guest.id = 4242;
+  guest.getURL = () => url;
+  guest.isDestroyed = () => false;
+  return guest;
+}
+
+describe('file System Access grants', () => {
+  let userDataDir;
+  let filesDir;
+  let ctx;
+  let normalSession;
+  let privateSession;
+
+  const load = () => {
+    ctx = loadMainModule(require.resolve('./permissions-manager'), {
+      userDataDir,
+      electronOverrides: {
+        systemPreferences: { askForMediaAccess: jest.fn(() => Promise.resolve(true)) },
+      },
+    });
+    normalSession = makeFakeSession();
+    privateSession = makeFakeSession();
+    ctx.mod.installPermissionHandlers(normalSession);
+    ctx.mod.installPermissionHandlers(privateSession, { privatePartition: PARTITION });
+    ctx.mod.registerPermissionsIpc();
+  };
+
+  // A permission check as Electron sends it for fileSystem.
+  const check = (
+    filePath,
+    fileAccessType,
+    { isDirectory = false, origin = SITE, session = normalSession } = {}
+  ) =>
+    session.checkHandler(null, 'fileSystem', origin, {
+      fileAccessType,
+      filePath,
+      isDirectory,
+      isMainFrame: false,
+    });
+
+  // A permission request as Electron sends it after a directory picker.
+  const request = (
+    filePath,
+    fileAccessType,
+    { isDirectory = true, url = SITE_URL, session = normalSession } = {}
+  ) => {
+    const callback = jest.fn();
+    session.requestHandler(makeGuest(url), 'fileSystem', callback, {
+      fileAccessType,
+      filePath,
+      isDirectory,
+      isMainFrame: true,
+      requestingUrl: url,
+    });
+    return callback;
+  };
+
+  const write = (name, content) => {
+    const file = path.join(filesDir, name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+    return file;
+  };
+
+  // What Chromium's save picker leaves behind: the picked file, emptied.
+  const savePick = (name) => write(name, '');
+
+  const age = (file, ms) => {
+    const at = new Date(Date.now() - ms);
+    fs.utimesSync(file, at, at);
+  };
+
+  beforeEach(() => {
+    userDataDir = createTempUserDataDir('freedom-fsa-');
+    filesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-fsa-files-'));
+    load();
+  });
+
+  afterEach(() => {
+    removeTempUserDataDir(userDataDir);
+    fs.rmSync(filesDir, { recursive: true, force: true });
+  });
+
+  describe('open file picker', () => {
+    test('the picked file is readable', () => {
+      const file = write('store.od', 'ontology');
+      expect(check(file, 'readable')).toBe(true);
+    });
+
+    test('but not writable: Chrome asks before writing to an opened file', () => {
+      const file = write('store.od', 'ontology');
+      expect(check(file, 'readable')).toBe(true);
+      expect(check(file, 'writable')).toBe(false);
+      // requestPermission({mode: 'readwrite'}) is a check pair; still no.
+      expect(check(file, 'readable')).toBe(true);
+      expect(check(file, 'writable')).toBe(false);
+    });
+
+    test('an empty file the user opened long ago is not mistaken for a save', () => {
+      const file = write('empty.od', '');
+      age(file, 10 * 60 * 1000);
+      expect(check(file, 'readable')).toBe(true);
+      expect(check(file, 'writable')).toBe(false);
+    });
+  });
+
+  describe('save file picker', () => {
+    test('the picked file is writable and readable', () => {
+      const file = savePick('saved.od');
+      expect(check(file, 'writable')).toBe(true);
+      expect(check(file, 'readable')).toBe(true);
+    });
+
+    test('stays writable once the site has written to it', () => {
+      const file = savePick('saved.od');
+      expect(check(file, 'writable')).toBe(true);
+      fs.writeFileSync(file, 'saved content');
+      age(file, 10 * 60 * 1000);
+      expect(check(file, 'writable')).toBe(true);
+    });
+
+    test('saving over a file the site had only opened makes it writable', () => {
+      const file = write('store.od', 'ontology');
+      expect(check(file, 'readable')).toBe(true);
+      expect(check(file, 'writable')).toBe(false);
+      fs.writeFileSync(file, ''); // the save picker truncates it
+      expect(check(file, 'writable')).toBe(true);
+    });
+
+    test('a save whose first write comes too late is refused', () => {
+      const file = savePick('saved.od');
+      age(file, 2 * 60 * 1000);
+      expect(check(file, 'writable')).toBe(false);
+    });
+
+    test('a non-empty or missing file is never taken for a save', () => {
+      expect(check(write('full.od', 'x'), 'writable')).toBe(false);
+      expect(check(path.join(filesDir, 'missing.od'), 'writable')).toBe(false);
+    });
+  });
+
+  describe('directory picker', () => {
+    test("readwrite: the picker's two requests grant the folder and everything in it", () => {
+      const dir = path.join(filesDir, 'store');
+      fs.mkdirSync(dir);
+      // Before the picker answered, a folder is nothing.
+      expect(check(dir, 'readable', { isDirectory: true })).toBe(false);
+
+      const w = request(dir, 'writable');
+      const r = request(dir, 'readable');
+      expect(w).toHaveBeenCalledWith(true);
+      expect(r).toHaveBeenCalledWith(true);
+
+      expect(check(dir, 'readable', { isDirectory: true })).toBe(true);
+      expect(check(dir, 'writable', { isDirectory: true })).toBe(true);
+      // Children share the folder's grant; a file picked inside it too.
+      const child = write('store/x.od', 'x');
+      expect(check(child, 'writable')).toBe(true);
+      expect(check(path.join(dir, 'sub'), 'writable', { isDirectory: true })).toBe(true);
+    });
+
+    test('read-only: the folder can be listed but not written', () => {
+      const dir = path.join(filesDir, 'store');
+      fs.mkdirSync(dir);
+      expect(request(dir, 'readable')).toHaveBeenCalledWith(true);
+      expect(check(dir, 'readable', { isDirectory: true })).toBe(true);
+      expect(check(dir, 'writable', { isDirectory: true })).toBe(false);
+      expect(check(write('store/x.od', 'x'), 'writable')).toBe(false);
+    });
+
+    test('a grant on one folder does not reach its parent or a sibling with a shared prefix', () => {
+      const dir = path.join(filesDir, 'store');
+      fs.mkdirSync(dir);
+      request(dir, 'writable');
+      expect(check(filesDir, 'writable', { isDirectory: true })).toBe(false);
+      expect(check(`${dir}-other`, 'writable', { isDirectory: true })).toBe(false);
+    });
+
+    test('a folder handle the site restored from storage is refused', () => {
+      const dir = path.join(filesDir, 'store');
+      fs.mkdirSync(dir);
+      expect(check(dir, 'readable', { isDirectory: true })).toBe(false);
+      expect(check(dir, 'writable', { isDirectory: true })).toBe(false);
+    });
+  });
+
+  test('grants are per origin', () => {
+    const dir = path.join(filesDir, 'store');
+    fs.mkdirSync(dir);
+    request(dir, 'writable');
+    const file = savePick('saved.od');
+    expect(check(file, 'writable')).toBe(true);
+    age(file, 10 * 60 * 1000);
+    expect(check(dir, 'writable', { isDirectory: true, origin: OTHER_SITE })).toBe(false);
+    expect(check(file, 'writable', { origin: OTHER_SITE })).toBe(false);
+  });
+
+  test('a request that is not a folder picker, or carries no usable path, is refused', () => {
+    const file = write('store.od', 'x');
+    expect(request(file, 'writable', { isDirectory: false })).toHaveBeenCalledWith(false);
+    expect(request('relative/dir', 'writable')).toHaveBeenCalledWith(false);
+    expect(request(filesDir, 'execute')).toHaveBeenCalledWith(false);
+    expect(check(file, 'writable')).toBe(false);
+    expect(check('relative.od', 'readable')).toBe(false);
+  });
+
+  test('internal pages and unusable origins get nothing', () => {
+    const dir = path.join(filesDir, 'store');
+    fs.mkdirSync(dir);
+    expect(request(dir, 'writable', { url: 'file:///app/pages/home.html' })).toHaveBeenCalledWith(
+      false
+    );
+    expect(check(write('a.od', 'x'), 'readable', { origin: 'file:///' })).toBe(false);
+    expect(check(write('b.od', 'x'), 'readable', { origin: '' })).toBe(false);
+  });
+
+  describe('private windows', () => {
+    test("a private window's grants stay in it and close with it", () => {
+      const dir = path.join(filesDir, 'store');
+      fs.mkdirSync(dir);
+      expect(request(dir, 'writable', { session: privateSession })).toHaveBeenCalledWith(true);
+      const opts = { isDirectory: true, session: privateSession };
+      expect(check(dir, 'writable', opts)).toBe(true);
+      // Not in the normal profile.
+      expect(check(dir, 'writable', { isDirectory: true })).toBe(false);
+
+      ctx.mod.clearPrivateDecisions(PARTITION);
+      expect(check(dir, 'writable', opts)).toBe(false);
+    });
+
+    test("the normal profile's grants do not reach a private window", () => {
+      const dir = path.join(filesDir, 'store');
+      fs.mkdirSync(dir);
+      request(dir, 'writable');
+      expect(check(dir, 'writable', { isDirectory: true, session: privateSession })).toBe(false);
+    });
+  });
+
+  test('revoke all drops every grant', () => {
+    const dir = path.join(filesDir, 'store');
+    fs.mkdirSync(dir);
+    request(dir, 'writable');
+    request(dir, 'writable', { session: privateSession });
+    ctx.mod.revokeAll();
+    expect(check(dir, 'writable', { isDirectory: true })).toBe(false);
+    expect(check(dir, 'writable', { isDirectory: true, session: privateSession })).toBe(false);
+  });
+
+  test('a sensitive path Electron flags is refused, in every session', () => {
+    for (const session of [normalSession, privateSession]) {
+      const listener = session.listeners.get('file-system-access-restricted');
+      expect(typeof listener).toBe('function');
+      const callback = jest.fn();
+      listener({}, { origin: SITE, path: os.homedir(), isDirectory: true }, callback);
+      expect(callback).toHaveBeenCalledWith('deny');
+    }
+  });
+
+  test('fileSystem stays out of the per-origin decision store', () => {
+    expect(ctx.mod.permissionKeysForRequest('fileSystem', {})).toBeNull();
+    const dir = path.join(filesDir, 'store');
+    fs.mkdirSync(dir);
+    request(dir, 'writable');
+    expect(ctx.mod.getDecisionsForOrigin(SITE)).toEqual({});
+  });
+});
