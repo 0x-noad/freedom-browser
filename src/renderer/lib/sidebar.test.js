@@ -19,7 +19,9 @@ async function loadSidebar() {
     sidebar: createElement('aside', { classes: ['sidebar', 'collapsed'] }),
     'wallet-toggle-btn': createElement('button'),
     'sidebar-close': createElement('button'),
-    'sidebar-identity': createElement('div', { classes: ['hidden'] }),
+    // The panel opens on its home view; a test hides it to put a request's
+    // screen up (showHome(false)).
+    'sidebar-identity': createElement('div'),
   };
   // The fake DOM has no MutationObserver; capture the sidebar's and let a
   // test deliver the home view's class change by hand.
@@ -331,6 +333,51 @@ describe('sidebar concealed by browser full screen', () => {
     sidebar.open();
     showHome(true);
     expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+
+  // R4-M1: entering full screen must not hide a request still waiting for
+  // an answer; the panel steps aside once it is answered.
+  test.each([
+    ['a dApp connect or approval', 'open'],
+    ['a Radicle consent', 'openForConsent'],
+  ])('entering full screen leaves %s that is still unanswered in view', async (_label, opener) => {
+    const { sidebar, elements, document, showHome } = await loadSidebar();
+    const before = closedEvents(document);
+    showHome(false);
+    sidebar[opener]();
+
+    sidebar.setFullscreenConcealed(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+    expect(sidebar.isVisible()).toBe(true);
+
+    // Answered: the panel goes back to how full screen has it.
+    showHome(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(true);
+    expect(sidebar.isVisible()).toBe(true);
+    expect(closedEvents(document)).toBe(before);
+
+    sidebar.setFullscreenConcealed(false);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+
+  test('a request answered before full screen does not keep the panel in view', async () => {
+    const { sidebar, elements, showHome } = await loadSidebar();
+    showHome(false);
+    sidebar.open();
+    showHome(true);
+    sidebar.setFullscreenConcealed(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(true);
+  });
+
+  test('a request dropped by closing the panel does not keep it in view later', async () => {
+    const { sidebar, elements, showHome } = await loadSidebar();
+    showHome(false);
+    sidebar.open();
+    sidebar.close();
+    // Reopened by the user on a screen that is not a request.
+    sidebar.toggle();
+    sidebar.setFullscreenConcealed(true);
+    expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(true);
   });
 
   test('a panel still holding a device confirmation is not hidden when home returns', async () => {

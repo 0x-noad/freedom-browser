@@ -23,6 +23,12 @@ let concealed = false;
 // panel is back on its home view (see watchHomeView).
 let fullscreen = false;
 let revealedForRequest = false;
+// Whether a request (an approval, a consent prompt, a vault unlock) has put
+// its screen up in the panel and not yet been answered: set when a request
+// opens the panel, cleared once the panel is back on its home view. Entering
+// full screen leaves such a panel in view, so the request is not left hanging
+// out of sight (see conceal()).
+let requestOpened = false;
 
 // DOM references
 let sidebar;
@@ -135,6 +141,7 @@ export function toggle() {
  */
 export function open() {
   if (!featureEnabled) return;
+  requestOpened = true;
   revealForRequest();
   if (!isOpen) {
     isOpen = true;
@@ -165,6 +172,7 @@ function refuseSidebarClose() {
  * provider prompts must render without the identity-wallet flag.
  */
 export function openForConsent() {
+  requestOpened = true;
   revealForRequest();
   if (!isOpen) {
     isOpen = true;
@@ -182,6 +190,7 @@ export function close() {
   // opens it into view rather than into a still-concealed panel.
   reveal();
   revealedForRequest = false;
+  requestOpened = false;
   if (isOpen) {
     isOpen = false;
     applyState();
@@ -194,18 +203,28 @@ export function close() {
  * Hide (or show again) an open sidebar for browser full screen, leaving it
  * open underneath so leaving full screen restores it as it was (#78). A
  * sidebar holding a device confirmation stays in view: that prompt cannot be
- * recalled (see refuseSidebarClose). Anything that opens the panel while it
+ * recalled (see refuseSidebarClose). So does one showing a request that is
+ * still unanswered (a dApp connect or approval, a Radicle consent, a vault
+ * unlock): it is marked as revealed for that request, so it steps aside once
+ * the request is answered, as one arriving in full screen does. Anything that opens the panel while it
  * is hidden — an approval request, the shortcut — shows it again, so a
  * request arriving in full screen is never answered out of sight.
  */
 export function setFullscreenConcealed(on) {
   fullscreen = Boolean(on);
-  revealedForRequest = false;
+  revealedForRequest = fullscreen && isOpen && isRequestUp();
   conceal();
 }
 
+// A request's screen is up in the panel: one opened it and the home view has
+// not come back since. Without a home view to watch there is no way to tell
+// when the request is over, so no request counts as up.
+function isRequestUp() {
+  return requestOpened && Boolean(homeView?.classList.contains('hidden'));
+}
+
 function conceal() {
-  concealed = fullscreen && isOpen && !isSignatureInFlight();
+  concealed = fullscreen && isOpen && !isSignatureInFlight() && !isRequestUp();
   sidebar?.classList.toggle('fullscreen-concealed', concealed);
 }
 
@@ -224,8 +243,10 @@ function revealForRequest() {
 }
 
 function watchHomeView(el) {
+  // Unwatched, the home view coming back would go unseen and a request would
+  // look up for ever; isRequestUp() treats a missing home view as no request.
+  if (!el || typeof MutationObserver !== 'function') return;
   homeView = el;
-  if (!homeView || typeof MutationObserver !== 'function') return;
   new MutationObserver(onHomeViewChange).observe(homeView, {
     attributes: true,
     attributeFilter: ['class'],
@@ -236,8 +257,9 @@ function onHomeViewChange() {
   // Read the settled state, not the records: a request that hands straight
   // over to another (unlock, then connect) shows and hides the home view in
   // one go, and the panel is still in use.
-  if (!revealedForRequest || !fullscreen) return;
   if (homeView.classList.contains('hidden')) return;
+  requestOpened = false;
+  if (!revealedForRequest || !fullscreen) return;
   revealedForRequest = false;
   conceal();
 }

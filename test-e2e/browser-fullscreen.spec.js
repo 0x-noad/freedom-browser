@@ -247,6 +247,49 @@ test.describe('with the bookmarks bar on and the sidebar open', () => {
     await expect(window.locator(CHROME.toolbar)).toBeHidden();
     await window.screenshot({ path: test.info().outputPath('fullscreen-shortcut-kept.png') });
   });
+
+  // R4-M1: entering full screen while a request is waiting in the panel must
+  // not hide it; it steps aside once the request is answered.
+  test('entering full screen leaves an unanswered request in view', async ({
+    window,
+    electronApp,
+  }) => {
+    await window.locator('#wallet-toggle-btn').click();
+    await expect(window.locator('#sidebar')).not.toHaveClass(/collapsed/);
+    await window.evaluate(async () => {
+      const consent = await import('./lib/radicle-consent.js');
+      consent.showRadicleConnect('bzz://myapp.eth', 'fullscreen-test').catch(() => {});
+    });
+    await expect(window.locator('#sidebar-radicle-consent')).toBeVisible();
+
+    await clickMenuItem(electronApp, 'fullscreen');
+    await expect.poll(() => windowFullScreen(electronApp)).toBe(true);
+    await expect(window.locator(CHROME.toolbar)).toBeHidden();
+    await expect(window.locator('#sidebar')).toBeVisible();
+    await expect(window.locator('#sidebar')).not.toHaveClass(/fullscreen-concealed/);
+    await expect(window.locator('#sidebar-radicle-consent')).toBeVisible();
+    // Whole panel on screen at its full width once the window has settled.
+    await expect
+      .poll(() =>
+        window.locator('#sidebar').evaluate((el) => {
+          const r = el.getBoundingClientRect();
+          return r.width === 320 && Math.round(r.right) === window.innerWidth;
+        })
+      )
+      .toBe(true);
+    await window.screenshot({ path: test.info().outputPath('fullscreen-pending-request.png') });
+
+    await window.locator('#radicle-consent-reject').click();
+    await expect(window.locator('#sidebar-radicle-consent')).toBeHidden();
+    await expectChromeHidden(window, electronApp);
+    await window.screenshot({
+      path: test.info().outputPath('fullscreen-pending-request-answered.png'),
+    });
+
+    await clickMenuItem(electronApp, 'fullscreen');
+    await expectChromeShown(window, electronApp);
+    await expect(window.locator('#sidebar')).toBeVisible();
+  });
 });
 
 test.describe('with the bookmarks bar off', () => {
