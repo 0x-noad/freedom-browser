@@ -87,33 +87,24 @@ async function defaultReadFeed() {
 
 // Streams the list so each chunk counts as progress for the inactivity
 // timeout above. `bee` is injectable for tests.
+//
+// bee-js (13.x) downloads over fetch and returns the response body as a
+// WHATWG ReadableStream. The abort signal handed to downloadReadable is what
+// stops the transfer: fetch aborts the request and errors the body, which
+// ends the for-await below with the abort reason. Don't drop it — the stream
+// is locked by the for-await, so it can't be cancelled from outside, and
+// without the signal a stalled download would keep its connection open.
 async function defaultDownloadBlob(ref, { signal, progress = () => {} } = {}, bee = null) {
   const client = bee || require('../swarm/swarm-service').getBee();
   const stream = await client.data.downloadReadable(ref, undefined, signal ? { signal } : {});
   progress();
-  // axios hands back a Node Readable here. Keep an 'error' listener on it so
-  // an error emitted after we stop reading can't go unhandled, and destroy it
-  // on abort so it stops pulling bytes.
-  if (typeof stream.on === 'function') stream.on('error', () => {});
-  const stop = () => {
-    if (typeof stream.destroy === 'function') stream.destroy(signal.reason);
-    else stream.cancel?.(signal.reason).catch(() => {});
-  };
-  if (signal) {
-    if (signal.aborted) stop();
-    else signal.addEventListener('abort', stop, { once: true });
+  const chunks = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.from(chunk));
+    progress();
   }
-  try {
-    const chunks = [];
-    for await (const chunk of stream) {
-      chunks.push(Buffer.from(chunk));
-      progress();
-    }
-    if (signal?.aborted) throw signal.reason;
-    return Buffer.concat(chunks);
-  } finally {
-    signal?.removeEventListener('abort', stop);
-  }
+  if (signal?.aborted) throw signal.reason;
+  return Buffer.concat(chunks);
 }
 
 function getUpdateRoot() {

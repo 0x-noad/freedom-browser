@@ -15,10 +15,11 @@
  * period: most sessions are shorter than six hours, and an update that keeps
  * missing its one check per launch would never land.
  *
- * Each check schedules the next only once it has finished, and a check that
- * comes due while an older one is still running (a reinstall or clear mid-
- * check starts a new chain) waits for it first, so two never run at once
- * (they would share update-manager's staging dir). runUpdateOnce bounds its
+ * Each check schedules the next only once it has finished. A reinstall
+ * mid-check starts a new chain and a clear (will-quit) just ends the current
+ * one; either way the older check schedules nothing further, and a check that
+ * comes due while an older one is still running waits for it first, so two
+ * never run at once (they would share update-manager's staging dir). runUpdateOnce bounds its
  * own network calls, so a check always finishes.
  */
 
