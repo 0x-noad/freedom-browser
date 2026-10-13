@@ -35,6 +35,10 @@ app.setName(appName);
 // Before any window exists: a source-tree run must not borrow the installed
 // app's WM_CLASS/app_id from package.json's desktopName (issue #142).
 require('./linux-desktop-name').applyLinuxDesktopName(app);
+// Web content sees a plain Chrome User-Agent, without the Freedom/ and
+// Electron/ tokens (issue #471). Before any session exists: each one reads the
+// fallback when it is created.
+require('./web-user-agent').applyWebUserAgent(app);
 
 // E2E test mode (Playwright). `FREEDOM_TEST_MODE=1` activates the
 // fixture-driven harness in src/main/test-harness.js (stubbed protocols,
@@ -367,7 +371,7 @@ const {
   registerPrivateCleanup,
 } = require('./private/private-windows');
 const { initUpdater } = require('./updater');
-const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
+const { setupApplicationMenu, stopHistoryMenuRefresh, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
 const { registerClientCertificateHandler } = require('./client-certificate');
 const {
@@ -736,6 +740,9 @@ const SHUTDOWN_WATCHDOG_MS = 20_000;
 // place that decides when quitting is allowed.
 async function windDown() {
   const myotisStopped = myotisManager.stopAllMyotis({ shutdown: true });
+  // Before any window closes: a window's 'closed' event arms a History-menu
+  // refresh that would otherwise fire after closeHistoryDb() and reopen it.
+  stopHistoryMenuRefresh();
 
   // Close all DevTools first to prevent crashes during cleanup
   log.info('[App] Closing all DevTools...');
