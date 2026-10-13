@@ -2311,14 +2311,16 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   // (sentence case, #277) — the two sit inside one card.
   const renderConflict = (state) => {
     const { conflict } = state;
+    // Both combinations are key chips, and Swap — the answer the question
+    // asks for — is the primary; Cancel stays the plain secondary (#606).
     const message = conflict.fixed
-      ? `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}” and cannot be reassigned. Pick a different combination.`
-      : `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}”. Swap the bindings so “${esc(conflict.settingsLabel)}” becomes ${kbd(conflict.swapFormatted)}?`;
+      ? `${kbd(state.formatted)} is already used by “${esc(conflict.settingsLabel)}” and cannot be reassigned. Pick a different combination.`
+      : `${kbd(state.formatted)} is already used by “${esc(conflict.settingsLabel)}”. Swap the bindings so “${esc(conflict.settingsLabel)}” becomes ${kbd(conflict.swapFormatted)}?`;
     return `
       <div class="row shortcut-conflict" data-shortcut-id="${esc(state.id)}">
         <div class="row-body"><p class="row-label">${message}</p></div>
         <span class="shortcut-conflict-actions">
-          ${conflict.fixed ? '' : '<button type="button" class="btn" data-action="swap">Swap</button>'}
+          ${conflict.fixed ? '' : '<button type="button" class="btn primary" data-action="swap">Swap</button>'}
           <button type="button" class="btn" data-action="cancel-conflict">Cancel</button>
         </span>
       </div>`;
