@@ -169,6 +169,8 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `Cmd+-` / `Ctrl+-`: Zoom out (steps the active page 10% down to 25%)
   - `Cmd+0` / `Ctrl+0`: Actual size (resets the active page to 100%)
   - `Cmd+L` / `Ctrl+L`: Focus address bar
+  - `Cmd+[` / `Alt+Left`: Back
+  - `Cmd+]` / `Alt+Right`: Forward
   - `Cmd+Y` / `Ctrl+H`: Show all history
   - `Cmd+Shift+J` / `Ctrl+Shift+J`: Downloads
   - `Cmd+Shift+B` / `Ctrl+Shift+B`: Toggle bookmark bar
@@ -192,6 +194,7 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 
 - **Automatic Recording**: Pages are recorded as you browse.
 - **History Page**: View and search your browsing history at `freedom://history`.
+- **History Menu**: The application menu's History menu (the macOS menu bar, the window menu bar on Linux and Windows) offers Back and Forward for the active tab, a **Recently Closed** list (the tabs Reopen Closed Tab would bring back, across your open windows, newest first; clicking one reopens it in the window it was closed in), a **Recently Visited** list of your 15 latest history entries (title, or the address when a page has none, with its cached favicon; clicking one loads it in the active tab exactly as if typed into the address bar), and Show All History at the bottom. The lists follow history as it changes: removing entries or clearing history takes them out of the menu at once. Private windows never contribute to either list, internal `freedom://` pages are left out, and each profile lists only its own history.
 
 ## Private Windows
 
