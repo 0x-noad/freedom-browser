@@ -768,8 +768,12 @@ const createWebview = (tabId, initialUrl) => {
         void refreshOnchainProvenance(tab, webviewUrl);
         // Clear any stale favicon from the previous page when navigating to
         // an internal page — page-favicon-updated will paint one back in if
-        // the page declares a <link rel="icon">.
-        if (isInternalPageUrl(event.url)) {
+        // the page declares a <link rel="icon">. Not when the commit reloads
+        // the page already shown (Settings at `#appearance` loading
+        // `freedom://settings`, a reload): Chromium does not report an icon
+        // list again that is identical to the one it just reported, so the
+        // cleared slot stayed on the globe for the rest of the visit (#606).
+        if (isInternalPageUrl(event.url) && !isSameInternalDocument(previousUrl, webviewUrl)) {
           tab.favicon = null;
           renderTabs();
         }
@@ -1121,6 +1125,14 @@ const isInternalPageUrl = (url) => {
   if (url.startsWith('freedom://')) return true;
   const base = getInternalPagesBase();
   return Boolean(base) && url.startsWith(base);
+};
+
+// Same internal page file, whatever the query or fragment: its own
+// <link rel="icon"> is the icon the tab already carries.
+const isSameInternalDocument = (previousUrl, nextUrl) => {
+  if (!isInternalPageUrl(previousUrl) || !isInternalPageUrl(nextUrl)) return false;
+  const documentOf = (url) => url.split(/[?#]/)[0];
+  return documentOf(previousUrl) === documentOf(nextUrl);
 };
 
 // Loading spinner (same style as address bar)
