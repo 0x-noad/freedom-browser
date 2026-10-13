@@ -243,6 +243,10 @@ async function readManifest(dir) {
  * and a feed version newer than the floor is layered over it again. A missing
  * or unparseable date on either side keeps the update on top.
  */
+// The last bundled-vs-update pair logged, so the notice appears once per pair
+// rather than on every resolveArtifacts call (toggles, allowlist refreshes).
+let loggedOutdatedUpdate = null;
+
 function withoutOutdatedUpdate(layers, floorDir) {
   const floor = layers.find((layer) => layer.dir === floorDir);
   const bundledAt = parseManifestDate(floor?.manifest.fetchedAt);
@@ -251,6 +255,9 @@ function withoutOutdatedUpdate(layers, floorDir) {
     if (dir === floorDir) return true;
     const generatedAt = parseManifestDate(manifest.version);
     if (generatedAt === null || generatedAt >= bundledAt) return true;
+    const key = `${floor.manifest.fetchedAt}|${dir}|${manifest.version}|${manifest.feedVersion}`;
+    if (key === loggedOutdatedUpdate) return false;
+    loggedOutdatedUpdate = key;
     log.info(
       `[adblock] the bundled filter lists (${floor.manifest.fetchedAt}) are newer than the ` +
         `Swarm update (${manifest.version}, feed version ${manifest.feedVersion}); ` +
@@ -856,6 +863,7 @@ function getEnabledFeedCategories() {
 /** Test-only: clear module state between suites. */
 function _resetAdblockForTests() {
   artifactsDirOverride = null;
+  loggedOutdatedUpdate = null;
   installed = false;
   cacheDir = null;
   engine = null;

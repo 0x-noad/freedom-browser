@@ -15,9 +15,11 @@
  * period: most sessions are shorter than six hours, and an update that keeps
  * missing its one check per launch would never land.
  *
- * Each check schedules the next only once it has finished, so two never run
- * at once (they would share update-manager's staging dir). runUpdateOnce
- * bounds its own network calls, so a check always finishes.
+ * Each check schedules the next only once it has finished, and a check that
+ * comes due while an older one is still running (a reinstall or clear mid-
+ * check starts a new chain) waits for it first, so two never run at once
+ * (they would share update-manager's staging dir). runUpdateOnce bounds its
+ * own network calls, so a check always finishes.
  */
 
 const log = require('../logger');
@@ -37,6 +39,8 @@ const RETRY_DELAY_MS = 30 * 60 * 1000;
 const RETRY_STATUSES = new Set(['feed_unavailable', 'download_failed', 'error']);
 
 let timer = null;
+// The check currently running, from whichever chain started it.
+let inFlight = null;
 // Bumped by every install and clear: a check still running from before one
 // does not schedule another, so there is only ever one chain of checks.
 let generation = 0;
@@ -76,7 +80,17 @@ function scheduleCheck(delayMs, chain) {
 
 async function runScheduledCheck(chain) {
   timer = null;
-  const result = await tick();
+  // An older chain's check may still be running; tick() never rejects.
+  while (inFlight) await inFlight;
+  if (chain !== generation) return;
+  const check = tick();
+  inFlight = check;
+  let result;
+  try {
+    result = await check;
+  } finally {
+    if (inFlight === check) inFlight = null;
+  }
   scheduleCheck(delayAfter(result), chain);
 }
 

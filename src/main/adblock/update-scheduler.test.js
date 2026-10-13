@@ -165,4 +165,23 @@ describe('scheduling', () => {
     await jest.advanceTimersByTimeAsync(1);
     expect(runUpdateOnce).toHaveBeenCalledTimes(3);
   });
+
+  test('a reinstall mid-check waits for the old check before running its first', async () => {
+    const held = holdNextCheck();
+    installAdblockUpdater();
+    await jest.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    installAdblockUpdater();
+    // The new chain comes due while the old check is still running.
+    await jest.advanceTimersByTimeAsync(2 * INITIAL_DELAY_MS);
+    expect(runUpdateOnce).toHaveBeenCalledTimes(1);
+
+    held.finish({ status: 'applied', version: 3 });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(runUpdateOnce).toHaveBeenCalledTimes(2);
+    // Still one chain: the next check is a full period after that one.
+    await jest.advanceTimersByTimeAsync(PERIOD_MS - 1);
+    expect(runUpdateOnce).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(runUpdateOnce).toHaveBeenCalledTimes(3);
+  });
 });

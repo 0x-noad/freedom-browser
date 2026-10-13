@@ -624,6 +624,22 @@ describe('artifact layers', () => {
     expect(fs.existsSync(path.join(userData, 'adblock', 'updated', 'manifest.json'))).toBe(true);
   });
 
+  test('logs the outdated update once, not on every rebuild', async () => {
+    const info = jest.spyOn(log, 'info').mockImplementation(() => {});
+    try {
+      useBundleFetchedAt('2026-09-30T19:41:30.785Z');
+      await buildWithLayers();
+      await refreshEngine(); // e.g. a category toggle or allowlist refresh
+      await refreshEngine();
+      const notices = info.mock.calls.filter(([line]) =>
+        /are newer than the Swarm update/.test(line)
+      );
+      expect(notices).toHaveLength(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   test('an update generated after the bundled lists were fetched still wins', async () => {
     useBundleFetchedAt('2026-07-20T00:00:00.000Z');
     await buildWithLayers();
