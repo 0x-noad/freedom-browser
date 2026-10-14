@@ -137,6 +137,12 @@ export function initWalletUi() {
     resumePendingPublishSetup();
   });
 
+  // Closing or skipping the onboarding dialog walks away from the identity
+  // step, so a publish setup asked for before it is dropped too (#719).
+  document.addEventListener('onboarding-dismissed', () => {
+    pendingPublishSetupTarget = null;
+  });
+
   // Listen for sidebar close to clean up sub-screens
   document.addEventListener('sidebar-closed', () => {
     pendingPublishSetupTarget = null;
@@ -393,7 +399,8 @@ export function openPublishSetupFlow(target = 'setup', options = {}) {
 
 // The publish setup a user asked for (an internal page's "Set up publishing")
 // before this profile had an identity, opened once the identity is ready.
-// Dropped when the sidebar closes: the user walked away from it.
+// Dropped when the user walks away from it: the sidebar closes, or the
+// onboarding dialog is closed or skipped.
 let pendingPublishSetupTarget = null;
 
 /**

@@ -1040,7 +1040,8 @@ jobs:
   # `publish-setup-rediscovery.spec.js` (#510) keeps Publish Setup from
   # offering a plan while Ant is still rediscovering the wallet's batches, and
   # `publish-page-setup.spec.js` (#719) keeps freedom://publish's Set Up
-  # Publishing button opening it, identity or not. The anvil-backed Safe specs run in `e2e-safe` below.
+  # Publishing button opening it, identity or not. The anvil-backed Safe
+  # specs run in `e2e-safe` below.
   e2e-wallet:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}

@@ -108,6 +108,29 @@ test.describe('freedom://publish Set Up Publishing (#719)', () => {
     await expect(window.locator('#sidebar-publish-setup')).toBeHidden();
   });
 
+  test('closing the onboarding dialog drops the pending publish setup', async ({
+    electronApp,
+    window,
+  }) => {
+    await startFakeAnt(electronApp);
+    await wireRealService(electronApp);
+    const page = await openPublishPage(window, electronApp);
+    await publishTextAndClickSetup(page);
+    await expect(window.locator('#sidebar-setup-cta')).toBeVisible();
+
+    // Get Started, then close the dialog; the sidebar stays open.
+    await window.locator('#sidebar-setup-btn').click();
+    await expect(window.locator('#onboarding-modal')).toBeVisible();
+    await window.locator('#onboarding-close').click();
+    await expect(window.locator('#onboarding-modal')).toBeHidden();
+    await expect.poll(() => sidebarOpen(window)).toBe(true);
+
+    // An identity finished later in the session does not open the setup.
+    await completeIdentity(electronApp, window);
+    await expect(window.locator('.sidebar-tabs')).toBeVisible();
+    await expect(window.locator('#sidebar-publish-setup')).toBeHidden();
+  });
+
   test('with an identity, opens the publish setup', async ({ electronApp, window }) => {
     await startFakeAnt(electronApp);
     await wireRealService(electronApp);
