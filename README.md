@@ -74,7 +74,7 @@ Do not post credentials, seed phrases, private keys, or sensitive logs in public
 
 - [Documentation index](docs/README.md)
 - [Development](docs/development.md)
-- [Configuration](docs/configuration.md)
+- [Configuration](docs/configuration.md), including the [command-line flags](docs/configuration.md#command-line-flags) (`--profile`, `--profile-dir`, `FREEDOM_PROFILE`, links to open)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Swarm content retrieval and migration](docs/protocols/swarm.md)
 - [IPFS/IPNS content retrieval and migration](docs/protocols/ipfs.md)

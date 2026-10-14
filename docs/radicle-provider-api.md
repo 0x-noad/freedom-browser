@@ -1,7 +1,7 @@
 # Radicle Provider API (`window.radicle`) — Draft Specification
 
 **Status:** Draft v0.1 (first implementation iteration)
-**Companion:** the [Swarm Provider API](swarm-provider-api.md) (`window.swarm`), whose
+**Companion:** the Swarm Provider API (`window.swarm`) SWIP, whose
 request/response pattern, error model, and permission architecture this
 document follows.
 
@@ -35,14 +35,10 @@ The provider exists for everything that is **not** a public read:
 
 ## Provider object
 
-Injected into the page realm of web pages alongside `window.swarm`, and the
-same way: an inline `<script>` Freedom inserts when the document fires
-`DOMContentLoaded`. It is therefore absent while the page parses (classic,
-`defer` and module scripts all run before that event; check from a `window`
-`DOMContentLoaded` or `load` listener), and never appears on a page whose
-Content Security Policy forbids inline scripts. See
-[Availability](./swarm-provider-api.md#availability) for the details, which
-apply unchanged:
+Installed in the page's main world of every web page's top frame before any
+of the page's own scripts run, alongside `window.swarm` and `window.ethereum`.
+A page's Content Security Policy does not affect it. It is not installed in
+private windows, in sub-frames, or on Freedom's internal pages.
 
 ```javascript
 window.radicle.request({ method: string, params?: object }): Promise<any>
