@@ -36,8 +36,11 @@ This means Freedom works seamlessly whether you:
 - Already have a system-wide Swarm daemon running and explicitly configure a profile to use it
 - Have port conflicts with other software (Freedom finds and records available profile ports)
 
-On macOS, the packaged app explicitly allows multiple bundle instances so profile
-launching can use `open -n -a Freedom --args --profile=<id>`.
+Profiles can also be chosen at launch with `--profile <id>`, `FREEDOM_PROFILE` or
+`--profile-dir <path>`, and links passed on the command line open as tabs; see
+[Command-Line Flags](configuration.md#command-line-flags). On macOS, the packaged app
+explicitly allows multiple bundle instances so profile launching can use
+`open -n -a Freedom --args --profile=<id>`.
 
 ## Profiles and Sidebar
 

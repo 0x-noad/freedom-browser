@@ -5,7 +5,7 @@ Freedom's README is the short project overview. Use these guides for detailed se
 ## For users and site authors
 
 - [Features](features.md) — browser capabilities, protocols, settings, and built-in pages.
-- [Configuration](configuration.md) — managed nodes, external endpoints, profiles, and Ethereum RPC configuration.
+- [Configuration](configuration.md) — managed nodes, external endpoints, profiles, command-line flags, and Ethereum RPC configuration.
 - [Troubleshooting](troubleshooting.md) — common node, naming, and content-loading problems.
 - [Swarm content retrieval](protocols/swarm.md) — `bzz://` behavior and site migration guidance.
 - [IPFS and IPNS content retrieval](protocols/ipfs.md) — native schemes, canonicalization, gateways, and site migration guidance.
