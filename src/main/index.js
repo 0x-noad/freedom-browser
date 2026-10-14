@@ -35,6 +35,10 @@ app.setName(appName);
 // Before any window exists: a source-tree run must not borrow the installed
 // app's WM_CLASS/app_id from package.json's desktopName (issue #142).
 require('./linux-desktop-name').applyLinuxDesktopName(app);
+// Web content sees a plain Chrome User-Agent, without the Freedom/ and
+// Electron/ tokens (issue #471). Before any session exists: each one reads the
+// fallback when it is created.
+require('./web-user-agent').applyWebUserAgent(app);
 
 // E2E test mode (Playwright). `FREEDOM_TEST_MODE=1` activates the
 // fixture-driven harness in src/main/test-harness.js (stubbed protocols,
@@ -58,6 +62,8 @@ const {
   migrateBeeDataToAntData,
   migrateUserData,
   purgeSetAsideBeeData,
+  purgeSetAsideLegacyKuboData,
+  setAsideLegacyKuboRepo,
 } = require('./migrate-user-data');
 if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
   migrateUserData({ logger: console });
@@ -463,6 +469,10 @@ async function bootstrap() {
   // gigabytes of Bee-only state are only set aside here; they are deleted
   // off the main thread once the first window has painted (below, #526).
   migrateBeeDataToAntData();
+  // Move the pre-0.8.0 Kubo repo out of ipfs-data/ (keeping the live
+  // ipfs-data/freedom-ipfs/), before IPFS starts below. Like the Bee-only
+  // state, it is only renamed aside here and deleted after first paint (#101).
+  setAsideLegacyKuboRepo();
 
   const defaultSession = session.defaultSession;
   await defaultSession.clearCache();
@@ -669,6 +679,7 @@ async function bootstrap() {
   // finished) are picked up on the next launch.
   mainWindow.once('ready-to-show', () => {
     void purgeSetAsideBeeData({ logger: log });
+    void purgeSetAsideLegacyKuboData({ logger: log });
   });
 
   if (!TEST_MODE) {

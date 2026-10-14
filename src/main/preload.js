@@ -619,8 +619,6 @@ contextBridge.exposeInMainWorld('remoteSigner', {
 contextBridge.exposeInMainWorld('swarmNode', {
   getStamps: () => ipcRenderer.invoke('swarm:get-stamps'),
   publishData: (data) => ipcRenderer.invoke('swarm:publish-data', data),
-  publishFile: (filePath) => ipcRenderer.invoke('swarm:publish-file', filePath),
-  publishDirectory: (dirPath) => ipcRenderer.invoke('swarm:publish-directory', dirPath),
   getUploadStatus: (tagUid) => ipcRenderer.invoke('swarm:get-upload-status', tagUid),
 });
 
