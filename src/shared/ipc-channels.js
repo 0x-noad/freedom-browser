@@ -203,6 +203,9 @@ module.exports = {
   // Tab navigation
   TAB_NEXT: 'tab:next',
   TAB_PREV: 'tab:prev',
+  // Select a tab by position (Cmd/Ctrl+1…8) or the last tab (Cmd/Ctrl+9);
+  // payload is the 1-based position or 'last' (#717).
+  TAB_SELECT: 'tab:select',
   TAB_MOVE_LEFT: 'tab:move-left',
   TAB_MOVE_RIGHT: 'tab:move-right',
   TAB_REOPEN_CLOSED: 'tab:reopen-closed',

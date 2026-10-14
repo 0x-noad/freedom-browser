@@ -116,6 +116,97 @@ describe('matchTabSwitchInput', () => {
   });
 });
 
+describe('matchTabKeyInput: select tab by position (#717)', () => {
+  const { mod } = load();
+  const match = (input, overrides = {}, platform = 'linux') =>
+    mod.matchTabKeyInput({ type: 'keyDown', ...input }, overrides, platform);
+  const digit = (n, extra = {}) => ({ key: String(n), code: `Digit${n}`, ...extra });
+
+  test('Cmd/Ctrl+1…8 select by position and Cmd/Ctrl+9 the last tab', () => {
+    for (let n = 1; n <= 8; n++) {
+      expect(match(digit(n, { control: true }), {}, 'linux')).toEqual({
+        channel: 'tab:select',
+        args: [n],
+      });
+      expect(match(digit(n, { control: true }), {}, 'win32')).toEqual({
+        channel: 'tab:select',
+        args: [n],
+      });
+      expect(match(digit(n, { meta: true }), {}, 'darwin')).toEqual({
+        channel: 'tab:select',
+        args: [n],
+      });
+    }
+    expect(match(digit(9, { control: true }))).toEqual({ channel: 'tab:select', args: ['last'] });
+    expect(match(digit(9, { meta: true }), {}, 'darwin')).toEqual({
+      channel: 'tab:select',
+      args: ['last'],
+    });
+    // Ctrl is not Cmd on macOS, and modifiers must match exactly.
+    expect(match(digit(2, { control: true }), {}, 'darwin')).toBeNull();
+    expect(match(digit(2, { control: true, shift: true }))).toBeNull();
+    expect(match(digit(0, { control: true }))).toBeNull();
+    // The matchTabSwitchInput shape still reports the channel.
+    expect(
+      mod.matchTabSwitchInput({ type: 'keyDown', ...digit(3, { control: true }) }, {}, 'linux')
+    ).toBe('tab:select');
+  });
+
+  test('Alt+1…9 also select on Linux only, as in Chrome', () => {
+    expect(match(digit(3, { alt: true }), {}, 'linux')).toEqual({
+      channel: 'tab:select',
+      args: [3],
+    });
+    expect(match(digit(9, { alt: true }), {}, 'linux')).toEqual({
+      channel: 'tab:select',
+      args: ['last'],
+    });
+    expect(match(digit(3, { alt: true }), {}, 'win32')).toBeNull();
+    expect(match(digit(3, { alt: true }), {}, 'darwin')).toBeNull();
+  });
+
+  test('matches the physical digit key, so AZERTY needs no Shift', () => {
+    expect(match({ key: '&', code: 'Digit1', control: true })).toEqual({
+      channel: 'tab:select',
+      args: [1],
+    });
+    expect(match({ key: 'é', code: 'Digit2', meta: true }, {}, 'darwin')).toEqual({
+      channel: 'tab:select',
+      args: [2],
+    });
+    expect(match({ key: 'ç', code: 'Digit9', control: true })).toEqual({
+      channel: 'tab:select',
+      args: ['last'],
+    });
+  });
+
+  test("leaves the AZERTY Ctrl+6 press (key '-') to Zoom Out", () => {
+    expect(match({ key: '-', code: 'Digit6', control: true })).toBeNull();
+    expect(match({ key: '-', code: 'Digit6', meta: true }, {}, 'darwin')).toBeNull();
+    // A US-layout Ctrl+6 is still Select Tab 6…
+    expect(match(digit(6, { control: true }))).toEqual({ channel: 'tab:select', args: [6] });
+    // …and once Zoom Out is remapped off `-`, the AZERTY press is the tab's.
+    expect(
+      match({ key: '-', code: 'Digit6', control: true }, { 'page.zoomOut': 'Ctrl+Shift+U' })
+    ).toEqual({ channel: 'tab:select', args: [6] });
+  });
+
+  test('follows a remap', () => {
+    const overrides = { 'tab.select2': 'Ctrl+Alt+2', 'tab.selectLast': 'Ctrl+Shift+L' };
+    expect(match(digit(2, { control: true }), overrides)).toBeNull();
+    expect(match(digit(2, { control: true, alt: true }), overrides)).toEqual({
+      channel: 'tab:select',
+      args: [2],
+    });
+    // The Linux Alt alias stays live next to the remap.
+    expect(match(digit(2, { alt: true }), overrides)).toEqual({ channel: 'tab:select', args: [2] });
+    expect(match({ key: 'L', code: 'KeyL', control: true, shift: true }, overrides)).toEqual({
+      channel: 'tab:select',
+      args: ['last'],
+    });
+  });
+});
+
 describe('attachTabSwitchKeys', () => {
   const overrides = { 'tab.next': 'Cmd+Alt+Right', 'tab.previous': 'Cmd+Alt+Left' };
 
@@ -138,6 +229,30 @@ describe('attachTabSwitchKeys', () => {
     // Claimed before the page, the menu accelerator and the chrome's keydown
     // fallback — so one press is one switch.
     for (const event of presses) expect(event.preventDefault).toHaveBeenCalledTimes(1);
+  });
+
+  test('claims Cmd/Ctrl+digit from a focused page and sends the position (#717)', () => {
+    const { mod, chromeWindow } = load();
+    const guest = contentsMock({ hostWebContents: contentsMock({ window: chromeWindow }) });
+    mod.attachTabSwitchKeys(guest, { platform: 'darwin' });
+
+    const presses = [2, 9, 5, 2].map((n) =>
+      press(guest, { key: String(n), code: `Digit${n}`, meta: true })
+    );
+
+    expect(chromeWindow.webContents.send.mock.calls).toEqual([
+      ['tab:select', 2],
+      ['tab:select', 'last'],
+      ['tab:select', 5],
+      ['tab:select', 2],
+    ]);
+    for (const event of presses) expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    // The AZERTY `-` press is not claimed, so Zoom Out's menu accelerator and
+    // the chrome's keydown handler still get it.
+    expect(
+      press(guest, { key: '-', code: 'Digit6', meta: true }).preventDefault
+    ).not.toHaveBeenCalled();
+    expect(chromeWindow.webContents.send).toHaveBeenCalledTimes(4);
   });
 
   test('also answers on the chrome renderer itself', () => {

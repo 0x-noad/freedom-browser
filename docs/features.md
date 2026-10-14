@@ -165,6 +165,8 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `Ctrl+PageUp` / `Ctrl+Shift+Tab` / `Cmd+Shift+[`: Previous tab
   - `Ctrl+Shift+PageDown`: Move tab right
   - `Ctrl+Shift+PageUp`: Move tab left
+  - `Cmd+1` / `Cmd+2` / `Cmd+3` / `Cmd+4` / `Cmd+5` / `Cmd+6` / `Cmd+7` / `Cmd+8` (`Ctrl+1` / `Ctrl+2` / `Ctrl+3` / `Ctrl+4` / `Ctrl+5` / `Ctrl+6` / `Ctrl+7` / `Ctrl+8` on Windows and Linux): Select tab 1–8 of the window (nothing happens if there are fewer tabs; Linux also accepts `Alt+1` to `Alt+8`, as Chrome does). Bound to the digit keys themselves, so on AZERTY and other layouts where the digits need Shift, the unshifted key in that position works. One exception on French AZERTY: there the `6` key types `-` unshifted, and Zoom out keeps that press
+  - `Cmd+9` / `Ctrl+9`: Select the last tab, however many there are (Linux also accepts `Alt+9`)
   - `Cmd+R` / `Ctrl+R`: Reload (from cache)
   - `Cmd+Shift+R` / `Ctrl+Shift+R`: Hard reload (bypass cache)
   - `Cmd+F` / `Ctrl+F`: Find in page

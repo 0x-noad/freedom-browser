@@ -31,6 +31,14 @@
  * renderer fallback, so one press is one switch, and Chromium drops the
  * matching keyup and char events on its own once the keydown is pre-handled.
  *
+ * Select Tab 1–8 and Select Last Tab (Cmd/Ctrl+1…9, #717) ride the same
+ * path: Chrome reserves them the same way (IDC_SELECT_TAB_0…7 and
+ * IDC_SELECT_LAST_TAB), and the press usually starts in a focused page too.
+ * They answer with `tab:select` and the position (1–8, or 'last'). A
+ * select-tab press that also matches another shortcut is left to that
+ * shortcut: on French AZERTY the `6` key types `-` unshifted, so Ctrl+6 is
+ * also Zoom Out's press, and Zoom Out has no other main-row key there.
+ *
  * One exception: while Settings > Shortcuts is recording a new binding, the
  * page has to receive the chord it is about to record — swapping Next and
  * Previous, say, means recording the chord that is live on the other row
@@ -42,6 +50,7 @@
 const { BrowserWindow } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const {
+  SHORTCUTS,
   eventMatchesAccelerator,
   getEffectiveAccelerator,
   getAliasAccelerators,
@@ -50,9 +59,17 @@ const { loadSettings } = require('./settings-store');
 const { isMainBrowserWindow } = require('./windows/mainWindow');
 
 const TAB_SWITCH_SHORTCUTS = [
-  { id: 'tab.next', channel: IPC.TAB_NEXT },
-  { id: 'tab.previous', channel: IPC.TAB_PREV },
+  { id: 'tab.next', channel: IPC.TAB_NEXT, args: [] },
+  { id: 'tab.previous', channel: IPC.TAB_PREV, args: [] },
+  ...[1, 2, 3, 4, 5, 6, 7, 8].map((position) => ({
+    id: `tab.select${position}`,
+    channel: IPC.TAB_SELECT,
+    args: [position],
+    yieldsToOthers: true,
+  })),
+  { id: 'tab.selectLast', channel: IPC.TAB_SELECT, args: ['last'], yieldsToOthers: true },
 ];
+const TAB_SWITCH_IDS = new Set(TAB_SWITCH_SHORTCUTS.map(({ id }) => id));
 
 // webContents id → disarm function, for settings pages with a shortcut
 // recording armed.
@@ -80,25 +97,40 @@ const inputAsKeyboardEvent = (input) => ({
   metaKey: Boolean(input.meta),
 });
 
+const shortcutMatches = (event, id, overrides, platform) =>
+  [getEffectiveAccelerator(id, overrides, platform), ...getAliasAccelerators(id, platform)].some(
+    (accelerator) => Boolean(accelerator) && eventMatchesAccelerator(event, accelerator, platform)
+  );
+
 /**
- * The tab-switch IPC channel a `before-input-event` input asks for, or null.
- * Only key-downs count (Electron reports Chromium's raw key-down as
- * `keyDown`); auto-repeat does too, so holding the chord keeps cycling the
- * way it does in Chrome. A key still inside an IME composition is the IME's.
+ * The tab-switch message a `before-input-event` input asks for, as
+ * `{ channel, args }`, or null. Only key-downs count (Electron reports
+ * Chromium's raw key-down as `keyDown`); auto-repeat does too, so holding
+ * the chord keeps cycling the way it does in Chrome. A key still inside an
+ * IME composition is the IME's.
  */
-function matchTabSwitchInput(input, overrides = {}, platform = process.platform) {
+function matchTabKeyInput(input, overrides = {}, platform = process.platform) {
   if (!input || input.type !== 'keyDown' || input.isComposing) return null;
   const event = inputAsKeyboardEvent(input);
-  for (const { id, channel } of TAB_SWITCH_SHORTCUTS) {
-    const accelerators = [
-      getEffectiveAccelerator(id, overrides, platform),
-      ...getAliasAccelerators(id, platform),
-    ];
-    if (accelerators.some((accelerator) => eventMatchesAccelerator(event, accelerator, platform))) {
-      return channel;
+  for (const { id, channel, args, yieldsToOthers } of TAB_SWITCH_SHORTCUTS) {
+    if (!shortcutMatches(event, id, overrides, platform)) continue;
+    if (
+      yieldsToOthers &&
+      SHORTCUTS.some(
+        (entry) =>
+          !TAB_SWITCH_IDS.has(entry.id) && shortcutMatches(event, entry.id, overrides, platform)
+      )
+    ) {
+      return null;
     }
+    return { channel, args };
   }
   return null;
+}
+
+/** The tab-switch IPC channel a `before-input-event` input asks for, or null. */
+function matchTabSwitchInput(input, overrides = {}, platform = process.platform) {
+  return matchTabKeyInput(input, overrides, platform)?.channel ?? null;
 }
 
 // The chrome window a webContents belongs to: itself for the chrome
@@ -118,12 +150,12 @@ function chromeWindowFor(contents) {
 function attachTabSwitchKeys(contents, { platform = process.platform } = {}) {
   contents.on('before-input-event', (event, input) => {
     if (recordingContents.has(contents.id)) return;
-    const channel = matchTabSwitchInput(input, currentOverrides(), platform);
-    if (!channel) return;
+    const match = matchTabKeyInput(input, currentOverrides(), platform);
+    if (!match) return;
     const win = chromeWindowFor(contents);
     if (!win) return;
     event.preventDefault();
-    win.webContents.send(channel);
+    win.webContents.send(match.channel, ...match.args);
   });
 }
 
@@ -172,6 +204,7 @@ function registerTabSwitchKeysIpc(ipcMain) {
 
 module.exports = {
   attachTabSwitchKeys,
+  matchTabKeyInput,
   matchTabSwitchInput,
   setShortcutRecording,
   registerTabSwitchKeysIpc,

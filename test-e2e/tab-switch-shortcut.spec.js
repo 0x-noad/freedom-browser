@@ -43,6 +43,41 @@ const hasXdotool = (() => {
 })();
 const xdotool = (args) => execFileSync('xdotool', args, { encoding: 'utf-8' }).trim();
 
+// Give the app's X window the input focus (no window manager under xvfb).
+async function focusAppWindow(electronApp) {
+  const pid = electronApp.process().pid;
+  let target = null;
+  await expect
+    .poll(
+      () => {
+        try {
+          const ids = xdotool(['search', '--onlyvisible', '--pid', String(pid)])
+            .split('\n')
+            .filter(Boolean);
+          target = ids.find((id) => {
+            try {
+              return Boolean(xdotool(['getwindowname', id]));
+            } catch {
+              return false;
+            }
+          });
+        } catch {
+          target = null;
+        }
+        return Boolean(target);
+      },
+      { message: `Waiting for an X window owned by the app (pid ${pid})`, timeout: 15_000 }
+    )
+    .toBe(true);
+  // No window manager under xvfb, so set the input focus directly.
+  xdotool(['windowfocus', '--sync', target]);
+  await expect
+    .poll(() =>
+      electronApp.evaluate(({ BrowserWindow }) => Boolean(BrowserWindow.getFocusedWindow()))
+    )
+    .toBe(true);
+}
+
 const activeTabId = (window) =>
   window.evaluate(() => document.querySelector('[data-test="tab"].active')?.dataset.tabId || null);
 
@@ -148,37 +183,7 @@ test.describe('a remapped Next/Previous Tab (#556)', () => {
 
     await openThreeTabs(window, harness);
 
-    const pid = electronApp.process().pid;
-    let target = null;
-    await expect
-      .poll(
-        () => {
-          try {
-            const ids = xdotool(['search', '--onlyvisible', '--pid', String(pid)])
-              .split('\n')
-              .filter(Boolean);
-            target = ids.find((id) => {
-              try {
-                return Boolean(xdotool(['getwindowname', id]));
-              } catch {
-                return false;
-              }
-            });
-          } catch {
-            target = null;
-          }
-          return Boolean(target);
-        },
-        { message: `Waiting for an X window owned by the app (pid ${pid})`, timeout: 15_000 }
-      )
-      .toBe(true);
-    // No window manager under xvfb, so set the input focus directly.
-    xdotool(['windowfocus', '--sync', target]);
-    await expect
-      .poll(() =>
-        electronApp.evaluate(({ BrowserWindow }) => Boolean(BrowserWindow.getFocusedWindow()))
-      )
-      .toBe(true);
+    await focusAppWindow(electronApp);
 
     for (const [key, expected] of [
       ['ctrl+alt+Right', '2'],
@@ -214,6 +219,84 @@ test('the default bindings and aliases switch on every press from the focused pa
     { keyCode: 'Tab', modifiers: ['control', 'shift'], expected: '2' },
   ]);
   expect(seen).toEqual(['2', '3', '1', '3', '2']);
+});
+
+// Cmd/Ctrl+1…8 select a tab by position and Cmd/Ctrl+9 the last tab (#717),
+// claimed in the browser process like Next/Previous, so they work from a
+// focused page and leave the incoming page holding the keyboard.
+const SELECT_MODIFIERS = [isMac ? 'meta' : 'control'];
+
+test.describe('select tab by position (#717)', () => {
+  test('Cmd/Ctrl+2 selects tab 2, +9 the last tab, +5 of three does nothing', async ({
+    window,
+    electronApp,
+    harness,
+  }) => {
+    await openThreeTabs(window, harness);
+    const seen = await pressSequence(window, electronApp, [
+      { keyCode: '2', modifiers: SELECT_MODIFIERS, expected: '2' },
+      { keyCode: '9', modifiers: SELECT_MODIFIERS, expected: '3' },
+    ]);
+    expect(seen).toEqual(['2', '3']);
+
+    // Out of range: only three tabs. Nothing changes, and the page keeps the
+    // keyboard.
+    await pressOnActivePage(window, electronApp, '5', SELECT_MODIFIERS);
+    // Then a real switch, so the out-of-range press provably went through
+    // first and a late stray switch would show.
+    await pressSequence(window, electronApp, [
+      { keyCode: '1', modifiers: SELECT_MODIFIERS, expected: '1' },
+    ]);
+    await pressOnActivePage(window, electronApp, '5', SELECT_MODIFIERS);
+    await window.waitForTimeout(300);
+    expect(await activeTabId(window)).toBe('1');
+    await expectPageFocused(window);
+  });
+
+  test('a page that cancels every keydown cannot block it', async ({
+    window,
+    electronApp,
+    harness,
+  }) => {
+    await openThreeTabs(window, harness, {
+      pageScript: '<script>addEventListener("keydown", (e) => e.preventDefault(), true);</script>',
+    });
+    await pressSequence(window, electronApp, [
+      { keyCode: '3', modifiers: SELECT_MODIFIERS, expected: '3' },
+      { keyCode: '2', modifiers: SELECT_MODIFIERS, expected: '2' },
+    ]);
+  });
+
+  test('real X11 Ctrl+digit and Alt+digit presses select (Linux)', async ({
+    window,
+    electronApp,
+    harness,
+  }) => {
+    test.skip(process.platform !== 'linux', 'X11 key injection is Linux-only');
+    test.skip(!process.env.DISPLAY, 'needs an X display — run under xvfb-run');
+    test.skip(!hasXdotool, 'xdotool is not installed (CI installs it for this spec)');
+
+    await openThreeTabs(window, harness);
+    await focusAppWindow(electronApp);
+
+    for (const [key, expected] of [
+      ['ctrl+2', '2'],
+      ['ctrl+9', '3'],
+      ['ctrl+5', '3'],
+      ['ctrl+1', '1'],
+      // Chrome on Linux also takes Alt+1…9.
+      ['alt+3', '3'],
+      ['alt+9', '3'],
+      ['alt+2', '2'],
+    ]) {
+      xdotool(['key', '--clearmodifiers', key]);
+      if (key === 'ctrl+5') await window.waitForTimeout(300);
+      await expect
+        .poll(() => activeTabId(window), { message: `Waiting for tab ${expected} after ${key}` })
+        .toBe(expected);
+      await expectPageFocused(window);
+    }
+  });
 });
 
 // Chrome keeps tab switching out of the page's reach; so does Freedom now. A

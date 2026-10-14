@@ -108,6 +108,35 @@ const SHORTCUTS = [
     category: 'Tabs',
     editable: true,
   },
+  // Select a tab by position, as in Chrome: Cmd/Ctrl+1…8 pick tab 1–8 (a
+  // position past the last tab does nothing), Cmd/Ctrl+9 always picks the
+  // last tab. Chrome on Linux also accepts Alt+1…9. The accelerator key is
+  // the digit, and the matcher also accepts the physical Digit1…Digit9 key
+  // code, so layouts whose digits sit behind Shift (French AZERTY, where the
+  // unshifted keys type & é " ' …) still reach them without Shift, the same
+  // way Chrome does (#717). No menu item — like Chrome, they are claimed in
+  // the browser process before any page sees them (tab-switch-keys.js), with
+  // a keydown fallback in the chrome renderer (tabs.js).
+  ...[1, 2, 3, 4, 5, 6, 7, 8].map((position) => ({
+    id: `tab.select${position}`,
+    description: `Select Tab ${position}`,
+    settingsLabel: `Select tab ${position}`,
+    defaultAccelerator: `CmdOrCtrl+${position}`,
+    aliases: [{ accelerator: `Alt+${position}`, platforms: ['linux'] }],
+    context: 'renderer',
+    category: 'Tabs',
+    editable: true,
+  })),
+  {
+    id: 'tab.selectLast',
+    description: 'Select Last Tab',
+    settingsLabel: 'Select last tab',
+    defaultAccelerator: 'CmdOrCtrl+9',
+    aliases: [{ accelerator: 'Alt+9', platforms: ['linux'] }],
+    context: 'renderer',
+    category: 'Tabs',
+    editable: true,
+  },
 
   // Page
   {
