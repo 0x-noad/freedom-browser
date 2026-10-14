@@ -28,24 +28,13 @@ pinned by `swarm-provider-ipc.test.js`.
 
 ## Availability
 
-`window.swarm` is added to the top-level document of web pages by an inline
-`<script>` that Freedom inserts when the document fires `DOMContentLoaded`
-(or at once, if the preload runs after parsing finished). Two consequences:
+`window.swarm` is installed in the page's main world of every web page's top
+frame before any of the page's own scripts run, the same way as
+`window.ethereum` and `window.radicle`. Classic, `defer` and module scripts can
+all read it while the page parses, and a page's Content Security Policy does
+not affect it.
 
-- **It is not there while the page parses.** Classic top-level scripts,
-  `defer` scripts and module scripts all run before `DOMContentLoaded` and
-  see `window.swarm === undefined`. Look for it from a `DOMContentLoaded`
-  listener on `window` (bubble phase), a `load` listener, or any later
-  callback; Freedom's own listener sits on `document` and was registered
-  before any page script, so it has run by then.
-- **A Content Security Policy that forbids inline scripts blocks it.** If the
-  page's `script-src` (or `default-src`) does not allow inline scripts
-  (`'unsafe-inline'`, which is ignored once the policy also lists a nonce or
-  hash), Chromium refuses the injected `<script>` and `window.swarm` never
-  appears; a CSP violation is logged instead. This applies to `bzz://` apps
-  and `https` sites alike.
-
-It is also not injected into:
+It is not injected into:
 
 - **private windows** (no provider at all, same as `window.ethereum` and
   `window.radicle`);
@@ -56,8 +45,7 @@ It is also not injected into:
 
 When **Settings → Advanced → Enable Identity & Wallet** is off, the object is
 still present but every call fails with `4900` ("Swarm provider is not
-available"). Detect Freedom with `window.swarm?.isFreedomBrowser === true`,
-checked no earlier than `DOMContentLoaded` (see above).
+available"). Detect Freedom with `window.swarm?.isFreedomBrowser === true`.
 
 ## Provider object
 
@@ -648,11 +636,6 @@ failing with `4100` means the grant is gone.
 ## Example
 
 ```javascript
-// window.swarm appears at DOMContentLoaded, not while the page parses (and
-// module/defer scripts run before that event), so wait for `load` if needed.
-if (!window.swarm && document.readyState !== 'complete') {
-  await new Promise((resolve) => window.addEventListener('load', resolve, { once: true }));
-}
 if (!window.swarm?.isFreedomBrowser) throw new Error('Open this app in Freedom');
 
 const caps = await window.swarm.getCapabilities();
