@@ -203,6 +203,43 @@ describe('matchTabKeyInput: select tab by position (#717)', () => {
     });
   });
 
+  test('dispatches a digit-row zoom press even with no select-tab binding on the key', () => {
+    // From a focused page Chromium hands the menu VKEY_6 for the AZERTY `-`
+    // press whether or not Select Tab 6 still sits on that key, so the
+    // zoom has to be answered here either way.
+    const azerty6 = { key: '-', code: 'Digit6', control: true };
+    const zoomOut = { channel: 'page:zoom-out', args: [] };
+    expect(match(azerty6, { 'tab.select6': 'Ctrl+Shift+6' })).toEqual(zoomOut);
+    expect(
+      match({ key: '-', code: 'Digit6', meta: true }, { 'tab.select6': 'Cmd+Shift+6' }, 'darwin')
+    ).toEqual(zoomOut);
+    // Czech `1` (`+`) with Select Tab 1 moved away: Zoom In's fixed Plus
+    // alias has nothing to outrank there, so it zooms in.
+    expect(
+      match({ key: '+', code: 'Digit1', control: true }, { 'tab.select1': 'Ctrl+Shift+1' })
+    ).toEqual({ channel: 'page:zoom-in', args: [] });
+    // German `=` is Shift+0: no select-tab binding takes a shifted digit,
+    // and Zoom In's Shift+= alias is answered here for the same reason.
+    expect(match({ key: '=', code: 'Digit0', control: true, shift: true })).toEqual({
+      channel: 'page:zoom-in',
+      args: [],
+    });
+    // A zoom remapped onto a digit-row character follows the remap.
+    expect(
+      match(azerty6, { 'tab.select6': 'Ctrl+Shift+6', 'page.zoomOut': 'Ctrl+Shift+U' })
+    ).toBeNull();
+    // Ctrl+- off the digit row stays with the menu accelerator, as before.
+    expect(match({ key: '-', code: 'Minus', control: true })).toBeNull();
+    // Another shortcut taking `-` is still left alone, not run from here.
+    expect(
+      match(azerty6, {
+        'tab.select6': 'Ctrl+Shift+6',
+        'page.zoomOut': 'Ctrl+Shift+U',
+        'page.reload': 'Ctrl+-',
+      })
+    ).toBeNull();
+  });
+
   test("keeps the Czech Ctrl+1 press (key '+') for Select Tab 1", () => {
     // Czech's unshifted `1` key types `+`, which Zoom In accepts only through
     // its fixed `CmdOrCtrl+Plus` alias. Zoom In keeps its own `=` key there

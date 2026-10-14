@@ -354,6 +354,42 @@ test.describe('select tab by position (#717)', () => {
   });
 });
 
+// The AZERTY `6` press is Zoom Out's whether or not Select Tab 6 still sits on
+// that key: with it remapped away nothing in tab-switch-keys.js matches a tab
+// binding, but Chromium still hands the menu VKEY_6, so the zoom has to be
+// sent from there all the same.
+test.describe('AZERTY zoom out with Select Tab 6 remapped', () => {
+  test.use({ seedSettings: { shortcutOverrides: { 'tab.select6': 'Ctrl+Shift+6' } } });
+
+  test('real X11 Ctrl + the 6 key still zooms out from a focused page (Linux)', async ({
+    window,
+    electronApp,
+    harness,
+  }) => {
+    test.skip(process.platform !== 'linux', 'X11 key injection is Linux-only');
+    test.skip(!process.env.DISPLAY, 'needs an X display — run under xvfb-run');
+    test.skip(!hasXdotool, 'xdotool is not installed (CI installs it for this spec)');
+    test.skip(!hasSetxkbmap, 'setxkbmap is not installed (CI installs it for this spec)');
+
+    await openThreeTabs(window, harness);
+    await focusAppWindow(electronApp);
+    const zoomFactor = () =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)').getZoomFactor());
+
+    try {
+      execFileSync('setxkbmap', ['fr']);
+      xdotool(['key', '--clearmodifiers', 'ctrl+minus']);
+      await expect.poll(zoomFactor, { message: 'Waiting for Zoom Out' }).toBeCloseTo(0.9, 5);
+      await window.waitForTimeout(300);
+      expect(await zoomFactor()).toBeCloseTo(0.9, 5); // one press, one step
+      expect(await activeTabId(window)).toBe('1');
+      await expectPageFocused(window);
+    } finally {
+      execFileSync('setxkbmap', ['us']);
+    }
+  });
+});
+
 // Chrome keeps tab switching out of the page's reach; so does Freedom now. A
 // page that cancels every keydown used to keep the key from ever reaching the
 // menu accelerator.

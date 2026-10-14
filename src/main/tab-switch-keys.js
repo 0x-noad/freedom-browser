@@ -49,6 +49,16 @@
  * key types `+`, which Zoom In accepts through its `CmdOrCtrl+Plus` alias,
  * but Zoom In keeps its own `=` key there while Select Tab 1 has no other.
  *
+ * The same VKEY_6 problem hits a zoom press on the digit row whether or not
+ * a select-tab binding sits on that key: remap Select Tab 6 to another chord
+ * and the AZERTY `6` press (`-`) still never reaches the menu's Ctrl+-
+ * accelerator from a focused page. So a digit-row press that types something
+ * other than its digit and is a zoom binding (its own or a fixed alias —
+ * with no select-tab binding on the key there is nothing for an alias to
+ * outrank) is claimed and dispatched here too, select-tab binding or not.
+ * Other shortcuts on such a key are left to the menu and the chrome
+ * fallback, as before.
+ *
  * One exception: while Settings > Shortcuts is recording a new binding, the
  * page has to receive the chord it is about to record — swapping Next and
  * Previous, say, means recording the chord that is live on the other row
@@ -88,6 +98,25 @@ const DISPATCHED_ELSEWHERE = {
   'page.zoomIn': 'page:zoom-in',
   'page.zoomOut': 'page:zoom-out',
   'page.zoomReset': 'page:zoom-reset',
+};
+
+const ZOOM_ENTRIES = SHORTCUTS.filter((entry) => DISPATCHED_ELSEWHERE[entry.id]);
+
+// A main-row digit key typing something other than that digit (AZERTY `6`
+// → `-`, Czech `1` → `+`, German Shift+`0` → `=`): Chromium reports these to
+// the menu as the digit's VKEY, so a zoom accelerator on that character never
+// fires there while a page has focus.
+const isRemappedDigitKey = (event) => {
+  const digit = /^Digit(\d)$/.exec(event.code || '');
+  return Boolean(digit) && event.key !== digit[1];
+};
+
+// The zoom message for a digit-row press that is a zoom binding, or null.
+// Registry order, so Zoom In wins a press two of them share (menus.js).
+const zoomOnDigitRow = (event, overrides, platform) => {
+  if (!isRemappedDigitKey(event)) return null;
+  const entry = ZOOM_ENTRIES.find(({ id }) => shortcutMatches(event, id, overrides, platform));
+  return entry ? { channel: DISPATCHED_ELSEWHERE[entry.id], args: [] } : null;
 };
 
 // webContents id → disarm function, for settings pages with a shortcut
@@ -137,7 +166,8 @@ const ownBindingElsewhere = (event, overrides, platform) =>
 /**
  * The message a `before-input-event` input asks for, as `{ channel, args }`,
  * or null: a tab switch, or — for a select-tab press that is another
- * shortcut's own binding — that shortcut's message (see above). Only key-downs count (Electron reports
+ * shortcut's own binding, or a digit-row zoom press — that shortcut's
+ * message (see above). Only key-downs count (Electron reports
  * Chromium's raw key-down as `keyDown`); auto-repeat does too, so holding
  * the chord keeps cycling the way it does in Chrome. A key still inside an
  * IME composition is the IME's.
@@ -154,7 +184,7 @@ function matchTabKeyInput(input, overrides = {}, platform = process.platform) {
     }
     return { channel, args };
   }
-  return null;
+  return zoomOnDigitRow(event, overrides, platform);
 }
 
 /** The tab-switch IPC channel a `before-input-event` input asks for, or null. */
