@@ -452,6 +452,69 @@ test.describe('digit-row zoom presses on non-US layouts', () => {
   });
 });
 
+// A keydown is dispatched only in the focused frame's window, so with focus in
+// an iframe (an embedded editor, say) the main frame never sees the press; the
+// iframe's own preload instance has to report it. Same rules as above: the
+// frame that has the key can keep it by cancelling the keydown.
+test.describe('digit-row zoom presses with focus in an iframe', () => {
+  const IFRAME_EDITOR =
+    '<iframe id="ed" srcdoc="<textarea id=t></textarea><script>addEventListener(&quot;keydown&quot;, (e) => { if (window.cancelCtrl && e.ctrlKey) e.preventDefault(); }, true);</script>"></iframe>';
+  const PRESSES = [
+    ['fr', 'ctrl+minus', 1.1], // the `6` key: Zoom Out
+    ['de', 'ctrl+shift+0', 1.3], // `=` is Shift+0: Zoom In's Shift+= alias
+  ];
+
+  test('zoom once from a focused iframe, and an iframe that cancels the keydown keeps it (Linux)', async ({
+    window,
+    electronApp,
+    harness,
+  }) => {
+    test.skip(process.platform !== 'linux', 'X11 key injection is Linux-only');
+    test.skip(!process.env.DISPLAY, 'needs an X display — run under xvfb-run');
+    test.skip(!hasXdotool, 'xdotool is not installed (CI installs it for this spec)');
+    test.skip(!hasSetxkbmap, 'setxkbmap is not installed (CI installs it for this spec)');
+
+    await openThreeTabs(window, harness, { pageScript: IFRAME_EDITOR });
+    await focusAppWindow(electronApp);
+    const webview = () => 'document.querySelector("webview:not(.hidden)")';
+    const inFrame = (js) =>
+      window.evaluate(
+        `${webview()}.executeJavaScript(${JSON.stringify(
+          `(() => { const w = document.getElementById('ed').contentWindow; ${js} })()`
+        )})`
+      );
+    const zoomFactor = () => window.evaluate(`${webview()}.getZoomFactor()`);
+    await expect.poll(() => inFrame("return Boolean(w.document.getElementById('t'));")).toBe(true);
+
+    try {
+      for (const cancel of [false, true]) {
+        await inFrame(`w.cancelCtrl = ${cancel};`);
+        for (const [layout, chord, zoomed] of PRESSES) {
+          await window.evaluate(`${webview()}.setZoomFactor(1.2)`);
+          await inFrame("w.document.getElementById('t').focus();");
+          expect(await inFrame('return w.document.activeElement?.id || null;')).toBe('t');
+          execFileSync('setxkbmap', [layout]);
+          xdotool(['key', '--clearmodifiers', chord]);
+          const expected = cancel ? 1.2 : zoomed;
+          if (!cancel) {
+            await expect
+              .poll(zoomFactor, { message: `Waiting for ${layout} ${chord} to zoom` })
+              .toBeCloseTo(expected, 5);
+          }
+          await window.waitForTimeout(400);
+          expect(await zoomFactor(), `${layout} ${chord} cancel=${cancel}`).toBeCloseTo(
+            expected,
+            5
+          );
+          expect(await activeTabId(window)).toBe('1');
+        }
+      }
+    } finally {
+      execFileSync('setxkbmap', ['us']);
+    }
+  });
+});
+
 // Chrome keeps tab switching out of the page's reach; so does Freedom now. A
 // page that cancels every keydown used to keep the key from ever reaching the
 // menu accelerator.
