@@ -378,6 +378,70 @@ describe('menu', () => {
     );
   });
 
+  const pendingSwitch = (platform) => {
+    let settle;
+    const openOrFocusProfile = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        })
+    );
+    const targetWindow = { setProgressBar: jest.fn(), isDestroyed: () => false };
+    const loaded = loadMenuModule(platform, {
+      openOrFocusProfile,
+      targetWindow,
+      keepPlatform: true,
+    });
+    const beta = findTopLabel(loaded.capturedTemplate, 'Profiles').submenu.find(
+      (item) => item.label === 'Beta'
+    );
+    return { loaded, targetWindow, beta, settle: (value) => settle(value) };
+  };
+
+  test('shows a native-menu profile switch in progress on the window until it settles (R2-M2)', async () => {
+    for (const platform of ['win32', 'darwin']) {
+      const { loaded, targetWindow, beta, settle } = pendingSwitch(platform);
+      try {
+        const clicked = beta.click();
+        // Above 1: an indeterminate bar on Windows and macOS.
+        expect(targetWindow.setProgressBar).toHaveBeenLastCalledWith(2);
+        settle({ focused: true });
+        await clicked;
+        expect(targetWindow.setProgressBar).toHaveBeenLastCalledWith(-1);
+      } finally {
+        loaded.restorePlatform();
+      }
+    }
+  });
+
+  test('on Linux the switch bar fills with the wait and never reads as done (R3-M1)', async () => {
+    jest.useFakeTimers();
+    const { loaded, targetWindow, beta, settle } = pendingSwitch('linux');
+    try {
+      const clicked = beta.click();
+      // Linux (Unity LauncherEntry) has no indeterminate mode: a value above 1
+      // would be drawn as a full, finished bar.
+      const values = () => targetWindow.setProgressBar.mock.calls.map(([value]) => value);
+      expect(values()[0]).toBeGreaterThan(0);
+      expect(values()[0]).toBeLessThan(0.5);
+      jest.advanceTimersByTime(4000);
+      const halfway = values()[values().length - 1];
+      expect(halfway).toBeGreaterThan(values()[0]);
+      expect(halfway).toBeLessThan(1);
+      jest.advanceTimersByTime(60000);
+      expect(Math.max(...values())).toBeLessThan(1);
+      settle({ focused: true });
+      await clicked;
+      expect(targetWindow.setProgressBar).toHaveBeenLastCalledWith(-1);
+      const calls = targetWindow.setProgressBar.mock.calls.length;
+      jest.advanceTimersByTime(5000);
+      expect(targetWindow.setProgressBar.mock.calls.length).toBe(calls);
+    } finally {
+      loaded.restorePlatform();
+      jest.useRealTimers();
+    }
+  });
+
   test('File menu no longer includes the profile management entry', () => {
     for (const platform of ['darwin', 'win32', 'linux']) {
       const { capturedTemplate } = loadMenuModule(platform);
