@@ -180,22 +180,21 @@ describe('matchTabKeyInput: select tab by position (#717)', () => {
     });
   });
 
-  test("hands the AZERTY Ctrl+6 press (key '-') to Zoom Out and dispatches it", () => {
-    // Zoom Out's own `-` binding: answered here with the menu item's message,
-    // since with a page focused neither the menu accelerator (Chromium sees
-    // VKEY_6) nor the chrome's keydown fallback would ever see it.
-    const zoomOut = { channel: 'page:zoom-out', args: [] };
-    expect(match({ key: '-', code: 'Digit6', control: true })).toEqual(zoomOut);
-    expect(match({ key: '-', code: 'Digit6', control: true }, {}, 'win32')).toEqual(zoomOut);
-    expect(match({ key: '-', code: 'Digit6', meta: true }, {}, 'darwin')).toEqual(zoomOut);
+  test("leaves the AZERTY Ctrl+6 press (key '-') unclaimed for Zoom Out", () => {
+    // Zoom Out's own `-` binding. Zoom is page-overridable, so the press goes
+    // to the page first; matchUnhandledPageKey answers it once the page
+    // declines.
+    expect(match({ key: '-', code: 'Digit6', control: true })).toBeNull();
+    expect(match({ key: '-', code: 'Digit6', control: true }, {}, 'win32')).toBeNull();
+    expect(match({ key: '-', code: 'Digit6', meta: true }, {}, 'darwin')).toBeNull();
     // A US-layout Ctrl+6 is still Select Tab 6…
     expect(match(digit(6, { control: true }))).toEqual({ channel: 'tab:select', args: [6] });
     // …and once Zoom Out is remapped off `-`, the AZERTY press is the tab's.
     expect(
       match({ key: '-', code: 'Digit6', control: true }, { 'page.zoomOut': 'Ctrl+Shift+U' })
     ).toEqual({ channel: 'tab:select', args: [6] });
-    // A press that is a remapped Zoom Out goes to Zoom Out too.
-    expect(match(digit(6, { control: true }), { 'page.zoomOut': 'Ctrl+6' })).toEqual(zoomOut);
+    // A press that is a remapped Zoom Out is Zoom Out's (its menu accelerator).
+    expect(match(digit(6, { control: true }), { 'page.zoomOut': 'Ctrl+6' })).toBeNull();
     // The Linux Alt+6 alias has no zoom sharing it.
     expect(match({ key: '-', code: 'Digit6', alt: true })).toEqual({
       channel: 'tab:select',
@@ -203,41 +202,11 @@ describe('matchTabKeyInput: select tab by position (#717)', () => {
     });
   });
 
-  test('dispatches a digit-row zoom press even with no select-tab binding on the key', () => {
-    // From a focused page Chromium hands the menu VKEY_6 for the AZERTY `-`
-    // press whether or not Select Tab 6 still sits on that key, so the
-    // zoom has to be answered here either way.
+  test('never claims a digit-row zoom press with no select-tab binding on the key', () => {
     const azerty6 = { key: '-', code: 'Digit6', control: true };
-    const zoomOut = { channel: 'page:zoom-out', args: [] };
-    expect(match(azerty6, { 'tab.select6': 'Ctrl+Shift+6' })).toEqual(zoomOut);
-    expect(
-      match({ key: '-', code: 'Digit6', meta: true }, { 'tab.select6': 'Cmd+Shift+6' }, 'darwin')
-    ).toEqual(zoomOut);
-    // Czech `1` (`+`) with Select Tab 1 moved away: Zoom In's fixed Plus
-    // alias has nothing to outrank there, so it zooms in.
-    expect(
-      match({ key: '+', code: 'Digit1', control: true }, { 'tab.select1': 'Ctrl+Shift+1' })
-    ).toEqual({ channel: 'page:zoom-in', args: [] });
-    // German `=` is Shift+0: no select-tab binding takes a shifted digit,
-    // and Zoom In's Shift+= alias is answered here for the same reason.
-    expect(match({ key: '=', code: 'Digit0', control: true, shift: true })).toEqual({
-      channel: 'page:zoom-in',
-      args: [],
-    });
-    // A zoom remapped onto a digit-row character follows the remap.
-    expect(
-      match(azerty6, { 'tab.select6': 'Ctrl+Shift+6', 'page.zoomOut': 'Ctrl+Shift+U' })
-    ).toBeNull();
-    // Ctrl+- off the digit row stays with the menu accelerator, as before.
-    expect(match({ key: '-', code: 'Minus', control: true })).toBeNull();
-    // Another shortcut taking `-` is still left alone, not run from here.
-    expect(
-      match(azerty6, {
-        'tab.select6': 'Ctrl+Shift+6',
-        'page.zoomOut': 'Ctrl+Shift+U',
-        'page.reload': 'Ctrl+-',
-      })
-    ).toBeNull();
+    expect(match(azerty6, { 'tab.select6': 'Ctrl+Shift+6' })).toBeNull();
+    expect(match({ key: '=', code: 'Digit0', control: true, shift: true })).toBeNull();
+    expect(match({ key: 'à', code: 'Digit0', control: true })).toBeNull();
   });
 
   test("keeps the Czech Ctrl+1 press (key '+') for Select Tab 1", () => {
@@ -250,11 +219,9 @@ describe('matchTabKeyInput: select tab by position (#717)', () => {
       channel: 'tab:select',
       args: [1],
     });
-    // Remapping Zoom In onto `+` makes the press its own binding again.
-    expect(match(czech1, { 'page.zoomIn': 'Ctrl+Plus' })).toEqual({
-      channel: 'page:zoom-in',
-      args: [],
-    });
+    // Remapping Zoom In onto `+` makes the press its own binding again,
+    // left for the page and then Zoom In.
+    expect(match(czech1, { 'page.zoomIn': 'Ctrl+Plus' })).toBeNull();
   });
 
   test('follows a remap', () => {
@@ -270,6 +237,91 @@ describe('matchTabKeyInput: select tab by position (#717)', () => {
       channel: 'tab:select',
       args: ['last'],
     });
+  });
+});
+
+describe('matchUnhandledPageKey: a digit-row zoom press the page declined', () => {
+  const { mod } = load();
+  const match = (event, overrides = {}, platform = 'linux') =>
+    mod.matchUnhandledPageKey(event, overrides, platform);
+  const zoomIn = { channel: 'page:zoom-in', args: [] };
+  const zoomOut = { channel: 'page:zoom-out', args: [] };
+  const azerty6 = { key: '-', code: 'Digit6', ctrlKey: true };
+  const german0 = { key: '=', code: 'Digit0', ctrlKey: true, shiftKey: true };
+
+  test('zooms where the menu sees only the digit (Windows and Linux)', () => {
+    // From a page Chromium hands the menu VKEY_6 / Shift+VKEY_0, which no
+    // accelerator takes, so nothing else would zoom.
+    for (const platform of ['linux', 'win32']) {
+      expect(match(azerty6, {}, platform)).toEqual(zoomOut);
+      expect(match(german0, {}, platform)).toEqual(zoomIn);
+      // Select Tab 6 remapped away: still Zoom Out's.
+      expect(match(azerty6, { 'tab.select6': 'Ctrl+Shift+6' }, platform)).toEqual(zoomOut);
+    }
+    // Czech `1` (`+`) with Select Tab 1 moved away: Zoom In's Plus alias.
+    expect(
+      match({ key: '+', code: 'Digit1', ctrlKey: true }, { 'tab.select1': 'Ctrl+Shift+1' })
+    ).toEqual(zoomIn);
+    // Czech `1` with Zoom In remapped onto `+`: yielded by Select Tab 1.
+    expect(
+      match({ key: '+', code: 'Digit1', ctrlKey: true }, { 'page.zoomIn': 'Ctrl+Plus' })
+    ).toEqual(zoomIn);
+  });
+
+  test('leaves a press the menu answers itself, so it zooms once', () => {
+    // The AZERTY `0` key types `à`; the menu sees VKEY_0, its own Ctrl+0.
+    expect(match({ key: 'à', code: 'Digit0', ctrlKey: true })).toBeNull();
+    // Zoom Out remapped onto Ctrl+6: the menu's accelerator now is VKEY_6.
+    expect(match(azerty6, { 'page.zoomOut': 'Ctrl+6' })).toBeNull();
+  });
+
+  test('leaves macOS to the menu, which matches by character', () => {
+    expect(match({ key: '-', code: 'Digit6', metaKey: true }, {}, 'darwin')).toBeNull();
+    expect(match({ ...german0, ctrlKey: false, metaKey: true }, {}, 'darwin')).toBeNull();
+  });
+
+  test('ignores everything else', () => {
+    // A press main claims as a tab switch never reached the page.
+    expect(match({ key: '+', code: 'Digit1', ctrlKey: true })).toBeNull();
+    // The digit itself, off the digit row, a non-zoom key, IME, junk.
+    expect(match({ key: '6', code: 'Digit6', ctrlKey: true })).toBeNull();
+    expect(match({ key: '-', code: 'Minus', ctrlKey: true })).toBeNull();
+    expect(match({ key: 'é', code: 'Digit2', ctrlKey: true })).toBeNull();
+    expect(match({ ...azerty6, isComposing: true })).toBeNull();
+    expect(match(null)).toBeNull();
+    expect(match({ key: 5, code: 'Digit6', ctrlKey: true })).toBeNull();
+    // Zoom Out remapped off `-`; another shortcut on `-` is not run here.
+    expect(
+      match(azerty6, {
+        'tab.select6': 'Ctrl+Shift+6',
+        'page.zoomOut': 'Ctrl+Shift+U',
+        'page.reload': 'Ctrl+-',
+      })
+    ).toBeNull();
+  });
+
+  test("the IPC handler sends it to the page's own window, not while recording", () => {
+    const { mod: m, chromeWindow } = load();
+    const guest = contentsMock({ hostWebContents: contentsMock({ window: chromeWindow }) });
+    const handlers = new Map();
+    m.registerTabSwitchKeysIpc({
+      handle: () => {},
+      on: (channel, fn) => handlers.set(channel, fn),
+    });
+    const handler = handlers.get('page:unhandled-key');
+    const platform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    try {
+      handler({ sender: guest }, azerty6);
+      expect(chromeWindow.webContents.send.mock.calls).toEqual([['page:zoom-out']]);
+      handler({ sender: guest }, 'junk');
+      handler({ sender: contentsMock() }, azerty6); // not one of our windows
+      m.setShortcutRecording(guest, true);
+      handler({ sender: guest }, azerty6);
+      expect(chromeWindow.webContents.send).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: platform });
+    }
   });
 });
 
@@ -313,13 +365,11 @@ describe('attachTabSwitchKeys', () => {
       ['tab:select', 2],
     ]);
     for (const event of presses) expect(event.preventDefault).toHaveBeenCalledTimes(1);
-    // The AZERTY `-` press is Zoom Out's: claimed here too and sent as the
-    // menu item's message, since from a focused page neither the Ctrl+-
-    // accelerator nor the chrome's keydown fallback would ever see it.
+    // The AZERTY `-` press is Zoom Out's, which a page may override: not
+    // claimed here, so the page sees it first.
     const azerty6 = press(guest, { key: '-', code: 'Digit6', meta: true });
-    expect(azerty6.preventDefault).toHaveBeenCalledTimes(1);
-    expect(chromeWindow.webContents.send).toHaveBeenCalledTimes(5);
-    expect(chromeWindow.webContents.send).toHaveBeenLastCalledWith('page:zoom-out');
+    expect(azerty6.preventDefault).not.toHaveBeenCalled();
+    expect(chromeWindow.webContents.send).toHaveBeenCalledTimes(4);
   });
 
   test('also answers on the chrome renderer itself', () => {
@@ -447,7 +497,10 @@ describe('a Settings > Shortcuts recording', () => {
   test('is set through the shortcuts:set-recording IPC from the sender', () => {
     const { mod, settingsPage } = setup();
     const handlers = new Map();
-    mod.registerTabSwitchKeysIpc({ handle: (channel, fn) => handlers.set(channel, fn) });
+    mod.registerTabSwitchKeysIpc({
+      handle: (channel, fn) => handlers.set(channel, fn),
+      on: () => {},
+    });
     const handler = handlers.get('shortcuts:set-recording');
 
     handler({ sender: settingsPage }, true);

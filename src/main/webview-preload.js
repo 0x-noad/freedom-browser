@@ -967,6 +967,37 @@ const handleDwebLinkActivation = (event) => {
 document.addEventListener('click', handleDwebLinkActivation, true);
 document.addEventListener('auxclick', handleDwebLinkActivation, true);
 
+// A zoom shortcut on a digit-row key that types something else (AZERTY `6`
+// → `-`, German Shift+`0` → `=`) reaches the page first, like Ctrl+- on a
+// US layout, so a page can keep it for itself by cancelling the keydown. If
+// it does not, report the press: from a page, Chromium hands the menu the
+// digit's VKEY instead, so the zoom accelerator never fires and main has to
+// answer it (tab-switch-keys.js decides). Capture on window, the first node
+// of the path, and decide after dispatch, so any page listener — capture or
+// bubble — has had its chance to call preventDefault().
+const DIGIT_CODE = /^Digit(\d)$/;
+window.addEventListener(
+  'keydown',
+  (event) => {
+    if (!event.isTrusted || event.isComposing) return;
+    if (!(event.ctrlKey || event.metaKey || event.altKey)) return;
+    const digit = DIGIT_CODE.exec(event.code || '');
+    if (!digit || event.key === digit[1]) return;
+    setTimeout(() => {
+      if (event.defaultPrevented) return;
+      ipcRenderer.send('page:unhandled-key', {
+        key: event.key,
+        code: event.code,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
+        metaKey: event.metaKey,
+      });
+    }, 0);
+  },
+  true
+);
+
 // Notify the host renderer when the cursor enters/leaves the bottom-left
 // region of the viewport so the link-hover URL preview can flip to the
 // opposite corner (matches Chrome's status-bubble behaviour). Only emits
@@ -1256,9 +1287,7 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   // `getUpdateState` hydrates a page opened after the last broadcast. Check
   // and install are settings-only, like every other action in Settings —
   // install quits the app.
-  getUpdateState: guardSettingsPage('getUpdateState', () =>
-    ipcRenderer.invoke('update:get-state')
-  ),
+  getUpdateState: guardSettingsPage('getUpdateState', () => ipcRenderer.invoke('update:get-state')),
   checkForUpdates: guardSettingsPage('checkForUpdates', () => {
     ipcRenderer.send('update:check');
   }),

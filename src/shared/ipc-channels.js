@@ -94,6 +94,9 @@ module.exports = {
   // Settings > Shortcuts arming/disarming a recording, so the browser-process
   // tab-switch keys (tab-switch-keys.js) let the chord reach the page.
   SHORTCUTS_SET_RECORDING: 'shortcuts:set-recording',
+  // A tab page's digit-row keydown it did not cancel (webview-preload.js), so
+  // tab-switch-keys.js can zoom where the menu accelerator cannot.
+  PAGE_UNHANDLED_KEY: 'page:unhandled-key',
 
   // Bzz routing (Swarm)
   BZZ_SET_BASE: 'bzz:set-base',
