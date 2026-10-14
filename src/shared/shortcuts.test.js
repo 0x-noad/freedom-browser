@@ -185,6 +185,16 @@ describe('select tab by position (#717)', () => {
       // dispatchers hand it to Zoom Out (tab-switch-keys.js, tabs.js).
       const azerty6 = keyEvent({ key: '-', code: 'Digit6', [primaryKey[platform]]: true });
       expect(matchingIds(azerty6, platform)).toEqual(['tab.select6', 'page.zoomOut']);
+      // Czech: the unshifted digit row types + ě š č ř ž ý á í. Only the `1`
+      // key's `+` is also another binding — Zoom In's fixed `Plus` alias,
+      // which does not outrank Select Tab 1 (tab-switch-keys.js, tabs.js).
+      const czech = { 2: 'ě', 3: 'š', 4: 'č', 5: 'ř', 6: 'ž', 7: 'ý', 8: 'á', 9: 'í' };
+      for (const [n, key] of Object.entries(czech)) {
+        const press = keyEvent({ key, code: `Digit${n}`, [primaryKey[platform]]: true });
+        expect(matchingIds(press, platform)).toEqual([ALL_IDS[n - 1]]);
+      }
+      const czech1 = keyEvent({ key: '+', code: 'Digit1', [primaryKey[platform]]: true });
+      expect(matchingIds(czech1, platform)).toEqual(['tab.select1', 'page.zoomIn']);
     }
     // Alt+digit on Linux, nowhere else.
     const alt4 = keyEvent({ key: '4', code: 'Digit4', altKey: true });
@@ -1225,8 +1235,18 @@ describe('conflicts are judged per keypress, like the matcher (#205)', () => {
       // binding stands down whenever the press also matches another shortcut
       // (tab-switch-keys.js and the tabs.js keydown fallback, both pinned in
       // their own tests) — since `6` is the only main-row `-` on AZERTY.
+      // tab-switch-keys.js also sends Zoom Out's message itself, since from
+      // a focused page the menu's Ctrl+- never fires for that key.
+      // The Czech Ctrl+1 press (key '+', code 'Digit1') against Zoom In's
+      // `Plus` alias: Select Tab 1 keeps it, since only another entry's own
+      // binding outranks a select-tab binding, and Zoom In keeps `=` on Czech.
+      // And the Czech Ctrl+= press (key '=', code 'Minus'): Zoom In's `=` on
+      // the US `-` position, the same shape as the Nordic `+`; the zoom
+      // keydown chain (menus.js) tries Zoom In first.
       const expected = [
+        'tab.select1 CmdOrCtrl+1 ~ page.zoomIn CmdOrCtrl+Plus',
         'tab.select6 CmdOrCtrl+6 ~ page.zoomOut CmdOrCtrl+-',
+        'page.zoomIn CmdOrCtrl+= ~ page.zoomOut CmdOrCtrl+-',
         'page.zoomIn CmdOrCtrl+Plus ~ page.zoomOut CmdOrCtrl+-',
       ];
       if (platform === 'darwin') expected.push('page.zoomIn CmdOrCtrl+Plus ~ nav.forward Cmd+]');

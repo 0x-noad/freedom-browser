@@ -744,6 +744,33 @@ const LAYOUT_DIFFS = {
     Period: ['.', ':'],
     Slash: ['-', '_'],
   },
+  // Czech (cz; Slovak's digit row is the same shape). The unshifted digit
+  // row types `+` and accented letters, so Ctrl+1 is also a `+` press (#717).
+  cz: {
+    Digit1: ['+', '1'],
+    Digit2: ['ě', '2'],
+    Digit3: ['š', '3'],
+    Digit4: ['č', '4'],
+    Digit5: ['ř', '5'],
+    Digit6: ['ž', '6'],
+    Digit7: ['ý', '7'],
+    Digit8: ['á', '8'],
+    Digit9: ['í', '9'],
+    Digit0: ['é', '0'],
+    Minus: ['=', '%'],
+    Equal: [null, null],
+    KeyY: ['z', 'Z'],
+    BracketLeft: ['ú', '/'],
+    BracketRight: [')', '('],
+    Semicolon: ['ů', '"'],
+    Quote: ['§', '!'],
+    Backquote: [';', null],
+    Backslash: [null, "'"],
+    KeyZ: ['y', 'Y'],
+    Comma: [',', '?'],
+    Period: ['.', ':'],
+    Slash: ['-', '_'],
+  },
   // Danish (dk)
   dk: {
     Digit2: ['2', '"'],

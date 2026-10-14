@@ -1658,12 +1658,14 @@ jobs:
 
       # xdotool sends the real Ctrl+W: Playwright's own key dispatch goes
       # through CDP into the renderer and never reaches a menu accelerator.
+      # setxkbmap (x11-xkb-utils) switches the xvfb display to the French and
+      # Czech layouts for the select-tab layout presses (#717).
       # Through the shared apt wrapper, like every other apt call on Linux CI.
       - name: Install xdotool
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install xdotool
+          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install xdotool x11-xkb-utils
 
       - name: Run close-tab and tab-switch shortcut E2E
         shell: bash

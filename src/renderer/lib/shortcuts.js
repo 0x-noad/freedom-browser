@@ -662,7 +662,17 @@ const isEditableEventTarget = (target) => {
  * renderer (stale store, out-of-band settings edit), it is ignored while
  * the user is typing in an editable target.
  */
-export const matchesShortcut = (event, id) => {
+export const matchesShortcut = (event, id) => matchesBinding(event, id, true);
+
+/**
+ * True when a keydown event matches the shortcut's own binding — the user's
+ * remap, else the registry default — leaving its fixed aliases out. Used
+ * where a press two entries share goes to the one it is the binding of
+ * (Select Tab N vs. a zoom key on some layouts, tabs.js).
+ */
+export const matchesOwnBinding = (event, id) => matchesBinding(event, id, false);
+
+const matchesBinding = (event, id, withAliases) => {
   const platform = getPlatform();
   const editable = isEditableEventTarget(event?.target);
   const matches = (accelerator) =>
@@ -670,5 +680,5 @@ export const matchesShortcut = (event, id) => {
     eventMatchesAccelerator(event, accelerator, platform) &&
     !(editable && acceleratorNeedsModifier(accelerator, platform));
   if (matches(getEffectiveAccelerator(id))) return true;
-  return getAliasAccelerators(id, platform).some(matches);
+  return withAliases && getAliasAccelerators(id, platform).some(matches);
 };

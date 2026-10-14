@@ -24,7 +24,7 @@ import {
   notifyFindBarTabSwitched,
 } from './find-bar.js';
 import { consumeHistoryTraversal } from './history-traversal.js';
-import { SHORTCUTS, matchesShortcut } from './shortcuts.js';
+import { SHORTCUTS, matchesShortcut, matchesOwnBinding } from './shortcuts.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { placePopoverAtPoint } from './popover-bounds.js';
 import { onWindowDeactivated } from './window-deactivation.js';
@@ -1851,13 +1851,16 @@ const SELECT_TAB_SHORTCUTS = [
 const SELECT_TAB_IDS = new Set(SELECT_TAB_SHORTCUTS.map(([id]) => id));
 
 // The position a keydown selects, or null. Mirrors tab-switch-keys.js: a
-// press that also matches another shortcut belongs to that one (on French
-// AZERTY the `6` key types `-`, so Ctrl+6 is Zoom Out's press too).
+// press that is also another shortcut's own binding belongs to that one (on
+// French AZERTY the `6` key types `-`, so Ctrl+6 is Zoom Out's press too; the
+// zoom keydown handler in menus.js answers it). A fixed alias does not take
+// the press: on Czech the `1` key types `+`, Zoom In's `CmdOrCtrl+Plus`
+// alias, but Zoom In keeps its own `=` key there and Select Tab 1 has none.
 const selectTabPositionForEvent = (event) => {
   const hit = SELECT_TAB_SHORTCUTS.find(([id]) => matchesShortcut(event, id));
   if (!hit) return null;
   const claimedElsewhere = SHORTCUTS.some(
-    (entry) => !SELECT_TAB_IDS.has(entry.id) && matchesShortcut(event, entry.id)
+    (entry) => !SELECT_TAB_IDS.has(entry.id) && matchesOwnBinding(event, entry.id)
   );
   return claimedElsewhere ? null : hit[1];
 };

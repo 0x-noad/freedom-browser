@@ -180,15 +180,44 @@ describe('matchTabKeyInput: select tab by position (#717)', () => {
     });
   });
 
-  test("leaves the AZERTY Ctrl+6 press (key '-') to Zoom Out", () => {
-    expect(match({ key: '-', code: 'Digit6', control: true })).toBeNull();
-    expect(match({ key: '-', code: 'Digit6', meta: true }, {}, 'darwin')).toBeNull();
+  test("hands the AZERTY Ctrl+6 press (key '-') to Zoom Out and dispatches it", () => {
+    // Zoom Out's own `-` binding: answered here with the menu item's message,
+    // since with a page focused neither the menu accelerator (Chromium sees
+    // VKEY_6) nor the chrome's keydown fallback would ever see it.
+    const zoomOut = { channel: 'page:zoom-out', args: [] };
+    expect(match({ key: '-', code: 'Digit6', control: true })).toEqual(zoomOut);
+    expect(match({ key: '-', code: 'Digit6', control: true }, {}, 'win32')).toEqual(zoomOut);
+    expect(match({ key: '-', code: 'Digit6', meta: true }, {}, 'darwin')).toEqual(zoomOut);
     // A US-layout Ctrl+6 is still Select Tab 6…
     expect(match(digit(6, { control: true }))).toEqual({ channel: 'tab:select', args: [6] });
     // …and once Zoom Out is remapped off `-`, the AZERTY press is the tab's.
     expect(
       match({ key: '-', code: 'Digit6', control: true }, { 'page.zoomOut': 'Ctrl+Shift+U' })
     ).toEqual({ channel: 'tab:select', args: [6] });
+    // A press that is a remapped Zoom Out goes to Zoom Out too.
+    expect(match(digit(6, { control: true }), { 'page.zoomOut': 'Ctrl+6' })).toEqual(zoomOut);
+    // The Linux Alt+6 alias has no zoom sharing it.
+    expect(match({ key: '-', code: 'Digit6', alt: true })).toEqual({
+      channel: 'tab:select',
+      args: [6],
+    });
+  });
+
+  test("keeps the Czech Ctrl+1 press (key '+') for Select Tab 1", () => {
+    // Czech's unshifted `1` key types `+`, which Zoom In accepts only through
+    // its fixed `CmdOrCtrl+Plus` alias. Zoom In keeps its own `=` key there
+    // (Czech `Minus` position); Select Tab 1 has no other key, so it wins.
+    const czech1 = { key: '+', code: 'Digit1', control: true };
+    expect(match(czech1)).toEqual({ channel: 'tab:select', args: [1] });
+    expect(match({ ...czech1, control: false, meta: true }, {}, 'darwin')).toEqual({
+      channel: 'tab:select',
+      args: [1],
+    });
+    // Remapping Zoom In onto `+` makes the press its own binding again.
+    expect(match(czech1, { 'page.zoomIn': 'Ctrl+Plus' })).toEqual({
+      channel: 'page:zoom-in',
+      args: [],
+    });
   });
 
   test('follows a remap', () => {
@@ -247,12 +276,13 @@ describe('attachTabSwitchKeys', () => {
       ['tab:select', 2],
     ]);
     for (const event of presses) expect(event.preventDefault).toHaveBeenCalledTimes(1);
-    // The AZERTY `-` press is not claimed, so Zoom Out's menu accelerator and
-    // the chrome's keydown handler still get it.
-    expect(
-      press(guest, { key: '-', code: 'Digit6', meta: true }).preventDefault
-    ).not.toHaveBeenCalled();
-    expect(chromeWindow.webContents.send).toHaveBeenCalledTimes(4);
+    // The AZERTY `-` press is Zoom Out's: claimed here too and sent as the
+    // menu item's message, since from a focused page neither the Ctrl+-
+    // accelerator nor the chrome's keydown fallback would ever see it.
+    const azerty6 = press(guest, { key: '-', code: 'Digit6', meta: true });
+    expect(azerty6.preventDefault).toHaveBeenCalledTimes(1);
+    expect(chromeWindow.webContents.send).toHaveBeenCalledTimes(5);
+    expect(chromeWindow.webContents.send).toHaveBeenLastCalledWith('page:zoom-out');
   });
 
   test('also answers on the chrome renderer itself', () => {

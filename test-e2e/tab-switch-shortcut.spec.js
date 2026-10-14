@@ -42,6 +42,14 @@ const hasXdotool = (() => {
   }
 })();
 const xdotool = (args) => execFileSync('xdotool', args, { encoding: 'utf-8' }).trim();
+const hasSetxkbmap = (() => {
+  try {
+    execFileSync('setxkbmap', ['-query'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 // Give the app's X window the input focus (no window manager under xvfb).
 async function focusAppWindow(electronApp) {
@@ -295,6 +303,53 @@ test.describe('select tab by position (#717)', () => {
         .poll(() => activeTabId(window), { message: `Waiting for tab ${expected} after ${key}` })
         .toBe(expected);
       await expectPageFocused(window);
+    }
+  });
+
+  // Layouts where a digit key types another shortcut's character. French
+  // AZERTY's `6` key types `-`: Zoom Out's own binding, so that press zooms
+  // out — from a focused page too, where Chromium reports the key to the menu
+  // as VKEY_6 and the Ctrl+- accelerator never fires, so tab-switch-keys.js
+  // sends the zoom itself. Czech's `1` key types `+`, only Zoom In's `Plus`
+  // alias, so that press stays Select Tab 1.
+  test('real X11 presses on French and Czech layouts (Linux)', async ({
+    window,
+    electronApp,
+    harness,
+  }) => {
+    test.skip(process.platform !== 'linux', 'X11 key injection is Linux-only');
+    test.skip(!process.env.DISPLAY, 'needs an X display — run under xvfb-run');
+    test.skip(!hasXdotool, 'xdotool is not installed (CI installs it for this spec)');
+    test.skip(!hasSetxkbmap, 'setxkbmap is not installed (CI installs it for this spec)');
+
+    await openThreeTabs(window, harness);
+    await focusAppWindow(electronApp);
+    const zoomFactor = () =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)').getZoomFactor());
+
+    try {
+      execFileSync('setxkbmap', ['fr']);
+      // The unshifted `6` key (keysym `minus` on fr), with the page focused.
+      xdotool(['key', '--clearmodifiers', 'ctrl+minus']);
+      await expect.poll(zoomFactor, { message: 'Waiting for Zoom Out' }).toBeCloseTo(0.9, 5);
+      await window.waitForTimeout(300);
+      expect(await zoomFactor()).toBeCloseTo(0.9, 5); // one press, one step
+      expect(await activeTabId(window)).toBe('1');
+      await expectPageFocused(window);
+      // The other AZERTY digit keys still select: `é` is the `2` key.
+      xdotool(['key', '--clearmodifiers', 'ctrl+eacute']);
+      await expect.poll(() => activeTabId(window)).toBe('2');
+
+      execFileSync('setxkbmap', ['cz']);
+      // The unshifted `1` key (keysym `plus` on cz).
+      xdotool(['key', '--clearmodifiers', 'ctrl+plus']);
+      await expect.poll(() => activeTabId(window)).toBe('1');
+      await window.waitForTimeout(300);
+      // Tab 1 is still at the zoom it was left at: Zoom In did not fire too.
+      expect(await zoomFactor()).toBeCloseTo(0.9, 5);
+      await expectPageFocused(window);
+    } finally {
+      execFileSync('setxkbmap', ['us']);
     }
   });
 });

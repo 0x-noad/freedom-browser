@@ -34,10 +34,20 @@
  * Select Tab 1–8 and Select Last Tab (Cmd/Ctrl+1…9, #717) ride the same
  * path: Chrome reserves them the same way (IDC_SELECT_TAB_0…7 and
  * IDC_SELECT_LAST_TAB), and the press usually starts in a focused page too.
- * They answer with `tab:select` and the position (1–8, or 'last'). A
- * select-tab press that also matches another shortcut is left to that
- * shortcut: on French AZERTY the `6` key types `-` unshifted, so Ctrl+6 is
- * also Zoom Out's press, and Zoom Out has no other main-row key there.
+ * They answer with `tab:select` and the position (1–8, or 'last').
+ *
+ * A select-tab press can also be another shortcut's own binding on some
+ * layouts: on French AZERTY the `6` key types `-` unshifted, so Ctrl+6 is
+ * also Zoom Out's press, and Zoom Out has no other main-row key there. That
+ * press is Zoom Out's — and it has to be dispatched from here, not just left
+ * alone: with a page focused, Chromium reports the key to the menu as
+ * VKEY_6, so the Ctrl+- accelerator never fires, and the chrome's keydown
+ * fallback only runs while the chrome has focus. So the press is claimed
+ * and the zoom message the menu item would have sent goes to the chrome
+ * (`DISPATCHED_ELSEWHERE`). Only another entry's own binding (default or
+ * remap) takes the press, not one of its fixed aliases: on Czech the `1`
+ * key types `+`, which Zoom In accepts through its `CmdOrCtrl+Plus` alias,
+ * but Zoom In keeps its own `=` key there while Select Tab 1 has no other.
  *
  * One exception: while Settings > Shortcuts is recording a new binding, the
  * page has to receive the chord it is about to record — swapping Next and
@@ -71,6 +81,15 @@ const TAB_SWITCH_SHORTCUTS = [
 ];
 const TAB_SWITCH_IDS = new Set(TAB_SWITCH_SHORTCUTS.map(({ id }) => id));
 
+// A select-tab press that is another entry's own binding goes to that entry.
+// The ones this module can answer for, with the message their menu item
+// sends (menu.js); a press yielded to anything else is left alone.
+const DISPATCHED_ELSEWHERE = {
+  'page.zoomIn': 'page:zoom-in',
+  'page.zoomOut': 'page:zoom-out',
+  'page.zoomReset': 'page:zoom-reset',
+};
+
 // webContents id → disarm function, for settings pages with a shortcut
 // recording armed.
 const recordingContents = new Map();
@@ -97,14 +116,28 @@ const inputAsKeyboardEvent = (input) => ({
   metaKey: Boolean(input.meta),
 });
 
+const acceleratorMatches = (event, accelerator, platform) =>
+  Boolean(accelerator) && eventMatchesAccelerator(event, accelerator, platform);
+
 const shortcutMatches = (event, id, overrides, platform) =>
   [getEffectiveAccelerator(id, overrides, platform), ...getAliasAccelerators(id, platform)].some(
-    (accelerator) => Boolean(accelerator) && eventMatchesAccelerator(event, accelerator, platform)
+    (accelerator) => acceleratorMatches(event, accelerator, platform)
   );
 
+// The other registry entry whose own binding (default or remap — not a fixed
+// alias) this press is, if any. Registry order, so on a press two of them
+// share Zoom In comes first, as in the chrome's zoom keydown chain (menus.js).
+const ownBindingElsewhere = (event, overrides, platform) =>
+  SHORTCUTS.find(
+    (entry) =>
+      !TAB_SWITCH_IDS.has(entry.id) &&
+      acceleratorMatches(event, getEffectiveAccelerator(entry.id, overrides, platform), platform)
+  ) || null;
+
 /**
- * The tab-switch message a `before-input-event` input asks for, as
- * `{ channel, args }`, or null. Only key-downs count (Electron reports
+ * The message a `before-input-event` input asks for, as `{ channel, args }`,
+ * or null: a tab switch, or — for a select-tab press that is another
+ * shortcut's own binding — that shortcut's message (see above). Only key-downs count (Electron reports
  * Chromium's raw key-down as `keyDown`); auto-repeat does too, so holding
  * the chord keeps cycling the way it does in Chrome. A key still inside an
  * IME composition is the IME's.
@@ -114,14 +147,10 @@ function matchTabKeyInput(input, overrides = {}, platform = process.platform) {
   const event = inputAsKeyboardEvent(input);
   for (const { id, channel, args, yieldsToOthers } of TAB_SWITCH_SHORTCUTS) {
     if (!shortcutMatches(event, id, overrides, platform)) continue;
-    if (
-      yieldsToOthers &&
-      SHORTCUTS.some(
-        (entry) =>
-          !TAB_SWITCH_IDS.has(entry.id) && shortcutMatches(event, entry.id, overrides, platform)
-      )
-    ) {
-      return null;
+    const owner = yieldsToOthers ? ownBindingElsewhere(event, overrides, platform) : null;
+    if (owner) {
+      const elsewhere = DISPATCHED_ELSEWHERE[owner.id];
+      return elsewhere ? { channel: elsewhere, args: [] } : null;
     }
     return { channel, args };
   }

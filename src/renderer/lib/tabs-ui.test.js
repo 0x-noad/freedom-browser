@@ -1286,6 +1286,17 @@ describe('tabs ui behavior', () => {
       windowHandlers.keydown(ctrlDigit(6));
       expect(mod.getActiveTab().id).toBe(tabs[5].id);
     });
+
+    test("keeps the Czech Ctrl+1 press (key '+') for tab 1, not Zoom In's alias", async () => {
+      const { mod, tabs, windowHandlers } = await setup(3);
+      mod.switchTab(tabs[2].id);
+      // Czech's unshifted `1` key types `+`: only Zoom In's fixed `Plus`
+      // alias, which does not outrank Select Tab 1 (Zoom In keeps `=`).
+      const czech1 = ctrlDigit(1, { key: '+' });
+      windowHandlers.keydown(czech1);
+      expect(czech1.preventDefault).toHaveBeenCalled();
+      expect(mod.getActiveTab().id).toBe(tabs[0].id);
+    });
   });
 
   test('forwards update-target-url and link-status:zone for the active tab only', async () => {
