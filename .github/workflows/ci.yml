@@ -891,6 +891,8 @@ jobs:
   # its own budget. `ant-api-guard.spec.js` (#428) needs a real guest too: the
   # guard that keeps web content off the local Ant API keys on the requesting
   # frame and webContents type, which only a real tab `<webview>` produces.
+  # `user-agent.spec.js` (#471) reads the User-Agent a real tab guest, its
+  # worker and a private window's partition send, which a unit test can't see.
   e2e-tabs:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -918,7 +920,7 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + popup-close + ant-api-guard E2E
+      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + popup-close + ant-api-guard + user-agent + browser-fullscreen E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/tabs.spec.js \
@@ -932,7 +934,9 @@ jobs:
             test-e2e/dweb-link-gesture.spec.js \
             test-e2e/popup-blocker.spec.js \
             test-e2e/popup-close.spec.js \
-            test-e2e/ant-api-guard.spec.js
+            test-e2e/ant-api-guard.spec.js \
+            test-e2e/user-agent.spec.js \
+            test-e2e/browser-fullscreen.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -1034,8 +1038,10 @@ jobs:
   # drives the Nodes tab's Browsing Credit group through node states the
   # pinned Ant cannot produce yet (paying, low, empty, switch on/off).
   # `publish-setup-rediscovery.spec.js` (#510) keeps Publish Setup from
-  # offering a plan while Ant is still rediscovering the wallet's batches. The
-  # anvil-backed Safe specs run in `e2e-safe` below.
+  # offering a plan while Ant is still rediscovering the wallet's batches, and
+  # `publish-page-setup.spec.js` (#719) keeps freedom://publish's Set Up
+  # Publishing button opening it, identity or not. The anvil-backed Safe
+  # specs run in `e2e-safe` below.
   e2e-wallet:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -1073,7 +1079,8 @@ jobs:
             test-e2e/safe-send-chain.spec.js \
             test-e2e/publisher-identity-selector.spec.js \
             test-e2e/browsing-credit.spec.js \
-            test-e2e/publish-setup-rediscovery.spec.js
+            test-e2e/publish-setup-rediscovery.spec.js \
+            test-e2e/publish-page-setup.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -1189,7 +1196,8 @@ jobs:
   # focus ring every chrome text field draws (`chrome-input-focus`, #246),
   # the shared sidebar sub-screen header shape (`sidebar-subscreen-headers`)
   # and the download shelf, whose dismissed card must stay dismissed for the
-  # rest of the transfer (`downloads`, #309).
+  # rest of the transfer (`downloads`, #309), and the application menu's
+  # History menu, which reads private-window state (`history-menu`, #584).
   e2e-chrome:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -1217,16 +1225,18 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads E2E
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/find-in-page.spec.js \
             test-e2e/tab-mute.spec.js \
             test-e2e/private-windows.spec.js \
+            test-e2e/page-providers-early.spec.js \
             test-e2e/private-tab-color.spec.js \
             test-e2e/chrome-input-focus.spec.js \
             test-e2e/sidebar-subscreen-headers.spec.js \
-            test-e2e/downloads.spec.js
+            test-e2e/downloads.spec.js \
+            test-e2e/history-menu.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -1651,12 +1661,14 @@ jobs:
 
       # xdotool sends the real Ctrl+W: Playwright's own key dispatch goes
       # through CDP into the renderer and never reaches a menu accelerator.
+      # setxkbmap (x11-xkb-utils) switches the xvfb display to the French and
+      # Czech layouts for the select-tab layout presses (#717).
       # Through the shared apt wrapper, like every other apt call on Linux CI.
       - name: Install xdotool
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install xdotool
+          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install xdotool x11-xkb-utils
 
       - name: Run close-tab and tab-switch shortcut E2E
         shell: bash
