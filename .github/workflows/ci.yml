@@ -1038,8 +1038,10 @@ jobs:
   # drives the Nodes tab's Browsing Credit group through node states the
   # pinned Ant cannot produce yet (paying, low, empty, switch on/off).
   # `publish-setup-rediscovery.spec.js` (#510) keeps Publish Setup from
-  # offering a plan while Ant is still rediscovering the wallet's batches. The
-  # anvil-backed Safe specs run in `e2e-safe` below.
+  # offering a plan while Ant is still rediscovering the wallet's batches, and
+  # `publish-page-setup.spec.js` (#719) keeps freedom://publish's Set Up
+  # Publishing button opening it, identity or not. The anvil-backed Safe
+  # specs run in `e2e-safe` below.
   e2e-wallet:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -1077,7 +1079,8 @@ jobs:
             test-e2e/safe-send-chain.spec.js \
             test-e2e/publisher-identity-selector.spec.js \
             test-e2e/browsing-credit.spec.js \
-            test-e2e/publish-setup-rediscovery.spec.js
+            test-e2e/publish-setup-rediscovery.spec.js \
+            test-e2e/publish-page-setup.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
