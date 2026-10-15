@@ -12,6 +12,12 @@ const REQUEST_QUEUE_TIMEOUT_MS = 15_000;
 // (delegated-ipfs.dev); when that one lookup failed from some networks, the
 // DHT fallback found no usable provider and pages 502'd with "no HTTP-capable
 // providers found". cid.contact is the second, independent index (#700).
+// Known cost (freedom-ipfs v0.4.6): the same list also feeds IPNS, and the
+// addon's DelegatedIpnsResolver reports "not found" if any endpoint 404s.
+// cid.contact always 404s IPNS, so when delegated-ipfs.dev is unreachable an
+// /ipns/<key> load fails as "name not found" instead of as a network error.
+// Diagnostics only (nothing is negatively cached); tracked upstream in
+// https://github.com/solardev-xyz/freedom-ipfs/issues/30.
 const DELEGATED_ROUTERS = 'https://delegated-ipfs.dev/routing/v1,https://cid.contact/routing/v1';
 // How long stopDispatcher() waits for the worker to acknowledge a stop before
 // resorting to terminate(), and how long it then waits for the thread to end

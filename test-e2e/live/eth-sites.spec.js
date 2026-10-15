@@ -178,13 +178,13 @@ const waitForWebviewCondition = (window, snippet, message) =>
 const EVIDENCE_TIMEOUT_MS = 10_000;
 const IPFS_LOG_LINE = /\bipfs\b|\bipns\b|freedom-ipfs/i;
 
-const withTimeout = (promise, label) =>
-  Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} timed out`)), EVIDENCE_TIMEOUT_MS)
-    ),
-  ]);
+const withTimeout = (promise, label) => {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out`)), EVIDENCE_TIMEOUT_MS);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+};
 
 const collectIpfsEvidence = async ({ electronApp, window }, testInfo) => {
   const problems = [];

@@ -116,7 +116,13 @@ The packaged app includes the `.node` addon via Electron Builder
   #700 only the addon's built-in default (delegated-ipfs.dev) was asked; when
   that one lookup failed, the DHT fallback found no usable provider and pages
   failed with `502 … no HTTP-capable providers found`. There is no setting or
-  environment variable for the list.
+  environment variable for the list. The addon uses the same list for IPNS
+  record lookups, and in freedom-ipfs v0.4.6 any endpoint's 404 makes the
+  lookup report "not found". cid.contact always answers 404 for IPNS, so when
+  delegated-ipfs.dev is unreachable an `/ipns/<key>` load fails as "name not
+  found" rather than as a network error. Only the error message is wrong:
+  nothing is cached, and a retry works once the network recovers. Tracked in
+  https://github.com/solardev-xyz/freedom-ipfs/issues/30.
 - IPFS identity status is reported as ephemeral. Native `freedom-ipfs` does not
   consume or expose a durable vault-derived PeerID for read-only retrieval in
   this release.
