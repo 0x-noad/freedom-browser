@@ -529,6 +529,65 @@ for (const theme of ['dark', 'light']) {
       await closeMenus(window);
     });
 
+    // #605: a private window keeps its dark plum chrome in both themes, but
+    // light-theme.css painted its text fields near-white under the private
+    // palette's light lavender text, so a typed URL measured about 1.4:1 on
+    // the light theme. The address bar is checked focused with typed text and
+    // again unfocused behind the find bar; the bookmark dialog covers the
+    // modal fields.
+    test(
+      declare(`private window fields render legibly in ${theme}`),
+      async ({ electronApp, window }) => {
+        test.setTimeout(180_000);
+        const pw = await recipes.privateWindow({ app: electronApp, win: window });
+        const ctx = { app: electronApp, win: pw };
+        const check = (label, opts) => assertSurface(pw, { label, theme, ...opts });
+
+        await pw.click('[data-test="address-input"]');
+        await pw.keyboard.type('https://example.com/typed');
+        await check('private address bar typing', { minSamples: 2 });
+
+        await recipes.findBar(ctx);
+        await check('private find bar', { minSamples: 2 });
+        await pw.keyboard.press('Escape');
+
+        await pw.click('[data-test="add-bookmark-btn"]');
+        await pw.waitForSelector('#add-bookmark-modal[open]');
+        await check('private bookmark dialog', { minSamples: 2 });
+      }
+    );
+
+    // #609: the same light-theme leak on the private window's menus, which
+    // light-theme.css painted white under the light lavender text.
+    test(
+      declare(`private window menus render legibly in ${theme}`),
+      async ({ electronApp, window }) => {
+        test.setTimeout(180_000);
+        const pw = await recipes.privateWindow({ app: electronApp, win: window });
+        const ctx = { app: electronApp, win: pw };
+        const check = (label, opts) => assertSurface(pw, { label, theme, ...opts });
+
+        await recipes.appMenu(ctx);
+        await check('private app menu', { minSamples: 3 });
+        await closeMenus(pw);
+
+        await recipes.nodesMenu(ctx);
+        await check('private nodes menu', { minSamples: 3 });
+        await closeMenus(pw);
+
+        await recipes.tabContextMenu(ctx);
+        await check('private tab context menu', { minSamples: 3 });
+        await pw.keyboard.press('Escape');
+
+        // The default bookmarks hold several `.eth` names, so this always
+        // opens a multi-row suggestion list.
+        await pw.click('[data-test="address-input"]');
+        await pw.keyboard.type('.eth');
+        await pw.waitForSelector('#autocomplete-dropdown:not(.hidden) .autocomplete-item');
+        await check('private address suggestions', { minSamples: 2 });
+      }
+    );
+
     test(
       declare(`wallet and permission subscreens render legibly in ${theme}`),
       async ({ electronApp, window }) => {
@@ -553,6 +612,11 @@ for (const theme of ['dark', 'light']) {
         await recipes.dappTxApproval(ctx);
         await check('dApp transaction approval', { minSamples: 2 });
         await recipes.dappSign(ctx);
+        // The pointer is still where the send flow's Confirm click left it,
+        // which since #606 gave Sign Message's actions their top margin is
+        // over the Sign button: its `:hover` opacity would be measured
+        // instead of its resting colours.
+        await window.mouse.move(0, 0);
         await check('dApp sign', { minSamples: 2 });
         await recipes.dappConnect(ctx);
         await check('dApp connect', { minSamples: 2 });

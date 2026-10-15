@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const internalPages = require('../shared/internal-pages.json');
 const IPC = require('../shared/ipc-channels');
 const { failure, success } = require('./ipc-contract');
@@ -18,9 +19,14 @@ function createWindowMock() {
   };
 }
 
-const HOST_RENDERER_URL = 'file:///app/src/renderer/index.html';
-const SETTINGS_PAGE_URL = 'file:///app/src/renderer/pages/settings.html';
-const HISTORY_PAGE_URL = 'file:///app/src/renderer/pages/history.html';
+// Real paths of this checkout's renderer: the profile-mutation gate matches
+// them exactly (ipc-sender-policy's internal-page match), not by suffix.
+const RENDERER_DIR = path.resolve(__dirname, '..', 'renderer');
+const rendererUrl = (...parts) => pathToFileURL(path.join(RENDERER_DIR, ...parts)).href;
+const HOST_RENDERER_URL = rendererUrl('index.html');
+const SETTINGS_PAGE_URL = rendererUrl('pages', 'settings.html');
+const PROFILES_PAGE_URL = rendererUrl('pages', 'profiles.html');
+const HISTORY_PAGE_URL = rendererUrl('pages', 'history.html');
 
 function createIpcEvent(url = SETTINGS_PAGE_URL) {
   return {
@@ -222,7 +228,10 @@ function loadIpcHandlersModule(options = {}) {
   const myotisManager = options.myotisManager || {
     stopAllMyotis: jest.fn(),
     refreshMyotisStatus: jest.fn(),
-    NETWORKS: new Map([[1, {}], [100, {}]]),
+    NETWORKS: new Map([
+      [1, {}],
+      [100, {}],
+    ]),
   };
 
   const { mod, app, webContents } = loadMainModule(require.resolve('./ipc-handlers'), {
@@ -263,6 +272,9 @@ function loadIpcHandlersModule(options = {}) {
       [require.resolve('./myotis/myotis-manager')]: () => myotisManager,
       ...(options.radicleManager
         ? { [require.resolve('./radicle-manager')]: () => options.radicleManager }
+        : {}),
+      ...(options.torManager
+        ? { [require.resolve('./tor-manager')]: () => options.torManager }
         : {}),
       ...(options.swarmProbeMock
         ? { [require.resolve('./swarm/swarm-probe')]: () => options.swarmProbeMock }
@@ -361,6 +373,31 @@ describe('ipc-handlers', () => {
       })
     ).resolves.toEqual(success());
     expect(ctx.state.activeBzzBases.has(5)).toBe(false);
+  });
+
+  test('Restart relaunches without the links (or --open-settings) this launch opened', () => {
+    const ctx = loadIpcHandlersModule();
+    ctx.app.relaunch = jest.fn();
+    ctx.app.quit = jest.fn();
+    const originalArgv = process.argv;
+    process.argv = [
+      '/opt/Freedom/freedom',
+      '--profile',
+      'work',
+      'https://x.example/',
+      '--open-settings',
+      '--no-sandbox',
+    ];
+    try {
+      ctx.mod.registerBaseIpcHandlers();
+      ctx.ipcMain.emit(IPC.APP_RELAUNCH, {});
+    } finally {
+      process.argv = originalArgv;
+    }
+    expect(ctx.app.relaunch).toHaveBeenCalledWith({
+      args: ['--profile', 'work', '--no-sandbox'],
+    });
+    expect(ctx.app.quit).toHaveBeenCalled();
   });
 
   test('registers window, app, and internal routing handlers', async () => {
@@ -829,6 +866,38 @@ describe('ipc-handlers', () => {
     expect(ctx.createProfileForActiveApp).not.toHaveBeenCalled();
   });
 
+  test('rejects profile mutations from a look-alike file outside this renderer (#662)', async () => {
+    const ctx = loadIpcHandlersModule();
+
+    ctx.mod.registerBaseIpcHandlers();
+
+    // Paths that end in the internal page's suffix but are not this
+    // checkout's renderer: a suffix test admitted every one of them.
+    const lookAlikes = [
+      'file:///home/u/x/src/renderer/pages/settings.html',
+      'file:///home/u/x/src/renderer/pages/profiles.html',
+      'file:///home/u/x/src/renderer/index.html',
+      pathToFileURL(path.join(RENDERER_DIR, 'pages', 'sub', 'settings.html')).href,
+    ];
+    for (const url of lookAlikes) {
+      expect(ctx.mod.isTrustedProfileMutationSender(createIpcEvent(url))).toBe(false);
+      await expect(
+        ctx.invokeProfileMutation(IPC.PROFILE_CREATE, { displayName: 'Work' }, url)
+      ).resolves.toEqual(
+        failure(
+          'PROFILE_IPC_FORBIDDEN',
+          'Profile changes are only available from trusted profile UI'
+        )
+      );
+    }
+    expect(ctx.createProfileForActiveApp).not.toHaveBeenCalled();
+
+    // The real pages still pass.
+    for (const url of [HOST_RENDERER_URL, SETTINGS_PAGE_URL, PROFILES_PAGE_URL]) {
+      expect(ctx.mod.isTrustedProfileMutationSender(createIpcEvent(url))).toBe(true);
+    }
+  });
+
   test('shows the create-profile modal only for trusted senders', () => {
     const ctx = loadIpcHandlersModule();
     ctx.mod.registerBaseIpcHandlers();
@@ -843,12 +912,12 @@ describe('ipc-handlers', () => {
     };
 
     // A hostile page loaded in a webview must not be able to pop the modal.
-    const untrusted = makeEvent('file:///app/src/renderer/pages/history.html');
+    const untrusted = makeEvent(HISTORY_PAGE_URL);
     ctx.ipcMain.emit(IPC.PROFILE_REQUEST_CREATE_MODAL, untrusted);
     expect(untrusted.win.webContents.send).not.toHaveBeenCalled();
 
     // The trusted profiles manager page may.
-    const trusted = makeEvent('file:///app/src/renderer/pages/profiles.html');
+    const trusted = makeEvent(PROFILES_PAGE_URL);
     ctx.ipcMain.emit(IPC.PROFILE_REQUEST_CREATE_MODAL, trusted);
     expect(trusted.win.webContents.send).toHaveBeenCalledWith(IPC.PROFILE_SHOW_CREATE_MODAL);
   });
@@ -1382,6 +1451,29 @@ describe('ipc-handlers', () => {
         nodes: expect.objectContaining({ radicle: { mode: 'disabled' } }),
       })
     );
+  });
+
+  test('a saved Tor mode is published to the registry right away (#377)', async () => {
+    // The Nodes menu reads a stopped Tor's mode and "Tor disabled for this
+    // profile" notice from the service registry; without this sync both stayed
+    // up after the user switched the mode back until the next start click.
+    const activeProfile = {
+      id: 'work',
+      displayName: 'Work',
+      source: 'catalog',
+      metadata: { nodes: { tor: { mode: 'disabled' } } },
+    };
+    const torManager = { syncProfileMode: jest.fn() };
+    const ctx = loadIpcHandlersModule({ activeProfile, torManager });
+    ctx.mod.registerBaseIpcHandlers();
+
+    const result = await ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+      protocol: 'tor',
+      config: { mode: 'managed' },
+    });
+
+    expect(result.success).toBe(true);
+    expect(torManager.syncProfileMode).toHaveBeenCalledTimes(1);
   });
 
   test('a node config whose catalog write fails is still refused as not saved', async () => {

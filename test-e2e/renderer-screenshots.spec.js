@@ -51,15 +51,16 @@
 // The baselines also assume a checkout *without* the bundled ad-block filter
 // lists (`assets/adblock/`, git-ignored, fetched by `npm run adblock:download`).
 // CI's screenshots job never downloads them, so `35-settings-privacy` (Ad
-// Blocking's panel, #268) and
+// Blocking's panel, #268), `40-settings-privacy-permissions` (which still
+// shows most of that panel above Site Permissions) and
 // `44-settings-search` (whose `block` query lists Ad Blocking rows) depict the
 // no-lists state: the section's single "cannot run" notice with its controls
 // inactive (#274). With the lists present — e.g. after running
-// `settings-adblock.spec.js`, which needs them — those two surfaces render
+// `settings-adblock.spec.js`, which needs them — those three surfaces render
 // live toggles, rule counts and a lists-present status line and fail with a
 // large diff unrelated to your change. Move `assets/adblock/` aside before
-// running or updating this spec locally, and never adopt those two baselines
-// from a run that had it.
+// running or updating this spec locally, and never adopt those three
+// baselines from a run that had it.
 //
 // Both npm scripts set `FREEDOM_E2E_STABLE_TEXT=1`, which launches Electron
 // with `--disable-lcd-text --disable-font-subpixel-positioning`. Without it
@@ -252,6 +253,7 @@ async function guestElementMask(win, page, selector, id) {
 }
 
 const UPDATE_VERSION_MASK = 'screenshot-update-version-mask';
+const AUTO_RETRY_COUNTDOWN_MASK = 'screenshot-auto-retry-countdown-mask';
 
 // Types into the settings page's own "Search settings" field (#281) the way
 // the page hears a keystroke, so the result list is rendered by the page
@@ -445,7 +447,17 @@ test.describe('renderer screenshots', () => {
         await recipes.tezInterstitial(ctx, 'conflict');
         await shot('26-tez-conflict');
         await recipes.errorPage(ctx);
-        await shot('27-error-page');
+        // The auto-retry countdown (#618) ticks every second, so a capture a
+        // moment later reads a different number.
+        const errorPage = await pageFor(electronApp, '/pages/error.html');
+        await errorPage.waitForSelector('#auto-retry:not([hidden])');
+        const countdown = await guestElementMask(
+          window,
+          errorPage,
+          '#auto-retry',
+          AUTO_RETRY_COUNTDOWN_MASK
+        );
+        await shot('27-error-page', { mask: [...scrollbar, ...countdown] });
 
         for (const [i, page] of ['downloads', 'history', 'profiles', 'payments'].entries()) {
           await go(window, `freedom://${page}`, 1_800);
@@ -509,6 +521,24 @@ test.describe('renderer screenshots', () => {
           }
           await shot(`${30 + i}-settings-${section}`);
         }
+        // The routes that bring a panel below its entry's first one up
+        // (#268). `scrollToPanel` scrolled the whole settings document for
+        // them, which captured as a blank page (`networks/ens`) or one shifted
+        // down under a seam (#604) — and with no baseline for any of them,
+        // nothing noticed. It re-aligns for a second after the hash moves, so
+        // each is captured once that is over.
+        for (const [i, route] of [
+          'privacy/permissions',
+          'networks/rpc',
+          'networks/ens',
+          'nodes/startup',
+        ].entries()) {
+          await page.evaluate((hash) => {
+            location.hash = hash;
+          }, route);
+          await page.waitForTimeout(1_500);
+          await shot(`${40 + i}-settings-${route.replace('/', '-')}`);
+        }
         // The page-wide search (#281): the sidebar field with a query, and
         // the result list that stands in for whichever section was open. The
         // query is deliberately one only static rows answer — the `[data-tor]`
@@ -530,7 +560,8 @@ test.describe('renderer screenshots', () => {
       // main-process state machine through the harness, the same entry point
       // electron-updater's events use, so both renderers paint what a user
       // would see mid-download and once an update is staged. Sizes and speed
-      // are fixed, and "Last checked just now" holds for the minute this takes.
+      // are fixed, and neither state shows a "Last checked" line (#594), so
+      // nothing here depends on the clock.
       test(`update states (${theme})`, async ({ electronApp, window }) => {
         test.setTimeout(180_000);
         const ctx = { app: electronApp, win: window };

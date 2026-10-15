@@ -290,27 +290,51 @@ describe('error page heading case (#260)', () => {
 
   test('the static <title> and <h1> share one sentence-case default', () => {
     const title = errorHtml.match(/<title>([^<]*)<\/title>/)[1];
-    const heading = errorHtml.match(/<h1 id="title">([^<]*)<\/h1>/)[1];
+    const heading = errorHtml.match(/<span id="title">([^<]*)<\/span>/)[1];
     expect(title).toBe('Content unavailable');
     expect(heading).toBe(title);
   });
 
   test('every heading this page can show is sentence case', () => {
-    const runtime = [...errorHtml.matchAll(/setErrorTitle\(\s*(['"])(.*?)\1\s*\)/g)].map(
-      (m) => m[2]
-    );
-    expect(runtime.length).toBeGreaterThanOrEqual(2);
+    const PROPER_NOUNS = new Set(['Swarm']);
+    // Literal setErrorTitle() calls, plus the per-reason Swarm headings
+    // describeSwarmFailure() hands it (#618).
+    const runtime = [
+      ...errorHtml.matchAll(/setErrorTitle\(\s*(['"])(.*?)\1\s*\)/g),
+      ...errorHtml.matchAll(/\btitle:\s*(['"])(.*?)\1/g),
+    ].map((m) => m[2]);
+    expect(runtime.length).toBeGreaterThanOrEqual(6);
     const headings = ['Content unavailable', ...runtime];
     for (const heading of headings) {
-      // Sentence case: only the first word (and any proper noun, of which
-      // these have none) is capitalised.
+      // Sentence case: only the first word (and any proper noun) is
+      // capitalised.
       expect(
         heading
           .split(' ')
           .slice(1)
-          .filter((w) => /^[A-Z]/.test(w))
+          .filter((w) => /^[A-Z]/.test(w) && !PROPER_NOUNS.has(w))
       ).toEqual([]);
     }
+  });
+});
+
+// #606 item 4: the error page is the content-failure sibling of the name
+// interstitials, so it shares their frame — the stylesheet, an icon in the
+// heading, and one filled primary action labelled in sentence case.
+describe('error page matches the interstitials (#606)', () => {
+  const errorHtml = read(path.join(RENDERER, 'pages/error.html'));
+
+  test('it links the shared interstitial stylesheet', () => {
+    expect(errorHtml).toMatch(/<link rel="stylesheet" href="styles\/interstitial\.css" \/>/);
+  });
+
+  test('its heading carries an icon', () => {
+    expect(errorHtml).toMatch(/<h1>\s*<svg\b[^>]*class="shield"/);
+  });
+
+  test('"Try again" is the filled primary, in sentence case', () => {
+    expect(errorHtml).toMatch(/<button id="retry-btn" class="button-primary">Try again<\/button>/);
+    expect(errorHtml).not.toMatch(/Try Again/);
   });
 });
 

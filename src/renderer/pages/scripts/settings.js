@@ -443,12 +443,40 @@ const PANELS = Object.keys(PANEL_NAV);
 // grow after this runs — the chain list and RPC Providers paint from IPC a
 // beat later — so the panel is re-aligned a few times over the next second,
 // until the user scrolls or presses a key, which hands the scroll back.
+//
+// Only `.layout` scrolls, so the panel is aligned by setting that one
+// container's offset. `scrollIntoView` scrolled every scrollable ancestor,
+// the document included, which painted the page blank or shifted down
+// under a seam (#604).
+const contentScroller = document.querySelector('.layout') || document.scrollingElement;
+
+/* settings panel scroll: start */
+// Where `scroller` has to be for `panel` to sit at its top, keeping the
+// panel's `scroll-margin-top` above it as `scrollIntoView` did.
+const panelScrollTop = (panel, scroller) => {
+  const margin = parseFloat(getComputedStyle(panel).scrollMarginTop) || 0;
+  const offset = panel.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  return Math.max(0, Math.round(scroller.scrollTop + offset - margin));
+};
+
+// With the document no longer scrolling, Chromium sends PageDown, Space
+// and End nowhere until something inside `.layout` has focus. Give the
+// scroller focus whenever nothing else holds it: on a section change, once
+// the page has loaded, and when the tab gains focus. A field or nav button
+// that has focus keeps it.
+const focusScrollerIfIdle = () => {
+  if (document.activeElement && document.activeElement !== document.body) return;
+  contentScroller.focus({ preventScroll: true });
+};
+window.addEventListener('focus', focusScrollerIfIdle);
+window.addEventListener('load', () => setTimeout(focusScrollerIfIdle, 0));
+
 let stopPanelScroll = () => {};
 const scrollToPanel = (id) => {
   stopPanelScroll();
   const panel = document.getElementById(id);
   if (!panel) return;
-  const align = () => panel.scrollIntoView({ block: 'start' });
+  const align = () => contentScroller.scrollTo({ top: panelScrollTop(panel, contentScroller) });
   align();
   const timers = [100, 250, 500, 1000].map((ms) => setTimeout(align, ms));
   const userTookOver = new AbortController();
@@ -464,6 +492,7 @@ const scrollToPanel = (id) => {
     });
   }
 };
+/* settings panel scroll: end */
 
 const showSection = (route) => {
   const [section, sub] = String(route).split('/');
@@ -477,8 +506,9 @@ const showSection = (route) => {
   // Always scroll the content area to the top when switching — avoids a
   // stale scroll offset from a taller prior section.
   stopPanelScroll();
-  window.scrollTo({ top: 0 });
+  contentScroller.scrollTo({ top: 0 });
   if (sub && PANEL_NAV[sub] === section) scrollToPanel(sub);
+  focusScrollerIfIdle();
 };
 
 navItems.forEach((item) => {
@@ -874,7 +904,7 @@ const settingsSearchResets = [];
     panel.classList.remove('hidden');
     showing = true;
     syncSwarmCacheUsage();
-    window.scrollTo({ top: 0 });
+    contentScroller.scrollTo({ top: 0 });
   };
 
   const closeResults = ({ restoreSection = true } = {}) => {
@@ -2281,14 +2311,16 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   // (sentence case, #277) — the two sit inside one card.
   const renderConflict = (state) => {
     const { conflict } = state;
+    // Both combinations are key chips, and Swap — the answer the question
+    // asks for — is the primary; Cancel stays the plain secondary (#606).
     const message = conflict.fixed
-      ? `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}” and cannot be reassigned. Pick a different combination.`
-      : `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}”. Swap the bindings so “${esc(conflict.settingsLabel)}” becomes ${kbd(conflict.swapFormatted)}?`;
+      ? `${kbd(state.formatted)} is already used by “${esc(conflict.settingsLabel)}” and cannot be reassigned. Pick a different combination.`
+      : `${kbd(state.formatted)} is already used by “${esc(conflict.settingsLabel)}”. Swap the bindings so “${esc(conflict.settingsLabel)}” becomes ${kbd(conflict.swapFormatted)}?`;
     return `
       <div class="row shortcut-conflict" data-shortcut-id="${esc(state.id)}">
         <div class="row-body"><p class="row-label">${message}</p></div>
         <span class="shortcut-conflict-actions">
-          ${conflict.fixed ? '' : '<button type="button" class="btn" data-action="swap">Swap</button>'}
+          ${conflict.fixed ? '' : '<button type="button" class="btn primary" data-action="swap">Swap</button>'}
           <button type="button" class="btn" data-action="cancel-conflict">Cancel</button>
         </span>
       </div>`;
@@ -2864,7 +2896,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       // updating is the one action that can end it; the Nodes card still
       // shows the recovery state next to the notice. Pinned by
       // test-e2e/myotis-upgrade-advisory.spec.js.
-      if (!['off', 'disabled'].includes(status.state) && ['SCHEDULED', 'ACTIVE'].includes(status.upgradeAdvisory?.phase))
+      if (
+        !['off', 'disabled'].includes(status.state) &&
+        ['SCHEDULED', 'ACTIVE'].includes(status.upgradeAdvisory?.phase)
+      )
         return status.state === 'ready' ? 'Ready — update Freedom' : 'Update Freedom — open Nodes';
       if (status.state === 'ready') return 'Ready';
       if (status.state === 'syncing') return 'Syncing';
@@ -4258,7 +4293,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
 // permission decisions (permissions.json) grouped by origin, with
 // per-permission revoke, per-site revoke, and revoke-all. Session-only
 // (unremembered) decisions live in main-process memory and are not
-// listed here — they expire with the app anyway.
+// listed here — they expire with the app anyway. The one exception is
+// the files and folders a site was given in its picker (#671): they are
+// run-scoped too, but otherwise nothing lists them, so main adds a
+// `fileSystem` row for every site holding them.
 (() => {
   const view = $('permissions-view');
   const revokeAll = $('permissions-revoke-all');
@@ -4273,6 +4311,9 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     midi: 'MIDI devices',
     // The pop-up-blocked icon's "Always allow pop-ups on this site" (#442).
     popups: 'Pop-ups',
+    // File System Access (#671): what the user picked in a site's file or
+    // folder dialog. Run-scoped, never stored.
+    fileSystem: 'Files and folders you picked',
   };
   // `external:<scheme>` — one decision per external-protocol scheme
   // (#406); mirrors permissionLabel in lib/site-permissions-ui.js.
@@ -4280,6 +4321,13 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     key.startsWith('external:')
       ? `Open ${key.slice('external:'.length)}: links`
       : PERMISSION_LABELS[key] || key;
+
+  // File System Access grants (#671) are listed for the run only: main
+  // drops them at quit and never stores them.
+  const status = (permission, decision) => {
+    if (decision !== 'allow') return 'Blocked';
+    return permission === 'fileSystem' ? 'Allowed until you quit' : 'Allowed';
+  };
 
   const render = (all) => {
     const origins = Object.keys(all || {}).sort();
@@ -4311,7 +4359,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
                   <p class="row-label">${esc(label(permission))}</p>
                   <p class="row-help" ${
                     decision === 'deny' ? 'style="color: var(--danger)"' : ''
-                  }>${decision === 'allow' ? 'Allowed' : 'Blocked'}</p>
+                  }>${status(permission, decision)}</p>
                 </div>
                 <div class="row-control">
                   <button class="btn" data-action="revoke"

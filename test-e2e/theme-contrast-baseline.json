@@ -1,6 +1,6 @@
 {
   "issue": "https://github.com/solardev-xyz/freedom-browser/issues/261",
-  "total": 64,
+  "total": 75,
   "gaps": [
     {
       "surface": "Swarm connect approval",
@@ -72,6 +72,14 @@
       "el": "button#dapp-tx-approve.dapp-tx-approve-btn",
       "text": "Confirm",
       "ratio": 2.11,
+      "bar": 4.5
+    },
+    {
+      "surface": "error page",
+      "theme": "dark",
+      "el": "button#retry-btn.button-primary",
+      "text": "Try again",
+      "ratio": 4.29,
       "bar": 4.5
     },
     {
@@ -150,7 +158,7 @@
       "surface": "nodes menu",
       "theme": "light",
       "el": "span#myotis-version-text",
-      "text": "Myotis v0.1.7",
+      "text": "Myotis 0.1.7",
       "ratio": 3.85,
       "bar": 4.5
     },
@@ -158,7 +166,7 @@
       "surface": "nodes menu",
       "theme": "light",
       "el": "span#radicle-version-text",
-      "text": "libradicle v0.7.1",
+      "text": "libradicle 0.7.1",
       "ratio": 3.85,
       "bar": 4.5
     },
@@ -264,6 +272,86 @@
       "el": "div.permission-popover-row-status",
       "text": "Allowed",
       "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "private address suggestions",
+      "theme": "dark",
+      "el": "div.autocomplete-icon-placeholder",
+      "text": "E",
+      "ratio": 3.79,
+      "bar": 4.5
+    },
+    {
+      "surface": "private address suggestions",
+      "theme": "light",
+      "el": "div.autocomplete-icon-placeholder",
+      "text": "E",
+      "ratio": 3.79,
+      "bar": 4.5
+    },
+    {
+      "surface": "private bookmark dialog",
+      "theme": "dark",
+      "el": "button#bookmark-submit-btn.primary-btn",
+      "text": "Add Bookmark",
+      "ratio": 2.4,
+      "bar": 4.5
+    },
+    {
+      "surface": "private bookmark dialog",
+      "theme": "light",
+      "el": "button#bookmark-submit-btn.primary-btn",
+      "text": "Add Bookmark",
+      "ratio": 2.4,
+      "bar": 4.5
+    },
+    {
+      "surface": "private nodes menu",
+      "theme": "dark",
+      "el": "span.bee-toggle-label",
+      "text": "Swarm",
+      "ratio": 2.17,
+      "bar": 4.5
+    },
+    {
+      "surface": "private nodes menu",
+      "theme": "dark",
+      "el": "span.ipfs-toggle-label",
+      "text": "IPFS",
+      "ratio": 2.17,
+      "bar": 4.5
+    },
+    {
+      "surface": "private nodes menu",
+      "theme": "dark",
+      "el": "span.radicle-toggle-label",
+      "text": "Radicle",
+      "ratio": 2.17,
+      "bar": 4.5
+    },
+    {
+      "surface": "private nodes menu",
+      "theme": "light",
+      "el": "span.bee-toggle-label",
+      "text": "Swarm",
+      "ratio": 2.17,
+      "bar": 4.5
+    },
+    {
+      "surface": "private nodes menu",
+      "theme": "light",
+      "el": "span.ipfs-toggle-label",
+      "text": "IPFS",
+      "ratio": 2.17,
+      "bar": 4.5
+    },
+    {
+      "surface": "private nodes menu",
+      "theme": "light",
+      "el": "span.radicle-toggle-label",
+      "text": "Radicle",
+      "ratio": 2.17,
       "bar": 4.5
     },
     {

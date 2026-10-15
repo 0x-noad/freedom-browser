@@ -13,112 +13,7 @@
 
 const path = require('path');
 const { test, expect } = require('./fixtures');
-
-const WALLET = '0x' + 'cd'.repeat(20);
-
-async function startFakeAnt(electronApp) {
-  return electronApp.evaluate(async (_e, wallet) => {
-    const http = process.mainModule.require('http');
-    const state = { stamps: [], health: { status: 'ok', chainReady: true } };
-    const quote = (depth, days) => ({
-      depth,
-      days,
-      amountPerChunk: '65676000',
-      planCostPlur: '68866000000000',
-      settlementDepositPlur: '0',
-      walletAddress: wallet,
-      walletBzzPlur: '0',
-      walletXdaiWei: '0',
-      bzzToAcquirePlur: '68866000000000',
-      swapInputWei: '432000000000000000',
-      gasReserveWei: '15000000000000000',
-      xdaiRequiredWei: '447000000000000000',
-      xdaiToSendWei: '447000000000000000',
-      sufficientFunds: false,
-    });
-    const server = http.createServer((req, res) => {
-      const url = new URL(req.url, 'http://127.0.0.1');
-      const send = (code, obj) => {
-        res.writeHead(code, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(obj));
-      };
-      switch (`${req.method} ${url.pathname}`) {
-        case 'GET /health':
-          return send(200, state.health);
-        case 'GET /node':
-          return send(200, { beeMode: 'light' });
-        case 'GET /readiness':
-          return send(200, { status: 'ready' });
-        case 'GET /stamps':
-          return send(200, { stamps: state.stamps });
-        case 'GET /addresses':
-          return send(200, { ethereum: wallet });
-        case 'GET /v0/storage/quote':
-          return send(
-            200,
-            quote(Number(url.searchParams.get('depth')), Number(url.searchParams.get('days')))
-          );
-        case 'GET /v0/settlement/deposit':
-          // An Ant with the storage routes; no chequebook yet.
-          return send(200, {
-            chequebook: '0x' + '00'.repeat(20),
-            walletAddress: wallet,
-            walletBzzPlur: '0',
-            walletXdaiWei: '0',
-            depositPlur: '0',
-            needsTopUp: false,
-          });
-        default:
-          return send(404, { code: 404, message: 'Not Found' });
-      }
-    });
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    globalThis.__fakeAnt = { server, state };
-    const url = `http://127.0.0.1:${server.address().port}`;
-    process.mainModule.require('./src/main/service-registry').updateService('ant', { api: url });
-    return url;
-  }, WALLET);
-}
-
-// The real service. `txCount` is the node wallet's transaction count on
-// Gnosis Chain, which only the fallback (no `walletScan`) reads.
-async function wireRealService(electronApp, { txCount = 7 } = {}) {
-  await electronApp.evaluate(({ ipcMain, BrowserWindow }, count) => {
-    const load = process.mainModule.require;
-    const { createPublishSetupService } = load('./src/main/swarm/publish-setup-service');
-    const setup = createPublishSetupService({
-      getNodeStatus: () => ({ status: 'running', error: null }),
-      getRegistryMode: () => 'bundled',
-      restartNode: async () => {},
-      getTransactionStatus: async () => ({ status: 'pending' }),
-      getWalletTxCount: async () => count,
-      // advanceClock() moves this, for the stalled-scan bound.
-      now: () => Date.now() + (globalThis.__clockOffset || 0),
-      publish: (state) => {
-        for (const win of BrowserWindow.getAllWindows()) {
-          win.webContents.send('swarm:setup-state', state);
-        }
-      },
-    });
-    globalThis.__publishSetup = setup;
-    const replace = (channel, handler) => {
-      ipcMain.removeHandler(channel);
-      ipcMain.handle(channel, handler);
-    };
-    replace('swarm:setup-get-state', async () => {
-      await setup.ensureFresh(0);
-      return setup.getState();
-    });
-    replace('swarm:setup-watch', (_e, surface, on) => {
-      setup.watch(`fake:${surface}`, on === true);
-      return setup.getState();
-    });
-    replace('swarm:setup-get-plans', () => setup.getPlans());
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send('ant:statusUpdate', { status: 'running' });
-    }
-  }, txCount);
-}
+const { startFakeAnt, wireRealService } = require('./publish-setup-fixtures');
 
 // What the fake antd's `/health` (and, optionally, `/stamps`) now answers.
 // Re-probes at once rather than waiting for the watch's next tick.
@@ -405,19 +300,26 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
       ipcMain.handle('swarm:get-stamps', () => {
         return new Promise((resolve) => {
           globalThis.__heldStamps.push(() =>
-            resolve({
-              success: true,
-              stamps: [
-                {
-                  batchId: 'aa'.repeat(32),
-                  usable: true,
-                  sizeBytes: 1e9,
-                  usagePercent: 0,
-                  ttlSeconds: 30 * 86400,
-                  depth: 20,
-                },
-              ],
-            })
+            resolve(
+              globalThis.__failStamps
+                ? { success: false, error: 'node unreachable' }
+                : {
+                    success: true,
+                    stamps: [
+                      {
+                        batchId: 'aa'.repeat(32),
+                        usable: true,
+                        sizeBytes: 1e9,
+                        usagePercent: 0,
+                        // Drifts like stamp-service's normalizeBatch: a lower ttl
+                        // and a fresh expiry estimate on every call.
+                        ttlSeconds: 30 * 86400 + 3600 - globalThis.__heldStamps.length,
+                        expiresApprox: new Date().toISOString(),
+                        depth: 20,
+                      },
+                    ],
+                  }
+            )
           );
         });
       });
@@ -432,6 +334,10 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
     await expect(window.locator('#stamp-scan-status')).toBeHidden();
     await expect(empty).toBeHidden();
     await expect(cards).toHaveCount(0);
+    // A first visit shows the spinner in place of the list (#595).
+    const loading = window.locator('#stamp-list-loading');
+    await expect(loading).toBeVisible();
+    await expect(loading).toHaveText('Loading your storage…');
     await shoot(window, 'storage-loading');
 
     await electronApp.evaluate(() => {
@@ -439,8 +345,91 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
     });
     await expect(cards).toHaveCount(1);
     await expect(empty).toBeHidden();
+    await expect(loading).toBeHidden();
     await expect(window.locator('#stamp-buy-another-btn')).toHaveText('Buy More Storage');
     await shoot(window, 'storage-loaded');
+
+    // A return visit lists the cached batches at once, under the spinner.
+    await window.evaluate(async () => {
+      const { closeStampManager } = await import('./lib/wallet/stamp-manager.js');
+      closeStampManager();
+    });
+    await openStorage(window);
+    await expect
+      .poll(() => electronApp.evaluate(() => globalThis.__heldStamps.length))
+      .toBeGreaterThan(0);
+    await expect(cards).toHaveCount(1);
+    await expect(empty).toBeHidden();
+    await expect(loading).toHaveText('Checking for changes…');
+    await expect(window.locator('#stamp-buy-another-btn')).toHaveText('Buy More Storage');
+    // The cached card may be stale: its actions wait for the fresh list.
+    const keepLonger = cards.locator('.stamp-batch-action-btn', { hasText: 'Keep Longer' });
+    await expect(keepLonger).toBeDisabled();
+    await shoot(window, 'storage-refreshing');
+    const card = await cards.first().elementHandle();
+
+    await electronApp.evaluate(() => {
+      for (const release of globalThis.__heldStamps.splice(0)) release();
+    });
+    await expect(loading).toBeHidden();
+    await expect(cards).toHaveCount(1);
+    // The same list came back: the card stays (it is not rebuilt), now live.
+    await expect(keepLonger).toBeEnabled();
+    expect(await card.evaluate((node) => node.isConnected)).toBe(true);
+    const stale = window.locator('#stamp-list-stale');
+    await expect(stale).toBeHidden();
+
+    // A return visit whose refresh fails keeps the cached card, says the
+    // list may be out of date, and leaves its actions off.
+    await window.evaluate(async () => {
+      const { closeStampManager } = await import('./lib/wallet/stamp-manager.js');
+      closeStampManager();
+    });
+    await electronApp.evaluate(() => {
+      globalThis.__failStamps = true;
+    });
+    await openStorage(window);
+    await expect
+      .poll(() => electronApp.evaluate(() => globalThis.__heldStamps.length))
+      .toBeGreaterThan(0);
+    await expect(stale).toBeHidden();
+    await electronApp.evaluate(() => {
+      for (const release of globalThis.__heldStamps.splice(0)) release();
+    });
+    await expect(loading).toBeHidden();
+    await expect(cards).toHaveCount(1);
+    await expect(empty).toBeHidden();
+    await expect(stale).toBeVisible();
+    await expect(stale).toContainText('may be out of date');
+    await expect(keepLonger).toBeDisabled();
+    await shoot(window, 'storage-stale');
+
+    // getState fails before the list does: nothing is left to name the
+    // wallet, so the screen says the list couldn't be checked instead of
+    // loading forever (and draws no cards it can't match to a wallet).
+    await window.evaluate(async () => {
+      const { closeStampManager } = await import('./lib/wallet/stamp-manager.js');
+      closeStampManager();
+    });
+    await electronApp.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('swarm:setup-get-state');
+      ipcMain.handle('swarm:setup-get-state', () => {
+        throw new Error('setup state unavailable');
+      });
+    });
+    await openStorage(window);
+    await expect
+      .poll(() => electronApp.evaluate(() => globalThis.__heldStamps.length))
+      .toBeGreaterThan(0);
+    await expect(loading).toHaveText('Loading your storage…');
+    await electronApp.evaluate(() => {
+      for (const release of globalThis.__heldStamps.splice(0)) release();
+    });
+    await expect(loading).toBeHidden();
+    await expect(cards).toHaveCount(0);
+    await expect(empty).toBeHidden();
+    await expect(stale).toBeVisible();
+    await shoot(window, 'storage-state-failed');
   });
 
   test('the storage screen shows the stalled-scan warning over the empty state', async ({

@@ -44,6 +44,15 @@
       </div>
     </div>
 
+    <!-- Shown for a few seconds on entering full screen (#78) -->
+    <div
+      id="fullscreen-exit-hint"
+      class="fullscreen-exit-hint"
+      role="status"
+      data-test="fullscreen-exit-hint"
+      hidden
+    ></div>
+
     <div class="title-bar">
       <div class="title-bar-spacer"></div>
       <div class="tab-bar">
@@ -3487,6 +3496,16 @@
                 </div>
                 <p class="stamp-manager-intro hidden" id="stamp-list-empty">
                   You have no storage yet. Buy a storage plan to publish on Swarm.
+                </p>
+                <!-- /stamps is loading: in place of the list, or over the cached one -->
+                <div class="connect-ledger-status stamp-list-loading hidden" id="stamp-list-loading">
+                  <span class="connect-ledger-status-spinner"></span>
+                  <span id="stamp-list-loading-text"></span>
+                </div>
+                <!-- /stamps failed: the cached list on screen may be out of date -->
+                <p class="stamp-manager-intro hidden" id="stamp-list-stale">
+                  Couldn't check your storage for changes, so this list may be out of date. Keep
+                  Longer and Make Bigger come back once it loads: open this screen again to retry.
                 </p>
                 <div class="stamp-batch-list" id="stamp-batch-list">
                   <!-- Batch cards inserted dynamically -->

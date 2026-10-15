@@ -40,6 +40,7 @@ const { openOrFocusProfile } = require('./profile-launcher');
 const { isPrivateWebContents } = require('./private/private-windows');
 const { readProfileFocusAck, requestProfileQuitAsync } = require('./profile-focus-handoff');
 const { isProfileLocked } = require('./profile-lock');
+const { relaunchArgs } = require('./launch-urls');
 
 // Bzz content probes, keyed by probe id. Each entry exposes a promise that
 // resolves to the probe outcome. Entries survive until BZZ_AWAIT_PROBE
@@ -62,6 +63,7 @@ const webviewPreloadPath = path.join(__dirname, 'webview-preload.js');
 // below is what the chrome window's preload uses, and the webview preload's
 // fallback.
 const { internalPages, buildEthereumInjectSource } = require('./webview-boot');
+const { internalPageFileForUrl, isChromeIndexUrl } = require('./ipc-sender-policy');
 
 const isAllowedBaseUrl = (value) => {
   if (!value) return false;
@@ -85,25 +87,18 @@ function getIpcSenderUrl(event) {
   return event?.senderFrame?.url || event?.sender?.getURL?.() || '';
 }
 
-function normalizeFileUrlPath(url) {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'file:') return null;
-    return decodeURIComponent(parsed.pathname).replace(/\\/g, '/');
-  } catch {
-    return null;
-  }
-}
-
+// The chrome window, settings.html or profiles.html. Same exact path match
+// as ipc-sender-policy (resolved file path against this checkout's / this
+// app.asar's renderer directory), never a suffix test: a look-alike file
+// saved as `…/src/renderer/pages/settings.html` elsewhere on disk and opened
+// as file:// is not the profile UI (#662). installIpcSenderPolicy's
+// PROFILE_MANAGER tier already refuses such a sender before these handlers
+// run; this keeps the handler-level check from being the weaker of the two.
 function isTrustedProfileMutationSender(event) {
-  const pathname = normalizeFileUrlPath(getIpcSenderUrl(event));
-  if (!pathname) return false;
-
-  return (
-    pathname.endsWith('/src/renderer/index.html') ||
-    pathname.endsWith('/src/renderer/pages/settings.html') ||
-    pathname.endsWith('/src/renderer/pages/profiles.html')
-  );
+  const url = getIpcSenderUrl(event);
+  if (isChromeIndexUrl(url)) return true;
+  const file = internalPageFileForUrl(url);
+  return file === internalPages.routable.settings || file === internalPages.routable.profiles;
 }
 
 function withTrustedProfileMutationSender(event, fn) {
@@ -343,6 +338,12 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
       const ipfsManager = require('./ipfs-manager');
       await ipfsManager.syncProfileMode();
     }
+    if (protocol === 'tor') {
+      // Same reason: the Nodes menu reads a stopped Tor's mode and notice from
+      // the registry, which otherwise only changes on the next start click.
+      const torManager = require('./tor-manager');
+      torManager.syncProfileMode();
+    }
   } catch (err) {
     log.error('[profile] Node config saved, but applying it failed:', err);
     return failure(
@@ -519,7 +520,7 @@ async function ensureProfileClosedForDelete(profileId, options = {}) {
     // Prefer the definitive signal: the acking process has actually exited.
     let ack;
     try {
-      ack = readAck(target);
+      ack = readAck(target, quit?.nonce);
     } catch {
       ack = null;
     }
@@ -801,7 +802,9 @@ function registerBaseIpcHandlers(callbacks = {}) {
   });
 
   ipcMain.on(IPC.APP_RELAUNCH, () => {
-    app.relaunch();
+    // Not a bare relaunch(): that reuses this launch's whole command line, so
+    // the links it was started with (and --open-settings) would open again.
+    app.relaunch({ args: relaunchArgs(process.argv) });
     app.quit();
   });
 

@@ -320,7 +320,7 @@ test('settings: changing a control saves it and the chrome follows', async ({
   expect(await cspViolations(electronApp)).toEqual([]);
 });
 
-test('error page: renders the failure and Try Again retries', async ({
+test('error page: renders the failure and Try again retries', async ({
   window,
   electronApp,
   harness,
@@ -328,7 +328,7 @@ test('error page: renders the failure and Try Again retries', async ({
   await harness.setProbeFixture(SAMPLE_BZZ_HASH, { ok: false, reason: 'not_found' });
   await navigate(window, `bzz://${SAMPLE_BZZ_HASH}`);
   const errorPage = await pageFor(electronApp, '/pages/error.html');
-  await expect(errorPage.locator('#title')).toHaveText('Content not ready yet');
+  await expect(errorPage.locator('#title')).toHaveText('Content not found yet');
   await expect(errorPage.locator('#details')).toContainText(`bzz://${SAMPLE_BZZ_HASH}`);
   await errorPage.screenshot({ path: test.info().outputPath('error.png') });
 

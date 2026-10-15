@@ -35,6 +35,10 @@ app.setName(appName);
 // Before any window exists: a source-tree run must not borrow the installed
 // app's WM_CLASS/app_id from package.json's desktopName (issue #142).
 require('./linux-desktop-name').applyLinuxDesktopName(app);
+// Web content sees a plain Chrome User-Agent, without the Freedom/ and
+// Electron/ tokens (issue #471). Before any session exists: each one reads the
+// fallback when it is created.
+require('./web-user-agent').applyWebUserAgent(app);
 
 // E2E test mode (Playwright). `FREEDOM_TEST_MODE=1` activates the
 // fixture-driven harness in src/main/test-harness.js (stubbed protocols,
@@ -48,10 +52,7 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
   app.setPath('userData', process.env.FREEDOM_TEST_USER_DATA);
   // Keep E2E download artifacts inside the per-run temp dir instead of
   // polluting the real ~/Downloads folder.
-  app.setPath(
-    'downloads',
-    require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads')
-  );
+  app.setPath('downloads', require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads'));
 }
 // Honoured in a packaged build only when the launch also kept a CDP debug port
 // on a scratch profile, i.e. the packaged E2E launcher
@@ -61,15 +62,28 @@ const {
   migrateBeeDataToAntData,
   migrateUserData,
   purgeSetAsideBeeData,
+  purgeSetAsideLegacyKuboData,
+  setAsideLegacyKuboRepo,
 } = require('./migrate-user-data');
 if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
   migrateUserData({ logger: console });
 }
-const { initializeProfile, warnAboutLegacyDevData } = require('./profile-resolver');
+const {
+  initializeProfile,
+  PROFILE_SWITCH_REJECTED,
+  warnAboutLegacyDevData,
+} = require('./profile-resolver');
 let activeProfile = null;
 try {
   activeProfile = initializeProfile(app);
 } catch (error) {
+  // An `x-freedom-profile:` switch (Linux, profile-switch-scheme.js) naming no
+  // registered profile: do nothing at all rather than open some other one.
+  if (error?.code === PROFILE_SWITCH_REJECTED) {
+    console.warn(`[profile] ${error.message}`);
+    app.exit(0);
+    process.exit(0);
+  }
   dialog.showErrorBox(
     'Freedom profile could not open',
     `Freedom could not initialize the selected profile.\n\n${error?.message || error}`
@@ -83,41 +97,86 @@ const {
   releaseProfileLock,
 } = require('./profile-lock');
 const {
+  requestInstanceLockProbeSync,
   requestProfileFocusSync,
   startProfileFocusRequestWatcher,
 } = require('./profile-focus-handoff');
+const {
+  handleLockedProfileLaunch,
+  listenForProfileRelaunches,
+  recordProfileSwitch,
+} = require('./profile-instance-handoff');
+const {
+  buildColdStartUrls,
+  createFirstWindowLinkQueue,
+  extractLaunchUrls,
+  sanitizeLaunchUrls,
+} = require('./launch-urls');
+// Links this launch was given (an OS link handler, `freedom <url>`), checked
+// against the schemes Freedom opens. A cold start opens them in its first
+// window; a second launch of an already-open profile hands them over below.
+const launchUrls = extractLaunchUrls(process.argv);
+// An in-app switch in another profile is waiting on this `x-freedom-profile:`
+// launch; tell it the launch arrived (profile-switch-scheme.js).
+recordProfileSwitch(activeProfile, 'received', { logger: console });
 let activeProfileLock = null;
 try {
   activeProfileLock = acquireProfileLock(activeProfile, { logger: console });
 } catch (error) {
   if (isLockUnavailableError(error)) {
-    const profileName = activeProfile.displayName || activeProfile.id || 'selected';
-    const focusResult = requestProfileFocusSync(activeProfile);
-    if (!focusResult.ok) {
-      dialog.showErrorBox(
-        'Freedom profile is already open',
-        `The "${profileName}" profile is already open, but Freedom could not focus it.\n\nClose that Freedom window or launch a different profile.`
-      );
-    }
+    // Linux: through the running profile's single-instance lock when it
+    // answers a probe saying it listens on one, which carries this launch's
+    // XDG activation token along (#142); otherwise through the focus-request
+    // file. Never the lock without the probe: see profile-instance-handoff.js.
+    handleLockedProfileLaunch({
+      app,
+      profile: activeProfile,
+      launchUrls,
+      probe: () => requestInstanceLockProbeSync(activeProfile),
+      requestFocus: requestProfileFocusSync,
+      showError: (title, message) => dialog.showErrorBox(title, message),
+      logger: console,
+    });
     app.exit(0);
     process.exit(0);
   }
   throw error;
+}
+// An `x-freedom-profile:` switch only raises a profile that is already open
+// (profile-switch-scheme.js). It got here because that profile quit between
+// the resolver's check and the lock: don't cold-start it in its place.
+if (activeProfile.switchOnly) {
+  console.warn(`[profile] Refused an x-freedom-profile switch to "${activeProfile.id}": not open`);
+  recordProfileSwitch(activeProfile, 'failed', { logger: console });
+  releaseProfileLock(activeProfileLock, { logger: console });
+  app.exit(0);
+  process.exit(0);
 }
 // Deep-link the profile manager's edit button lands an opened profile on. The
 // intent crosses process boundaries as a boolean (focus request field / the
 // `--open-settings` launch flag); this is the only place it becomes a URL.
 const PROFILE_SETTINGS_DEEPLINK = 'freedom://settings/profile';
 let focusCurrentProfileWindow = null;
+// Links handed to this process before its first window exists (an early macOS
+// `open-url`, a second launch's focus request during cold start). bootstrap()
+// drains them into that window's initial tabs; see createFirstWindowLinkQueue.
+const firstWindowLinks = createFirstWindowLinkQueue();
+// Set once this process holds its single-instance lock (Linux, #142, below).
+let listeningOnInstanceLock = false;
 const profileFocusWatcher = startProfileFocusRequestWatcher(
   activeProfile,
-  (request) =>
-    app.whenReady().then(() => {
-      if (typeof focusCurrentProfileWindow !== 'function') {
-        throw new Error('Main window focus handler is not ready');
-      }
-      return focusCurrentProfileWindow(request?.openSettings ? PROFILE_SETTINGS_DEEPLINK : null);
-    }),
+  (request) => {
+    // The request file is only a transport: re-check the URLs it carries.
+    const urls = request?.openSettings
+      ? [PROFILE_SETTINGS_DEEPLINK]
+      : sanitizeLaunchUrls(request?.urls);
+    // A handoff that lands while this process is still cold-starting goes to
+    // the first window bootstrap() is about to open (which comes up focused),
+    // not to a window of its own racing it. The ack can go out right away:
+    // the queue is drained into that window when it is created.
+    if (firstWindowLinks.queue(urls)) return Promise.resolve();
+    return app.whenReady().then(() => focusCurrentProfileWindow(urls));
+  },
   {
     logger: console,
     // Another Freedom process asked us to close — e.g. it is deleting this
@@ -127,8 +186,33 @@ const profileFocusWatcher = startProfileFocusRequestWatcher(
       setTimeout(() => app.quit(), 0);
       return Promise.resolve();
     },
+    // The answer to a second launch's instance-lock probe (#142).
+    isListeningOnInstanceLock: () => listeningOnInstanceLock,
   }
 );
+
+// Linux: later launches of this profile arrive as 'second-instance' with the
+// launch's XDG activation token (profile-instance-handoff.js, #142). The
+// focus-request watcher above stays the fallback for launches that cannot
+// reach this lock, or that this process does not answer the probe for.
+listeningOnInstanceLock = listenForProfileRelaunches(app, {
+  settingsUrl: PROFILE_SETTINGS_DEEPLINK,
+  firstWindowLinks,
+  focusWindow: (urls) => focusCurrentProfileWindow(urls),
+  userDataDir: activeProfile.userDataDir,
+  logger: console,
+});
+
+// macOS hands a link to the running app through `open-url` rather than argv,
+// including the one that launches it, which can arrive before `ready`. Those
+// wait for the first window, which opens them; later ones get a new tab.
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  const urls = sanitizeLaunchUrls([url]);
+  if (urls.length === 0) return;
+  if (firstWindowLinks.queue(urls)) return;
+  focusCurrentProfileWindow(urls);
+});
 
 const { version } = require('../../package.json');
 const iconPath = app.isPackaged
@@ -338,7 +422,7 @@ const {
   registerPrivateCleanup,
 } = require('./private/private-windows');
 const { initUpdater } = require('./updater');
-const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
+const { setupApplicationMenu, stopHistoryMenuRefresh, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
 const { registerClientCertificateHandler } = require('./client-certificate');
 const {
@@ -385,6 +469,10 @@ async function bootstrap() {
   // gigabytes of Bee-only state are only set aside here; they are deleted
   // off the main thread once the first window has painted (below, #526).
   migrateBeeDataToAntData();
+  // Move the pre-0.8.0 Kubo repo out of ipfs-data/ (keeping the live
+  // ipfs-data/freedom-ipfs/), before IPFS starts below. Like the Bee-only
+  // state, it is only renamed aside here and deleted after first paint (#101).
+  setAsideLegacyKuboRepo();
 
   const defaultSession = session.defaultSession;
   await defaultSession.clearCache();
@@ -577,20 +665,28 @@ async function bootstrap() {
   const settings = loadSettings();
   // A profile cold-started from another window's "edit" button (Profiles
   // manager) carries --open-settings; land its first tab on Profile settings.
-  const coldStartUrl = process.argv.includes('--open-settings') ? PROFILE_SETTINGS_DEEPLINK : null;
-  const mainWindow = createMainWindow(coldStartUrl);
+  // Otherwise the first window opens the links the launch was given, if any.
+  // Links that arrived before this window (an early macOS `open-url`, a second
+  // launch handed over during this cold start) are opened either way, after
+  // the settings tab when there is one.
+  const coldStartUrls = buildColdStartUrls(process.argv, {
+    settingsUrl: PROFILE_SETTINGS_DEEPLINK,
+    pendingOpenUrls: firstWindowLinks.drainForFirstWindow(),
+  });
+  const mainWindow = createMainWindow(coldStartUrls.length > 0 ? coldStartUrls : null);
   // One-off big deletes wait until the window is up, so an upgrade never
   // shows up as a slow launch (#526). Interrupted purges (quit before it
   // finished) are picked up on the next launch.
   mainWindow.once('ready-to-show', () => {
     void purgeSetAsideBeeData({ logger: log });
+    void purgeSetAsideLegacyKuboData({ logger: log });
   });
 
   if (!TEST_MODE) {
     await promptForDefaultExternalCandidates(activeProfile, {
       window: mainWindow,
       enabledProtocols: {
-        bee: settings.startBeeAtLaunch !== false,
+        bee: settings.startAntAtLaunch !== false,
         ipfs: settings.startIpfsAtLaunch !== false,
         tor: settings.enableTorIntegration === true && settings.startTorAtLaunch === true,
       },
@@ -695,6 +791,9 @@ const SHUTDOWN_WATCHDOG_MS = 20_000;
 // place that decides when quitting is allowed.
 async function windDown() {
   const myotisStopped = myotisManager.stopAllMyotis({ shutdown: true });
+  // Before any window closes: a window's 'closed' event arms a History-menu
+  // refresh that would otherwise fire after closeHistoryDb() and reopen it.
+  stopHistoryMenuRefresh();
 
   // Close all DevTools first to prevent crashes during cleanup
   log.info('[App] Closing all DevTools...');
@@ -767,9 +866,11 @@ async function windDown() {
   if (!myotisExits || myotisExits.some((exited) => !exited)) {
     log.warn('[App] Myotis child exit unconfirmed; data-directory reuse remains blocked');
   }
-  log.info(myotisExits && myotisExits.every(Boolean)
-    ? '[App] All processes stopped, quitting...'
-    : '[App] Quitting with Myotis exit unconfirmed');
+  log.info(
+    myotisExits && myotisExits.every(Boolean)
+      ? '[App] All processes stopped, quitting...'
+      : '[App] Quitting with Myotis exit unconfirmed'
+  );
 }
 
 app.on('before-quit', async (event) => {

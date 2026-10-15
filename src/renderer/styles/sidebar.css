@@ -1822,7 +1822,11 @@
    Stamp Manager
    ============================================ */
 
-/* Batch list */
+/* Batch list; the loading line borrows the Connect Ledger status spinner */
+.connect-ledger-status.stamp-list-loading {
+  margin: 0 0 12px 0;
+}
+
 .stamp-batch-list {
   display: flex;
   flex-direction: column;
@@ -1888,7 +1892,7 @@
   margin-top: 6px;
   font-size: 10px;
   color: var(--muted);
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   cursor: default;
 }
 
@@ -1939,8 +1943,13 @@
   transition: background-color 0.15s ease;
 }
 
-.stamp-batch-action-btn:hover {
+.stamp-batch-action-btn:hover:not(:disabled) {
   background: rgba(26, 115, 232, 0.15);
+}
+
+.stamp-batch-action-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Extension form (inline) */
@@ -3015,7 +3024,7 @@
 .perms-tx-addr,
 .perms-tx-selector {
   font-size: 11px;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   color: var(--muted);
 }
 
@@ -3485,6 +3494,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 100%;
+}
+
+/* The publisher selector's "Unlock to reveal owner" sits in the address slot
+   but is a sentence, not an address (#606). */
+.wallet-selector-address-hint {
+  font-family: inherit;
 }
 
 .wallet-selector-chevron {
@@ -5299,10 +5314,10 @@
   background: rgba(0, 0, 0, 0.06);
 }
 
-[data-theme="light"] .send-edit-btn {
-  background: rgba(0, 0, 0, 0.03);
-}
-
+/* Secondary buttons stay outlined at rest in the light theme, like the Swarm
+   approvals' Reject (#606 item 6): Send's Edit and the dApp Reject buttons used
+   to take a grey fill here that the dark theme and their siblings do not have.
+   Only the hover tint is light-specific. */
 [data-theme="light"] .send-edit-btn:hover {
   background: rgba(0, 0, 0, 0.06);
 }
@@ -5615,10 +5630,6 @@
 }
 
 [data-theme="light"] .dapp-connect-permissions {
-  background: rgba(0, 0, 0, 0.03);
-}
-
-[data-theme="light"] .dapp-connect-reject-btn {
   background: rgba(0, 0, 0, 0.03);
 }
 
@@ -6074,10 +6085,6 @@
   background: rgba(0, 0, 0, 0.03);
 }
 
-[data-theme="light"] .dapp-tx-reject-btn {
-  background: rgba(0, 0, 0, 0.03);
-}
-
 [data-theme="light"] .dapp-tx-reject-btn:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.06);
 }
@@ -6259,6 +6266,9 @@
 .dapp-sign-actions {
   display: flex;
   gap: 12px;
+  /* Same breathing room as `.dapp-tx-actions`: without it Reject/Sign sat
+     flush against the auto-approve checkbox above them (#606). */
+  margin-top: 16px;
 }
 
 .dapp-sign-reject-btn {
@@ -6315,10 +6325,6 @@
 }
 
 [data-theme="light"] .dapp-sign-unlock {
-  background: rgba(0, 0, 0, 0.03);
-}
-
-[data-theme="light"] .dapp-sign-reject-btn {
   background: rgba(0, 0, 0, 0.03);
 }
 
