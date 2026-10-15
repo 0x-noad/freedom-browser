@@ -1897,7 +1897,7 @@ jobs:
           retention-days: 14
 
   # Static analysis of the workflows and composite actions themselves (#633,
-  # #637): an unpinned `uses:`, a checkout that keeps the token in .git/config,
+  # #637): an unpinned `uses:`, a checkout that persists the git token,
   # a cache restored into a release build, template injection and the rest of
   # zizmor's audits. Accepted findings are listed, with reasons, in
   # .github/zizmor.yml; anything else fails here. Ungated like `test`: it reads

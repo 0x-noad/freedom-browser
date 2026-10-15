@@ -279,9 +279,11 @@ jobs:
       # Electron download cache is off in install-node-deps below: these jobs
       # build the signed releases and nightlies, so none of their inputs may
       # come from a cache another run wrote (#635). ci.yml keeps its caches.
-      # `package-manager-cache: false` is a no-op on setup-node v4 (which only
-      # caches when `cache:` is set) but keeps it off after a bump to v5+, which
-      # caches npm by default; v4 logs it as an unexpected input until then.
+      # `package-manager-cache: false` keeps setup-node (v5+) from turning npm
+      # caching on by itself, which it does when package.json declares npm in
+      # `packageManager` or `devEngines.packageManager`. This repo declares
+      # neither today, so the input is belt and braces: adding that field later
+      # must not quietly start restoring a cache into these builds.
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -1679,10 +1681,14 @@ jobs:
           # "Merged since the last nightly" is a git log between two commits
           # that can be many merges apart.
           fetch-depth: 0
-          # The one checkout that keeps the token in .git/config: "Publish the
+          # The one checkout that persists the token for git: "Publish the
           # rolling nightly release" force-pushes the `nightly` tag with plain
-          # git. Nothing in this job uploads the workspace, and the job runs
-          # no npm install or build, only git, gh and the downloaded artifacts.
+          # git. Since checkout v6 the token is not written into .git/config
+          # itself but into a credentials file under $RUNNER_TEMP, which
+          # .git/config pulls in with an `includeIf` entry; post-job cleanup
+          # removes both. Nothing in this job uploads the workspace, and the
+          # job runs no npm install or build, only git, gh and the downloaded
+          # artifacts.
           persist-credentials: true # zizmor: ignore[artipacked]
 
       - name: Download all platform artifacts
@@ -1768,8 +1774,9 @@ jobs:
           # Move the rolling tag before touching the release, so the release
           # page never shows last night's source next to tonight's assets.
           # A lightweight tag: no identity to configure, and nothing reads a
-          # tag message here. actions/checkout left the workflow token in the
-          # remote's credentials; `contents: write` above is what lets it push.
+          # tag message here. actions/checkout left the workflow token in git's
+          # config (a $RUNNER_TEMP credentials file included from .git/config);
+          # `contents: write` above is what lets it push.
           git tag -f nightly "$GITHUB_SHA"
           git push -f origin refs/tags/nightly
 
