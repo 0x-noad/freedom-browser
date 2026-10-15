@@ -107,6 +107,16 @@ The packaged app includes the `.node` addon via Electron Builder
   failed rename, so an interrupted run leaves a marker for the next launch; an
   unfinished purge is picked up the same way. A `FREEDOM_IPFS_DATA` override
   skips the cleanup, since that directory is not Freedom's to judge.
+- **Content discovery.** The native node finds providers for a CID (and IPNS
+  records) through two delegated routers, queried in parallel with the answers
+  merged: `https://delegated-ipfs.dev/routing/v1` and
+  `https://cid.contact/routing/v1` (`DELEGATED_ROUTERS` in
+  `src/main/ipfs/freedom-ipfs-native-node.js`), with a light DHT lookup as the
+  fallback. Both services see the CIDs and IPNS names the user loads. Before
+  #700 only the addon's built-in default (delegated-ipfs.dev) was asked; when
+  that one lookup failed, the DHT fallback found no usable provider and pages
+  failed with `502 … no HTTP-capable providers found`. There is no setting or
+  environment variable for the list.
 - IPFS identity status is reported as ephemeral. Native `freedom-ipfs` does not
   consume or expose a durable vault-derived PeerID for read-only retrieval in
   this release.
