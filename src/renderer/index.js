@@ -75,7 +75,7 @@ import { initBrowserFullscreen, listenForFullscreenChanges } from './lib/browser
 import { renderSubscreenHeaders } from './lib/subscreen-header.js';
 import { initRadicleConsent } from './lib/radicle-consent.js';
 import { initRadicleAlias } from './lib/radicle-alias.js';
-import { initWalletUi, openPublishSetupFlow } from './lib/wallet-ui.js';
+import { initWalletUi, openPublishSetupFromPage } from './lib/wallet-ui.js';
 import { attachSubmenuHover } from './lib/submenu-hover.js';
 import { isPrivateWindow } from './lib/private-mode.js';
 import { bindHoverTooltip } from './lib/hover-tooltip.js';
@@ -748,7 +748,7 @@ electronAPI.onCloseMenus?.(closeAllMenus);
 listenForFullscreenChanges();
 
 // Internal pages can deep-link into the sidebar publish-setup checklist.
-electronAPI.onOpenPublishSetup?.(openPublishSetupFlow);
+electronAPI.onOpenPublishSetup?.(openPublishSetupFromPage);
 
 // Initialize update notification toast
 function initUpdateNotifications() {
