@@ -81,7 +81,7 @@ const PUBLIC_CHANNELS = [
   // derives the calling origin from `event.senderFrame.url`, so it never trusts
   // anything the page says about who it is. That origin fixes which partition
   // the page may write and which grants it may spend — so a read of another
-  // site's published `/public` subtree is served only against a grant the user
+  // site's published `/shared` subtree is served only against a grant the user
   // approved for this exact origin, and never because the page named a target.
   'vault:provider-request',
   // The vault home page's owner-plane channels (freedom://dapps). These are

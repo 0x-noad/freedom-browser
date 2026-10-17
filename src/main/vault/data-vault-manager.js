@@ -8,7 +8,7 @@
  * name another site's namespace.
  *
  * A cross-origin read is not an exception to that. A site may read another's
- * data, but only what the owner published under `/public`, only for a
+ * data, but only what the owner published under `/shared`, only for a
  * reader->owner pair the user approved, and only through an owner ORIGIN that the
  * engine resolves to a namespace itself. The reader's identity still comes from
  * its frame; the owner's comes from a stored grant. A page can widen neither by
@@ -60,7 +60,7 @@ const META_AAD = `${EXPORT_FORMAT}|permissions`;
 const M = {
   connect: 'vault_connect',
   getData: 'vault_getData',
-  getPublicData: 'vault_getPublicData',
+  getSharedData: 'vault_getSharedData',
   setData: 'vault_setData',
   patchData: 'vault_patchData',
   subscribe: 'vault_subscribe',
@@ -75,7 +75,7 @@ const M = {
 // site that requests only read/write scopes cannot read back the grant it
 // already holds — a confusing failure that leaks nothing when allowed, since
 // the caller is asking about permissions it was itself given.
-// `vault_getPublicData` is deliberately NOT here: this set exists for a method
+// `vault_getSharedData` is deliberately NOT here: this set exists for a method
 // that tells a caller only about itself, and that one is the cross-origin
 // surface. Holding it is the recorded fact that the site intends to read
 // another site's published data, so it has to be asked for.
@@ -251,7 +251,7 @@ class DataVaultManager {
       switch (method) {
         case M.getData:
           return ok(active(await this._engine.localGet(sessionId, params.paths || [])));
-        case M.getPublicData:
+        case M.getSharedData:
           // `params.origin` names the OWNER being asked about, never the caller:
           // the caller's identity still comes from `event.senderFrame.url`, and
           // this string can only select among owners the user already approved
@@ -260,7 +260,7 @@ class DataVaultManager {
           // than refusing one), so normalising here would launder an origin the
           // engine would have rejected. `active`, never `written`: it is a read.
           return ok(
-            active(await this._engine.localGetPublic(sessionId, params.origin, params.paths || []))
+            active(await this._engine.localGetShared(sessionId, params.origin, params.paths || []))
           );
         case M.setData:
           return ok(written(await this._engine.localSet(sessionId, params.values || {}, params.baseVersion)));

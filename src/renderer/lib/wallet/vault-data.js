@@ -87,7 +87,7 @@ export function initVaultData(opts = {}) {
   const reqAllow = document.getElementById('vault-request-allow');
   const reqDeny = document.getElementById('vault-request-deny');
   const reqOwn = document.getElementById('vault-request-own');
-  const reqPublicNote = document.getElementById('vault-request-public-note');
+  const reqSharedNote = document.getElementById('vault-request-shared-note');
   const reqForeignBlock = document.getElementById('vault-request-foreign-block');
   // Cross-origin read grants on a partition's detail view, both directions.
   const permsHeader = document.getElementById('vault-detail-perms-header');
@@ -551,7 +551,7 @@ export function initVaultData(opts = {}) {
     if (reqFields) reqFields.replaceChildren();
     if (reqOwn) reqOwn.replaceChildren();
     if (reqForeignBlock) reqForeignBlock.classList.add('hidden');
-    if (reqPublicNote) reqPublicNote.classList.add('hidden');
+    if (reqSharedNote) reqSharedNote.classList.add('hidden');
   }
 
 
@@ -694,16 +694,16 @@ export function initVaultData(opts = {}) {
     }
 
     // The one thing this sheet has to say that the rows do not: a write at or
-    // below `/public` is what makes this site's data publishable. Rooted AT or
+    // below `/shared` is what makes this site's data publishable. Rooted AT or
     // BELOW, because that is exactly what the engine's publish gate requires —
     // a whole-document grant carries every other right but not this one, so it
-    // must not raise the note either. Token-wise, so `/publicity` is not
-    // `/public`.
-    if (reqPublicNote) {
+    // must not raise the note either. Token-wise, so `/sharedly` is not
+    // `/shared`.
+    if (reqSharedNote) {
       const publishes = requestedFields.some(
-        (f) => f.write === true && (f.path === '/public' || f.path.startsWith('/public/'))
+        (f) => f.write === true && (f.path === '/shared' || f.path.startsWith('/shared/'))
       );
-      reqPublicNote.classList.toggle('hidden', !publishes);
+      reqSharedNote.classList.toggle('hidden', !publishes);
     }
 
     // Built only from main's resolved list: that alone has been through

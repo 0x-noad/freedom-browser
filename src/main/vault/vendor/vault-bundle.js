@@ -1,7 +1,7 @@
 /* GENERATED — do not edit by hand.
  * @vault/{vault-core,crypto-core,protocol} bundled for Freedom Browser.
  * Source:   https://github.com/absolutions19/vault3r-code-public
- * Revision: 3b095c4da2d5
+ * Revision: cb0e3e6cc3e9
  * License:  MPL-2.0 (same as Freedom Browser)
  * Inlines:  @noble/ciphers, @noble/curves, @noble/hashes, @scure/base,
  *           @scure/bip39, tldts — all MIT. See the vendor README beside
@@ -3525,13 +3525,13 @@ var init_xchacha = __esm({
 });
 
 // packages/protocol/src/constants.ts
-var PROTOCOL_VERSION, NS_PREFIX_WEB, PUBLIC_POINTER, REQUEST_MAX_SKEW_MS, SESSION_DEFAULT_TTL_MS, SESSION_ABSOLUTE_MAX_TTL_MS, DELEGATION_DEFAULT_TTL_MS, MAX_ENVELOPE_BYTES, MAX_PLAINTEXT_BYTES, MAX_JSON_DEPTH, MAX_PATHS_PER_REQUEST, MAX_PATCH_OPS, MAX_NAMESPACE_BYTES, MAX_FIELD_PATH_LEN, MAX_FOREIGN_ORIGINS, MAX_FOREIGN_PATHS_PER_ORIGIN;
+var PROTOCOL_VERSION, NS_PREFIX_WEB, SHARED_POINTER, REQUEST_MAX_SKEW_MS, SESSION_DEFAULT_TTL_MS, SESSION_ABSOLUTE_MAX_TTL_MS, DELEGATION_DEFAULT_TTL_MS, MAX_ENVELOPE_BYTES, MAX_PLAINTEXT_BYTES, MAX_JSON_DEPTH, MAX_PATHS_PER_REQUEST, MAX_PATCH_OPS, MAX_NAMESPACE_BYTES, MAX_FIELD_PATH_LEN, MAX_FOREIGN_ORIGINS, MAX_FOREIGN_PATHS_PER_ORIGIN;
 var init_constants = __esm({
   "packages/protocol/src/constants.ts"() {
     "use strict";
     PROTOCOL_VERSION = "1";
     NS_PREFIX_WEB = "web";
-    PUBLIC_POINTER = "/public";
+    SHARED_POINTER = "/shared";
     REQUEST_MAX_SKEW_MS = 3e4;
     SESSION_DEFAULT_TTL_MS = 4 * 60 * 6e4;
     SESSION_ABSOLUTE_MAX_TTL_MS = 7 * 24 * 60 * 6e4;
@@ -3970,7 +3970,7 @@ var init_methods = __esm({
       SessionDelete: "vault_sessionDelete",
       SessionPing: "vault_sessionPing",
       GetData: "vault_getData",
-      GetPublicData: "vault_getPublicData",
+      GetSharedData: "vault_getSharedData",
       SetData: "vault_setData",
       PatchData: "vault_patchData",
       Subscribe: "vault_subscribe",
@@ -8600,16 +8600,16 @@ function fieldAllows(fields, path, mode) {
 function pathIsSensitive(fields, path) {
   return fields.some((r) => pointerCovers(r.path, path) && r.sensitive === true);
 }
-function isUnderPublic(path) {
-  return pointerCovers(PUBLIC_POINTER, path);
+function isUnderShared(path) {
+  return pointerCovers(SHARED_POINTER, path);
 }
 function foreignReadAllows(entry, path) {
-  if (!isUnderPublic(path)) return false;
+  if (!isUnderShared(path)) return false;
   if (!Array.isArray(entry?.paths)) return false;
-  return entry.paths.some((p) => typeof p === "string" && isUnderPublic(p) && pointerCovers(p, path));
+  return entry.paths.some((p) => typeof p === "string" && isUnderShared(p) && pointerCovers(p, path));
 }
 function publishAllows(fields, path) {
-  return fields.some((r) => r.write && isUnderPublic(r.path) && pointerCovers(r.path, path));
+  return fields.some((r) => r.write && isUnderShared(r.path) && pointerCovers(r.path, path));
 }
 function intersectScopes(requested, allowedMethods) {
   const methodSet = /* @__PURE__ */ new Set();
@@ -9019,10 +9019,10 @@ function normalizeForeignPaths(paths) {
   const kept = [];
   for (const p of paths ?? []) {
     parsePointer(p);
-    if (!isUnderPublic(p)) {
-      throw VaultError.of("FieldOutOfScope", `cross-origin reads are limited to ${PUBLIC_POINTER}`);
+    if (!isUnderShared(p)) {
+      throw VaultError.of("FieldOutOfScope", `cross-origin reads are limited to ${SHARED_POINTER}`);
     }
-    if (p === PUBLIC_POINTER) return [PUBLIC_POINTER];
+    if (p === SHARED_POINTER) return [SHARED_POINTER];
     kept.push(p);
   }
   return [...new Set(kept)];
@@ -9390,8 +9390,8 @@ var init_engine = __esm({
         const changedPaths = [];
         for (const change of changes) {
           const path = change.path;
-          if (isUnderPublic(path) && !publishAllows(session.grant.fields, path)) {
-            throw VaultError.of("WriteForbidden", `publishing to ${path} needs an explicit ${PUBLIC_POINTER} grant`);
+          if (isUnderShared(path) && !publishAllows(session.grant.fields, path)) {
+            throw VaultError.of("WriteForbidden", `publishing to ${path} needs an explicit ${SHARED_POINTER} grant`);
           }
           if (change.op === "remove") {
             if (!fieldAllows(session.grant.fields, path, "write")) {
@@ -9676,9 +9676,9 @@ var init_engine = __esm({
        * One owner per call, never a batch: a multi-owner call would make one request
        * decrypt up to `MAX_FOREIGN_ORIGINS` other partitions.
        */
-      async localGetPublic(sessionId, origin, paths) {
+      async localGetShared(sessionId, origin, paths) {
         const session = await this.requireLocalSession(sessionId);
-        this.assertLocalMethod(session, Method.GetPublicData);
+        this.assertLocalMethod(session, Method.GetSharedData);
         if (paths.length > MAX_PATHS_PER_REQUEST) throw VaultError.of("QuotaExceeded", "too many paths");
         let namespace;
         try {
@@ -9895,7 +9895,7 @@ __export(src_exports2, {
   fieldAllows: () => fieldAllows,
   foreignReadAllows: () => foreignReadAllows,
   intersectScopes: () => intersectScopes,
-  isUnderPublic: () => isUnderPublic,
+  isUnderShared: () => isUnderShared,
   normalizeFields: () => normalizeFields,
   parsePointer: () => parsePointer,
   pathIsSensitive: () => pathIsSensitive,

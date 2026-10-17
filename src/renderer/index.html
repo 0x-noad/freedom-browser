@@ -2018,14 +2018,14 @@
                       <div class="vault-req-own" id="vault-request-own"></div>
 
                       <!-- Shown only when the site asked to WRITE at or below
-                           `/public`, which is the one grant that makes its data
+                           `/shared`, which is the one grant that makes its data
                            publishable. Blue and the info glyph, not amber: this
                            says what the access means, the way the wallet's own
                            sign pane does. Without it nothing on this sheet
                            tells the user that what this site stores there is
                            something other sites can ask for — the location is
                            the only mark, so this sentence is the only notice. -->
-                      <div class="dapp-sign-warning hidden" id="vault-request-public-note">
+                      <div class="dapp-sign-warning hidden" id="vault-request-shared-note">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                           <circle cx="12" cy="12" r="10" />
                           <line x1="12" y1="16" x2="12" y2="12" />
@@ -2033,7 +2033,7 @@
                         </svg>
                         <span
                           >This site writes data marked
-                          <span class="vault-req-inline-path">/public</span> into its partition.
+                          <span class="vault-req-inline-path">/shared</span> into its partition.
                           Other sites can read this data if you give them permission.</span
                         >
                       </div>
@@ -2046,7 +2046,7 @@
                       <div class="vault-req-intro">
                         This site is requesting
                         <span class="vault-req-inline-code">read</span> permissions for data
-                        marked <span class="vault-req-inline-path">/public</span> from the
+                        marked <span class="vault-req-inline-path">/shared</span> from the
                         following sites:
                       </div>
                       <ul id="vault-request-fields" class="vault-request-fields"></ul>

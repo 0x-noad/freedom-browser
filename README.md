@@ -21,7 +21,7 @@ Radicle is available on macOS, Linux, and Windows (x64 and ARM64). The release w
 - Tabs, sidebar, bookmarks, history, downloads, find-in-page, shortcuts, themes, permissions, and automatic updates.
 - Ad blocking with signed list updates and per-site allowlisting.
 - Wallet and dApp flows, x402 payments, hardware-wallet support, and Swarm/Radicle provider APIs.
-- A per-site encrypted data vault (`window.vault`): a site declares the fields it wants, the user approves the partition, and a site may publish under `/public` for another site to read with per-pair consent. Managed in the wallet's **Data** pane, with the `freedom://dapps` launcher.
+- A per-site encrypted data vault (`window.vault`): a site declares the fields it wants, the user approves the partition, and a site may publish under `/shared` for another site to read with per-pair consent. Managed in the wallet's **Data** pane, with the `freedom://dapps` launcher.
 - Custom protocol origins so decentralized applications can use relative assets, storage, service workers, and range requests naturally.
 
 See the [feature guide](docs/features.md) for the detailed capability list.

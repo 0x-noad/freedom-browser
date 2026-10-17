@@ -47,7 +47,7 @@ function grant(extra = {}) {
   };
 }
 
-const foreignRead = { namespace: OWNER, origin: 'https://owner.example', paths: ['/public'] };
+const foreignRead = { namespace: OWNER, origin: 'https://owner.example', paths: ['/shared'] };
 
 describe('foreignReads on a remembered grant', () => {
   test('persists what was granted', () => {
@@ -90,7 +90,7 @@ describe('foreignReads on a remembered grant', () => {
 
 describe('removeForeignRead', () => {
   test('drops one owner and leaves the rest', () => {
-    const other = { namespace: 'web:other.example', origin: 'https://other.example', paths: ['/public'] };
+    const other = { namespace: 'web:other.example', origin: 'https://other.example', paths: ['/shared'] };
     perms.grantPermission(READER, grant({ foreignReads: [foreignRead, other] }), NOW);
 
     expect(perms.removeForeignRead(READER, OWNER)).toBe(true);
@@ -144,7 +144,7 @@ describe('setForeignReadEnabled', () => {
   });
 
   test('leaves the other owners alone', () => {
-    const other = { namespace: 'web:other.example', origin: 'https://other.example', paths: ['/public'] };
+    const other = { namespace: 'web:other.example', origin: 'https://other.example', paths: ['/shared'] };
     perms.grantPermission(READER, grant({ foreignReads: [foreignRead, other] }), NOW);
     perms.setForeignReadEnabled(READER, OWNER, false);
 
@@ -190,7 +190,7 @@ describe('removeForeignReadsTo', () => {
   });
 
   test('leaves a reader of a different owner alone', () => {
-    const other = { namespace: 'web:other.example', origin: 'https://other.example', paths: ['/public'] };
+    const other = { namespace: 'web:other.example', origin: 'https://other.example', paths: ['/shared'] };
     perms.grantPermission(READER, grant({ foreignReads: [other] }), NOW);
 
     expect(perms.removeForeignReadsTo(OWNER)).toEqual([]);

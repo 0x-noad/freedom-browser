@@ -11,7 +11,7 @@
  * It exists because the one claim the feature rests on is the hardest to see in
  * a unit test: that a granted cross-origin read comes back with the owner's
  * VALUE in it. Everything around that answers `null` by design — an unapproved
- * owner, a path outside `/public`, a site never visited — so a wiring mistake
+ * owner, a path outside `/shared`, a site never visited — so a wiring mistake
  * anywhere in the chain looks exactly like the no-oracle behaviour working.
  */
 
@@ -103,14 +103,14 @@ afterEach(() => {
 });
 
 /** The owner connects, publishes `value`, and returns its session id. */
-async function ownerPublishes(value, pointer = '/public/displayName') {
+async function ownerPublishes(value, pointer = '/shared/displayName') {
   const event = frame(OWNER_ORIGIN, 11);
   const session = await call(event, 'vault_connect', {
     requestedScopes: [
       {
         methods: ['vault_getData', 'vault_setData'],
-        // Publishing needs a grant rooted at or below /public: that is the gate.
-        fields: [{ path: '/public', read: true, write: true }],
+        // Publishing needs a grant rooted at or below /shared: that is the gate.
+        fields: [{ path: '/shared', read: true, write: true }],
       },
     ],
   });
@@ -119,12 +119,12 @@ async function ownerPublishes(value, pointer = '/public/displayName') {
 }
 
 /** The reader connects naming `owner`, and returns its session id. */
-async function readerConnects(paths = ['/public/displayName'], owner = OWNER_ORIGIN) {
+async function readerConnects(paths = ['/shared/displayName'], owner = OWNER_ORIGIN) {
   const event = frame(READER_ORIGIN, 22);
   const session = await call(event, 'vault_connect', {
     requestedScopes: [
       {
-        methods: ['vault_getData', 'vault_setData', 'vault_getPublicData'],
+        methods: ['vault_getData', 'vault_setData', 'vault_getSharedData'],
         fields: [{ path: '/own/seen', read: true, write: true }],
         foreign: [{ origin: owner, paths }],
       },
@@ -138,13 +138,13 @@ describe('a granted cross-partition read returns the owner’s value', () => {
     await ownerPublishes('ada');
     const { event, session } = await readerConnects();
 
-    const res = await call(event, 'vault_getPublicData', {
+    const res = await call(event, 'vault_getSharedData', {
       sessionId: session.sessionId,
       origin: OWNER_ORIGIN,
-      paths: ['/public/displayName'],
+      paths: ['/shared/displayName'],
     });
 
-    expect(res.values).toEqual({ '/public/displayName': 'ada' });
+    expect(res.values).toEqual({ '/shared/displayName': 'ada' });
     // No etag: a version over another partition moves when the owner writes,
     // which is a write-activity oracle even when every value reads null.
     expect(Object.keys(res)).toEqual(['values']);
@@ -157,33 +157,33 @@ describe('a granted cross-partition read returns the owner’s value', () => {
     expect(session.namespace).toBe(READER_NS);
     expect(perms.getPermission(OWNER_NS)).toBeTruthy();
     expect(perms.getPermission(READER_NS).foreignReads).toEqual([
-      { namespace: OWNER_NS, origin: OWNER_ORIGIN, paths: ['/public/displayName'] },
+      { namespace: OWNER_NS, origin: OWNER_ORIGIN, paths: ['/shared/displayName'] },
     ]);
   });
 
   test('a wholesale grant keeps up with what the owner publishes later', async () => {
     await ownerPublishes('ada');
-    const { event, session } = await readerConnects(['/public']);
+    const { event, session } = await readerConnects(['/shared']);
 
     // Published AFTER the grant was made.
     const owner = frame(OWNER_ORIGIN, 11);
     const ownerSession = await call(owner, 'vault_connect', {
       requestedScopes: [
-        { methods: ['vault_getData', 'vault_setData'], fields: [{ path: '/public', read: true, write: true }] },
+        { methods: ['vault_getData', 'vault_setData'], fields: [{ path: '/shared', read: true, write: true }] },
       ],
     });
     await call(owner, 'vault_setData', {
       sessionId: ownerSession.sessionId,
-      values: { '/public/bio': 'later' },
+      values: { '/shared/bio': 'later' },
     });
 
-    const res = await call(event, 'vault_getPublicData', {
+    const res = await call(event, 'vault_getSharedData', {
       sessionId: session.sessionId,
       origin: OWNER_ORIGIN,
-      paths: ['/public/displayName', '/public/bio'],
+      paths: ['/shared/displayName', '/shared/bio'],
     });
 
-    expect(res.values).toEqual({ '/public/displayName': 'ada', '/public/bio': 'later' });
+    expect(res.values).toEqual({ '/shared/displayName': 'ada', '/shared/bio': 'later' });
   });
 
   test('the owner’s private data does not cross, and does not error', async () => {
@@ -193,7 +193,7 @@ describe('a granted cross-partition read returns the owner’s value', () => {
         {
           methods: ['vault_getData', 'vault_setData'],
           fields: [
-            { path: '/public', read: true, write: true },
+            { path: '/shared', read: true, write: true },
             { path: '/private', read: true, write: true },
           ],
         },
@@ -201,37 +201,37 @@ describe('a granted cross-partition read returns the owner’s value', () => {
     });
     await call(owner, 'vault_setData', {
       sessionId: session.sessionId,
-      values: { '/public/displayName': 'ada', '/private/notes': 'not for sharing' },
+      values: { '/shared/displayName': 'ada', '/private/notes': 'not for sharing' },
     });
 
-    const reader = await readerConnects(['/public/displayName']);
-    const res = await call(reader.event, 'vault_getPublicData', {
+    const reader = await readerConnects(['/shared/displayName']);
+    const res = await call(reader.event, 'vault_getSharedData', {
       sessionId: reader.session.sessionId,
       origin: OWNER_ORIGIN,
-      paths: ['/public/displayName', '/private/notes'],
+      paths: ['/shared/displayName', '/private/notes'],
     });
 
     // Null rather than a refusal: an error would say the path exists.
-    expect(res.values).toEqual({ '/public/displayName': 'ada', '/private/notes': null });
+    expect(res.values).toEqual({ '/shared/displayName': 'ada', '/private/notes': null });
   });
 
   test('an owner the user never approved is indistinguishable from one that does not exist', async () => {
     await ownerPublishes('ada');
     const { event, session } = await readerConnects();
 
-    const unapproved = await call(event, 'vault_getPublicData', {
+    const unapproved = await call(event, 'vault_getSharedData', {
       sessionId: session.sessionId,
       origin: 'http://third.localhost:8799',
-      paths: ['/public/displayName'],
+      paths: ['/shared/displayName'],
     });
-    const nonexistent = await call(event, 'vault_getPublicData', {
+    const nonexistent = await call(event, 'vault_getSharedData', {
       sessionId: session.sessionId,
       origin: 'https://nothing-here.invalid',
-      paths: ['/public/displayName'],
+      paths: ['/shared/displayName'],
     });
 
     expect(unapproved).toEqual(nonexistent);
-    expect(unapproved.values).toEqual({ '/public/displayName': null });
+    expect(unapproved.values).toEqual({ '/shared/displayName': null });
   });
 
   test('switching the read off in the Data pane stops it, and on restores it', async () => {
@@ -239,12 +239,12 @@ describe('a granted cross-partition read returns the owner’s value', () => {
     const { session } = await readerConnects();
     const read = async (sessionId) =>
       (
-        await call(frame(READER_ORIGIN, 22), 'vault_getPublicData', {
+        await call(frame(READER_ORIGIN, 22), 'vault_getSharedData', {
           sessionId,
           origin: OWNER_ORIGIN,
-          paths: ['/public/displayName'],
+          paths: ['/shared/displayName'],
         })
-      ).values['/public/displayName'];
+      ).values['/shared/displayName'];
 
     expect(await read(session.sessionId)).toBe('ada');
 
@@ -271,10 +271,10 @@ describe('a granted cross-partition read returns the owner’s value', () => {
     // The reader's sessions end with the sweep, so its live one is refused —
     // it does not get to spend an approval to a partition that is gone.
     await expect(
-      call(event, 'vault_getPublicData', {
+      call(event, 'vault_getSharedData', {
         sessionId: session.sessionId,
         origin: OWNER_ORIGIN,
-        paths: ['/public/displayName'],
+        paths: ['/shared/displayName'],
       }),
     ).rejects.toThrow(/session/i);
 
@@ -287,17 +287,17 @@ describe('a granted cross-partition read returns the owner’s value', () => {
       { path: '/own/seen', read: true, write: true },
     ]);
 
-    const res = await call(again.event, 'vault_getPublicData', {
+    const res = await call(again.event, 'vault_getSharedData', {
       sessionId: again.session.sessionId,
       origin: OWNER_ORIGIN,
-      paths: ['/public/displayName'],
+      paths: ['/shared/displayName'],
     });
-    expect(res.values).toEqual({ '/public/displayName': null });
+    expect(res.values).toEqual({ '/shared/displayName': null });
   });
 });
 
 describe('the publish gate', () => {
-  test('a whole-document grant cannot write under /public', async () => {
+  test('a whole-document grant cannot write under /shared', async () => {
     const event = frame(OWNER_ORIGIN, 11);
     const session = await call(event, 'vault_connect', {
       requestedScopes: [
@@ -305,13 +305,13 @@ describe('the publish gate', () => {
       ],
     });
 
-    // The empty pointer covers every path, `/public` included — so without an
+    // The empty pointer covers every path, `/shared` included — so without an
     // explicit gate a site could publish without the word ever reaching its
     // consent sheet, and "location is the mark" would not be true.
     await expect(
       call(event, 'vault_setData', {
         sessionId: session.sessionId,
-        values: { '/public/sneaky': 1 },
+        values: { '/shared/sneaky': 1 },
       }),
     ).rejects.toThrow();
 

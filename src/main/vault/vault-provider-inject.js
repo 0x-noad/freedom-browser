@@ -38,7 +38,7 @@ module.exports = `
   // EIP-1193-shaped surface, scoped to VAULT's methods. A site connects once,
   // then reads/writes its own namespaced slice -- and, if it declared them at
   // connect and the user approved, READS (never writes, never subscribes to)
-  // another site's '/public' pointers.
+  // another site's '/shared' pointers.
   window.vault = {
     isVault3r: true,
 
@@ -52,10 +52,10 @@ module.exports = `
     get: function (sessionId, paths) { return call('vault_getData', { sessionId: sessionId, paths: paths }); },
     // Read another site's published data. 'origin' must be one you declared at
     // connect and the user approved, and each path must be under that owner's
-    // '/public'. Separate from get() because there is no version to pass back as
+    // '/shared'. Separate from get() because there is no version to pass back as
     // baseVersion -- you cannot write here. A path the owner never wrote, a
     // grant the user removed, and an owner with no partition are all null.
-    readPublic: function (sessionId, origin, paths) { return call('vault_getPublicData', { sessionId: sessionId, origin: origin, paths: paths }); },
+    readShared: function (sessionId, origin, paths) { return call('vault_getSharedData', { sessionId: sessionId, origin: origin, paths: paths }); },
     set: function (sessionId, values, baseVersion) { return call('vault_setData', { sessionId: sessionId, values: values, baseVersion: baseVersion }); },
     patch: function (sessionId, ops, baseVersion) { return call('vault_patchData', { sessionId: sessionId, ops: ops, baseVersion: baseVersion }); },
     subscribe: function (sessionId, paths) { return call('vault_subscribe', { sessionId: sessionId, paths: paths }); },

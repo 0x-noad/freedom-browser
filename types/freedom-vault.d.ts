@@ -3,7 +3,7 @@
  * Freedom injects into every page.
  *
  * Per-site is the default and the boundary. The one way across it is deliberate
- * and narrow: a site may publish under the reserved `/public` subtree, and
+ * and narrow: a site may publish under the reserved `/shared` subtree, and
  * another site may be granted READ-ONLY access to it — declared at `connect`
  * and approved by the user per reader/owner pair.
  *
@@ -47,10 +47,10 @@ export interface FreedomVaultField {
  * `https://site.example` and `bzz://site.example` are two different owners
  * holding two different partitions.
  *
- * Only pointers under the reserved `/public` subtree may be named, `/public`
+ * Only pointers under the reserved `/shared` subtree may be named, `/shared`
  * itself included — naming it asks for the whole published area, including
  * whatever the owner adds later, and the consent sheet renders that as
- * open-ended rather than as a list of fields. Anything outside `/public` fails
+ * open-ended rather than as a list of fields. Anything outside `/shared` fails
  * the connect.
  *
  * Read-only: there is no cross-origin write and no cross-origin `subscribe`.
@@ -63,7 +63,7 @@ export interface FreedomVaultForeignRead {
 export interface FreedomVaultScope {
   /**
    * The methods the site intends to call. `vault_getPermissions` is granted
-   * whether or not you ask for it; `vault_getPublicData` is NOT — it is the
+   * whether or not you ask for it; `vault_getSharedData` is NOT — it is the
    * cross-origin surface, so it has to be asked for.
    */
   methods: string[];
@@ -162,17 +162,17 @@ export interface FreedomVaultProvider {
   /**
    * Read another site's published data. `origin` must be one you declared at
    * `connect` and the user approved, and each path must be under that owner's
-   * `/public`. At most 64 paths per call.
+   * `/shared`. At most 64 paths per call.
    *
    * Separate from `get` because there is no `version` to come back: you cannot
    * write here, so there is nothing to pass as `baseVersion`.
    *
    * A path the owner never wrote, an owner with no partition at all, a grant
-   * the user removed, and a pointer outside `/public` are INDISTINGUISHABLE —
+   * the user removed, and a pointer outside `/shared` are INDISTINGUISHABLE —
    * each resolves to `null` rather than rejecting. That is deliberate: an error
    * telling them apart would let you probe which sites the user has visited.
    */
-  readPublic(
+  readShared(
     sessionId: string,
     origin: string,
     paths: string[]
