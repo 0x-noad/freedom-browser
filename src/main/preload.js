@@ -865,3 +865,71 @@ if (process.argv.includes('--freedom-test-harness')) {
         : Promise.reject(new Error(`Unknown test harness operation: ${op}`)),
   });
 }
+
+// ============================================
+// VAULT data vault — OWNER plane (window.vaultData)
+// ============================================
+// The management surface for the "Data" pane. Deliberately separate from the
+// site-facing window.vault provider (injected into webviews by
+// webview-preload.js): these channels are on the MAIN-WINDOW preload only, so a
+// website can never reach them.
+contextBridge.exposeInMainWorld('vaultData', {
+  /** [{ namespace, origin, appName, fields, methods, bytes, lastUsed, connectedAt }] */
+  listPartitions: () => ipcRenderer.invoke('datavault:list-partitions'),
+  /** { totalBytes, partitionCount, unlocked } */
+  getUsage: () => ipcRenderer.invoke('datavault:usage'),
+  /** { namespace, locked, data?, bytes? } — data present only when unlocked */
+  getPartitionData: (namespace) => ipcRenderer.invoke('datavault:get-partition-data', namespace),
+  /** The partition for a browsed URL, or null — backs the per-tab banner */
+  partitionForUrl: (url) => ipcRenderer.invoke('datavault:partition-for-url', url),
+  /** { deleted, namespace, freedBytes } */
+  deletePartition: (namespace) => ipcRenderer.invoke('datavault:delete-partition', namespace),
+  /** { cleared, freedBytes } */
+  clearAll: () => ipcRenderer.invoke('datavault:clear-all'),
+  /** { saved, path?, canceled? } — main shows the save dialog */
+  exportVault: () => ipcRenderer.invoke('datavault:export'),
+  /**
+   * One partition's cross-origin read grants, from both ends.
+   * { locked, reads: [{ ownerNamespace, ownerOrigin, paths, enabled }],
+   *           readers: [{ readerNamespace, readerOrigin, paths }] }
+   */
+  foreignGrantsFor: (namespace) => ipcRenderer.invoke('datavault:foreign-grants', namespace),
+  /** { revoked, readerNamespace, ownerNamespace } — deletes no data either side */
+  revokeForeignRead: (readerNamespace, ownerNamespace) =>
+    ipcRenderer.invoke('datavault:revoke-foreign-read', { readerNamespace, ownerNamespace }),
+  /**
+   * { changed, readerNamespace, ownerNamespace, enabled } — turn one held read
+   * off or on. Unlike revoke, the grant stays on the record either way, so the
+   * Data pane can offer it back.
+   */
+  setForeignReadEnabled: (readerNamespace, ownerNamespace, enabled) =>
+    ipcRenderer.invoke('datavault:set-foreign-read-enabled', {
+      readerNamespace,
+      ownerNamespace,
+      enabled,
+    }),
+
+  // Consent flow — a site is asking for access. Main pushes a request; the
+  // "Data" pane renders per-field toggles and responds with the user's decision.
+  /**
+   * cb({ id, origin, namespace, appMetadata, icon, requestedScopes, previousGrant,
+   *      foreignReads: [{ namespace, origin, paths, wholesale, known }] })
+   *
+   * `foreignReads` are the cross-origin reads the ENGINE resolved — canonical
+   * owner origin, clamped paths — not `requestedScopes[].foreign`, which is the
+   * page's unvalidated text.
+   */
+  onConsentRequest: (cb) => ipcRenderer.on('datavault:consent-request', (_e, req) => cb(req)),
+  /** decision: { approved, grantedMethods?, grantedFields?, writePolicy?, reason? } */
+  respondConsent: (id, decision) => ipcRenderer.send('datavault:consent-response', { id, decision }),
+  /** Register this window as the consent target (also solves the boot race). */
+  signalReady: () => ipcRenderer.send('datavault:ui-ready'),
+  /** cb({ namespace }) — a site wrote to its partition; listed sizes are stale. */
+  onPartitionChanged: (cb) => ipcRenderer.on('datavault:partition-changed', (_e, ev) => cb(ev)),
+
+  // Unlock flow — the launcher page (freedom://dapps) is a webview and cannot
+  // reach the sidebar's unlock screen, so main asks this window to show it.
+  /** cb({ id }) — show the browser's unlock screen, then call respondUnlock(id). */
+  onShowUnlock: (cb) => ipcRenderer.on('datavault:show-unlock', (_e, req) => cb(req)),
+  respondUnlock: (id) => ipcRenderer.send('datavault:unlock-result', { id }),
+});
