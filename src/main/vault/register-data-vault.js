@@ -33,7 +33,29 @@ function isHomeFrame(event) {
 let consentTarget = null;
 /** id -> resolve, for consent round-trips in flight. */
 const pendingConsent = new Map();
+/** namespace -> id, so a prompt whose asker is gone can be taken off screen. */
+const consentByNamespace = new Map();
 let consentSeq = 0;
+
+/**
+ * Take a consent sheet off screen because the page that asked for it is gone.
+ *
+ * The manager calls this when the asking frame is destroyed or navigates: the
+ * request no longer exists, so the sheet must not sit there inviting an answer
+ * that can grant nothing. Resolves the round-trip as a refusal so nothing in
+ * main is left waiting on it either.
+ */
+function cancelConsent(namespace) {
+  const id = consentByNamespace.get(namespace);
+  if (!id) return;
+  consentByNamespace.delete(namespace);
+  const resolve = pendingConsent.get(id);
+  pendingConsent.delete(id);
+  if (consentTarget && !consentTarget.isDestroyed()) {
+    consentTarget.webContents.send('datavault:consent-cancel', { id });
+  }
+  if (resolve) resolve({ approved: false, reason: 'the page that asked is gone' });
+}
 
 /**
  * Consent sheet: a round-trip to the "Data" pane, which renders the requested
@@ -50,11 +72,16 @@ async function promptConsent(req) {
 
   if (consentTarget && !consentTarget.isDestroyed()) {
     const id = `consent-${++consentSeq}`;
-    const decision = await new Promise((resolve) => {
-      pendingConsent.set(id, resolve);
-      consentTarget.webContents.send('datavault:consent-request', { ...req, id });
-    });
-    return decision;
+    consentByNamespace.set(req.namespace, id);
+    try {
+      return await new Promise((resolve) => {
+        pendingConsent.set(id, resolve);
+        consentTarget.webContents.send('datavault:consent-request', { ...req, id });
+      });
+    } finally {
+      pendingConsent.delete(id);
+      if (consentByNamespace.get(req.namespace) === id) consentByNamespace.delete(req.namespace);
+    }
   }
 
   const fieldList = fields.map((f) => `  • ${f.path} ${f.write ? '(read + write)' : '(read only)'}`).join('\n');
@@ -172,6 +199,7 @@ function registerDataVault() {
       ensureUnlocked: requestUnlockFromUi,
     },
     promptConsent,
+    cancelConsent,
     // Tiles pass a namespace; main resolved it to the origin it observed itself.
     openUrl: (url) => {
       const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());

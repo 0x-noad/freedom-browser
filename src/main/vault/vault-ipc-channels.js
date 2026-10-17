@@ -16,6 +16,9 @@ module.exports = {
 
   // Consent prompt (main -> renderer modal -> main).
   VAULT_CONSENT_REQUEST: 'vault:consent-request',
+  // Take a sheet off screen because the page that asked is gone (a reload, a
+  // closed tab). Push-only, owner plane: the renderer answers nothing.
+  VAULT_CONSENT_CANCEL: 'datavault:consent-cancel',
   VAULT_CONSENT_RESULT: 'vault:consent-result',
 
   // Management (browser settings UI -> main).
