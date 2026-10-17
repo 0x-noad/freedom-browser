@@ -574,6 +574,15 @@ describe('consent sheet: the /public note', () => {
     expect(note().classList.contains('hidden')).toBe(true);
   });
 
+  test('it has air above it, and an info dot that actually renders', () => {
+    // The dot of the `i` is a zero-length line; with the default butt cap it
+    // draws nothing, which is why it looked like an undotted stroke.
+    const rule = ruleBodyFor('#vault-request-public-note svg');
+    expect(rule).toMatch(/stroke-linecap:\s*round/);
+    expect(rule).toMatch(/stroke-width:\s*2\.4/);
+    expect(ruleBodyFor('#vault-request-public-note')).toMatch(/margin-top:\s*14px/);
+  });
+
   test('its copy says what the mark means, and marks /public as code', () => {
     const html = require('fs').readFileSync(
       require('path').join(__dirname, '..', '..', 'index.html'),
@@ -1194,8 +1203,9 @@ describe('the usage bar shows what the vault is made of', () => {
     // Mixed from the accent, not picked, so both shades follow the theme.
     expect(ruleBodyFor('.vault-usage-seg.b')).toMatch(/color-mix\([^)]*var\(--accent\)/);
     expect(ruleBodyFor('.vault-usage-seg.empty')).toMatch(/background:\s*var\(--border\)/);
-    // The smallest site stays visible beside a large one.
-    expect(ruleBodyFor('.vault-usage-seg')).toMatch(/min-width:\s*2px/);
+    // The smallest site is a chip you can see and hover, not a hairline —
+    // deliberately wider than its share, since the row below gives the size.
+    expect(ruleBodyFor('.vault-usage-seg')).toMatch(/min-width:\s*8px/);
     // One rule for both ways into the row's hover state, so they cannot drift.
     expect(vaultCss).toMatch(
       /\.vault-row:hover,\s*\n\.vault-row\.is-hovered \{ border-color: var\(--accent\); \}/,

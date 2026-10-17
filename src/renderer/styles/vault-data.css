@@ -25,8 +25,13 @@
 }
 .vault-usage-seg {
   height: 100%;
-  /* So the smallest site is still a visible sliver beside a large one. */
-  min-width: 2px;
+  /* A floor of one bar-height, so the smallest site is a chip you can see and
+     hover rather than a hairline. It makes the bar deliberately inexact at the
+     bottom end — a 2 KB site next to a 2 MB one is drawn far wider than its
+     share — which is the right trade for a control you point at: the sizes are
+     written out on the rows below. The big segments absorb it, since flex
+     shrinks them and the floor holds the small ones. */
+  min-width: 8px;
   transition: width 0.3s ease, filter 0.15s ease;
 }
 /* Two shades, alternating, so neighbouring shares are told apart. The second is
@@ -83,6 +88,15 @@
 
 /* The consent sheet uses the list's site row AS IS — same builder, same open
    button, same width — so nothing here restyles it. */
+
+/* The `/public` note sits under the site row, not against it. And its info
+   glyph is drawn bolder with round caps, because the dot of the `i` is a
+   zero-length line: with the default butt cap it renders as nothing at all. */
+#vault-request-public-note { margin-top: 14px; }
+#vault-request-public-note svg {
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
 
 /* `/public` named inside a sentence: code font, and the same green the
    stored-data pills use for a writable field. */

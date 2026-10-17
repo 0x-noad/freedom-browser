@@ -141,6 +141,12 @@ export interface FreedomVaultProvider {
     sessionId: string,
     paths: string[]
   ): Promise<{ values: Record<string, unknown>; version: string }>;
+  /**
+   * Write a map of pointers. Pass the `version` you last read as `baseVersion`
+   * for optimistic concurrency: a stale one rejects with `4321`
+   * (`VersionConflict`), whose `data.version` is the current etag — retry
+   * against that rather than re-reading the document.
+   */
   set(
     sessionId: string,
     values: Record<string, unknown>,
