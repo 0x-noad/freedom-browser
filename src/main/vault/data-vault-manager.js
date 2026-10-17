@@ -93,6 +93,18 @@ const ALWAYS_GRANTED_METHODS = [M.getPermissions];
 const UNLOCK_COOLDOWN_MS = 60_000;
 /** Consecutive dismissals before a namespace stops being able to prompt. */
 const UNLOCK_MAX_DISMISSALS = 3;
+/**
+ * Consent prompts a namespace may have the user reject before it stops being
+ * able to raise one, and how long that embargo lasts.
+ *
+ * The consent sheet is a modal: it covers the sidebar's tab bar so a request
+ * can only be answered, which is what keeps it from being lost behind a click.
+ * That is also what makes a loop of `connect()` calls worth refusing — a page
+ * that re-asks on every rejection would otherwise hold the sidebar hostage.
+ * Same shape as the unlock embargo above, and the same reasoning.
+ */
+const CONSENT_MAX_REJECTIONS = 3;
+const CONSENT_EMBARGO_MS = 5 * 60_000;
 
 class DataVaultManager {
   /**
@@ -122,11 +134,17 @@ class DataVaultManager {
    *   A site wrote to its partition. The "Data" pane lists partitions with their
    *   on-disk size and renders at consent time — before the site's first write —
    *   so without this it shows 0 B until the user happens to re-open the list.
+   * @param {(namespace: string) => void} [deps.cancelConsent]
+   *   Take a consent sheet off screen: the page that asked for it is gone, so
+   *   an answer could only grant a session nobody holds.
    * @param {() => number} [deps.now]  Injectable clock (tests).
    */
-  constructor({ dataDir, identityVault, promptConsent, openUrl, isHomeFrame, nativeImage, onPartitionChanged, now }) {
+  constructor({ dataDir, identityVault, promptConsent, cancelConsent, openUrl, isHomeFrame, nativeImage, onPartitionChanged, now }) {
     this._now = now || (() => Date.now());
     this._promptConsent = promptConsent;
+    // Takes a sheet off screen when the page that asked for it is gone.
+    // Optional: without it an abandoned prompt still settles, it just lingers.
+    this._cancelConsent = typeof cancelConsent === 'function' ? cancelConsent : null;
     this._openUrl = openUrl || null;
     this._isHomeFrame = typeof isHomeFrame === 'function' ? isHomeFrame : null;
     this._nativeImage = nativeImage || null;
@@ -153,6 +171,12 @@ class DataVaultManager {
     this._sessions = new Map();
     /** namespace -> the consent request currently in flight (dedupe double-connect). */
     this._pendingByNamespace = new Map();
+    /** namespace -> { rejections, embargoedUntil } — see CONSENT_MAX_REJECTIONS. */
+    this._consentRefusals = new Map();
+    /** namespace -> webContentsId of the frame currently asking to connect. */
+    this._connectAskers = new Map();
+    /** namespace -> { webContentsId, abandon } for a prompt on screen now. */
+    this._consentPromptFrames = new Map();
     /** namespace -> { dismissals, lastPromptAt } for vault_requestUnlock. */
     this._unlockPrompts = new Map();
     /** The unlock prompt in flight, shared by every caller. */
@@ -292,6 +316,45 @@ class DataVaultManager {
     }
   }
 
+  /**
+   * @private Count one rejection, and embargo the namespace at the third.
+   *
+   * Consecutive: an approval clears the count, because a user who says yes has
+   * answered the question the count was asking. Not persisted — a restart is a
+   * new situation, same as the unlock embargo.
+   */
+  _noteConsentRejection(namespace) {
+    const state = this._consentRefusals.get(namespace) || { rejections: 0, embargoedUntil: 0 };
+    state.rejections += 1;
+    if (state.rejections >= CONSENT_MAX_REJECTIONS) {
+      state.embargoedUntil = this._now() + CONSENT_EMBARGO_MS;
+      state.rejections = 0;
+    }
+    this._consentRefusals.set(namespace, state);
+  }
+
+  /**
+   * @private Settle a pending consent prompt whose asker is gone.
+   *
+   * Main cannot wait on the renderer forever. The prompt's entry is what makes
+   * every later `connect()` from that site return the same promise, so an
+   * unanswered one poisons every reload — a page that reloads gets the dead
+   * promise, waits out its own 120s timeout, and the next reload does it again.
+   * The prompt belongs to a page load: if that load is gone, answering it would
+   * grant a session nobody holds, so the honest answer is a rejection.
+   *
+   * This is the backstop, not the mechanism. The sheet being modal is what
+   * stops a request being lost in normal use; this is for the renderer dying,
+   * the window closing, or any other flow hiding the sheet.
+   */
+  _abandonConsentFor(webContentsId) {
+    for (const [namespace, entry] of this._consentPromptFrames) {
+      if (entry.webContentsId !== webContentsId) continue;
+      this._consentPromptFrames.delete(namespace);
+      entry.abandon();
+    }
+  }
+
   /** @private Reject a sessionId that isn't bound to this exact frame/origin. */
   _requireOwnedSession(event, origin, sessionId) {
     const rec = sessionId && this._sessions.get(sessionId);
@@ -304,11 +367,20 @@ class DataVaultManager {
   /** @private */
   async _connect(event, origin, params) {
     const derived = deriveOriginNamespace(origin); // throws on a non-authoritative origin
-    const result = await this._engine.connectLocal({
-      origin,
-      appMetadata: params.appMetadata || {},
-      requestedScopes: params.requestedScopes || [],
-    });
+    // The consent hook below runs inside connectLocal and is handed no event,
+    // so the asking frame is recorded here, keyed by the namespace it asked
+    // for. That is what lets a prompt be abandoned when its page goes away.
+    this._connectAskers.set(derived.namespace, event.sender.id);
+    let result;
+    try {
+      result = await this._engine.connectLocal({
+        origin,
+        appMetadata: params.appMetadata || {},
+        requestedScopes: params.requestedScopes || [],
+      });
+    } finally {
+      this._connectAskers.delete(derived.namespace);
+    }
     this._sessions.set(result.sessionId, {
       namespace: derived.namespace,
       origin,
@@ -350,12 +422,53 @@ class DataVaultManager {
     if (this._pendingByNamespace.has(namespace)) {
       return this._pendingByNamespace.get(namespace);
     }
+
+    // A site the user has said no to three times in a row stops being able to
+    // raise the sheet. The sheet is modal — it covers the sidebar's tab bar so
+    // a request can only be answered — so a page that re-asks on every
+    // rejection would hold the sidebar hostage. Refused with the same
+    // `approved: false` a rejection produces, deliberately indistinguishable
+    // from the user saying no again: a page that could tell them apart could
+    // count the user's refusals.
+    const refusals = this._consentRefusals.get(namespace);
+    if (refusals && refusals.embargoedUntil > this._now()) {
+      return { approved: false, reason: 'user denied' };
+    }
+
+    // One sheet at a time, whoever asks. Two origins racing — a page and its
+    // own iframe, or a handful of subdomains — would otherwise have the second
+    // prompt replace the first in the renderer, leaving the first caller
+    // waiting on a sheet nobody can see. Refusing the newcomer is the honest
+    // half: it gets an answer, and the sheet the user is looking at is the one
+    // they were already asked about.
+    if (this._pendingByNamespace.size > 0) {
+      return { approved: false, reason: 'another request is awaiting an answer' };
+    }
     // Clamp the page's claimed name/icon ONCE, and show the consent sheet the
     // same values the home-page tile will use — the user must approve exactly
     // what they will later see, or the tile becomes a spoofing surface.
     const claimed = this._sanitizeAppMetadata(req.appMetadata);
 
-    const p = (async () => {
+    // Tie this prompt to the frame that asked. If that page is destroyed or
+    // navigates away, the request it made no longer exists: `abandon` settles
+    // the engine's await, clears the sheet in the renderer, and — through the
+    // `abandoned` flag — stops a late answer from persisting a grant for a
+    // session nobody will hold.
+    const askerId = this._connectAskers.get(namespace);
+    let abandoned = false;
+    let abandon = () => {};
+    const abandonedPromise = new Promise((resolve) => {
+      abandon = () => {
+        if (abandoned) return;
+        abandoned = true;
+        if (this._cancelConsent) this._cancelConsent(namespace);
+        resolve({ approved: false, reason: 'the page that asked is gone' });
+      };
+    });
+    this._consentPromptFrames.set(namespace, { webContentsId: askerId, abandon });
+    this._watchConsentAsker(askerId);
+
+    const prompt = (async () => {
       const decision = await this._promptConsent({
         origin: req.verification.domain,
         namespace,
@@ -378,6 +491,10 @@ class DataVaultManager {
           paths: e.paths,
         })),
       });
+      // An answer that arrives after the asking page is gone grants nothing:
+      // there is no session to attach it to, and a partition appearing for a
+      // page that no longer exists is not what the user approved.
+      if (abandoned) return { approved: false, reason: 'the page that asked is gone' };
       if (decision && decision.approved) {
         const grantedMethods = withAlwaysGranted(decision.grantedMethods || requestedMethods);
         perms.grantPermission(
@@ -396,16 +513,45 @@ class DataVaultManager {
           },
           this._now(),
         );
+        // The user is willing: forget whatever they rejected before.
+        this._consentRefusals.delete(namespace);
         return { ...decision, grantedMethods, grantedForeignReads: decision.grantedForeignReads || [] };
       }
+      this._noteConsentRejection(namespace);
       return decision || { approved: false, reason: 'no decision' };
     })();
+    // Whichever comes first: the user's answer, or the page going away.
+    const p = Promise.race([prompt, abandonedPromise]);
     this._pendingByNamespace.set(namespace, p);
     try {
       return await p;
     } finally {
       this._pendingByNamespace.delete(namespace);
+      this._consentPromptFrames.delete(namespace);
     }
+  }
+
+  /**
+   * @private Abandon this namespace's prompt if the frame that asked goes away.
+   *
+   * A reload keeps the WebContents and destroys the document, so `destroyed`
+   * alone would miss it — a cross-document navigation is the other half. An
+   * in-page navigation (a hash change) is not: the page that asked is still
+   * there, still waiting.
+   */
+  _watchConsentAsker(webContentsId) {
+    const wc = webContentsById(webContentsId);
+    if (!wc || wc.isDestroyed()) return;
+    const gone = () => this._abandonConsentFor(webContentsId);
+    wc.once('destroyed', gone);
+    const onNavigate = (_e, _url, _isInPlace, isMainFrame, ...rest) => {
+      // Electron passes `isSameDocument` in the details for
+      // `did-start-navigation`; older signatures put it positionally. Treat
+      // anything that is not same-document in the main frame as gone.
+      const sameDocument = rest.some((arg) => arg === true);
+      if (isMainFrame && !sameDocument) gone();
+    };
+    wc.once('did-start-navigation', onNavigate);
   }
 
   /** @private Push a subscription / permissions_changed notification to the page. */

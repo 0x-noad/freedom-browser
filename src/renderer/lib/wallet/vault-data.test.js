@@ -304,6 +304,7 @@ function setupDom() {
     clearAll: jest.fn().mockResolvedValue({ cleared: true }),
     exportVault: jest.fn().mockResolvedValue({ saved: true }),
     onConsentRequest: jest.fn(),
+    onConsentCancelled: jest.fn(),
     respondConsent: jest.fn(),
     signalReady: jest.fn(),
     onPartitionChanged: jest.fn(),
@@ -524,6 +525,114 @@ describe('consent sheet: the partition being created', () => {
     els.get('vault-request-deny').onclick();
 
     expect(els.get('vault-request-own').children).toHaveLength(0);
+  });
+});
+
+describe('consent sheet: it cannot be left unanswered', () => {
+  beforeEach(setupDom);
+
+  /** Raise a request with the sidebar seams wired, as wallet-ui wires them. */
+  function raise(extra = {}) {
+    const hideOtherSubscreens = jest.fn();
+    let hider = () => {};
+    const { initVaultData } = require('./vault-data.js');
+    initVaultData({
+      hideOtherSubscreens,
+      registerScreenHider: (fn) => {
+        hider = fn;
+      },
+    });
+    vaultData.onConsentRequest.mock.calls[0][0](request(extra));
+    return { hideOtherSubscreens, hider: () => hider() };
+  }
+
+  test('takes the sidebar over the way the other prompts do', () => {
+    const { hideOtherSubscreens } = raise();
+
+    // It is a modal subscreen: whatever screen was up goes first, then this.
+    expect(hideOtherSubscreens).toHaveBeenCalled();
+    expect(els.get('vault-request-view').classList.contains('hidden')).toBe(false);
+  });
+
+  test('is a modal in the markup, with no way out but answering', () => {
+    const html = require('fs').readFileSync(
+      require('path').join(__dirname, '..', '..', 'index.html'),
+      'utf8',
+    );
+    const open = html.slice(html.indexOf('id="vault-request-view"'));
+    const tag = open.slice(0, open.indexOf('>'));
+    // `.sidebar-modal` is what covers the tab bar, so the request cannot be
+    // left behind a click into another tab — the bug this closes.
+    expect(tag).toContain('sidebar-subscreen sidebar-modal');
+    // Outside the Data tab panel, or it would be covered by nothing.
+    expect(html.indexOf('id="vault-request-view"')).toBeGreaterThan(html.indexOf('id="tab-settings"'));
+    // No back button and no header: Reject and Allow are the only exits.
+    const sheet = open.slice(0, open.indexOf('id="vault-request-allow"'));
+    expect(sheet).not.toContain('subscreen-header');
+    expect(sheet).not.toContain('data-back');
+  });
+
+  test('something else taking the sidebar answers it, rather than hiding it', () => {
+    const { hider } = raise();
+
+    hider();
+
+    // The page is waiting on this; a screen that disappears without an answer
+    // is what pinned the site forever.
+    expect(vaultData.respondConsent).toHaveBeenCalledWith('consent-1', {
+      approved: false,
+      reason: 'user denied',
+    });
+    expect(els.get('vault-request-view').classList.contains('hidden')).toBe(true);
+  });
+
+  test('our own transition is not a dismissal', () => {
+    // `hideOtherSubscreens()` fires every hider, ours included. Answering on
+    // the way IN would reject the request we are about to show.
+    const hideOtherSubscreens = jest.fn();
+    let hider = () => {};
+    const { initVaultData } = require('./vault-data.js');
+    initVaultData({
+      hideOtherSubscreens: () => {
+        hideOtherSubscreens();
+        hider();
+      },
+      registerScreenHider: (fn) => {
+        hider = fn;
+      },
+    });
+    vaultData.onConsentRequest.mock.calls[0][0](request());
+
+    expect(vaultData.respondConsent).not.toHaveBeenCalled();
+    expect(els.get('vault-request-view').classList.contains('hidden')).toBe(false);
+  });
+
+  test('answering takes the sheet down and leaves the pane where it was', () => {
+    raise();
+    els.get('vault-request-allow').onclick();
+
+    expect(els.get('vault-request-view').classList.contains('hidden')).toBe(true);
+    expect(els.get('vault-request-own').children).toHaveLength(0);
+  });
+
+  test('main taking the request back clears the sheet WITHOUT answering', () => {
+    raise();
+    const cancelled = vaultData.onConsentCancelled.mock.calls[0][0];
+
+    cancelled({ id: 'consent-1' });
+
+    // The page that asked is gone; main has already settled it. Responding
+    // would answer a round-trip nobody is holding.
+    expect(vaultData.respondConsent).not.toHaveBeenCalled();
+    expect(els.get('vault-request-view').classList.contains('hidden')).toBe(true);
+    expect(els.get('vault-request-own').children).toHaveLength(0);
+  });
+
+  test('a cancel for a different request leaves the one on screen alone', () => {
+    raise();
+    vaultData.onConsentCancelled.mock.calls[0][0]({ id: 'consent-99' });
+
+    expect(els.get('vault-request-view').classList.contains('hidden')).toBe(false);
   });
 });
 
@@ -1035,9 +1144,10 @@ describe('detail view: the reads this site holds', () => {
       require('path').join(__dirname, '..', '..', 'index.html'),
       'utf8',
     );
+    // To the end of the Data tab: the consent sheet is no longer inside it.
     const view = html.slice(
       html.indexOf('id="vault-detail-view"'),
-      html.indexOf('id="vault-request-view"'),
+      html.indexOf('id="tab-settings"'),
     );
     const at = (needle) => view.indexOf(needle);
 
@@ -1306,12 +1416,13 @@ describe('the locked prompt goes away when the vault is opened elsewhere', () =>
     return api;
   }
 
-  test('a consent sheet raised over it clears it', async () => {
+  test('a consent sheet covers it rather than racing it', async () => {
     await locked();
 
-    // The sequence a site connecting to a locked vault produces: main raises the
-    // unlock screen, the user unlocks, and the consent request arrives. The
-    // prompt used to stay on screen, over an open vault.
+    // The sheet is a modal subscreen now: it overlays the whole sidebar content
+    // area, so it does not have to clear the pane underneath and cannot be
+    // drawn behind it. That used to be a real bug — the sheet rendered under a
+    // prompt still saying the vault was locked.
     vaultData.onConsentRequest.mock.calls[0][0]({
       id: 'consent-1',
       origin: 'https://reader.example',
@@ -1320,11 +1431,10 @@ describe('the locked prompt goes away when the vault is opened elsewhere', () =>
       foreignReads: [],
     });
 
-    expect(els.get('vault-locked-view').classList.contains('hidden')).toBe(true);
     expect(els.get('vault-request-view').classList.contains('hidden')).toBe(false);
   });
 
-  test('a refresh that finds the vault still locked puts it back', async () => {
+  test('a refresh that finds the vault still locked keeps the prompt', async () => {
     const api = await locked();
     vaultData.onConsentRequest.mock.calls[0][0]({
       id: 'consent-1',

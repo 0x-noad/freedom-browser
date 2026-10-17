@@ -8,7 +8,7 @@
 import { showOnboarding } from './onboarding.js';
 import { open as openSidebarPanel, isFeatureEnabled as isSidebarFeatureEnabled } from './sidebar.js';
 import { isPrivateWindow } from './private-mode.js';
-import { walletState } from './wallet/wallet-state.js';
+import { walletState, registerScreenHider, hideAllSubscreens } from './wallet/wallet-state.js';
 import { isSignatureInFlight, onSignatureFlightChange } from './wallet/signature-flight.js';
 import { truncateAddress, timeAgo } from './wallet/wallet-utils.js';
 
@@ -149,6 +149,11 @@ export function initWalletUi() {
     requestUnlock: () => showVaultUnlock('Your data vault'),
     // Foreground, because the click is the user asking to go there.
     openInNewTab: (url) => openInNewTabWithTarget(url, null, { background: false }),
+    // The consent sheet is a modal subscreen like the dApp and Swarm prompts,
+    // so it takes the sidebar over the same way and answers when something
+    // else takes it back.
+    hideOtherSubscreens: () => hideAllSubscreens(),
+    registerScreenHider: (fn) => registerScreenHider(fn),
   });
   initCreateWallet();
   initConnectLedger();

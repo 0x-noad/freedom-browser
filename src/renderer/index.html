@@ -1990,78 +1990,6 @@
                   </div>
                 </div>
 
-                <!-- REQUEST VIEW (a site is asking for access — the consent prompt) -->
-                <div id="vault-request-view" class="hidden">
-                  <div class="vault-request">
-                    <!-- The wallet's Connect pane, class for class: the two prompts
-                         ask the same question about the same site, so they look the
-                         same. The site shown is the origin main derived from the
-                         sender frame, never anything the page claims. -->
-                    <div class="dapp-connect-origin">
-                      <div class="dapp-connect-icon" id="vault-request-icon">
-                        <img class="dapp-connect-favicon" id="vault-request-favicon" alt="" />
-                      </div>
-                      <div class="dapp-connect-site" id="vault-request-site">example.com</div>
-                      <div class="dapp-connect-wants">wants to access your vault</div>
-                    </div>
-
-                    <!-- The headers are inset to the permissions card's own
-                         padding, so both sit on the same left edge; the site row
-                         is not, so it is the same width as on the Data pane. -->
-                    <div class="vault-req-intro-block">
-                      <div class="vault-req-intro">
-                        This site is requesting to create a partition in your vault:
-                      </div>
-                      <!-- The same row the Data pane lists a site with, so the thing
-                           being approved here and the thing managed there are the
-                           same item: same builder, same controls, same width. -->
-                      <div class="vault-req-own" id="vault-request-own"></div>
-
-                      <!-- Shown only when the site asked to WRITE at or below
-                           `/shared`, which is the one grant that makes its data
-                           publishable. Blue and the info glyph, not amber: this
-                           says what the access means, the way the wallet's own
-                           sign pane does. Without it nothing on this sheet
-                           tells the user that what this site stores there is
-                           something other sites can ask for — the location is
-                           the only mark, so this sentence is the only notice. -->
-                      <div class="dapp-sign-warning hidden" id="vault-request-shared-note">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <circle cx="12" cy="12" r="10" />
-                          <line x1="12" y1="16" x2="12" y2="12" />
-                          <line x1="12" y1="8" x2="12.01" y2="8" />
-                        </svg>
-                        <span
-                          >This site writes data marked
-                          <span class="vault-req-inline-path">/shared</span> into its partition.
-                          Other sites can read this data if you give them permission.</span
-                        >
-                      </div>
-                    </div>
-
-                    <!-- Only when the site asked to read another partition. Without
-                         one there is nothing to head, and an empty section above the
-                         buttons is noise. -->
-                    <div class="vault-req-foreign-block hidden" id="vault-request-foreign-block">
-                      <div class="vault-req-intro">
-                        This site is requesting
-                        <span class="vault-req-inline-code">read</span> permissions for data
-                        marked <span class="vault-req-inline-path">/shared</span> from the
-                        following sites:
-                      </div>
-                      <ul id="vault-request-fields" class="vault-request-fields"></ul>
-                    </div>
-
-                    <div class="dapp-connect-actions">
-                      <button type="button" class="dapp-connect-reject-btn" id="vault-request-deny">
-                        Reject
-                      </button>
-                      <button type="button" id="vault-request-allow" class="dapp-connect-approve-btn">
-                        Allow
-                      </button>
-                    </div>
-                  </div>
-                </div>
               </div>
 
               <div id="tab-settings" class="tab-panel hidden">
@@ -3804,6 +3732,85 @@
             </div>
 
             <!-- Swarm Connect sub-screen -->
+            <!-- A site is asking for access. A MODAL subscreen, like every other
+                 externally-triggered prompt in this sidebar: it overlays the whole
+                 content area including the tab bar, so the request can only be
+                 answered rather than lost behind a click into another tab. There is
+                 deliberately no header and no back button — Reject and Allow are the
+                 only ways out. Closing the sidebar hides it; reopening brings it
+                 back, which is how the panel holds a pending confirmation. -->
+            <div id="vault-request-view" class="sidebar-subscreen sidebar-modal hidden">
+                <div class="vault-request">
+                  <!-- The wallet's Connect pane, class for class: the two prompts
+                       ask the same question about the same site, so they look the
+                       same. The site shown is the origin main derived from the
+                       sender frame, never anything the page claims. -->
+                  <div class="dapp-connect-origin">
+                    <div class="dapp-connect-icon" id="vault-request-icon">
+                      <img class="dapp-connect-favicon" id="vault-request-favicon" alt="" />
+                    </div>
+                    <div class="dapp-connect-site" id="vault-request-site">example.com</div>
+                    <div class="dapp-connect-wants">wants to access your vault</div>
+                  </div>
+
+                  <!-- The headers are inset to the permissions card's own
+                       padding, so both sit on the same left edge; the site row
+                       is not, so it is the same width as on the Data pane. -->
+                  <div class="vault-req-intro-block">
+                    <div class="vault-req-intro">
+                      This site is requesting to create a partition in your vault:
+                    </div>
+                    <!-- The same row the Data pane lists a site with, so the thing
+                         being approved here and the thing managed there are the
+                         same item: same builder, same controls, same width. -->
+                    <div class="vault-req-own" id="vault-request-own"></div>
+
+                    <!-- Shown only when the site asked to WRITE at or below
+                         `/shared`, which is the one grant that makes its data
+                         publishable. Blue and the info glyph, not amber: this
+                         says what the access means, the way the wallet's own
+                         sign pane does. Without it nothing on this sheet
+                         tells the user that what this site stores there is
+                         something other sites can ask for — the location is
+                         the only mark, so this sentence is the only notice. -->
+                    <div class="dapp-sign-warning hidden" id="vault-request-shared-note">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="12" y1="16" x2="12" y2="12" />
+                        <line x1="12" y1="8" x2="12.01" y2="8" />
+                      </svg>
+                      <span
+                        >This site writes data marked
+                        <span class="vault-req-inline-path">/shared</span> into its partition.
+                        Other sites can read this data if you give them permission.</span
+                      >
+                    </div>
+                  </div>
+
+                  <!-- Only when the site asked to read another partition. Without
+                       one there is nothing to head, and an empty section above the
+                       buttons is noise. -->
+                  <div class="vault-req-foreign-block hidden" id="vault-request-foreign-block">
+                    <div class="vault-req-intro">
+                      This site is requesting
+                      <span class="vault-req-inline-code">read</span> permissions for data
+                      marked <span class="vault-req-inline-path">/shared</span> from the
+                      following sites:
+                    </div>
+                    <ul id="vault-request-fields" class="vault-request-fields"></ul>
+                  </div>
+
+                  <div class="dapp-connect-actions">
+                    <button type="button" class="dapp-connect-reject-btn" id="vault-request-deny">
+                      Reject
+                    </button>
+                    <button type="button" id="vault-request-allow" class="dapp-connect-approve-btn">
+                      Allow
+                    </button>
+                  </div>
+                </div>
+              </div>
+
             <div id="sidebar-swarm-connect" class="sidebar-subscreen sidebar-modal hidden">
               <div
                 class="subscreen-header"

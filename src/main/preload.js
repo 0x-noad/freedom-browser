@@ -922,6 +922,12 @@ contextBridge.exposeInMainWorld('vaultData', {
   onConsentRequest: (cb) => ipcRenderer.on('datavault:consent-request', (_e, req) => cb(req)),
   /** decision: { approved, grantedMethods?, grantedFields?, writePolicy?, reason? } */
   respondConsent: (id, decision) => ipcRenderer.send('datavault:consent-response', { id, decision }),
+  /**
+   * cb({ id }) — main took a request back because the page that asked is gone
+   * (a reload, a closed tab). Take the sheet down; do NOT respond, since main
+   * has already settled it.
+   */
+  onConsentCancelled: (cb) => ipcRenderer.on('datavault:consent-cancel', (_e, ev) => cb(ev)),
   /** Register this window as the consent target (also solves the boot race). */
   signalReady: () => ipcRenderer.send('datavault:ui-ready'),
   /** cb({ namespace }) — a site wrote to its partition; listed sizes are stale. */

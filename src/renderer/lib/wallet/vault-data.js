@@ -64,6 +64,15 @@ export function initVaultData(opts = {}) {
   // Host seam, like the two above: opening a tab is the shell's job, and this
   // module stays reachable from a test without pulling the tab strip in behind it.
   const openInNewTab = typeof opts.openInNewTab === 'function' ? opts.openInNewTab : null;
+  // Host seams for the sidebar's own screen stack. The consent sheet is a modal
+  // subscreen like every other externally-triggered prompt, so it has to take
+  // the sidebar over the same way they do — and be told when something else
+  // takes it back. Injected rather than imported so this module stays reachable
+  // from a test without pulling the wallet's screen machinery in behind it.
+  const hideOtherSubscreens =
+    typeof opts.hideOtherSubscreens === 'function' ? opts.hideOtherSubscreens : () => {};
+  const registerScreenHider =
+    typeof opts.registerScreenHider === 'function' ? opts.registerScreenHider : () => {};
 
   const lockedView = document.getElementById('vault-locked-view');
   const unlockBtn = document.getElementById('vault-unlock-btn');
@@ -120,7 +129,6 @@ export function initVaultData(opts = {}) {
     if (lockedView) lockedView.classList.add('hidden');
     listView.classList.toggle('hidden', name !== 'list');
     detailView.classList.toggle('hidden', name !== 'detail');
-    requestView.classList.toggle('hidden', name !== 'request');
   }
 
   /**
@@ -243,8 +251,6 @@ export function initVaultData(opts = {}) {
       hideConnectionBanner();
       listView.classList.add('hidden');
       detailView.classList.add('hidden');
-      requestView.classList.add('hidden');
-      clearRequest();
       // replaceChildren, not innerHTML: the rows go for certain, and this
       // module's one rule is that nothing on this path writes markup.
       listEl.replaceChildren();
@@ -252,7 +258,7 @@ export function initVaultData(opts = {}) {
       usageText.textContent = '';
       if (usageFill) usageFill.replaceChildren();
       currentNs = null;
-    } else if (listView.classList.contains('hidden') && detailView.classList.contains('hidden') && requestView.classList.contains('hidden')) {
+    } else if (listView.classList.contains('hidden') && detailView.classList.contains('hidden')) {
       listView.classList.remove('hidden');
     }
   }
@@ -547,6 +553,27 @@ export function initVaultData(opts = {}) {
   }
 
   /** Leave the request view with nothing from it able to bleed into the next one. */
+  /**
+   * The request on screen now, so a dismissal can answer it. `presenting` is
+   * the swarm approvals' guard: our own `hideOtherSubscreens()` fires every
+   * screen hider, including ours, and that transition is not a dismissal.
+   */
+  let openRequestId = null;
+  let presenting = false;
+
+  /** Answer a request and take the sheet down. */
+  function answer(id, decision) {
+    openRequestId = null;
+    window.vaultData.respondConsent(id, decision);
+    requestView.classList.add('hidden');
+    clearRequest();
+    refresh();
+    // The pane is wherever the user left it; answering a modal should not also
+    // navigate them. Refresh anyway: a grant changes the list, and a consent
+    // that main unlocked the vault for leaves a locked prompt behind that is no
+    // longer true. `refresh` re-reads both and leaves the current view alone.
+  }
+
   function clearRequest() {
     if (reqFields) reqFields.replaceChildren();
     if (reqOwn) reqOwn.replaceChildren();
@@ -715,9 +742,22 @@ export function initVaultData(opts = {}) {
     reqFields.replaceChildren(...foreign.map((entry) => readAccessRow(entry.namespace)));
     if (reqForeignBlock) reqForeignBlock.classList.toggle('hidden', foreign.length === 0);
 
-    // Surface it: open the sidebar + switch to the Data tab, then show the request.
+    openRequestId = req.id;
+
+    // Take the sidebar over, the way every other externally-triggered prompt
+    // does: hide whatever subscreen is up, then raise this modal. It covers the
+    // tab bar, so the request cannot be left behind a click into another tab.
     openAndFocus();
-    setView('request');
+    // The guard covers the whole transition, `hideOtherSubscreens()` included:
+    // that call fires every screen hider, ours among them, and a sheet we are
+    // in the middle of raising must not answer itself on the way in.
+    presenting = true;
+    try {
+      hideOtherSubscreens();
+      requestView.classList.remove('hidden');
+    } finally {
+      presenting = false;
+    }
 
     const methods = [...new Set((req.requestedScopes || []).flatMap((s) => s.methods || []))];
 
@@ -732,18 +772,16 @@ export function initVaultData(opts = {}) {
         .filter((e) => !declined.has(e.namespace))
         .map((e) => ({ namespace: e.namespace, origin: e.origin, paths: e.paths }));
 
-      window.vaultData.respondConsent(req.id, {
+      answer(req.id, {
         approved: true,
         grantedMethods: methods,
         grantedFields: requestedFields,
         grantedForeignReads,
         writePolicy: 'ask-once-per-session',
       });
-      showList();
     };
     reqDeny.onclick = () => {
-      window.vaultData.respondConsent(req.id, { approved: false, reason: 'user denied' });
-      showList();
+      answer(req.id, { approved: false, reason: 'user denied' });
     };
   }
 
@@ -816,6 +854,28 @@ export function initVaultData(opts = {}) {
   if (window.vaultData && window.vaultData.onConsentRequest) {
     window.vaultData.onConsentRequest(showRequest);
     window.vaultData.signalReady();
+  }
+
+  // Something else is taking the sidebar: answer the request rather than
+  // leaving the page hanging on a sheet nobody can see. Same rule the Swarm
+  // approvals use, with the same guard for our own transition.
+  registerScreenHider(() => {
+    if (presenting) return;
+    const wasVisible = requestView && !requestView.classList.contains('hidden');
+    requestView?.classList.add('hidden');
+    if (wasVisible && openRequestId) answer(openRequestId, { approved: false, reason: 'user denied' });
+  });
+
+  // Main took the request back: the page that asked is gone, so an answer could
+  // only grant a session nobody holds. Take the sheet down WITHOUT responding —
+  // main has already settled it.
+  if (window.vaultData && window.vaultData.onConsentCancelled) {
+    window.vaultData.onConsentCancelled(({ id }) => {
+      if (openRequestId && id !== openRequestId) return;
+      openRequestId = null;
+      requestView?.classList.add('hidden');
+      clearRequest();
+    });
   }
 
   // A site wrote to its partition. The list renders at consent time — before

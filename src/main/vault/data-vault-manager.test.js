@@ -343,6 +343,182 @@ describe('_decideConsent', () => {
   });
 });
 
+describe('a page cannot grief the user with consent prompts', () => {
+  let manager;
+  let prompted;
+  let cancelled;
+  let clock;
+
+  const request = (ns = READER_NS) => ({
+    verification: { namespace: ns, domain: 'https://reader.example' },
+    appMetadata: {},
+    requestedScopes: [{ methods: ['vault_getData'], fields: [{ path: '/own', read: true }] }],
+    foreignReads: [],
+  });
+
+  beforeEach(() => {
+    prompted = [];
+    cancelled = [];
+    clock = 1_000_000;
+    jest.spyOn(perms, 'grantPermission').mockImplementation(() => {});
+    jest.spyOn(perms, 'updateLastUsed').mockImplementation(() => {});
+    jest.spyOn(perms, 'getPermission').mockReturnValue(null);
+    manager = new DataVaultManager({
+      dataDir: '/tmp/vault-manager-test',
+      identityVault: { isUnlocked: () => true, getMnemonic: () => 'x', ensureUnlocked: async () => true },
+      promptConsent: async (req) => {
+        prompted.push(req);
+        return { approved: false, reason: 'user denied' };
+      },
+      cancelConsent: (ns) => cancelled.push(ns),
+      now: () => clock,
+    });
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  test('three rejections in a row, and the sheet stops being raised', async () => {
+    for (let i = 0; i < 3; i++) {
+      const d = await manager._decideConsent(request());
+      expect(d.approved).toBe(false);
+    }
+    expect(prompted).toHaveLength(3);
+
+    const embargoed = await manager._decideConsent(request());
+
+    // Refused without a prompt, and worded exactly like a rejection: a page
+    // that could tell them apart could count the user's refusals.
+    expect(prompted).toHaveLength(3);
+    expect(embargoed).toEqual({ approved: false, reason: 'user denied' });
+  });
+
+  test('the embargo lifts on its own', async () => {
+    for (let i = 0; i < 3; i++) await manager._decideConsent(request());
+    clock += 5 * 60_000 + 1;
+
+    await manager._decideConsent(request());
+
+    expect(prompted).toHaveLength(4);
+  });
+
+  test('an approval forgets the rejections before it', async () => {
+    await manager._decideConsent(request());
+    await manager._decideConsent(request());
+    manager._promptConsent = async (req) => {
+      prompted.push(req);
+      return { approved: true, grantedMethods: ['vault_getData'], grantedFields: [] };
+    };
+
+    await manager._decideConsent(request());
+    // Two rejections then a yes: the count is about a site the user keeps
+    // saying no to, and they have stopped saying no.
+    manager._promptConsent = async (req) => {
+      prompted.push(req);
+      return { approved: false, reason: 'user denied' };
+    };
+    for (let i = 0; i < 3; i++) await manager._decideConsent(request());
+
+    expect(prompted).toHaveLength(6);
+  });
+
+  test('one sheet at a time: a second origin is refused, not stacked', async () => {
+    let release;
+    manager._promptConsent = (req) => {
+      prompted.push(req);
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    };
+
+    const first = manager._decideConsent(request(READER_NS));
+    await Promise.resolve();
+    const second = await manager._decideConsent(request('web:other.example'));
+
+    // The renderer shows one sheet. A second request would replace it, leaving
+    // the first caller waiting on a sheet nobody can see.
+    expect(prompted).toHaveLength(1);
+    expect(second.approved).toBe(false);
+    release({ approved: false, reason: 'user denied' });
+    await first;
+  });
+
+  test('a second request from the SAME origin joins the open sheet', async () => {
+    let release;
+    manager._promptConsent = (req) => {
+      prompted.push(req);
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    };
+
+    const first = manager._decideConsent(request());
+    await Promise.resolve();
+    const second = manager._decideConsent(request());
+    release({ approved: false, reason: 'user denied' });
+
+    // One prompt, one answer, both callers served — a page and its iframe
+    // asking at once must not stack two sheets.
+    expect(prompted).toHaveLength(1);
+    expect(await first).toEqual(await second);
+  });
+
+  test('a prompt whose asking page is gone is abandoned, not left pending', async () => {
+    manager._promptConsent = (req) => {
+      prompted.push(req);
+      return new Promise(() => {}); // never answered
+    };
+    manager._connectAskers.set(READER_NS, 77);
+
+    const pending = manager._decideConsent(request());
+    await Promise.resolve();
+    expect(manager._pendingByNamespace.size).toBe(1);
+
+    manager._abandonConsentFor(77);
+
+    // Settled, the entry dropped, and the sheet taken off screen. Until this,
+    // every later connect() from that site returned this same dead promise.
+    expect((await pending).approved).toBe(false);
+    expect(manager._pendingByNamespace.size).toBe(0);
+    expect(cancelled).toEqual([READER_NS]);
+  });
+
+  test('an answer arriving after the asker is gone grants nothing', async () => {
+    let answer;
+    manager._promptConsent = (req) => {
+      prompted.push(req);
+      return new Promise((resolve) => {
+        answer = resolve;
+      });
+    };
+    manager._connectAskers.set(READER_NS, 77);
+
+    const pending = manager._decideConsent(request());
+    await Promise.resolve();
+    manager._abandonConsentFor(77);
+    await pending;
+    answer({ approved: true, grantedMethods: ['vault_getData'], grantedFields: [] });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // There is no session to attach a grant to, and a partition appearing for
+    // a page that no longer exists is not what the user approved.
+    expect(perms.grantPermission).not.toHaveBeenCalled();
+  });
+
+  test('abandoning one namespace leaves another alone', async () => {
+    manager._promptConsent = () => new Promise(() => {});
+    manager._connectAskers.set(READER_NS, 77);
+    const pending = manager._decideConsent(request());
+    await Promise.resolve();
+
+    manager._abandonConsentFor(999);
+
+    expect(manager._pendingByNamespace.size).toBe(1);
+    expect(cancelled).toEqual([]);
+    manager._abandonConsentFor(77);
+    await pending;
+  });
+});
+
 describe('listPartitions', () => {
   let manager;
 
