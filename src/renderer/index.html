@@ -3740,7 +3740,10 @@
                  only ways out. Closing the sidebar hides it; reopening brings it
                  back, which is how the panel holds a pending confirmation. -->
             <div id="vault-request-view" class="sidebar-subscreen sidebar-modal hidden">
-                <div class="vault-request">
+              <!-- The sidebar's own content wrapper, so this sheet is inset and
+                   scrolls exactly like every other subscreen. It used to borrow
+                   the Data tab's padding, which it lost on the way out. -->
+              <div class="subscreen-content vault-request">
                   <!-- The wallet's Connect pane, class for class: the two prompts
                        ask the same question about the same site, so they look the
                        same. The site shown is the origin main derived from the

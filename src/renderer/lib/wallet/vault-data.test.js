@@ -566,6 +566,10 @@ describe('consent sheet: it cannot be left unanswered', () => {
     expect(tag).toContain('sidebar-subscreen sidebar-modal');
     // Outside the Data tab panel, or it would be covered by nothing.
     expect(html.indexOf('id="vault-request-view"')).toBeGreaterThan(html.indexOf('id="tab-settings"'));
+    // The sidebar's own content wrapper: it carries the inset and the scroll
+    // every other subscreen has. Without it the sheet sat flush against the
+    // sidebar's edges, which is what moving it out of the Data tab cost.
+    expect(open.slice(0, open.indexOf('dapp-connect-origin'))).toContain('subscreen-content');
     // No back button and no header: Reject and Allow are the only exits.
     const sheet = open.slice(0, open.indexOf('id="vault-request-allow"'));
     expect(sheet).not.toContain('subscreen-header');
