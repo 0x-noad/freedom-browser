@@ -89,16 +89,16 @@
 /* The consent sheet uses the list's site row AS IS — same builder, same open
    button, same width — so nothing here restyles it. */
 
-/* The `/public` note sits under the site row, not against it. And its info
+/* The `/shared` note sits under the site row, not against it. And its info
    glyph is drawn bolder with round caps, because the dot of the `i` is a
    zero-length line: with the default butt cap it renders as nothing at all. */
-#vault-request-public-note { margin-top: 14px; }
-#vault-request-public-note svg {
+#vault-request-shared-note { margin-top: 14px; }
+#vault-request-shared-note svg {
   stroke-width: 2.4;
   stroke-linecap: round;
 }
 
-/* `/public` named inside a sentence: code font, and the same green the
+/* `/shared` named inside a sentence: code font, and the same green the
    stored-data pills use for a writable field. */
 .vault-req-inline-path {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

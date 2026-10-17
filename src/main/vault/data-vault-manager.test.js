@@ -29,7 +29,7 @@ const perms = require('./data-vault-permissions');
 const OWNER_NS = 'web:owner.example';
 const READER_NS = 'web:reader.example';
 
-const foreignRead = (paths = ['/public']) => ({
+const foreignRead = (paths = ['/shared']) => ({
   namespace: OWNER_NS,
   origin: 'https://owner.example',
   paths,
@@ -39,7 +39,7 @@ function remembered(extra = {}) {
   return {
     namespace: READER_NS,
     origin: 'https://reader.example',
-    methods: ['vault_getData', 'vault_getPublicData'],
+    methods: ['vault_getData', 'vault_getSharedData'],
     fields: [{ path: '/own', read: true, write: true }],
     foreignReads: [],
     writePolicy: 'ask-once-per-session',
@@ -68,8 +68,8 @@ describe('covers() — when a remembered grant spares the user a prompt', () => 
 
   test('a remembered whole subtree covers a newly named leaf', () => {
     expect(
-      covers(remembered({ foreignReads: [foreignRead(['/public'])] }), methods, fields, [
-        foreignRead(['/public/profile/displayName']),
+      covers(remembered({ foreignReads: [foreignRead(['/shared'])] }), methods, fields, [
+        foreignRead(['/shared/profile/displayName']),
       ]),
     ).toBe(true);
   });
@@ -78,22 +78,22 @@ describe('covers() — when a remembered grant spares the user a prompt', () => 
     // Otherwise a site that was allowed one field could quietly widen to the
     // owner's entire published area without a second prompt.
     expect(
-      covers(remembered({ foreignReads: [foreignRead(['/public/profile/displayName'])] }), methods, fields, [
-        foreignRead(['/public']),
+      covers(remembered({ foreignReads: [foreignRead(['/shared/profile/displayName'])] }), methods, fields, [
+        foreignRead(['/shared']),
       ]),
     ).toBe(false);
   });
 
   test('matches on pointer tokens, not string prefixes', () => {
     expect(
-      covers(remembered({ foreignReads: [foreignRead(['/public/a'])] }), methods, fields, [
-        foreignRead(['/public/ab']),
+      covers(remembered({ foreignReads: [foreignRead(['/shared/a'])] }), methods, fields, [
+        foreignRead(['/shared/ab']),
       ]),
     ).toBe(false);
   });
 
   test('refuses when the paths match but the owner does not', () => {
-    const elsewhere = { namespace: 'web:elsewhere.example', origin: 'https://elsewhere.example', paths: ['/public'] };
+    const elsewhere = { namespace: 'web:elsewhere.example', origin: 'https://elsewhere.example', paths: ['/shared'] };
     expect(covers(remembered({ foreignReads: [elsewhere] }), methods, fields, [foreignRead()])).toBe(false);
   });
 
@@ -105,7 +105,7 @@ describe('covers() — when a remembered grant spares the user a prompt', () => 
   });
 });
 
-describe('vault_getPublicData routing', () => {
+describe('vault_getSharedData routing', () => {
   let manager;
   let engine;
 
@@ -118,7 +118,7 @@ describe('vault_getPublicData routing', () => {
       promptConsent: async () => ({ approved: true }),
       onPartitionChanged: jest.fn(),
     });
-    engine = { localGetPublic: jest.fn().mockResolvedValue({ values: {} }) };
+    engine = { localGetShared: jest.fn().mockResolvedValue({ values: {} }) };
     manager._engine = engine;
   });
 
@@ -138,58 +138,58 @@ describe('vault_getPublicData routing', () => {
     bindSession('s1', { origin: 'https://reader.example', namespace: READER_NS, webContentsId: 7 });
 
     await manager._onRequest(event(7, 'https://reader.example/app'), {
-      method: 'vault_getPublicData',
-      params: { sessionId: 's1', origin: 'https://owner.example', paths: ['/public/x'] },
+      method: 'vault_getSharedData',
+      params: { sessionId: 's1', origin: 'https://owner.example', paths: ['/shared/x'] },
     });
 
     // Not normalised on the way through: `originForNamespace` strips a path
     // where the engine's `deriveOriginNamespace` refuses one, so normalising
     // here would launder an origin the engine would have rejected.
-    expect(engine.localGetPublic).toHaveBeenCalledWith('s1', 'https://owner.example', ['/public/x']);
+    expect(engine.localGetShared).toHaveBeenCalledWith('s1', 'https://owner.example', ['/shared/x']);
   });
 
   test('refuses a session belonging to another tab, without reaching the engine', async () => {
     bindSession('s1', { origin: 'https://reader.example', namespace: READER_NS, webContentsId: 7 });
 
     const res = await manager._onRequest(event(99, 'https://reader.example/app'), {
-      method: 'vault_getPublicData',
-      params: { sessionId: 's1', origin: 'https://owner.example', paths: ['/public/x'] },
+      method: 'vault_getSharedData',
+      params: { sessionId: 's1', origin: 'https://owner.example', paths: ['/shared/x'] },
     });
 
     expect(res.error.code).toBe(4900);
     // The engine must not be consulted at all: this is the host's boundary, and
     // a call that got through would have decrypted an owner's partition.
-    expect(engine.localGetPublic).not.toHaveBeenCalled();
+    expect(engine.localGetShared).not.toHaveBeenCalled();
   });
 
   test('refuses a session whose origin no longer matches the frame', async () => {
     bindSession('s1', { origin: 'https://reader.example', namespace: READER_NS, webContentsId: 7 });
 
     const res = await manager._onRequest(event(7, 'https://evil.example/app'), {
-      method: 'vault_getPublicData',
-      params: { sessionId: 's1', origin: 'https://owner.example', paths: ['/public/x'] },
+      method: 'vault_getSharedData',
+      params: { sessionId: 's1', origin: 'https://owner.example', paths: ['/shared/x'] },
     });
 
     expect(res.error.code).toBe(4900);
-    expect(engine.localGetPublic).not.toHaveBeenCalled();
+    expect(engine.localGetShared).not.toHaveBeenCalled();
   });
 
   test('refuses an unknown session id', async () => {
     const res = await manager._onRequest(event(7, 'https://reader.example/app'), {
-      method: 'vault_getPublicData',
+      method: 'vault_getSharedData',
       params: { sessionId: 'nope', origin: 'https://owner.example', paths: [] },
     });
 
     expect(res.error.code).toBe(4900);
-    expect(engine.localGetPublic).not.toHaveBeenCalled();
+    expect(engine.localGetShared).not.toHaveBeenCalled();
   });
 
   test('does not report a partition change — it is a read', async () => {
     bindSession('s1', { origin: 'https://reader.example', namespace: READER_NS, webContentsId: 7 });
 
     await manager._onRequest(event(7, 'https://reader.example/app'), {
-      method: 'vault_getPublicData',
-      params: { sessionId: 's1', origin: 'https://owner.example', paths: ['/public/x'] },
+      method: 'vault_getSharedData',
+      params: { sessionId: 's1', origin: 'https://owner.example', paths: ['/shared/x'] },
     });
 
     expect(manager._onPartitionChanged).not.toHaveBeenCalled();
@@ -199,11 +199,11 @@ describe('vault_getPublicData routing', () => {
     bindSession('s1', { origin: 'https://reader.example', namespace: READER_NS, webContentsId: 7 });
 
     await manager._onRequest(event(7, 'https://reader.example/app'), {
-      method: 'vault_getPublicData',
+      method: 'vault_getSharedData',
       params: { sessionId: 's1', origin: 'https://owner.example' },
     });
 
-    expect(engine.localGetPublic).toHaveBeenCalledWith('s1', 'https://owner.example', []);
+    expect(engine.localGetShared).toHaveBeenCalledWith('s1', 'https://owner.example', []);
   });
 });
 
@@ -215,7 +215,7 @@ describe('the cross-origin method is not granted by default', () => {
     const source = require('fs').readFileSync(require.resolve('./data-vault-manager.js'), 'utf8');
     const always = /const ALWAYS_GRANTED_METHODS = \[([^\]]*)\]/.exec(source);
     expect(always).not.toBeNull();
-    expect(always[1]).not.toMatch(/getPublicData/);
+    expect(always[1]).not.toMatch(/getSharedData/);
   });
 });
 
@@ -244,11 +244,11 @@ describe('_decideConsent', () => {
     appMetadata: {},
     requestedScopes: [
       {
-        methods: ['vault_getData', 'vault_getPublicData'],
+        methods: ['vault_getData', 'vault_getSharedData'],
         fields: [{ path: '/own', read: true, write: true }],
         // The page's raw text, deliberately DIFFERENT from the resolved list,
         // so a test can tell which one the sheet was shown.
-        foreign: [{ origin: 'https://attacker.example', paths: ['/public'] }],
+        foreign: [{ origin: 'https://attacker.example', paths: ['/shared'] }],
       },
     ],
     foreignReads,
@@ -266,13 +266,13 @@ describe('_decideConsent', () => {
   test('shows the sheet what a grant is made of, and nothing else', async () => {
     jest.spyOn(perms, 'getPermission').mockImplementation((ns) => (ns === OWNER_NS ? remembered() : null));
 
-    await manager._decideConsent(request([foreignRead(['/public/displayName'])]));
+    await manager._decideConsent(request([foreignRead(['/shared/displayName'])]));
 
     // It used to carry `wholesale` and `known` as hints for a sheet that read
     // them; `known` especially — whether the user holds data for ANOTHER site —
     // has no business crossing to the renderer with no reader.
     expect(prompted[0].foreignReads).toEqual([
-      { namespace: OWNER_NS, origin: 'https://owner.example', paths: ['/public/displayName'] },
+      { namespace: OWNER_NS, origin: 'https://owner.example', paths: ['/shared/displayName'] },
     ]);
   });
 
@@ -396,7 +396,7 @@ describe('foreignGrantsFor', () => {
 
   test('tells the detail view which held reads are on', () => {
     const off = { ...foreignRead(), enabled: false };
-    const legacy = { namespace: 'web:other.example', origin: 'https://other.example', paths: ['/public'] };
+    const legacy = { namespace: 'web:other.example', origin: 'https://other.example', paths: ['/shared'] };
     jest.spyOn(perms, 'getPermission').mockReturnValue(remembered({ foreignReads: [off, legacy] }));
     jest.spyOn(perms, 'getAllPermissions').mockReturnValue([]);
 
@@ -405,7 +405,7 @@ describe('foreignGrantsFor', () => {
     // An entry with no flag is on: that is every grant the sheet writes.
     expect(reads.map((e) => e.enabled)).toEqual([false, true]);
     // Off is not gone — the paths the user approved are still there to restore.
-    expect(reads[0].paths).toEqual(['/public']);
+    expect(reads[0].paths).toEqual(['/shared']);
   });
 
   test('tells the OWNER end the same thing, from the reader records', () => {

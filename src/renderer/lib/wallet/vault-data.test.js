@@ -264,7 +264,7 @@ const ELEMENT_IDS = [
   'vault-request-allow',
   'vault-request-deny',
   'vault-request-own',
-  'vault-request-public-note',
+  'vault-request-shared-note',
   'vault-request-foreign-block',
   'vault-detail-perms-header',
   'vault-detail-reads',
@@ -432,7 +432,7 @@ function request(extra = {}) {
     namespace: 'web:reader.example',
     requestedScopes: [
       {
-        methods: ['vault_getData', 'vault_getPublicData'],
+        methods: ['vault_getData', 'vault_getSharedData'],
         fields: [{ path: '/own/profile', read: true, write: true }],
       },
     ],
@@ -444,7 +444,7 @@ function request(extra = {}) {
 const owner = (extra = {}) => ({
   namespace: OWNER_NS,
   origin: 'https://owner.example',
-  paths: ['/public/displayName'],
+  paths: ['/shared/displayName'],
   wholesale: false,
   known: true,
   ...extra,
@@ -527,25 +527,25 @@ describe('consent sheet: the partition being created', () => {
   });
 });
 
-describe('consent sheet: the /public note', () => {
+describe('consent sheet: the /shared note', () => {
   beforeEach(setupDom);
 
-  const note = () => els.get('vault-request-public-note');
+  const note = () => els.get('vault-request-shared-note');
   const asking = (fields) =>
     request({ requestedScopes: [{ methods: ['vault_getData', 'vault_setData'], fields }] });
 
-  test('is shown when the site asked to write at or below /public', () => {
-    showConsent(asking([{ path: '/public', read: true, write: true }]));
+  test('is shown when the site asked to write at or below /shared', () => {
+    showConsent(asking([{ path: '/shared', read: true, write: true }]));
     expect(note().classList.contains('hidden')).toBe(false);
 
     setupDom();
-    showConsent(asking([{ path: '/public/displayName', read: true, write: true }]));
+    showConsent(asking([{ path: '/shared/displayName', read: true, write: true }]));
     expect(note().classList.contains('hidden')).toBe(false);
   });
 
   test('is absent when nothing it writes can be published', () => {
-    // Read-only on /public publishes nothing.
-    showConsent(asking([{ path: '/public', read: true, write: false }]));
+    // Read-only on /shared publishes nothing.
+    showConsent(asking([{ path: '/shared', read: true, write: false }]));
     expect(note().classList.contains('hidden')).toBe(true);
 
     // A write somewhere else entirely.
@@ -556,19 +556,19 @@ describe('consent sheet: the /public note', () => {
 
   test('a whole-document grant does NOT raise it', () => {
     // The empty pointer covers every path, but the engine's publish gate
-    // refuses a write under /public without a rule rooted there — so this
+    // refuses a write under /shared without a rule rooted there — so this
     // grant cannot publish, and saying it could would be false.
     showConsent(asking([{ path: '', read: true, write: true }]));
     expect(note().classList.contains('hidden')).toBe(true);
   });
 
-  test('/publicity is not /public', () => {
-    showConsent(asking([{ path: '/publicity', read: true, write: true }]));
+  test('/sharedly is not /shared', () => {
+    showConsent(asking([{ path: '/sharedly', read: true, write: true }]));
     expect(note().classList.contains('hidden')).toBe(true);
   });
 
   test('is hidden again on the way out', () => {
-    showConsent(asking([{ path: '/public', read: true, write: true }]));
+    showConsent(asking([{ path: '/shared', read: true, write: true }]));
     els.get('vault-request-deny').onclick();
 
     expect(note().classList.contains('hidden')).toBe(true);
@@ -577,22 +577,22 @@ describe('consent sheet: the /public note', () => {
   test('it has air above it, and an info dot that actually renders', () => {
     // The dot of the `i` is a zero-length line; with the default butt cap it
     // draws nothing, which is why it looked like an undotted stroke.
-    const rule = ruleBodyFor('#vault-request-public-note svg');
+    const rule = ruleBodyFor('#vault-request-shared-note svg');
     expect(rule).toMatch(/stroke-linecap:\s*round/);
     expect(rule).toMatch(/stroke-width:\s*2\.4/);
-    expect(ruleBodyFor('#vault-request-public-note')).toMatch(/margin-top:\s*14px/);
+    expect(ruleBodyFor('#vault-request-shared-note')).toMatch(/margin-top:\s*14px/);
   });
 
-  test('its copy says what the mark means, and marks /public as code', () => {
+  test('its copy says what the mark means, and marks /shared as code', () => {
     const html = require('fs').readFileSync(
       require('path').join(__dirname, '..', '..', 'index.html'),
       'utf8',
     );
-    const open = '<div class="dapp-sign-warning hidden" id="vault-request-public-note">';
+    const open = '<div class="dapp-sign-warning hidden" id="vault-request-shared-note">';
     expect(html).toContain(open);
     const block = html.slice(html.indexOf(open), html.indexOf('vault-req-foreign-block'));
     expect(block.replace(/\s+/g, ' ')).toContain(
-      'This site writes data marked <span class="vault-req-inline-path">/public</span> into its partition. Other sites can read this data if you give them permission.',
+      'This site writes data marked <span class="vault-req-inline-path">/shared</span> into its partition. Other sites can read this data if you give them permission.',
     );
     // Blue and the info glyph: this says what the access means, not what it
     // risks (docs/agent-playbooks/ui-consistency.md).
@@ -624,7 +624,7 @@ describe('consent sheet: the read-access section', () => {
     expect(ruleBodyFor('.vault-req-read::marker')).toBe(null);
   });
 
-  test('names /public in code, in the same green as a writable field', () => {
+  test('names /shared in code, in the same green as a writable field', () => {
     // It is a pointer inside a sentence, so it reads as one.
     expect(ruleBodyFor('.vault-req-inline-path')).toMatch(/font-family:\s*ui-monospace/);
     expect(ruleBodyFor('.vault-req-inline-path')).toMatch(/color:\s*var\(--secure-fg\)/);
@@ -714,7 +714,7 @@ describe('consent sheet: what gets sent back', () => {
     // Narrowed to what a grant is made of: main's `wholesale` and `known` are
     // hints for this sheet, and the host persists whatever comes back.
     expect(decision().grantedForeignReads).toEqual([
-      { namespace: OWNER_NS, origin: 'https://owner.example', paths: ['/public/displayName'] },
+      { namespace: OWNER_NS, origin: 'https://owner.example', paths: ['/shared/displayName'] },
     ]);
   });
 
@@ -739,7 +739,7 @@ describe('consent sheet: what gets sent back', () => {
             methods: ['vault_getData'],
             fields: [
               { path: '/own', read: true, write: true },
-              { path: '/public/x', read: true, origin: 'https://bank.example' },
+              { path: '/shared/x', read: true, origin: 'https://bank.example' },
             ],
           },
         ],
@@ -816,7 +816,7 @@ describe('detail view: cross-origin grants, both directions', () => {
   const partition = {
     namespace: OWNER_NS,
     origin: 'https://owner.example',
-    fields: [{ path: '/public', read: true, write: true }],
+    fields: [{ path: '/shared', read: true, write: true }],
     bytes: 10,
   };
 
@@ -836,8 +836,8 @@ describe('detail view: cross-origin grants, both directions', () => {
   test('lists the sites this partition reads, and the sites that read it', async () => {
     vaultData.foreignGrantsFor.mockResolvedValue({
       locked: false,
-      reads: [{ ownerNamespace: 'web:a.example', ownerOrigin: 'https://a.example', paths: ['/public/x'] }],
-      readers: [{ readerNamespace: 'web:b.example', readerOrigin: 'https://b.example', paths: ['/public'] }],
+      reads: [{ ownerNamespace: 'web:a.example', ownerOrigin: 'https://a.example', paths: ['/shared/x'] }],
+      readers: [{ readerNamespace: 'web:b.example', readerOrigin: 'https://b.example', paths: ['/shared'] }],
     });
 
     await openDetail(partition);
@@ -860,7 +860,7 @@ describe('detail view: cross-origin grants, both directions', () => {
         {
           readerNamespace: 'web:b.example',
           readerOrigin: 'https://b.example',
-          paths: ['/public'],
+          paths: ['/shared'],
           enabled: true,
         },
       ],
@@ -901,7 +901,7 @@ describe('detail view: cross-origin grants, both directions', () => {
         {
           readerNamespace: 'web:b.example',
           readerOrigin: 'https://b.example',
-          paths: ['/public'],
+          paths: ['/shared'],
           enabled: false,
         },
       ],
@@ -949,7 +949,7 @@ describe('detail view: the reads this site holds', () => {
         {
           ownerNamespace: 'web:owner.example',
           ownerOrigin: 'https://owner.example',
-          paths: ['/public/displayName'],
+          paths: ['/shared/displayName'],
           enabled: true,
           ...extra,
         },
@@ -967,7 +967,7 @@ describe('detail view: the reads this site holds', () => {
     expect(item.className).toBe('vault-perm out');
     expect(item.children.map((el) => el.className)).toEqual(['vault-perm-ns', 'vault-perm-tog']);
     // The namespace, not the URL: this names the partition being read. No
-    // scope on the row — every cross-origin read is `/public` by construction.
+    // scope on the row — every cross-origin read is `/shared` by construction.
     expect(item.children[0].textContent).toBe('web:owner.example');
     expect(item.children[1].children[0].textContent).toBe('read');
     const boxes = item.querySelectorAll('input[type=checkbox]');
@@ -994,7 +994,7 @@ describe('detail view: the reads this site holds', () => {
         {
           ownerNamespace: 'web:owner.example',
           ownerOrigin: 'https://owner.example',
-          paths: ['/public/displayName'],
+          paths: ['/shared/displayName'],
           enabled: false,
         },
       ],

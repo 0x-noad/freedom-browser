@@ -14,13 +14,13 @@ describe('the injected provider', () => {
     expect(() => new Function(VAULT_INJECT_SOURCE)).not.toThrow();
   });
 
-  test('exposes readPublic, routed to the method main dispatches on', () => {
-    expect(VAULT_INJECT_SOURCE).toContain('readPublic:');
-    expect(VAULT_INJECT_SOURCE).toContain("'vault_getPublicData'");
+  test('exposes readShared, routed to the method main dispatches on', () => {
+    expect(VAULT_INJECT_SOURCE).toContain('readShared:');
+    expect(VAULT_INJECT_SOURCE).toContain("'vault_getSharedData'");
   });
 
   test('passes the owner origin through, since a path list alone cannot name one', () => {
-    const call = /readPublic: function \(([^)]*)\)[\s\S]{0,200}?vault_getPublicData'[^}]*\}/.exec(
+    const call = /readShared: function \(([^)]*)\)[\s\S]{0,200}?vault_getSharedData'[^}]*\}/.exec(
       VAULT_INJECT_SOURCE,
     );
     expect(call).not.toBeNull();
@@ -31,7 +31,7 @@ describe('the injected provider', () => {
   test('does not offer a cross-origin write or subscribe', () => {
     // Read only is a property of the design, not an omission to be tidied up
     // later: there is no cross-origin write path in the engine at all.
-    expect(VAULT_INJECT_SOURCE).not.toMatch(/vault_setPublicData|vault_subscribePublic/);
+    expect(VAULT_INJECT_SOURCE).not.toMatch(/vault_setSharedData|vault_subscribeShared/);
   });
 
   test('still exposes the own-partition surface it had', () => {

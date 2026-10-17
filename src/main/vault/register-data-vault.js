@@ -58,7 +58,7 @@ async function promptConsent(req) {
   }
 
   const fieldList = fields.map((f) => `  • ${f.path} ${f.write ? '(read + write)' : '(read only)'}`).join('\n');
-  // A site may also ask to read what ANOTHER site published under /public. This
+  // A site may also ask to read what ANOTHER site published under /shared. This
   // coarse message box is a poor surface for approving a cross-site grant — it
   // cannot show the owner per row, and the user cannot decline one owner while
   // allowing another — so it names them and grants none of them. The reader
@@ -82,7 +82,7 @@ async function promptConsent(req) {
     detail:
       `${req.origin}\n\nIt is asking to store and read:\n${fieldList}${foreignList}` +
       `\n\nIts own slice stays private to it. The only part of any other site's ` +
-      `data that can ever be granted is what that site published under /public, ` +
+      `data that can ever be granted is what that site published under /shared, ` +
       `and only to a site you approve.`,
   });
   if (response !== 1) return { approved: false, reason: 'user denied' };

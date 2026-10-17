@@ -7,8 +7,8 @@ from the user's wallet mnemonic; the browser derives the calling origin from the
 from anything the page claims, and that origin is the isolation boundary.
 
 The one way across that boundary is deliberate and narrow: a site may publish
-under the reserved `/public` subtree, and another site may be granted read-only
-access to it. See [Publishing under `/public`](#publishing-under-public) and
+under the reserved `/shared` subtree, and another site may be granted read-only
+access to it. See [Publishing under `/shared`](#publishing-under-public) and
 [Reading another site's public data](#reading-another-sites-public-data).
 
 Type definitions ship in [`types/freedom-vault.d.ts`](../types/freedom-vault.d.ts).
@@ -119,9 +119,9 @@ other partitions you may read, by unticking an owner. Read `session.grant` back
 rather than assuming you got what you asked for. A remembered grant reconnects
 silently; asking for more than was granted prompts again.
 
-A write at or below `/public` also raises a note on the sheet, in so many words:
+A write at or below `/shared` also raises a note on the sheet, in so many words:
 that what you store there is something other sites can ask to read. See
-[Publishing under `/public`](#publishing-under-public).
+[Publishing under `/shared`](#publishing-under-public).
 
 `vault_getPermissions` is granted whether or not you ask for it, so
 `vault.getPermissions(sessionId)` always works on a live session.
@@ -211,30 +211,30 @@ way to split it.
 or `ArrayBuffer` type; a blob costs 33 % more than its bytes, and that inflated
 size is what every subsequent write re-serializes.
 
-### Publishing under `/public`
+### Publishing under `/shared`
 
-`/public` is reserved, and **location is the mark** — there is no shareable
+`/shared` is reserved, and **location is the mark** — there is no shareable
 flag. Anything you write under it is what another site can be granted, and
 nothing outside it can ever be read by another site.
 
 To you it is ordinary data: read and write it under your own grant like
 anything else. Two things follow from the location being the mark:
 
-**Publishing is explicit.** A write under `/public` needs a granted rule rooted
-at or below `/public`. A grant on the whole document carries every other right
+**Publishing is explicit.** A write under `/shared` needs a granted rule rooted
+at or below `/shared`. A grant on the whole document carries every other right
 but not this one, so a site cannot end up publishing because it asked for
 everything.
 
 Note what this does and does not tell the user. Asking to write at or below
-`/public` raises a note on your own consent sheet — "This site writes data
-marked `/public` into its partition. Other sites can read this data if you give
+`/shared` raises a note on your own consent sheet — "This site writes data
+marked `/shared` into its partition. Other sites can read this data if you give
 them permission." — so the user is told that what you store there is askable
 for, at the moment they grant it. What they are not told is *which* of your
 fields end up there, or when: that is your own schema, and the sheet does not
 list paths. Nothing is actually read by anyone until a reader asks and the user
 approves that separately, which is a second, per-pair decision.
 
-Publishing more under `/public` later is immediately covered by an existing
+Publishing more under `/shared` later is immediately covered by an existing
 whole-subtree grant, and *not* by a specific-pointer grant — so a reader
 granted the whole subtree keeps up with you, and one granted a named pointer
 does not.
@@ -248,15 +248,15 @@ cross-origin reads:
 const session = await window.vault.connect({
   requestedScopes: [
     {
-      methods: ['vault_getData', 'vault_setData', 'vault_getPublicData'],
+      methods: ['vault_getData', 'vault_setData', 'vault_getSharedData'],
       fields: [{ path: '/profile', read: true, write: true }],
-      foreign: [{ origin: 'bzz://social.eth', paths: ['/public/displayName'] }],
+      foreign: [{ origin: 'bzz://social.eth', paths: ['/shared/displayName'] }],
     },
   ],
 });
 
-const { values } = await window.vault.readPublic(session.sessionId, 'bzz://social.eth', [
-  '/public/displayName',
+const { values } = await window.vault.readShared(session.sessionId, 'bzz://social.eth', [
+  '/shared/displayName',
 ]);
 ```
 
@@ -264,19 +264,19 @@ const { values } = await window.vault.readPublic(session.sessionId, 'bzz://socia
   poll if you need to see changes.
 - Origins compare **including scheme**, so `bzz://social.eth` and
   `https://social.example` are two different asks.
-- You may name specific pointers or `/public` wholesale. Neither the sheet nor
+- You may name specific pointers or `/shared` wholesale. Neither the sheet nor
   the Data pane shows which pointers you asked for — both name the partition and
   nothing else — so a wholesale ask is approved on the same terms as a narrow
   one. Ask for only what you need anyway: the grant is what the engine enforces
   on every read, whatever the user was shown, and a narrower ask survives the
   owner publishing something you had no business reading.
-- `vault_getPublicData` must be requested. Unlike `vault_getPermissions` it is
+- `vault_getSharedData` must be requested. Unlike `vault_getPermissions` it is
   never granted implicitly, because it is the cross-origin surface.
 - At most 8 owners and 16 paths each per connect.
 
 **Absent data reads as empty, and there is no error for "no such owner."** A
 path the owner never wrote, an owner with no partition at all, an owner the user
-declined, a grant since removed, and a pointer outside `/public` all resolve to
+declined, a grant since removed, and a pointer outside `/shared` all resolve to
 `null`. That is deliberate: anything that told them apart would let you probe
 which sites the user has visited. It also means a typo in an origin is
 indistinguishable from an owner with nothing published — check the Data pane,
@@ -306,10 +306,10 @@ a cue to ask again.
 
 A partition is keyed by origin, so **the next iteration of your site is a
 different site**: a new subdomain, a new scheme, a new domain, and the document
-starts empty. `/public` is the way across that — if you plan for it on the way
-in. Write what a future version will need under `/public` from the start, and v2
+starts empty. `/shared` is the way across that — if you plan for it on the way
+in. Write what a future version will need under `/shared` from the start, and v2
 declares a read of v1's origin and migrates on first run. The engine repo's
-README works the pattern through in code, under *Sharing data under `/public`* →
+README works the pattern through in code, under *Sharing data under `/shared`* →
 *Forward compatibility*.
 
 Two things to keep in mind. The user approves that read, on v2's sheet, naming
@@ -320,13 +320,13 @@ or report.
 
 ### A reader can re-publish what it reads
 
-Said plainly: nothing stops a site that reads `/public/displayName` from writing
-that value into **its own** `/public`, where a third site can then ask to read
+Said plainly: nothing stops a site that reads `/shared/displayName` from writing
+that value into **its own** `/shared`, where a third site can then ask to read
 it. The grant is per reader/owner pair and is not transitive; the data is not
 bound at all. Once a reader has a value it holds a copy, and the browser cannot
 un-copy it — revoking stops future reads, not past ones.
 
-Treat `/public` as published. If you would not put it on a page, do not put it
+Treat `/shared` as published. If you would not put it on a page, do not put it
 there.
 
 ### Locking
