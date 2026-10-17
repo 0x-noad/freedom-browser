@@ -1,7 +1,7 @@
 /* GENERATED — do not edit by hand.
  * @vault/{vault-core,crypto-core,protocol} bundled for Freedom Browser.
  * Source:   https://github.com/absolutions19/vault3r-code-public
- * Revision: e5e96b509108
+ * Revision: 3b095c4da2d5
  * License:  MPL-2.0 (same as Freedom Browser)
  * Inlines:  @noble/ciphers, @noble/curves, @noble/hashes, @scure/base,
  *           @scure/bip39, tldts — all MIT. See the vendor README beside
@@ -4602,9 +4602,21 @@ function normalizeHost(input) {
     throw new NamespaceError(`invalid host: ${input}`);
   }
   const info = (0, import_tldts.parse)(hostname);
-  if (info.isIp) throw new NamespaceError("IP literals are not valid identities");
-  if (!hostname.includes(".")) throw new NamespaceError("host must be a fully-qualified domain");
-  if (hostname === "localhost") throw new NamespaceError("localhost is not a valid identity");
+  if (info.isIp) {
+    throw new NamespaceError(
+      "IP literals are not valid identities \u2014 serve on a name instead, e.g. http://app.localhost:9999"
+    );
+  }
+  if (!hostname.includes(".")) {
+    throw new NamespaceError(
+      `host must be a fully-qualified domain \u2014 use a name like app.${hostname} (any *.localhost name resolves to loopback)`
+    );
+  }
+  if (hostname === "localhost") {
+    throw new NamespaceError(
+      "localhost is not a valid identity \u2014 use a subdomain of it, e.g. http://app.localhost:9999"
+    );
+  }
   return hostname;
 }
 function isLoopbackName(hostname) {
@@ -9368,7 +9380,11 @@ var init_engine = __esm({
         const loaded = await this.docStore.load(session.storageKey);
         const baseV = etagToVersion(baseVersion);
         if (baseV !== void 0 && baseV !== loaded.version) {
-          throw VaultError.of("VersionConflict", `stale baseVersion (have ${loaded.version})`);
+          throw VaultError.of(
+            "VersionConflict",
+            `stale baseVersion (have ${loaded.version})`,
+            { version: versionToEtag(loaded.version) }
+          );
         }
         let doc = loaded.doc;
         const changedPaths = [];
