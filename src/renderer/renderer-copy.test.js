@@ -467,9 +467,11 @@ describe('approval screens (#239)', () => {
     test('no undocumented approval secondary has drifted off "Reject"', () => {
       const drifted = [];
       for (const match of index.matchAll(
-        /class="(?:swarm-connect|dapp-tx|dapp-sign|dapp-connect)-reject-btn"\s+id="([a-z0-9-]+)"[^>]*>\s*([^<]*?)\s*</g
+        /<button[^>]*\bclass="(?:swarm-connect|dapp-tx|dapp-sign|dapp-connect)-reject-btn"[^>]*>\s*([^<]*?)\s*</g
       )) {
-        const [, id, text] = match;
+        const id = /\bid="([a-z0-9-]+)"/.exec(match[0])?.[1];
+        const text = match[1];
+        if (!id) continue;
         if (NOT_A_REJECT.has(id) || norm(text) === 'Reject') continue;
         if (documented.some(([documentedId]) => documentedId === id)) continue;
         drifted.push(`#${id} says "${norm(text)}"`);

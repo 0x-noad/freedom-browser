@@ -37,6 +37,11 @@ import { initRemoteSession } from './wallet/remote-session.js';
 import { initRemoteSigningPanel } from './wallet/remote-signing-panel.js';
 import { initPublishSetup, openPublishSetup, closePublishSetup } from './wallet/publish-setup.js';
 import { initStampManager, openStampManager, closeStampManager } from './wallet/stamp-manager.js';
+import { initVaultData, updateVaultConnectionBanner } from './wallet/vault-data.js';
+import { openInNewTabWithTarget } from './tabs.js';
+
+/** Set once initWalletUi runs; the tab handler below refreshes through it. */
+let vaultDataApi = null;
 import { initChequebookDeposit, closeChequebookDeposit } from './wallet/chequebook-deposit.js';
 import { initSwarmConnect, showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval } from './wallet/swarm-connect.js';
 import { initVaultUnlock, showVaultUnlock } from './wallet/vault-unlock.js';
@@ -50,6 +55,7 @@ export { showDappConnect, updateConnectionBanner, showDappTxApproval, showDappSi
 export { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval, showVaultUnlock };
 export { showPermissionManifest };
 export { updateX402ConnectionBanner };
+export { updateVaultConnectionBanner };
 export { showDappPermissions, showSwarmPermissions, showX402Permissions };
 export { getSelectedChainId, setSelectedChainId };
 
@@ -103,6 +109,47 @@ export function initWalletUi() {
   initChainSwitcher();
   initReceive();
   initWalletSettings(switchTab);
+
+  // VAULT data vault pane. openAndFocus lets main surface a site's consent
+  // request here (per-field toggles) instead of a native dialog.
+  // The data vault has no unlock UI of its own — one unlock covers both vaults.
+  // Main routes a locked site-connect (or the launcher's Unlock button) here.
+  if (window.vaultData?.onShowUnlock) {
+    window.vaultData.onShowUnlock(async ({ id, label }) => {
+      try {
+        // Check the lock state first, as every other caller of this screen does.
+        // It SHOWS an unlock rather than deciding one is needed, so asking for it
+        // against an open vault prompts for Touch ID again. Main checks before
+        // sending, but the vault can be unlocked by something else between the
+        // send and this handler running.
+        const status = await window.identity?.getStatus?.();
+        if (!status?.isUnlocked) {
+          // A site-initiated unlock names the site, like the wallet's own prompts;
+          // the launcher and other vault-internal asks fall back to the generic label.
+          await showVaultUnlock(label || 'Your data vault');
+        }
+      } catch {
+        // user cancelled — main re-reads the real lock state either way
+      }
+      window.vaultData.respondUnlock(id);
+      // This unlock did not come from the Data pane's own button, so nothing
+      // else re-reads the lock state: the pane can be on screen showing its
+      // locked prompt with the vault now open behind it. Harmless when the user
+      // cancelled — refresh asks main what the state actually is.
+      vaultDataApi?.refresh();
+    });
+  }
+
+  vaultDataApi = initVaultData({
+    openAndFocus: () => {
+      openSidebarPanel();
+      switchTab('data');
+    },
+    // The pane's own Unlock button drives the browser's existing unlock screen.
+    requestUnlock: () => showVaultUnlock('Your data vault'),
+    // Foreground, because the click is the user asking to go there.
+    openInNewTab: (url) => openInNewTabWithTarget(url, null, { background: false }),
+  });
   initCreateWallet();
   initConnectLedger();
   initConnectPhone();
@@ -198,6 +245,9 @@ function setupCoordinatorListeners() {
       }
       if (tabName === 'wallet') {
         refreshRecentPayments().catch((err) => console.error('[wallet-ui] recent payments refresh failed:', err));
+      }
+      if (tabName === 'data' && vaultDataApi) {
+        vaultDataApi.refresh();
       }
     });
   });
