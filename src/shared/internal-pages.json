@@ -1,5 +1,6 @@
 {
   "routable": {
+    "dapps": "dapps.html",
     "home": "home.html",
     "downloads": "downloads.html",
     "history": "history.html",

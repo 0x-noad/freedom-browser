@@ -1,0 +1,192 @@
+<!doctype html>
+<!--
+  Your dApps — the VAULT data-vault launcher (freedom://dapps).
+
+  A grid of every site holding data in your vault: the site's own icon (supplied
+  in-band at connect and pinned with the grant), its name underneath, click to
+  launch. Read-only — delete/revoke/export live in the wallet's Data pane, so
+  nothing destructive sits on a surface you open constantly.
+
+  Self-contained (inline style + script) to match the other internal pages.
+  `img-src data:` is the load-bearing CSP directive: icons are inline bytes that
+  main has already validated, sniffed, size/dimension-capped and re-encoded, and
+  `connect-src 'none'` means opening this page makes zero network requests — it
+  can never beacon your vault's site list.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none';"
+    />
+    <title>Your dApps</title>
+    <link rel="stylesheet" href="styles/theme.css" />
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+        background: var(--page-gradient);
+        color: var(--text);
+        padding: 48px;
+        box-sizing: border-box;
+        min-height: 100vh;
+      }
+      .wrap {
+        max-width: 920px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 28px;
+        margin: 0 0 6px;
+      }
+      .subtitle {
+        margin: 0 0 32px;
+        font-size: 13px;
+        color: var(--text-muted);
+        min-height: 18px;
+      }
+      .hidden {
+        display: none !important;
+      }
+
+      /* locked */
+      .locked {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+        padding: 72px 24px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: var(--surface-translucent);
+      }
+      .locked-icon {
+        font-size: 30px;
+        opacity: 0.75;
+      }
+      .locked-text {
+        margin: 0;
+        font-size: 14px;
+        color: var(--text-muted);
+      }
+      .unlock-btn {
+        padding: 9px 22px;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--bg);
+        background: var(--accent);
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .unlock-btn:hover:not(:disabled) {
+        filter: brightness(1.08);
+      }
+      .unlock-btn:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+
+      /* grid */
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+        gap: 20px 12px;
+      }
+      .tile {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 6px 12px;
+        font: inherit;
+        color: inherit;
+        background: none;
+        border: 1px solid transparent;
+        border-radius: 12px;
+        cursor: pointer;
+        transition:
+          background 0.12s ease,
+          border-color 0.12s ease;
+      }
+      .tile:hover,
+      .tile:focus-visible {
+        background: var(--bg-card-hover);
+        border-color: var(--border);
+        outline: none;
+      }
+      .tile:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .tile-icon {
+        width: 56px;
+        height: 56px;
+        border-radius: 14px;
+        object-fit: cover;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        box-sizing: border-box;
+      }
+      .tile-monogram {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 24px;
+        font-weight: 600;
+        /* colour, background and border-color are set per tile by monogramEl():
+           the hue is derived from the site's namespace, so it is data, not theme */
+      }
+      .tile-name {
+        max-width: 100%;
+        font-size: 12px;
+        line-height: 1.3;
+        text-align: center;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        overflow-wrap: anywhere;
+      }
+
+      .empty {
+        padding: 64px 24px;
+        text-align: center;
+        color: var(--text-muted);
+        font-size: 14px;
+      }
+      .empty-hint {
+        margin-top: 6px;
+        font-size: 12.5px;
+        opacity: 0.8;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Your dApps</h1>
+      <p class="subtitle" id="subtitle"></p>
+
+      <section class="locked hidden" id="locked">
+        <div class="locked-icon" aria-hidden="true">🔒</div>
+        <p class="locked-text">Unlock to view your saved dApps.</p>
+        <button class="unlock-btn" id="unlock-btn" type="button">Unlock</button>
+      </section>
+
+      <section class="grid hidden" id="grid" aria-label="Sites with data in your vault"></section>
+
+      <section class="empty hidden" id="empty">
+        <p>No sites have saved data to your vault yet</p>
+        <p class="empty-hint">When a site asks for a data vault and you approve, it appears here.</p>
+      </section>
+    </div>
+
+    <script src="scripts/dapps.js"></script>
+  </body>
+</html>
