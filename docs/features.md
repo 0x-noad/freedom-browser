@@ -235,6 +235,7 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 - **Swarm Provider**: Permissioned `window.swarm` APIs cover publishing, chunks, feeds, signing identities, and messaging. It is the only way a page reaches your Swarm node: requests from web content to the node's local HTTP API (`localhost:1633` and the port Freedom runs it on) are blocked, except a node URL you open in the address bar, and `bzz://` pages are read-only (GET/HEAD). See the [provider reference](swarm-provider-api.md).
 - **Radicle Provider**: Permissioned `window.radicle` APIs cover repository data, node operations, signing, and seeding; see the [provider reference](radicle-provider-api.md).
 - **x402 Payments**: Approve pay-as-you-browse requests, configure per-origin auto-pay allowances, and inspect payment history.
+- **Data Vault**: Sites get their own encrypted store through `window.vault`. A site declares which fields it wants and whether it needs to write them; you approve the partition once, and the data is sealed under a key derived from the wallet you already have. A site can also publish under `/public` and let another site read it, one approved pair at a time, switchable off and on from either side. The wallet's **Data** pane manages both directions and `freedom://dapps` lists the sites holding data. See the [site-author guide](vault-for-site-authors.md).
 
 ## Context Menus
 
@@ -275,6 +276,7 @@ Access built-in browser pages using the `freedom://` protocol:
 | `freedom://payments`      | x402 payment history         |
 | `freedom://private`       | Private window start page    |
 | `freedom://profiles`      | Browser profile manager      |
+| `freedom://dapps`         | Sites holding data in your vault |
 | `freedom://protocol-test` | Protocol and media test page |
 | `freedom://publish`       | Publish files to Swarm       |
 | `freedom://settings`      | Browser and network settings |

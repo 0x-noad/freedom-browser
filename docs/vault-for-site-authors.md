@@ -1,0 +1,310 @@
+# The Freedom Data Vault for Site Authors
+
+`window.vault` gives a site its own encrypted store inside the browser. You
+declare the JSON Pointer paths you want and whether you need to write them; the
+user approves the partition, not the paths. Data is sealed under a key derived
+from the user's wallet mnemonic; the browser derives the calling origin from the sender frame, never
+from anything the page claims, and that origin is the isolation boundary.
+
+The one way across that boundary is deliberate and narrow: a site may publish
+under the reserved `/public` subtree, and another site may be granted read-only
+access to it. See [Publishing under `/public`](#publishing-under-public) and
+[Reading another site's public data](#reading-another-sites-public-data).
+
+Type definitions ship in [`types/freedom-vault.d.ts`](../types/freedom-vault.d.ts).
+
+## Detecting it
+
+The provider is installed at **document-start**, before any page script runs —
+including a deferred `<script type="module">` — so you can read it directly:
+
+```js
+if (window.vault?.isVault3r) {
+  // the data vault is available
+}
+```
+
+It also dispatches `vault#initialized` on install, following the EIP-1193
+convention, if you would rather not depend on the timing.
+
+Nothing is injected in private windows: `window.vault` is simply absent there.
+
+## Origins, schemes and local development
+
+`bzz://`, `ipfs://` and `ipns://` are registered as **standard, secure,
+fetch-enabled, CORS-enabled** schemes with streaming and service-worker support.
+Two consequences worth relying on:
+
+- **Cross-scheme reads work.** A page served from `http://localhost:8765` can
+  `fetch('bzz://meinhard.eth/')` successfully. You do not need a gateway
+  fallback for development.
+- **Your dev loop represents production.** In production the app is served from
+  `bzz://` and the same read is same-origin; nothing about the fetch changes.
+
+Origins are compared **including scheme and port**. `https://site.example` and
+`bzz://site.example` are different origins to every provider here, and moving a
+dev server from `:8765` to `:8766` silently drops the grants held by `:8765`.
+
+
+### Publish under a stable name, or lose user data
+
+**This is the single most consequential fact about building on the vault.** The
+namespace is derived from your origin: `bzz://<host>` maps to
+`web:dweb:bzz:<host>`. For an app published at a **raw content reference**, the
+reference changes on every redeploy — so the namespace changes, so every
+returning user silently gets an empty vault and their profile is stranded in a
+partition nothing can reach. There is no error and no prompt; a returning user
+simply gets a first-run experience.
+
+Publish under a stable name — an ENS name with a contenthash record you update —
+and the namespace survives every release. `ens://name.eth` and `bzz://name.eth`
+share one namespace by design, so moving between them is safe; moving between
+content references is not.
+
+**Dev hosts are keyed by port.** For `*.localhost` hosts only, the port is part
+of the namespace: `http://app.localhost:8765` and `:8766` are two partitions,
+so two dev servers never share — or race on — one another's data. Real origins
+keep the port out, so a production redeploy on a new port keeps its namespace.
+
+### If a partition will not open
+
+Wrong identity and corruption look identical to the cipher. The vault records a
+fingerprint of the identity that sealed each store, so the Data tab can tell you
+which it was: **sealed under a different identity** (unlock with that mnemonic,
+or delete), **corrupt** (unrecoverable — delete so the site can start over), or
+**unknown** for stores written before fingerprints existed. A site sees the same
+attribution as `error.data.reason` on any `KeyInvalidated` (4311) rejection.
+
+### Connecting
+
+```js
+const session = await window.vault.connect({
+  requestedScopes: [
+    {
+      methods: ['vault_getData', 'vault_setData', 'vault_subscribe'],
+      fields: [
+        { path: '/profile/displayName', read: true, write: true },
+        { path: '/profile/watchlist', read: true, write: true },
+      ],
+    },
+  ],
+  appMetadata: { name: 'DKey', icon: 'data:image/png;base64,…' },
+});
+// { sessionId, grant, namespace }
+```
+
+Paths are JSON Pointers — `/profile/displayName`, not `profile.displayName`. A
+rule path that is neither empty nor `/`-prefixed is rejected, so a dotted path
+matches nothing.
+
+The consent sheet appears on first connect. It approves **per partition, not per
+field**: one row naming your site, exactly as the Data pane lists it, and — when
+you asked to read another site — one row per owner partition with a `read`
+checkbox. A field path is your own schema and means little to the person
+approving it; which partitions are being opened is the decision.
+
+So there is nothing on the sheet that narrows your own field list: it is
+approved as asked, or rejected. The one thing the user can narrow is the set of
+other partitions you may read, by unticking an owner. Read `session.grant` back
+rather than assuming you got what you asked for. A remembered grant reconnects
+silently; asking for more than was granted prompts again.
+
+A write at or below `/public` also raises a note on the sheet, in so many words:
+that what you store there is something other sites can ask to read. See
+[Publishing under `/public`](#publishing-under-public).
+
+`vault_getPermissions` is granted whether or not you ask for it, so
+`vault.getPermissions(sessionId)` always works on a live session.
+
+`appMetadata.icon` must be a `data:` URI — PNG, JPEG or WebP only (SVG is
+rejected, since the launcher page renders it), the declared MIME must match the
+actual magic bytes, at most 16 KiB decoded, 8–512 px. It is re-encoded to a
+128×128 PNG, so send something near that size rather than your largest art —
+bytes above the cap are rejected, not downscaled. Anything else falls back to
+a monogram derived from your namespace. Icons ride in-band precisely so that
+rendering the launcher never touches the network.
+
+### Reading and writing
+
+```js
+const { values, version } = await window.vault.get(session.sessionId, ['/profile/displayName']);
+await window.vault.set(session.sessionId, { '/profile/displayName': 'ada' }, version);
+```
+
+At most 64 paths per call. `version` is an ETag: pass the one you read back as
+`baseVersion` to get optimistic concurrency, or omit it to overwrite.
+
+`subscribe(sessionId, paths)` pushes updates through the `change` event;
+`permissionsChanged` fires whenever the user moves your grant from the Data tab
+— revoked, narrowed, or a cross-origin read switched back on. Your session ends
+with it in every case, so treat it as "reconnect and read `session.grant`",
+never as "you lost access": one of the things it reports is gaining some.
+
+**Limits, and what they cost you.** Your whole partition is capped at **16 MiB**
+on the UTF-8 serialization of its document, and a write that would cross that
+rejects with `QuotaExceeded` rather than truncating. Within that: 64 paths per
+read or subscribe, 128 changes per `set` or `patch`, pointers up to 512 UTF-8
+bytes, and 32 levels of nesting counted from the document root (your pointer's
+own depth counts toward it).
+
+Every write is a whole-document read-modify-write — load, decrypt, parse,
+mutate, serialize, encrypt, save — so the cost of one small `set` scales with
+how much you keep in the partition, not with what you changed. Nothing throttles
+you, but a megabyte-scale document written in a tight loop is a megabyte-scale
+cycle each time. Keep the hot, frequently-written values in their own shallow
+pointers and the bulky ones where they are read rather than rewritten.
+
+### Publishing under `/public`
+
+`/public` is reserved, and **location is the mark** — there is no shareable
+flag. Anything you write under it is what another site can be granted, and
+nothing outside it can ever be read by another site.
+
+To you it is ordinary data: read and write it under your own grant like
+anything else. Two things follow from the location being the mark:
+
+**Publishing is explicit.** A write under `/public` needs a granted rule rooted
+at or below `/public`. A grant on the whole document carries every other right
+but not this one, so a site cannot end up publishing because it asked for
+everything.
+
+Note what this does and does not tell the user. Asking to write at or below
+`/public` raises a note on your own consent sheet — "This site writes data
+marked `/public` into its partition. Other sites can read this data if you give
+them permission." — so the user is told that what you store there is askable
+for, at the moment they grant it. What they are not told is *which* of your
+fields end up there, or when: that is your own schema, and the sheet does not
+list paths. Nothing is actually read by anyone until a reader asks and the user
+approves that separately, which is a second, per-pair decision.
+
+Publishing more under `/public` later is immediately covered by an existing
+whole-subtree grant, and *not* by a specific-pointer grant — so a reader
+granted the whole subtree keeps up with you, and one granted a named pointer
+does not.
+
+### Reading another site's public data
+
+Declare it at `connect`, so one sheet covers your own fields and your
+cross-origin reads:
+
+```js
+const session = await window.vault.connect({
+  requestedScopes: [
+    {
+      methods: ['vault_getData', 'vault_setData', 'vault_getPublicData'],
+      fields: [{ path: '/profile', read: true, write: true }],
+      foreign: [{ origin: 'bzz://social.eth', paths: ['/public/displayName'] }],
+    },
+  ],
+});
+
+const { values } = await window.vault.readPublic(session.sessionId, 'bzz://social.eth', [
+  '/public/displayName',
+]);
+```
+
+- Read-only. There is no cross-origin write and no cross-origin `subscribe`, so
+  poll if you need to see changes.
+- Origins compare **including scheme**, so `bzz://social.eth` and
+  `https://social.example` are two different asks.
+- You may name specific pointers or `/public` wholesale. Neither the sheet nor
+  the Data pane shows which pointers you asked for — both name the partition and
+  nothing else — so a wholesale ask is approved on the same terms as a narrow
+  one. Ask for only what you need anyway: the grant is what the engine enforces
+  on every read, whatever the user was shown, and a narrower ask survives the
+  owner publishing something you had no business reading.
+- `vault_getPublicData` must be requested. Unlike `vault_getPermissions` it is
+  never granted implicitly, because it is the cross-origin surface.
+- At most 8 owners and 16 paths each per connect.
+
+**Absent data reads as empty, and there is no error for "no such owner."** A
+path the owner never wrote, an owner with no partition at all, an owner the user
+declined, a grant since removed, and a pointer outside `/public` all resolve to
+`null`. That is deliberate: anything that told them apart would let you probe
+which sites the user has visited. It also means a typo in an origin is
+indistinguishable from an owner with nothing published — check the Data pane,
+which lists the pairs the user actually approved, and whether each is on.
+
+### Revoking, and switching off
+
+The user controls a cross-origin read from the wallet's Data pane, from either
+end, with the same control: a `read` checkbox under **Permissions** on either
+partition's page — "this site reads" on the reader's, "reads this site" on the
+owner's. It is one grant and one state, so unticking it on either page switches
+the same read off, and it stays on record so the user can tick it back on.
+`permissionsChanged` fires on the reader's live session, no data is deleted on
+either side, and deleting a partition drops every grant naming it in both
+directions — after which the reader prompts again rather than appearing to
+still hold it.
+
+A read that is off starts returning empty rather than rejecting, so code that
+already handles absent data already handles this.
+
+**A switched-off read does not re-prompt.** The approval is still on record, so
+connecting again does not raise the consent sheet for it — your reads just keep
+answering `null` until the user ticks it back on. Do not treat empty results as
+a cue to ask again.
+
+### Letting your next version read this one
+
+A partition is keyed by origin, so **the next iteration of your site is a
+different site**: a new subdomain, a new scheme, a new domain, and the document
+starts empty. `/public` is the way across that — if you plan for it on the way
+in. Write what a future version will need under `/public` from the start, and v2
+declares a read of v1's origin and migrates on first run. The engine repo's
+README works the pattern through in code, under *Sharing data under `/public`* →
+*Forward compatibility*.
+
+Two things to keep in mind. The user approves that read, on v2's sheet, naming
+v1's partition — it is not automatic, and if they decline, v2 starts empty. And
+an absent v1 is indistinguishable from a declined one: both read `null`, so
+treat an empty result as "nothing to migrate" rather than as a failure to retry
+or report.
+
+### A reader can re-publish what it reads
+
+Said plainly: nothing stops a site that reads `/public/displayName` from writing
+that value into **its own** `/public`, where a third site can then ask to read
+it. The grant is per reader/owner pair and is not transitive; the data is not
+bound at all. Once a reader has a value it holds a copy, and the browser cannot
+un-copy it — revoking stops future reads, not past ones.
+
+Treat `/public` as published. If you would not put it on a page, do not put it
+there.
+
+### Locking
+
+The vault auto-locks after 15 minutes idle. Vault reads and writes count as
+activity and push the timer out, so an actively used session stays open. A
+long-lived page will still meet a locked vault eventually.
+
+A locked vault rejects data-plane calls with **code `4312`**. Branch on the
+code, never the message — the text comes from the engine's `DEFAULT_MESSAGE`
+table and is free to change; the code is the contract. The provider preserves
+`code` on the rejected `Error`, which is what makes this possible:
+
+```js
+try {
+  await window.vault.get(sessionId, ['/profile']);
+} catch (err) {
+  if (err.code !== 4312) throw err;
+  const { unlocked, reason } = await window.vault.requestUnlock(sessionId);
+  if (unlocked) return retry();
+  // reason: 'dismissed' — the user said no this time
+  //         'cooldown'  — asked too recently; wait before offering again
+  //         'embargoed' — dismissed repeatedly; stop offering until they unlock
+}
+```
+
+`requestUnlock` raises the browser's own unlock screen — the very same one the
+wallet uses for its own signing flows, Touch ID and all — so you never have to
+describe where that control lives. The prompt names your site, using the origin
+the browser observed on your frame rather than anything your page supplied. It **resolves rather than rejects** when the user declines, so a
+refusal is a branch, not an exception.
+
+It is not in your grant and you do not request it: holding a live session is the
+authorisation. What it cannot be is a nuisance — concurrent calls from any
+number of sites share one prompt, a site that just asked is refused with
+`cooldown` for a minute, and three dismissals in a row earn `embargoed` until
+the user unlocks by some other means. Offer it from a button the user pressed;
+do not call it on a timer.

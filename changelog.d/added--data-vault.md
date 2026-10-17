@@ -1,0 +1,7 @@
+- Sites can store data in an encrypted per-site vault you control, with a **Data** pane in the wallet sidebar to manage it ([#PR](https://github.com/solardev-xyz/freedom-browser/pull/PR))
+  - A site asks for a partition; you approve it once, and its data is sealed under a key derived from the wallet you already have
+  - The **Data** pane lists every site holding data, what it stores and how much, and deletes one site's data or all of it
+  - `freedom://dapps` lists the sites holding data in your vault and opens them
+  - A site can publish part of its data under `/public` and ask to read what another site published there — one approved pair at a time, and the consent sheet says on the writing site's own prompt that other sites can ask for it
+  - A granted read can be switched off and back on from either site's page in the **Data** pane, without deleting anything
+  - A locked vault shows an unlock prompt and nothing else: the list of sites you hold data for is as private as the data
