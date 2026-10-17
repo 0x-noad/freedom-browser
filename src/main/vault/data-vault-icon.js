@@ -113,7 +113,12 @@ function normalizeIcon(input, opts = {}) {
     try {
       const img = ni.createFromBuffer(buf);
       if (!img || img.isEmpty()) return { ok: false, reason: 'decoder rejected the image' };
-      const png = img.resize({ width: NORMALIZED_DIM, height: NORMALIZED_DIM, quality: 'good' }).toPNG();
+      // Downscale, never up. A 64px icon resized to 128 is the same picture
+      // with its edges smeared, and the tiles render at 56px anyway — the
+      // re-encode is here to strip EXIF, ICC and animation, not to invent
+      // pixels. An already-small icon is re-encoded at its own size.
+      const edge = Math.min(NORMALIZED_DIM, Math.max(dims.width, dims.height));
+      const png = img.resize({ width: edge, height: edge, quality: 'good' }).toPNG();
       if (!png || png.length === 0) return { ok: false, reason: 're-encode produced nothing' };
       if (png.length > MAX_ICON_BYTES) return { ok: false, reason: 're-encoded icon too large' };
       return {
@@ -121,8 +126,8 @@ function normalizeIcon(input, opts = {}) {
         icon: {
           dataUri: `data:image/png;base64,${png.toString('base64')}`,
           mime: 'image/png',
-          width: NORMALIZED_DIM,
-          height: NORMALIZED_DIM,
+          width: edge,
+          height: edge,
           bytes: png.length,
         },
       };

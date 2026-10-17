@@ -63,8 +63,18 @@ content references is not.
 
 **Dev hosts are keyed by port.** For `*.localhost` hosts only, the port is part
 of the namespace: `http://app.localhost:8765` and `:8766` are two partitions,
-so two dev servers never share — or race on — one another's data. Real origins
-keep the port out, so a production redeploy on a new port keeps its namespace.
+so two dev servers never share — or race on — one another's data. The flip side
+is that restarting your dev server on a different port gives you an empty vault
+and leaves yesterday's data in a partition you can only reach by going back to
+the old port. Real origins keep the port out, so a production redeploy on a new
+port keeps its namespace.
+
+**Bare `localhost` and IP literals are refused outright**, not merely keyed
+differently: `connect()` from `http://localhost:9999` fails with *host must be a
+fully-qualified domain*, and `http://127.0.0.1:9999` with *IP literals are not
+valid identities*. An identity needs a name, and an address is not one. Use any
+subdomain — `http://app.localhost:9999` — which Chromium resolves to loopback
+with no hosts-file entry, so it costs you nothing but the prefix.
 
 ### If a partition will not open
 
@@ -118,9 +128,12 @@ that what you store there is something other sites can ask to read. See
 
 `appMetadata.icon` must be a `data:` URI — PNG, JPEG or WebP only (SVG is
 rejected, since the launcher page renders it), the declared MIME must match the
-actual magic bytes, at most 16 KiB decoded, 8–512 px. It is re-encoded to a
-128×128 PNG, so send something near that size rather than your largest art —
-bytes above the cap are rejected, not downscaled. Anything else falls back to
+actual magic bytes, at most 16 KiB decoded, 8–512 px. Bytes above the cap are
+rejected, not downscaled. It is re-encoded — which is what strips EXIF, ICC and
+animation — and downscaled to at most 128×128, never upscaled, so **128×128 is
+the size to send**: anything smaller is kept at its own size and will look soft
+on the launcher's 56 px tile, and anything larger is thrown away. Anything else
+falls back to
 a monogram derived from your namespace. Icons ride in-band precisely so that
 rendering the launcher never touches the network.
 
@@ -134,6 +147,32 @@ await window.vault.set(session.sessionId, { '/profile/displayName': 'ada' }, ver
 At most 64 paths per call. `version` is an ETag: pass the one you read back as
 `baseVersion` to get optimistic concurrency, or omit it to overwrite.
 
+A stale `baseVersion` rejects with **`4321` (`VersionConflict`)**, and the error
+carries the version you lost to:
+
+```js
+try {
+  await window.vault.set(sessionId, { '/notes/draft': text }, version);
+} catch (err) {
+  if (err.code === 4321) {
+    // err.data.version is the current etag — retry against it without re-reading.
+    await window.vault.set(sessionId, { '/notes/draft': text }, err.data.version);
+  }
+}
+```
+
+Retrying blind (no `baseVersion`) is also legitimate — it is last-write-wins,
+which is the right answer for a value only your own tab writes.
+
+**Saving on the way out.** `set()` resolves only after the write is stored, so
+the promise *is* the durability signal — but a page cannot await anything during
+`pagehide` or `unload`, because it is already going away. The browser's own
+behaviour, if it helps: a request that reaches the main process is applied in
+full even when the frame is gone (the reply is what gets lost); a request that
+has not been dispatched when the renderer tears down never happens at all. So
+save on **`visibilitychange` → `hidden`**, where you can still await, and treat
+`pagehide` as a best-effort repeat rather than your only save.
+
 `subscribe(sessionId, paths)` pushes updates through the `change` event;
 `permissionsChanged` fires whenever the user moves your grant from the Data tab
 — revoked, narrowed, or a cross-origin read switched back on. Your session ends
@@ -145,14 +184,32 @@ on the UTF-8 serialization of its document, and a write that would cross that
 rejects with `QuotaExceeded` rather than truncating. Within that: 64 paths per
 read or subscribe, 128 changes per `set` or `patch`, pointers up to 512 UTF-8
 bytes, and 32 levels of nesting counted from the document root (your pointer's
-own depth counts toward it).
+own depth counts toward it). **There is no per-value cap** — one 10 MB string
+is as acceptable as a thousand small ones, as long as the document fits.
 
 Every write is a whole-document read-modify-write — load, decrypt, parse,
-mutate, serialize, encrypt, save — so the cost of one small `set` scales with
-how much you keep in the partition, not with what you changed. Nothing throttles
-you, but a megabyte-scale document written in a tight loop is a megabyte-scale
-cycle each time. Keep the hot, frequently-written values in their own shallow
-pointers and the bulky ones where they are read rather than rewritten.
+mutate, serialize, encrypt, save — so **the cost of a write tracks what the
+partition holds, not what you changed.** Measured on a 2023 laptop, through the
+real store:
+
+| What | Time |
+| --- | --- |
+| Writing 0.9 MB (a 0.7 MB value plus a 170 KB one) | ~13 ms |
+| Writing **one small field** with that 0.9 MB already stored | ~12 ms |
+| Reading both large values back | ~5 ms |
+| Writing one 8 MB value | ~70 ms |
+| Writing **one small field** with 8 MB already stored | ~110 ms |
+
+So a megabyte-scale partition is comfortable, and an 8 MB one makes every
+keystroke-sized write a tenth of a second. Nothing throttles you. Keep the hot,
+frequently-written values in their own shallow pointers, and if you store
+something big, expect to pay for it on every unrelated write — or keep it in a
+separate partition's worth of thinking: there is one document per origin, and no
+way to split it.
+
+**Binary data goes in as base64.** Values are JSON, so there is no `Uint8Array`
+or `ArrayBuffer` type; a blob costs 33 % more than its bytes, and that inflated
+size is what every subsequent write re-serializes.
 
 ### Publishing under `/public`
 
