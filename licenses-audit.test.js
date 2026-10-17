@@ -45,6 +45,12 @@ const auditDoc = read('LICENSE_AUDIT.md');
 
 const SRC_DIR = 'src';
 const VENDOR_DIR = 'src/renderer/vendor';
+/**
+ * The main process has a vendor directory too, for the data vault's engine.
+ * Same rules as the renderer's: committed, pre-built, shipped by `src/**`, and
+ * not covered by the "npm dependencies" line in NOTICES.
+ */
+const MAIN_VENDOR_DIR = 'src/main/vault/vendor';
 
 /** Extensions `src/` holds that are Freedom's own source rather than an asset. */
 const SOURCE_EXTENSIONS = new Set(['.js', '.css', '.html', '.json', '.md']);
@@ -170,6 +176,21 @@ const VENDOR_FILES = {
     auditName: 'dompurify',
     noticeMatch: /^DOMPurify \(HTML sanitizer\)$/m,
   },
+};
+
+/** Every file `src/main/vault/vendor/` may hold, and what it is. */
+const MAIN_VENDOR_FILES = {
+  'vault-bundle.js': {
+    thirdParty: true,
+    label: 'Vault3r data-vault engine',
+    auditName: 'vault3r (@vault/vault-core, @vault/crypto-core, @vault/protocol)',
+    noticeMatch: /^Vault3r data-vault engine \(@vault\/vault-core/m,
+  },
+  // Two-line `require` shims over the bundle, written by the same bundler.
+  'vault-core.js': { thirdParty: true, coveredBy: 'vault-bundle.js' },
+  'crypto-core.js': { thirdParty: true, coveredBy: 'vault-bundle.js' },
+  // Freedom's own note on what the bundle is and how to rebuild it.
+  'README.md': { thirdParty: false, label: "Freedom's own vendor-directory note" },
 };
 
 /**
@@ -333,6 +354,12 @@ describe('bundled-component inventory', () => {
     }
   });
 
+  it('classifies every file committed under src/main/vault/vendor', () => {
+    for (const file of fs.readdirSync(path.join(repoRoot, MAIN_VENDOR_DIR)).sort()) {
+      expect({ file, classified: file in MAIN_VENDOR_FILES }).toEqual({ file, classified: true });
+    }
+  });
+
   it('classifies every non-source file the src/**/* pattern ships', () => {
     for (const file of shippedSrcAssets()) {
       const dir = `${path.dirname(file)}/`;
@@ -340,18 +367,21 @@ describe('bundled-component inventory', () => {
     }
   });
 
-  it('keeps third-party bundles in src/renderer/vendor, where they get read', () => {
-    // The vendor sweeps below are what catch a copyleft bundle, and they only
-    // look in one directory. A pre-built library dropped anywhere else under
-    // `src/` ships identically and is invisible to them — which is the qrious
-    // bug with the directory changed.
-    const bundled = /\.(min|bundle|umd|esm|dist)\.(js|mjs|cjs|css)$/;
+  it('keeps third-party bundles in a vendor directory, where they get read', () => {
+    // The vendor sweeps are what catch a copyleft bundle, and they only look in
+    // the directories enumerated above. A pre-built library dropped anywhere
+    // else under `src/` ships identically and is invisible to them — which is
+    // the qrious bug with the directory changed.
+    //
+    // `[.-]` before the suffix, not `.`: the data vault's engine arrived as
+    // `vault-bundle.js` and this sweep did not see it, because the convention
+    // it encoded was one punctuation mark wide.
+    const bundled = /[.-](min|bundle|umd|esm|dist)\.(js|mjs|cjs|css)$/;
+    const vendorDirs = [VENDOR_DIR, MAIN_VENDOR_DIR];
     for (const file of shippedSrcFiles()) {
       if (!bundled.test(path.basename(file))) continue;
-      expect({ file, inVendorDir: file.startsWith(`${VENDOR_DIR}/`) }).toEqual({
-        file,
-        inVendorDir: true,
-      });
+      const inVendorDir = vendorDirs.some((dir) => file.startsWith(`${dir}/`));
+      expect({ file, inVendorDir }).toEqual({ file, inVendorDir: true });
     }
   });
 
@@ -364,6 +394,10 @@ describe('bundled-component inventory', () => {
     for (const file of Object.keys(VENDOR_FILES)) {
       expect({ file, present: vendor.has(file) }).toEqual({ file, present: true });
     }
+    const mainVendor = new Set(fs.readdirSync(path.join(repoRoot, MAIN_VENDOR_DIR)));
+    for (const file of Object.keys(MAIN_VENDOR_FILES)) {
+      expect({ file, present: mainVendor.has(file) }).toEqual({ file, present: true });
+    }
     const assetDirs = new Set(shippedSrcAssets().map((file) => `${path.dirname(file)}/`));
     for (const dir of Object.keys(SRC_ASSETS)) {
       expect({ dir, present: assetDirs.has(dir) }).toEqual({ dir, present: true });
@@ -375,6 +409,7 @@ describe('NOTICES attributes every third-party component that ships', () => {
   const attributable = [
     ...Object.entries(EXTRA_RESOURCES),
     ...Object.entries(VENDOR_FILES),
+    ...Object.entries(MAIN_VENDOR_FILES),
     ...Object.entries(SRC_ASSETS),
   ].filter(([, meta]) => meta.thirdParty && !meta.coveredBy);
 

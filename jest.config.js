@@ -12,7 +12,15 @@ module.exports = {
     '/ipfs-bin/',
     '/test-e2e/.*\\.spec\\.js$',
   ],
-  collectCoverageFrom: ['src/**/*.js', '!src/**/*.test.js', '!src/renderer/vendor/**'],
+  collectCoverageFrom: [
+    'src/**/*.js',
+    '!src/**/*.test.js',
+    // Both vendor directories hold generated, pre-built third-party code:
+    // counting it would move the numbers below without saying anything about
+    // how well Freedom's own code is tested.
+    '!src/renderer/vendor/**',
+    '!src/main/vault/vendor/**',
+  ],
   // Coverage thresholds are intentionally below typical "healthy" targets.
   // The Swarm publishing feature landed with heavily-tested services
   // (swarm-provider-ipc, feed-service, stamp-service, publish-service,

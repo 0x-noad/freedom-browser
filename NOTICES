@@ -119,6 +119,31 @@ DOMPurify (HTML sanitizer)
   Copyright (c) Cure53 and other contributors
   https://github.com/cure53/DOMPurify
 
+== Bundled main-process libraries (src/main/vault/vendor/) ==
+
+Vault3r data-vault engine (@vault/vault-core, @vault/crypto-core, @vault/protocol)
+  License: MPL-2.0
+  Copyright (c) 2026 Vault3r contributors
+  https://github.com/absolutions19/vault3r-code-public
+  Shipped as `src/main/vault/vendor/vault-bundle.js`, one generated
+  CommonJS file built by that repo's `tools/bundle-for-freedom.mjs`, whose
+  banner records the revision it was built from. It is the data vault's
+  cryptography, grant arithmetic and document store; the host glue beside
+  it in `src/main/vault/` is Freedom's own MPL-2.0 code. MPL-2.0 is
+  Freedom's own license, so the two mix without condition; the source of
+  the bundled files is the repository above, and
+  `src/main/vault/vendor/README.md` says how to rebuild it.
+  That bundle inlines six MIT libraries, which therefore ship inside it:
+  - @noble/ciphers 1.3.0, @noble/hashes 1.8.0, @noble/curves 1.9.7: MIT,
+    Copyright (c) 2022 Paul Miller, https://github.com/paulmillr/noble-ciphers
+    (and noble-hashes, noble-curves)
+  - @scure/base 1.2.6, @scure/bip39 1.6.0: MIT, Copyright (c) 2022 Paul
+    Miller, https://github.com/paulmillr/scure-base (and scure-bip39)
+  - tldts 6.1.86 (Public Suffix List data): MIT, Copyright (c) 2017
+    Thomas Parisot and contributors, https://github.com/remusao/tldts
+  The five noble and scure packages are also npm dependencies of the
+  wallet at these same versions; tldts arrives only with this bundle.
+
 == Framework ==
 
 Electron

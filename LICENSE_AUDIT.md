@@ -29,6 +29,7 @@
 | Dev npm dependencies                                        | not bundled | Do not affect the distributed product                              |
 | External binaries / native addons shipped in `resources/`   | 5           | Ant, freedom-ipfs, libradicle, Myotis, Arti                        |
 | Vendored renderer bundles in `src/renderer/vendor/`         | 4           | OpenLV, highlight.js, marked, DOMPurify                            |
+| Vendored main-process bundle in `src/main/vault/vendor/`    | 1           | Vault3r data-vault engine (MPL-2.0; inlines six MIT libraries)     |
 | Strong copyleft (GPL/AGPL)                                  | 0           | One found and removed — see below                                  |
 | GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410) |
 | Weak copyleft (MPL-2.0)                                     | 13 packages | Compatible; MPL-2.0 is our own license                             |
@@ -153,6 +154,49 @@ These are pre-built third-party files committed into the repo. They are **not** 
 | `highlight.min.js`, `hljs-github-{dark,light}.css` | highlight.js                                                             | 11.11.1       | BSD-3-Clause             | Green      |
 | `marked.min.js`                                    | marked                                                                   | 15.0.7        | MIT                      | Green      |
 | `purify.min.js`                                    | DOMPurify                                                                | 3.2.5         | MPL-2.0 OR Apache-2.0    | Green      |
+
+## Vendored Main-Process Bundle (`src/main/vault/vendor/`)
+
+The data vault's engine ships as one generated CommonJS file, built from a
+separate repository by its own bundler. Same rule as the renderer bundles
+above: committed, shipped inside `app.asar` by `build.files`' `src/**/*`
+pattern, and **not** covered by the "npm dependencies" line in `NOTICES`.
+
+| File                | Component                                                        | Version | License  | Risk  |
+| ------------------- | ---------------------------------------------------------------- | ------- | -------- | ----- |
+| `vault-bundle.js`   | Vault3r data-vault engine (`@vault/{vault-core,crypto-core,protocol}`) | 0.4.0   | MPL-2.0  | Green |
+
+MPL-2.0 is Freedom's own license, so the bundle and the host glue beside it in
+`src/main/vault/` mix without condition and nothing needs relicensing. The
+MPL's source obligation is met the way the LGPL one is for OpenLV — by the file
+being one regenerable bundle traceable to published source: its banner records
+the repository and the exact revision it was built from, and
+`src/main/vault/vendor/README.md` holds the rebuild command. A banner reading
+`+local` was built over uncommitted work and must not be merged.
+
+**Six MIT libraries ship inside it**, since the bundler keeps only Node
+builtins external:
+
+| Package                                                | Version | License | Also in the npm tree? |
+| ------------------------------------------------------ | ------- | ------- | --------------------- |
+| `@noble/ciphers`                                       | 1.3.0   | MIT     | yes, same version     |
+| `@noble/hashes`                                        | 1.8.0   | MIT     | yes, same version     |
+| `@noble/curves`                                        | 1.9.7   | MIT     | yes, same version     |
+| `@scure/base`                                          | 1.2.6   | MIT     | yes, same version     |
+| `@scure/bip39`                                         | 1.6.0   | MIT     | yes, same version     |
+| `tldts` (Public Suffix List data)                      | 6.1.86  | MIT     | **no — new**          |
+
+`tldts` is the one component this bundle adds to the shipped artifact that
+nothing else in the tree carries. The vault needs the Public Suffix List to
+derive an eTLD+1 for host-granularity namespaces and to decide whether a
+record's self-declared domain is authoritative for a host — a "last two labels"
+check would make `attacker.co.uk` authoritative for `victim.co.uk`. Electron
+exposes no PSL API, so the data ships with the engine.
+
+**The constraint this places on future work:** keep it one generated file with
+its banner, never hand-edit it (the banner says so, and an edit is invisible to
+the engine's own test suite), and update this section, `NOTICES` and
+`licenses-audit.json` together whenever the inlined set moves.
 
 ### The LGPL question: OpenLV
 

@@ -790,6 +790,30 @@
       "linking_or_integration": "native-addon",
       "risk": "green",
       "issues": []
+    },
+    {
+      "name": "vault3r (@vault/vault-core, @vault/crypto-core, @vault/protocol)",
+      "version": "0.4.0",
+      "type": "vendored-bundle",
+      "scope": "runtime",
+      "source": { "ecosystem": "git", "url": "https://github.com/absolutions19/vault3r-code-public" },
+      "license": {
+        "spdx": ["MPL-2.0"],
+        "raw": "MPL-2.0",
+        "license_files": ["LICENSE"],
+        "notice_required": true
+      },
+      "vendored_path": "src/main/vault/vendor/vault-bundle.js",
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-bundle",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "vendored-source",
+          "details": "MPL-2.0, the same license as Freedom, so the bundle and the host glue beside it mix without condition and no file needs relicensing. The generated file's banner records the source repository and the revision it was built from, and src/main/vault/vendor/README.md holds the rebuild command — which is what makes the MPL's source obligation satisfiable. The bundle inlines six MIT libraries: @noble/ciphers 1.3.0, @noble/hashes 1.8.0, @noble/curves 1.9.7, @scure/base 1.2.6, @scure/bip39 1.6.0 and tldts 6.1.86. Five are already npm dependencies of the wallet at these same versions; tldts ships only inside this bundle, and is the Public Suffix List data the vault needs to derive an eTLD+1 and to decide whether a record's self-declared domain is authoritative for a host.",
+          "recommended_fix": "Keep the bundle one generated file with its banner intact, regenerate rather than edit it, and commit it on its own with the engine revision in the message. If the inlined set changes, update NOTICES, LICENSE_AUDIT.md and this record together."
+        }
+      ]
     }
   ],
   "production_license_distribution": {
