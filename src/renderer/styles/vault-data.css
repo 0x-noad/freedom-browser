@@ -1,0 +1,405 @@
+/* "Data" pane — VAULT (data vault) management. Uses existing sidebar tokens. */
+
+/* Match the standard tab padding + scroll used by #tab-nodes / #tab-settings. */
+#tab-data {
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1;
+}
+#tab-data::-webkit-scrollbar { width: 8px; }
+#tab-data::-webkit-scrollbar-track { background: transparent; }
+#tab-data::-webkit-scrollbar-thumb { background-color: var(--border); border-radius: 4px; }
+#tab-data::-webkit-scrollbar-thumb:hover { background-color: var(--muted); }
+
+.vault-usage { margin: 6px 0 12px; }
+.vault-usage-bar {
+  height: 8px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+/* The segments, laid side by side across the whole track. */
+.vault-usage-bar-fill {
+  height: 100%;
+  display: flex;
+}
+.vault-usage-seg {
+  height: 100%;
+  /* So the smallest site is still a visible sliver beside a large one. */
+  min-width: 2px;
+  transition: width 0.3s ease, filter 0.15s ease;
+}
+/* Two shades, alternating, so neighbouring shares are told apart. The second is
+   mixed from the first rather than picked, so both follow the theme's accent. */
+.vault-usage-seg.a { background: var(--accent); }
+.vault-usage-seg.b { background: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+/* Nothing stored yet: the track reads as inert rather than as a full vault. */
+.vault-usage-seg.empty { background: var(--border); }
+.vault-usage-seg:hover { filter: brightness(1.25); }
+.vault-usage-text {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.vault-actions { display: flex; gap: 8px; margin-top: 10px; }
+.vault-btn {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.vault-btn:hover { border-color: var(--accent); }
+.vault-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+.vault-btn.full { width: 100%; margin-top: 14px; }
+.vault-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff; /* theme-literal: the fixed contrast pair on a filled accent button, same on either palette */
+}
+.vault-btn.primary:hover { filter: brightness(1.08); }
+
+/* Consent request view. The frame is the wallet's own `.dapp-connect-*` Connect
+   pane (src/renderer/styles/sidebar.css); only the rows below are ours, standing
+   in for that pane's fixed bullet list. */
+
+/* Both headers on this sheet read the same: this one matches
+   `.dapp-connect-permissions-title`, which the wallet's Connect pane also uses,
+   rather than that shared class being changed to match this one. Neither header
+   is inset, so both run the full width of the sheet — the same width as the
+   site row below, which is the row the Data pane lists that site with. */
+.vault-req-intro-block { margin-bottom: 24px; }
+.vault-req-intro {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+
+/* The consent sheet uses the list's site row AS IS — same builder, same open
+   button, same width — so nothing here restyles it. */
+
+/* `/public` named inside a sentence: code font, and the same green the
+   stored-data pills use for a writable field. */
+.vault-req-inline-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--secure-fg);
+}
+/* A permission named inside a sentence: the same code font, but the sentence's
+   own colour — green is reserved for a place in the document, and `read` is
+   not one. Kept as its own rule rather than grouped with the selector above so
+   each reads on its own. */
+.vault-req-inline-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* A read-access row: the owner's namespace as code and one checkbox beside it.
+   No outline and no marker — `list-style: none` and nothing drawing one — so
+   the rows read as the lines they are. Flex is what keeps the box hard right
+   while a long namespace wraps. Not selectable: it is an identifier being
+   shown, not text to lift out. */
+.vault-request-fields {
+  list-style: none;
+  margin: 0;
+  padding: 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.vault-req-read {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  line-height: 1.5;
+  user-select: none;
+}
+.vault-req-ns {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-all;
+}
+.vault-req-box { accent-color: var(--accent); flex: 0 0 auto; margin-top: 2px; }
+
+/* Only present when the site asked to read another partition. The bottom gap is
+   the same the permissions card used to give, so the actions are not crowded. */
+.vault-req-foreign-block { margin: 20px 0 24px; }
+.vault-req-foreign-block.hidden { display: none; }
+
+
+/* Cross-origin reads on the detail view, both directions under ONE
+   "Permissions" header. One row each: the other partition's namespace in code,
+   and the read box. Unticking keeps the row, so nothing makes room for a
+   removal control.
+
+   The direction is what the user has to read off a row, so it is carried three
+   ways and never by hue alone: the group's sub-label says it in words, its
+   arrow points, and the row's left edge is accent going out, green coming in —
+   two colours that differ in lightness as well as hue. */
+.vault-perm-group { margin-bottom: 14px; }
+.vault-perm-group.hidden { display: none; }
+.vault-perm-dir {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.75;
+  margin-bottom: 6px;
+}
+.vault-perm-dir svg { width: 13px; height: 13px; flex: 0 0 auto; }
+.vault-perm-dir.out { color: var(--accent); }
+.vault-perm-dir.in { color: var(--secure-fg); }
+.vault-perm-list { display: flex; flex-direction: column; gap: 6px; }
+.vault-perm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.vault-perm.out { border-left: 3px solid var(--accent); }
+.vault-perm.in { border-left: 3px solid var(--secure-fg); }
+/* An unticked read is not happening, so its edge drops to the ordinary border
+   colour — a live colour on a read that is off claimed it was on. The direction
+   still reads from the group's sub-label above it. Keyed off the box itself so
+   it follows the click rather than the next render. */
+.vault-perm:not(:has(.vault-perm-box:checked)) { border-left-color: var(--border); }
+.vault-perm-ns {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-all;
+}
+.vault-perm-tog {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.vault-perm-box { accent-color: var(--accent); }
+
+.vault-list { display: flex; flex-direction: column; gap: 6px; }
+.vault-empty { color: var(--muted); font-size: 13px; padding: 10px 4px; }
+
+.vault-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+/* `is-hovered` is the same state, reached from the usage bar: hovering a
+   segment points at its row, so the two must look identical — hence one rule
+   rather than two that can drift. */
+.vault-row:hover,
+.vault-row.is-hovered { border-color: var(--accent); }
+.vault-row-info { flex: 1; cursor: pointer; min-width: 0; }
+.vault-row-host {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vault-row-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+/* The site's own thumbnail, which is also the button that opens it — the same
+   art the launcher's tiles show, at row scale. */
+.vault-row-open {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+.vault-row-open:hover { opacity: 0.8; }
+.vault-row-open:disabled { opacity: 0.4; cursor: default; }
+.vault-row-thumb {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  object-fit: cover;
+  background: var(--toolbar);
+  border: 1px solid var(--border);
+  box-sizing: border-box;
+}
+.vault-row-monogram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  /* colour, background and border-color are set per site by monogramEl(): the
+     hue comes from the namespace, so it is data, not theme */
+}
+
+/* The whole-vault controls sit at the BOTTOM of the pane, the way the wallet tab
+   bottom-aligns its own account-wide block (`.perms-actions`, margin-top auto).
+   The list view is the flex column that makes that possible. */
+#vault-list-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.vault-section-footer {
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.vault-detail-body { padding: 4px; }
+.vault-detail-site { margin-bottom: 20px; }
+
+/* The pane pads 16px; this header cancels it, so Back sits in the pane's own
+   top-left corner and the rule under it spans the full width. Scoped to this
+   view on purpose: `.subscreen-header` is shared with every sidebar sub-screen,
+   where it is a padded modal header and should stay one. */
+#vault-detail-view .subscreen-header {
+  margin: -16px -16px 12px;
+  padding: 0;
+  /* No rule under it either: the first section header is the next thing down,
+     and two lines of division in a row divided nothing. */
+  border-bottom: 0;
+}
+#vault-detail-view .subscreen-back-btn { padding: 8px 10px 8px 8px; }
+
+/* The screen's own title, kept for assistive tech and taken off screen: the
+   site row under the first header names this screen, and a generic "Site data"
+   beside Back said less than the row does. */
+#vault-detail-view .subscreen-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.vault-json {
+  background: var(--toolbar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* --- locked view ----------------------------------------------------------- */
+/* Shown INSTEAD of the whole pane while the vault is locked: no usage, no site
+   list, no counts. The set of sites you hold data for is history-shaped, so a
+   locked vault shows an unlock prompt and nothing else (same rule as the
+   freedom://dapps launcher). */
+
+.vault-locked {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 20px;
+  text-align: center;
+}
+
+.vault-locked-icon {
+  font-size: 26px;
+  opacity: 0.7;
+}
+
+.vault-locked-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.vault-locked-text {
+  font-size: 12.5px;
+  color: var(--muted);
+  max-width: 260px;
+}
+
+.vault-locked .vault-btn {
+  margin-top: 6px;
+}
+
+/* Per-tab connection banner — mirrors the wallet's dapp / swarm / x402 banners
+   so the data vault reads in the same terms as the rest of the sidebar. */
+.vault-connection-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  /* theme-literal: vault identity colour, not a theme surface — violet means vault the way the sibling banners' amber means Swarm and green means wallet */
+  background: rgba(139, 92, 246, 0.1);
+  /* theme-literal: the border of the pair above */
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: 8px;
+}
+.vault-connection-banner.hidden { display: none; }
+.vault-connection-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+  cursor: pointer;
+}
+.vault-connection-indicator {
+  width: 8px;
+  height: 8px;
+  background: #8b5cf6; /* theme-literal: vault identity colour, see the banner above */
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.vault-connection-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.vault-connection-site {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vault-connection-fields {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-theme="light"] .vault-connection-banner {
+  /* theme-literal: the light half of the identity pair above */
+  background: rgba(139, 92, 246, 0.08);
+  /* theme-literal: the light half of the identity pair above */
+  border-color: rgba(139, 92, 246, 0.25);
+}

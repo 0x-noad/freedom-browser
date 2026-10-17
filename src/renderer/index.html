@@ -173,6 +173,20 @@
             <path d="M4 4 20 20" />
           </svg>
         </button>
+        <button id="dapps-btn" class="icon-btn" aria-label="Your dApps" title="Your dApps">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+          >
+            <rect x="3" y="3" width="6" height="6" rx="1.5" />
+            <rect x="15" y="3" width="6" height="6" rx="1.5" />
+            <rect x="3" y="15" width="6" height="6" rx="1.5" />
+            <rect x="15" y="15" width="6" height="6" rx="1.5" />
+          </svg>
+        </button>
         <button id="home-btn" class="icon-btn" aria-label="Home">
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -1240,6 +1254,7 @@
             <div class="sidebar-tabs">
               <button type="button" class="sidebar-tab active" data-tab="wallet">Wallet</button>
               <button type="button" class="sidebar-tab" data-tab="nodes">Nodes</button>
+              <button type="button" class="sidebar-tab" data-tab="data">Data</button>
               <button type="button" class="sidebar-tab" data-tab="settings">Settings</button>
             </div>
             <button
@@ -1864,6 +1879,191 @@
               <!-- /tab-nodes -->
 
               <!-- Settings Tab Panel -->
+              <div id="tab-data" class="tab-panel hidden">
+                <!-- LOCKED VIEW — the ONLY thing shown while the vault is locked. -->
+                <div id="vault-locked-view" class="vault-locked hidden">
+                  <div class="vault-locked-icon" aria-hidden="true">🔒</div>
+                  <div class="vault-locked-title">Your vault is locked</div>
+                  <div class="vault-locked-text">Unlock to view the sites that have stored data.</div>
+                  <button type="button" id="vault-unlock-btn" class="vault-btn primary">Unlock</button>
+                </div>
+
+                <!-- LIST VIEW -->
+                <div id="vault-list-view">
+                  <!-- Vault Connection Banner (the partition belonging to the current tab) -->
+                  <div class="vault-connection-banner hidden" id="vault-connection-banner">
+                    <div class="vault-connection-info" id="vault-connection-manage" title="View this site’s data">
+                      <span class="vault-connection-indicator"></span>
+                      <span class="vault-connection-text">
+                        <span class="vault-connection-site" id="vault-connection-site">site.eth</span>
+                        <span class="vault-connection-fields" id="vault-connection-fields"></span>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div class="sidebar-section">
+                    <div class="sidebar-section-header">
+                      <span class="sidebar-section-title">Sites with data</span>
+                    </div>
+                    <div id="vault-partition-list" class="vault-list">
+                      <div class="vault-empty">No sites have stored data yet</div>
+                    </div>
+                  </div>
+                  <!-- Bottom-aligned, the way the wallet tab bottom-aligns its own
+                       account-wide block. The list is what the pane is for; export and
+                       clear-all are rarer and one of them is destructive. -->
+                  <div class="sidebar-section vault-section-footer">
+                    <div class="sidebar-section-header">
+                      <span class="sidebar-section-title">Your data vault</span>
+                    </div>
+                    <!-- Composition, not fullness: there is no total quota to be
+                         full against, so the bar is always full and divided by
+                         each site's share of the vault. aria-hidden because the
+                         line under it and the list above say the same thing in
+                         words, and a screen reader does not need a dozen
+                         unlabelled slivers. -->
+                    <div class="vault-usage">
+                      <div class="vault-usage-bar" aria-hidden="true">
+                        <div id="vault-usage-bar-fill" class="vault-usage-bar-fill"></div>
+                      </div>
+                      <div id="vault-usage-text" class="vault-usage-text">—</div>
+                    </div>
+                    <div class="vault-actions">
+                      <button type="button" id="vault-export-btn" class="vault-btn">Export vault</button>
+                      <button type="button" id="vault-clear-btn" class="vault-btn danger">Clear all data</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- DETAIL VIEW (one site's stored data) -->
+                <div id="vault-detail-view" class="hidden">
+                  <!-- Titled for the screen reader only: the site row under the
+                       first header names this screen on sight, and the generic
+                       title beside Back said less than it did. The declaration
+                       keeps its `data-title` (every sub-screen header has one) and
+                       our stylesheet hides it visually. -->
+                  <div class="subscreen-header" data-back="vault-detail-back" data-title="Site data"></div>
+                  <div class="vault-detail-body">
+                    <!-- The partition, as the same row the Data pane lists it with:
+                         one item, wherever a site appears. -->
+                    <div class="sidebar-section-header"><span class="sidebar-section-title">This partition</span></div>
+                    <div class="vault-detail-site" id="vault-detail-site"></div>
+
+                    <!-- One cross-origin read grant, seen from each end, under ONE
+                         header: the reads this site holds on others, and the ones
+                         others hold on it. Same item and same on/off state on both
+                         sides, because it is the same grant — only the direction
+                         differs, which is what the sub-label and the coloured edge
+                         say. The header and each group hide when empty: an
+                         ordinary site has none of this, and permanently blank
+                         sections on every partition are noise. -->
+                    <div class="sidebar-section-header hidden" id="vault-detail-perms-header">
+                      <span class="sidebar-section-title">Permissions</span>
+                    </div>
+
+                    <div class="vault-perm-group hidden" id="vault-detail-reads-group">
+                      <div class="vault-perm-dir out">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <line x1="5" y1="19" x2="19" y2="5" />
+                          <polyline points="12 5 19 5 19 12" />
+                        </svg>
+                        This site reads
+                      </div>
+                      <div class="vault-perm-list" id="vault-detail-reads"></div>
+                    </div>
+
+                    <div class="vault-perm-group hidden" id="vault-detail-readers-group">
+                      <div class="vault-perm-dir in">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <line x1="19" y1="5" x2="5" y2="19" />
+                          <polyline points="12 19 5 19 5 12" />
+                        </svg>
+                        Reads this site
+                      </div>
+                      <div class="vault-perm-list" id="vault-detail-readers"></div>
+                    </div>
+
+                    <div class="sidebar-section-header"><span class="sidebar-section-title">Stored data</span></div>
+                    <pre id="vault-detail-json" class="vault-json"></pre>
+
+                    <button type="button" id="vault-detail-delete" class="vault-btn danger full">Delete this site’s partition</button>
+                  </div>
+                </div>
+
+                <!-- REQUEST VIEW (a site is asking for access — the consent prompt) -->
+                <div id="vault-request-view" class="hidden">
+                  <div class="vault-request">
+                    <!-- The wallet's Connect pane, class for class: the two prompts
+                         ask the same question about the same site, so they look the
+                         same. The site shown is the origin main derived from the
+                         sender frame, never anything the page claims. -->
+                    <div class="dapp-connect-origin">
+                      <div class="dapp-connect-icon" id="vault-request-icon">
+                        <img class="dapp-connect-favicon" id="vault-request-favicon" alt="" />
+                      </div>
+                      <div class="dapp-connect-site" id="vault-request-site">example.com</div>
+                      <div class="dapp-connect-wants">wants to access your vault</div>
+                    </div>
+
+                    <!-- The headers are inset to the permissions card's own
+                         padding, so both sit on the same left edge; the site row
+                         is not, so it is the same width as on the Data pane. -->
+                    <div class="vault-req-intro-block">
+                      <div class="vault-req-intro">
+                        This site is requesting to create a partition in your vault:
+                      </div>
+                      <!-- The same row the Data pane lists a site with, so the thing
+                           being approved here and the thing managed there are the
+                           same item: same builder, same controls, same width. -->
+                      <div class="vault-req-own" id="vault-request-own"></div>
+
+                      <!-- Shown only when the site asked to WRITE at or below
+                           `/public`, which is the one grant that makes its data
+                           publishable. Blue and the info glyph, not amber: this
+                           says what the access means, the way the wallet's own
+                           sign pane does. Without it nothing on this sheet
+                           tells the user that what this site stores there is
+                           something other sites can ask for — the location is
+                           the only mark, so this sentence is the only notice. -->
+                      <div class="dapp-sign-warning hidden" id="vault-request-public-note">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <circle cx="12" cy="12" r="10" />
+                          <line x1="12" y1="16" x2="12" y2="12" />
+                          <line x1="12" y1="8" x2="12.01" y2="8" />
+                        </svg>
+                        <span
+                          >This site writes data marked
+                          <span class="vault-req-inline-path">/public</span> into its partition.
+                          Other sites can read this data if you give them permission.</span
+                        >
+                      </div>
+                    </div>
+
+                    <!-- Only when the site asked to read another partition. Without
+                         one there is nothing to head, and an empty section above the
+                         buttons is noise. -->
+                    <div class="vault-req-foreign-block hidden" id="vault-request-foreign-block">
+                      <div class="vault-req-intro">
+                        This site is requesting
+                        <span class="vault-req-inline-code">read</span> permissions for data
+                        marked <span class="vault-req-inline-path">/public</span> from the
+                        following sites:
+                      </div>
+                      <ul id="vault-request-fields" class="vault-request-fields"></ul>
+                    </div>
+
+                    <div class="dapp-connect-actions">
+                      <button type="button" class="dapp-connect-reject-btn" id="vault-request-deny">
+                        Reject
+                      </button>
+                      <button type="button" id="vault-request-allow" class="dapp-connect-approve-btn">
+                        Allow
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div id="tab-settings" class="tab-panel hidden">
                 <!-- Security Section -->
                 <div class="sidebar-section">
