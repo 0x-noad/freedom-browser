@@ -894,9 +894,6 @@ contextBridge.exposeInMainWorld('vaultData', {
    *           readers: [{ readerNamespace, readerOrigin, paths }] }
    */
   foreignGrantsFor: (namespace) => ipcRenderer.invoke('datavault:foreign-grants', namespace),
-  /** { revoked, readerNamespace, ownerNamespace } — deletes no data either side */
-  revokeForeignRead: (readerNamespace, ownerNamespace) =>
-    ipcRenderer.invoke('datavault:revoke-foreign-read', { readerNamespace, ownerNamespace }),
   /**
    * { changed, readerNamespace, ownerNamespace, enabled } — turn one held read
    * off or on. Unlike revoke, the grant stays on the record either way, so the

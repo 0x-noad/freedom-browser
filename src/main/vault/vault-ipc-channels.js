@@ -11,7 +11,6 @@
 module.exports = {
   // Per-site provider data plane (page -> host -> main -> engine -> back).
   VAULT_PROVIDER_REQUEST: 'vault:provider-request', // sendToHost from preload
-  VAULT_PROVIDER_RESPONSE: 'vault:provider-response', // webview.send back to preload
   VAULT_PROVIDER_EVENT: 'vault:provider-event', // subscription / permissions_changed pushes
 
   // Consent prompt (main -> renderer modal -> main).
@@ -19,11 +18,8 @@ module.exports = {
   // Take a sheet off screen because the page that asked is gone (a reload, a
   // closed tab). Push-only, owner plane: the renderer answers nothing.
   VAULT_CONSENT_CANCEL: 'datavault:consent-cancel',
-  VAULT_CONSENT_RESULT: 'vault:consent-result',
 
   // Management (browser settings UI -> main).
-  VAULT_GET_ALL_PERMISSIONS: 'vault:get-all-permissions',
-  VAULT_REVOKE_PERMISSION: 'vault:revoke-permission',
   VAULT_IMPORT: 'vault:import',
 
   // Owner-facing "Data" pane (trusted wallet UI only). Distinct `datavault:`
@@ -39,9 +35,9 @@ module.exports = {
   // sites this partition reads, and which sites read it. Removing one deletes
   // no data on either side, so it is not folded into VAULT_DELETE_PARTITION.
   VAULT_FOREIGN_GRANTS: 'datavault:foreign-grants',
-  VAULT_REVOKE_FOREIGN_READ: 'datavault:revoke-foreign-read',
-  // Turning one held read off keeps the grant on the record, so it is its own
-  // channel rather than a flag on the revoke above: the two end differently.
+  // Turning one held read off keeps the grant on the record — the Data pane's
+  // checkbox is the only control, and it is re-tickable, so there is no
+  // separate "revoke" channel.
   VAULT_SET_FOREIGN_READ_ENABLED: 'datavault:set-foreign-read-enabled',
 
   // Vault home page (`vault://home`) — the dApp launcher. Same owner-plane trust

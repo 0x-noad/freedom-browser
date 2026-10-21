@@ -646,13 +646,4 @@ describe('setForeignReadEnabled', () => {
     expect(manager.setForeignReadEnabled(READER_NS, null, false)).toEqual({ changed: false });
     expect(perms.setForeignReadEnabled).not.toHaveBeenCalled();
   });
-
-  test('is NOT revocation: it never drops the entry', () => {
-    jest.spyOn(perms, 'removeForeignRead').mockReturnValue(true);
-    jest.spyOn(perms, 'setForeignReadEnabled').mockReturnValue(true);
-
-    manager.setForeignReadEnabled(READER_NS, OWNER_NS, false);
-
-    expect(perms.removeForeignRead).not.toHaveBeenCalled();
-  });
 });
