@@ -29,7 +29,7 @@
 | Dev npm dependencies                                        | not bundled | Do not affect the distributed product                              |
 | External binaries / native addons shipped in `resources/`   | 5           | Ant, freedom-ipfs, libradicle, Myotis, Arti                        |
 | Vendored renderer bundles in `src/renderer/vendor/`         | 4           | OpenLV, highlight.js, marked, DOMPurify                            |
-| Vendored main-process bundle in `src/main/vault/vendor/`    | 1           | Vault3r data-vault engine (MPL-2.0; inlines six MIT libraries)     |
+| Vendored main-process bundle in `src/main/vault/vendor/`    | 1           | Vault3r data-vault engine (MPL-2.0; inlines five MIT libraries)     |
 | Strong copyleft (GPL/AGPL)                                  | 0           | One found and removed — see below                                  |
 | GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410) |
 | Weak copyleft (MPL-2.0)                                     | 13 packages | Compatible; MPL-2.0 is our own license                             |
@@ -174,7 +174,7 @@ the repository and the exact revision it was built from, and
 `src/main/vault/vendor/README.md` holds the rebuild command. A banner reading
 `+local` was built over uncommitted work and must not be merged.
 
-**Six MIT libraries ship inside it**, since the bundler keeps only Node
+**Five MIT libraries ship inside it**, since the bundler keeps only Node
 builtins external:
 
 | Package                                                | Version | License | Also in the npm tree? |
@@ -184,26 +184,30 @@ builtins external:
 | `@noble/curves`                                        | 1.9.7   | MIT     | yes, same version     |
 | `@scure/base`                                          | 1.2.6   | MIT     | yes, same version     |
 | `@scure/bip39`                                         | 1.6.0   | MIT     | yes, same version     |
-| `tldts` (Public Suffix List data)                      | 6.1.86  | MIT     | **no — new**          |
 
-`tldts` is the one component this bundle adds to the shipped artifact that
-nothing else in the tree carries. The engine needs the Public Suffix List for
-one thing: deciding whether an identity record's self-declared domain is
-authoritative for the host it was fetched from — a "last two labels" check
-would make `attacker.co.uk` authoritative for `victim.co.uk`. Electron exposes
-no PSL API, so the data ships with the engine.
+Every one is already in Freedom's npm tree at the same version, so the bundle
+adds no component the artifact did not already carry.
 
-That check belongs to the engine's *networked* mode, which Freedom does not
-use: a namespace here is the caller's origin, derived with no suffix list at
-all. The data is therefore inert in this build, and it is still in the bundle
-only because `VaultEngine` statically imports the verification path. Lifting it
-out means turning that path into an injected adapter — worth doing, out of
-scope for the feature.
+That is the result of a deliberate narrowing, recorded here so it is not
+undone. The bundler builds from each package's `browser.ts` entry, which omits
+the engine's *networked* identity model — the proposal-verification pipeline,
+the `.well-known` resolver and the relay transport runtime. Freedom uses the
+browser model instead: the main process reads the caller's origin off the
+sender frame, and the namespace *is* that origin. Only the networked model
+needs the Public Suffix List, to decide whether an identity record's
+self-declared domain is authoritative for the host it was fetched from — a
+"last two labels" check would make `attacker.co.uk` authoritative for
+`victim.co.uk`. Narrowing the entry therefore took `tldts` and its 170 KB of
+trie data out of the artifact entirely, and the bundle went from 435,952 to
+254,461 bytes.
 
 **The constraint this places on future work:** keep it one generated file with
 its banner, never hand-edit it (the banner says so, and an edit is invisible to
 the engine's own test suite), and update this section, `NOTICES` and
-`licenses-audit.json` together whenever the inlined set moves.
+`licenses-audit.json` together whenever the inlined set moves. If a future
+bundle reaches the networked path again, the suffix list returns with it:
+`tldts` ships CommonJS without `sideEffects: false`, so esbuild cannot
+tree-shake it out of anything that stays reachable.
 
 ### The LGPL question: OpenLV
 
