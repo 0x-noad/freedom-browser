@@ -187,11 +187,18 @@ builtins external:
 | `tldts` (Public Suffix List data)                      | 6.1.86  | MIT     | **no — new**          |
 
 `tldts` is the one component this bundle adds to the shipped artifact that
-nothing else in the tree carries. The vault needs the Public Suffix List to
-derive an eTLD+1 for host-granularity namespaces and to decide whether a
-record's self-declared domain is authoritative for a host — a "last two labels"
-check would make `attacker.co.uk` authoritative for `victim.co.uk`. Electron
-exposes no PSL API, so the data ships with the engine.
+nothing else in the tree carries. The engine needs the Public Suffix List for
+one thing: deciding whether an identity record's self-declared domain is
+authoritative for the host it was fetched from — a "last two labels" check
+would make `attacker.co.uk` authoritative for `victim.co.uk`. Electron exposes
+no PSL API, so the data ships with the engine.
+
+That check belongs to the engine's *networked* mode, which Freedom does not
+use: a namespace here is the caller's origin, derived with no suffix list at
+all. The data is therefore inert in this build, and it is still in the bundle
+only because `VaultEngine` statically imports the verification path. Lifting it
+out means turning that path into an injected adapter — worth doing, out of
+scope for the feature.
 
 **The constraint this places on future work:** keep it one generated file with
 its banner, never hand-edit it (the banner says so, and an edit is invisible to

@@ -44,71 +44,60 @@ Two consequences worth relying on:
 - **Your dev loop represents production.** In production the app is served from
   `bzz://` and the same read is same-origin; nothing about the fetch changes.
 
-That is about *fetching*. Which partition you get is a separate rule, stated
-once in the next section — and it is not the browser's origin comparison.
-
+That is about *fetching*. Which partition you get is the next section.
 
 ### What your partition is keyed by
 
-**This is the single most consequential fact about building on the vault.** One
-function derives the namespace from your origin, and it keeps less of that
-origin than you are likely to assume:
+**Your partition is keyed by your origin.** Scheme, host and port, verbatim:
 
-| Served from | Namespace | Dropped |
-| --- | --- | --- |
-| `https://site.example` | `web:site.example` | scheme, port |
-| `http://site.example` | `web:site.example` | — the same partition as above |
-| `https://app.site.example` | `web:site.example` | the subdomain too |
-| `http://app.localhost:8765` | `web:app.localhost:8765` | nothing; loopback keeps the port |
-| `bzz://name.eth` | `web:dweb:bzz:name.eth` | nothing |
-| `ipfs://name.eth` | `web:dweb:ipfs:name.eth` | nothing — **not** the row above |
+```
+https://site.example         ->  web:https://site.example
+http://app.localhost:8765    ->  web:http://app.localhost:8765
+bzz://name.eth               ->  web:bzz://name.eth
+```
 
-Those are two different rules, so read them separately.
+That is the same boundary the browser already enforces for `localStorage`,
+IndexedDB, cookies and service workers, so there is nothing vault-specific to
+learn. Two different origins are two partitions; the same origin is the same
+partition. There is no suffix list, no granularity setting and no per-scheme
+exception.
 
-**For `http(s)` the key is the registrable domain, and nothing else.** The
-scheme is dropped, so you cannot gain a fresh partition by moving to HTTPS and
-cannot lose one either. The port is dropped, except on loopback below. And
-subdomains collapse: `site.example`, `www.site.example` and
-`app.site.example` are **one partition** — so your subdomains share a document
-and race on it, and a staging subdomain reads and writes production's data.
+Four consequences, because each one catches somebody:
 
-**For a dweb scheme the key is the scheme plus the whole authority.** Nothing
-is dropped and nothing collapses. Two consequences:
+- **`http://` and `https://` are different partitions.** An `http` origin is
+  network-attackable and is not the same principal as its `https` twin — which
+  is why every other storage API splits them too.
+- **A subdomain is a different site.** `site.example` and `app.site.example` do
+  not share, so a staging host cannot read or overwrite production's data. If
+  you *want* to share across your own subdomains, that is what `/shared` plus
+  consent is for.
+- **A port is part of an origin.** Two dev servers on one hostname never share
+  or race on a partition. The flip side is that restarting your dev server on a
+  different port gives you an empty vault, with yesterday's data in a partition
+  only the old port can reach. (A scheme's default port is not a port:
+  `https://site.example` and `:443` agree.)
+- **For dweb, the transport is part of your identity.** Freedom serves a `.eth`
+  name under whatever its contenthash resolves to, so one name can be
+  `bzz://name.eth` or `ipfs://name.eth` — and those are two partitions.
+  **Changing your contenthash from a Swarm reference to an IPFS one strands
+  every user's data**, as surely as changing the name would. Keep the name *and*
+  the transport stable.
 
-- **The transport is part of your identity.** Freedom resolves a `.eth` name to
-  whatever its contenthash points at and serves it under that scheme, so one
-  name can be `bzz://name.eth` or `ipfs://name.eth` — and those are two
-  partitions. **Changing your contenthash from a Swarm reference to an IPFS one
-  strands every user's data**, as surely as changing the name would. Keep the
-  name *and* the transport stable. (There is no `ens://` page origin to worry
-  about: `ens://` is accepted in the address bar but canonicalised to the
-  resolved transport before a page ever loads.)
-- **A raw content reference is not a stable identity.** The reference changes on
-  every redeploy, so the namespace changes, so every returning user silently
-  gets an empty vault and their profile is stranded in a partition nothing can
-  reach. There is no error and no prompt — just a first-run experience for a
-  returning user. An ENS name with a contenthash record you update survives
-  every release.
-
-**Loopback hosts are keyed by port.** For `*.localhost` only, the port is part
-of the namespace: `http://app.localhost:8765` and `:8766` are two partitions,
-so two dev servers never share — or race on — one another's data. The flip side
-is that restarting your dev server on a different port gives you an empty vault
-and leaves yesterday's data in a partition you can only reach by going back to
-the old port.
-
-**Bare `localhost` and IP literals are refused outright**, not merely keyed
-differently: `connect()` from `http://localhost:9999` fails with *host must be a
-fully-qualified domain*, and `http://127.0.0.1:9999` with *IP literals are not
-valid identities*. An identity needs a name, and an address is not one. Use any
-subdomain — `http://app.localhost:9999` — which Chromium resolves to loopback
-with no hosts-file entry, so it costs you nothing but the prefix.
+And one that is not about two origins at all: **a raw content reference is
+not a stable identity.** If your app is published at a content address, that
+address changes on every redeploy, so your origin changes, so every returning
+user silently gets an empty vault with their old profile in a partition nothing
+can reach. No error, no prompt — just a first-run experience for a returning
+user. An ENS name whose contenthash record you update survives every release.
 
 **Accepted schemes** are `http(s)` and the dweb set: `bzz`, `ipfs`, `ipns`,
-`hyper`, `ens`, `rad`, `swarm`, `ar`. The provider is injected on any page that
-is neither internal nor in a private window, so `window.vault` exists on a
-`web3://` page — but `connect()` there rejects with *unsupported origin
-scheme*.
+`hyper`, `ens`, `rad`, `swarm`, `ar`. `localhost` and IP literals are fine —
+`http://localhost:9999` and `http://127.0.0.1:9999` are perfectly good origins.
+The provider is injected on any page that is neither internal nor in a private
+window, so `window.vault` exists on a `web3://` page, but `connect()` there
+rejects with *unsupported origin scheme*. A URL carrying userinfo, a path, a
+query or a fragment is rejected rather than trimmed, so two display URLs for
+one site can never be steered to different partitions.
 
 ### If a partition will not open
 
@@ -384,10 +373,10 @@ const { values } = await window.vault.readShared(session.sessionId, 'bzz://socia
 
 - Read-only. There is no cross-origin write and no cross-origin `subscribe`, so
   poll if you need to see changes.
-- The origin you name runs through the same derivation as your own, so the same
-  collapsing applies: naming `https://social.example` reaches the one partition
-  that `http://social.example` and `https://app.social.example` also share,
-  while `bzz://social.eth` is a different partition from all three.
+- Name the owner's **exact origin**, since that is its partition: scheme, host
+  and port. `https://social.example`, `http://social.example` and
+  `bzz://social.eth` are three different asks, and a wrong one is
+  indistinguishable from an owner with nothing published.
 - You may name specific pointers or `/shared` wholesale. Neither the sheet nor
   the Data pane shows which pointers you asked for — both name the partition and
   nothing else — so a wholesale ask is approved on the same terms as a narrow
@@ -428,11 +417,10 @@ a cue to ask again.
 
 ### Letting your next version read this one
 
-A partition is keyed as the table above describes, so **the next iteration of a
-dweb app is a different site**: a new name, a new transport, a new content
-reference, and the document starts empty. (On `http(s)` a new subdomain is
-*not* a new partition — those collapse — so this is a dweb concern first.) `/shared` is the way across that — if you plan for it on the way
-in. Write what a future version will need under `/shared` from the start, and v2
+A partition is keyed by origin, so **the next iteration of your site is a
+different site**: a new subdomain, a new scheme, a new port, a new name, a new
+transport — any of them, and the document starts empty. `/shared` is the way
+across that, if you plan for it on the way in. Write what a future version will need under `/shared` from the start, and v2
 declares a read of v1's origin and migrates on first run. The engine repo's
 README works the pattern through in code, under *Sharing data under `/shared`* →
 *Forward compatibility*.
