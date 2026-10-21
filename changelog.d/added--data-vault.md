@@ -1,4 +1,4 @@
-- Sites can store data in an encrypted per-site vault you control, with a **Data** pane in the wallet sidebar to manage it ([#PR](https://github.com/solardev-xyz/freedom-browser/pull/PR))
+- Sites can store data in an encrypted per-site vault you control, with a **Data** pane in the wallet sidebar to manage it (PR forthcoming)
   - A site asks for a partition; you approve it once, and its data is sealed under a key derived from the wallet you already have
   - The **Data** pane lists every site holding data, what it stores and how much, and deletes one site's data or all of it
   - `freedom://dapps` lists the sites holding data in your vault and opens them
