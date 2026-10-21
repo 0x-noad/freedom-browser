@@ -83,6 +83,19 @@ Four consequences, because each one catches somebody:
   every user's data**, as surely as changing the name would. Keep the name *and*
   the transport stable.
 
+  This one is a deliberate choice, and it deliberately differs from the rest of
+  the browser: site *permissions* key a name host on the bare name, so a
+  permission survives a transport change. A partition does not, because the
+  blast radius is different. A name can be reached through several resolution
+  paths, and the suffixes Freedom treats as names — `.eth`, `.box`, `.wei`,
+  `.gwei`, `.tez` — are governed by different registries with different owners
+  and different failure modes. Key on the bare name and every one of those
+  paths opens the same partition, so a hijacked IPNS key or a contenthash set
+  through a compromised controller reaches data that was written over a path
+  nobody compromised. Keeping the scheme means a bad resolution path only ever
+  reaches what was written through that same path. The cost is this bullet; the
+  sanctioned way to carry data forward is `/shared` plus the user's consent.
+
 And one that is not about two origins at all: **a raw content reference is
 not a stable identity.** If your app is published at a content address, that
 address changes on every redeploy, so your origin changes, so every returning
