@@ -8,8 +8,8 @@ from anything the page claims, and that origin is the isolation boundary.
 
 The one way across that boundary is deliberate and narrow: a site may publish
 under the reserved `/shared` subtree, and another site may be granted read-only
-access to it. See [Publishing under `/shared`](#publishing-under-public) and
-[Reading another site's public data](#reading-another-sites-public-data).
+access to it. See [Publishing under `/shared`](#publishing-under-shared) and
+[Reading another site's shared data](#reading-another-sites-shared-data).
 
 Type definitions ship in [`types/freedom-vault.d.ts`](../types/freedom-vault.d.ts).
 
@@ -25,7 +25,10 @@ if (window.vault?.isVault3r) {
 ```
 
 It also dispatches `vault#initialized` on install, following the EIP-1193
-convention, if you would rather not depend on the timing.
+convention — but on the normal path that happens *before* your first script
+runs, so a listener your page adds can never catch it. Check `window.vault`
+first; add the listener only as a fallback, for the case where the early
+injection failed and a late one is still to come.
 
 Nothing is injected in private windows: `window.vault` is simply absent there.
 
@@ -35,39 +38,64 @@ Nothing is injected in private windows: `window.vault` is simply absent there.
 fetch-enabled, CORS-enabled** schemes with streaming and service-worker support.
 Two consequences worth relying on:
 
-- **Cross-scheme reads work.** A page served from `http://localhost:8765` can
-  `fetch('bzz://meinhard.eth/')` successfully. You do not need a gateway
+- **Cross-scheme reads work.** A page served from `http://app.localhost:8765`
+  can `fetch('bzz://meinhard.eth/')` successfully. You do not need a gateway
   fallback for development.
 - **Your dev loop represents production.** In production the app is served from
   `bzz://` and the same read is same-origin; nothing about the fetch changes.
 
-Origins are compared **including scheme and port**. `https://site.example` and
-`bzz://site.example` are different origins to every provider here, and moving a
-dev server from `:8765` to `:8766` silently drops the grants held by `:8765`.
+That is about *fetching*. Which partition you get is a separate rule, stated
+once in the next section — and it is not the browser's origin comparison.
 
 
-### Publish under a stable name, or lose user data
+### What your partition is keyed by
 
-**This is the single most consequential fact about building on the vault.** The
-namespace is derived from your origin: `bzz://<host>` maps to
-`web:dweb:bzz:<host>`. For an app published at a **raw content reference**, the
-reference changes on every redeploy — so the namespace changes, so every
-returning user silently gets an empty vault and their profile is stranded in a
-partition nothing can reach. There is no error and no prompt; a returning user
-simply gets a first-run experience.
+**This is the single most consequential fact about building on the vault.** One
+function derives the namespace from your origin, and it keeps less of that
+origin than you are likely to assume:
 
-Publish under a stable name — an ENS name with a contenthash record you update —
-and the namespace survives every release. `ens://name.eth` and `bzz://name.eth`
-share one namespace by design, so moving between them is safe; moving between
-content references is not.
+| Served from | Namespace | Dropped |
+| --- | --- | --- |
+| `https://site.example` | `web:site.example` | scheme, port |
+| `http://site.example` | `web:site.example` | — the same partition as above |
+| `https://app.site.example` | `web:site.example` | the subdomain too |
+| `http://app.localhost:8765` | `web:app.localhost:8765` | nothing; loopback keeps the port |
+| `bzz://name.eth` | `web:dweb:bzz:name.eth` | nothing |
+| `ipfs://name.eth` | `web:dweb:ipfs:name.eth` | nothing — **not** the row above |
 
-**Dev hosts are keyed by port.** For `*.localhost` hosts only, the port is part
+Those are two different rules, so read them separately.
+
+**For `http(s)` the key is the registrable domain, and nothing else.** The
+scheme is dropped, so you cannot gain a fresh partition by moving to HTTPS and
+cannot lose one either. The port is dropped, except on loopback below. And
+subdomains collapse: `site.example`, `www.site.example` and
+`app.site.example` are **one partition** — so your subdomains share a document
+and race on it, and a staging subdomain reads and writes production's data.
+
+**For a dweb scheme the key is the scheme plus the whole authority.** Nothing
+is dropped and nothing collapses. Two consequences:
+
+- **The transport is part of your identity.** Freedom resolves a `.eth` name to
+  whatever its contenthash points at and serves it under that scheme, so one
+  name can be `bzz://name.eth` or `ipfs://name.eth` — and those are two
+  partitions. **Changing your contenthash from a Swarm reference to an IPFS one
+  strands every user's data**, as surely as changing the name would. Keep the
+  name *and* the transport stable. (There is no `ens://` page origin to worry
+  about: `ens://` is accepted in the address bar but canonicalised to the
+  resolved transport before a page ever loads.)
+- **A raw content reference is not a stable identity.** The reference changes on
+  every redeploy, so the namespace changes, so every returning user silently
+  gets an empty vault and their profile is stranded in a partition nothing can
+  reach. There is no error and no prompt — just a first-run experience for a
+  returning user. An ENS name with a contenthash record you update survives
+  every release.
+
+**Loopback hosts are keyed by port.** For `*.localhost` only, the port is part
 of the namespace: `http://app.localhost:8765` and `:8766` are two partitions,
 so two dev servers never share — or race on — one another's data. The flip side
 is that restarting your dev server on a different port gives you an empty vault
 and leaves yesterday's data in a partition you can only reach by going back to
-the old port. Real origins keep the port out, so a production redeploy on a new
-port keeps its namespace.
+the old port.
 
 **Bare `localhost` and IP literals are refused outright**, not merely keyed
 differently: `connect()` from `http://localhost:9999` fails with *host must be a
@@ -75,6 +103,12 @@ fully-qualified domain*, and `http://127.0.0.1:9999` with *IP literals are not
 valid identities*. An identity needs a name, and an address is not one. Use any
 subdomain — `http://app.localhost:9999` — which Chromium resolves to loopback
 with no hosts-file entry, so it costs you nothing but the prefix.
+
+**Accepted schemes** are `http(s)` and the dweb set: `bzz`, `ipfs`, `ipns`,
+`hyper`, `ens`, `rad`, `swarm`, `ar`. The provider is injected on any page that
+is neither internal nor in a private window, so `window.vault` exists on a
+`web3://` page — but `connect()` there rejects with *unsupported origin
+scheme*.
 
 ### If a partition will not open
 
@@ -107,7 +141,20 @@ Paths are JSON Pointers — `/profile/displayName`, not `profile.displayName`. A
 rule path that is neither empty nor `/`-prefixed is rejected, so a dotted path
 matches nothing.
 
-The consent sheet appears on first connect. It approves **per partition, not per
+**A rule is a prefix rule, and it cuts one way only.** A granted rule on
+`/save` covers `/save`, `/save/state` and everything below. A granted rule on
+`/save/state` does *not* let you `get(['/save'])` — that rejects with `4305`
+(`FieldOutOfScope`). Declare the root of the subtree you intend to own, not the
+leaves you happen to write first.
+
+`sensitive: true` on a field rule is accepted, persisted — and inert here. The
+engine supports it as a per-read confirmation, but Freedom runs the one-unlock
+model, where a single unlock covers routine access, so setting it changes
+nothing and `4310` never fires. Do not build a flow that depends on it.
+
+The consent sheet appears on first connect. It opens in the wallet sidebar's
+**Data** tab and is modal there — it covers the tab bar, so the sheet can be
+answered but not navigated away from. It approves **per partition, not per
 field**: one row naming your site, exactly as the Data pane lists it, and — when
 you asked to read another site — one row per owner partition with a `read`
 checkbox. A field path is your own schema and means little to the person
@@ -116,12 +163,23 @@ approving it; which partitions are being opened is the decision.
 So there is nothing on the sheet that narrows your own field list: it is
 approved as asked, or rejected. The one thing the user can narrow is the set of
 other partitions you may read, by unticking an owner. Read `session.grant` back
-rather than assuming you got what you asked for. A remembered grant reconnects
-silently; asking for more than was granted prompts again.
+rather than assuming you got what you asked for.
+
+A remembered grant reconnects silently. Asking for more prompts again — and
+"more" is judged by **exact path equality**, not by the prefix rule above: a
+remembered grant on `/save` does not cover a later connect asking for
+`/save/state`, even though that same grant would happily *read* it. So send the
+same field list every time. Changing your declared schema is a user-visible
+event: the next visit raises the sheet again.
 
 A write at or below `/shared` also raises a note on the sheet, in so many words:
 that what you store there is something other sites can ask to read. See
-[Publishing under `/shared`](#publishing-under-public).
+[Publishing under `/shared`](#publishing-under-shared).
+
+`appMetadata.name` is **not** shown on the consent sheet. The sheet names the
+origin the browser observed on your frame and nothing else, deliberately: a
+page-supplied name sitting above that origin would be the spoofable half. Your
+name reaches the `freedom://dapps` launcher tile and the monogram fallback.
 
 `vault_getPermissions` is granted whether or not you ask for it, so
 `vault.getPermissions(sessionId)` always works on a live session.
@@ -146,6 +204,10 @@ await window.vault.set(session.sessionId, { '/profile/displayName': 'ada' }, ver
 
 At most 64 paths per call. `version` is an ETag: pass the one you read back as
 `baseVersion` to get optimistic concurrency, or omit it to overwrite.
+
+**A path you never wrote reads as `null`, not as an error.** Same as a foreign
+read, for a plainer reason: there is nothing there. Only a path outside your
+grant errors.
 
 A stale `baseVersion` rejects with **`4321` (`VersionConflict`)**, and the error
 carries the version you lost to:
@@ -173,11 +235,31 @@ has not been dispatched when the renderer tears down never happens at all. So
 save on **`visibilitychange` → `hidden`**, where you can still await, and treat
 `pagehide` as a best-effort repeat rather than your only save.
 
-`subscribe(sessionId, paths)` pushes updates through the `change` event;
+`subscribe(sessionId, paths)` returns `{ subscriptionId }` and pushes updates
+through the `change` event. The payload is
+`{ subscriptionId, changes, version }`, where `changes` maps each changed
+pointer to its new value — `null` for one that was removed — and carries only
+pointers you both subscribed to and may read. It fans out to **every live
+session on your partition, your own other tabs included**, which is the usual
+way a second tab learns the first one wrote.
+
 `permissionsChanged` fires whenever the user moves your grant from the Data tab
-— revoked, narrowed, or a cross-origin read switched back on. Your session ends
-with it in every case, so treat it as "reconnect and read `session.grant`",
-never as "you lost access": one of the things it reports is gaining some.
+— revoked, narrowed, or a cross-origin read switched back on. Its payload is
+`{ sessionId, fields, revokedSubscriptions }`. Your session ends with it in
+every case, so treat it as "reconnect and read `session.grant`", never as "you
+lost access": one of the things it reports is gaining some.
+
+**Sessions are per page load and live only in memory.** A reload gets a new one,
+through a silent reconnect if the remembered grant still covers what you ask
+for. Two tabs of your site are two sessions writing one document, which is
+where `4321` comes from in practice. If the browser's main process restarts
+while your page lives on, the old `sessionId` starts rejecting with `4900`
+(`Disconnected`) — reconnect rather than reading it as a lost grant.
+
+`disconnect(sessionId)` ends **the session and nothing else.** The remembered
+grant survives it, so your next `connect()` reconnects silently. It is not a
+revocation; a site cannot revoke its own grant, because that control belongs to
+the user in the Data pane.
 
 **Limits, and what they cost you.** Your whole partition is capped at **16 MiB**
 on the UTF-8 serialization of its document, and a write that would cross that
@@ -211,6 +293,46 @@ way to split it.
 or `ArrayBuffer` type; a blob costs 33 % more than its bytes, and that inflated
 size is what every subsequent write re-serializes.
 
+### Errors
+
+Every rejection carries a numeric `code` on the `Error`. **Branch on the code,
+never the message** — the text comes from the engine's `DEFAULT_MESSAGE` table
+or from a host-supplied reason, and both are free to change.
+
+| Code | Name | When, and what to do |
+| --- | --- | --- |
+| `4001` | `UserRejected` | `connect()` was refused. All four refusals share this code — see below. |
+| `4010` | `InvalidRequest` | Malformed params: a dotted path, a bad pointer, a non-`data:` icon. Your bug, not a user decision. |
+| `4100` | `Unauthorized` | The method is not in your grant. `vault_getSharedData` is the one you must ask for. |
+| `4305` | `FieldOutOfScope` | A path outside your rules — including a path *above* a granted rule. Fix your field list. |
+| `4306` | `WriteForbidden` | A write to a rule you hold only `read` on. |
+| `4310` | `BiometricFailed` | Cannot currently happen in Freedom; see `sensitive` above. |
+| `4311` | `KeyInvalidated` | The partition will not open. `error.data.reason` attributes it — see [If a partition will not open](#if-a-partition-will-not-open). |
+| `4312` | `VaultLocked` | Auto-locked. Offer `requestUnlock` — see [Locking](#locking). |
+| `4321` | `VersionConflict` | Stale `baseVersion`. `error.data.version` is the current etag; retry against it. |
+| `4330` | `QuotaExceeded` | Over a cap: the 16 MiB document, 64 paths, 128 changes, 8 owners, 16 paths per owner. |
+| `4900` | `Disconnected` | Unknown `sessionId` — typically a stale session after a main-process restart. Reconnect. |
+| `-32603` | — | *Vault request timed out*: no answer within **120 s**. The transport's error, not the vault's; in practice, a sheet nobody answered. |
+
+**What a refused `connect()` looks like.** Four situations all reject with
+`4001`, and what separates them reaches you only in the message you have just
+been told not to branch on. In one case that is deliberate. So treat `4001` as
+a single outcome — *stop asking on your own initiative, and put connecting
+behind a button the user presses* — and read the messages as debugging aid
+only:
+
+- The user rejected the sheet (*user denied*).
+- The user has rejected you **three times running**, and the sheet will not
+  open again for five minutes. Reported identically to a plain rejection on
+  purpose: a site that could tell them apart could count the user's refusals.
+- **Another origin's sheet is already open** (*another request is awaiting an
+  answer*). One sheet at a time, whoever asks, so the newcomer is refused
+  rather than left waiting behind a sheet it cannot see. This is the one worth
+  retrying, and the user's button press is the retry.
+- **The page that asked is gone** — you navigated away while the sheet was
+  open, so the answer has nothing to attach to. Nothing was granted; the next
+  page load asks afresh.
+
 ### Publishing under `/shared`
 
 `/shared` is reserved, and **location is the mark** — there is no shareable
@@ -239,7 +361,7 @@ whole-subtree grant, and *not* by a specific-pointer grant — so a reader
 granted the whole subtree keeps up with you, and one granted a named pointer
 does not.
 
-### Reading another site's public data
+### Reading another site's shared data
 
 Declare it at `connect`, so one sheet covers your own fields and your
 cross-origin reads:
@@ -262,8 +384,10 @@ const { values } = await window.vault.readShared(session.sessionId, 'bzz://socia
 
 - Read-only. There is no cross-origin write and no cross-origin `subscribe`, so
   poll if you need to see changes.
-- Origins compare **including scheme**, so `bzz://social.eth` and
-  `https://social.example` are two different asks.
+- The origin you name runs through the same derivation as your own, so the same
+  collapsing applies: naming `https://social.example` reaches the one partition
+  that `http://social.example` and `https://app.social.example` also share,
+  while `bzz://social.eth` is a different partition from all three.
 - You may name specific pointers or `/shared` wholesale. Neither the sheet nor
   the Data pane shows which pointers you asked for — both name the partition and
   nothing else — so a wholesale ask is approved on the same terms as a narrow
@@ -304,9 +428,10 @@ a cue to ask again.
 
 ### Letting your next version read this one
 
-A partition is keyed by origin, so **the next iteration of your site is a
-different site**: a new subdomain, a new scheme, a new domain, and the document
-starts empty. `/shared` is the way across that — if you plan for it on the way
+A partition is keyed as the table above describes, so **the next iteration of a
+dweb app is a different site**: a new name, a new transport, a new content
+reference, and the document starts empty. (On `http(s)` a new subdomain is
+*not* a new partition — those collapse — so this is a dweb concern first.) `/shared` is the way across that — if you plan for it on the way
 in. Write what a future version will need under `/shared` from the start, and v2
 declares a read of v1's origin and migrates on first run. The engine repo's
 README works the pattern through in code, under *Sharing data under `/shared`* →
@@ -331,8 +456,11 @@ there.
 
 ### Locking
 
-The vault auto-locks after 15 minutes idle. Vault reads and writes count as
-activity and push the timer out, so an actively used session stays open. A
+The vault auto-locks after 15 minutes idle. That is the browser's current
+default rather than part of the contract, so do not hard-code the interval or
+try to predict the lock — handle `4312` wherever it lands. Vault reads and
+writes count as activity and push the timer out, so an actively used session
+stays open. A
 long-lived page will still meet a locked vault eventually.
 
 A locked vault rejects data-plane calls with **code `4312`**. Branch on the
