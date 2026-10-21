@@ -67,19 +67,11 @@
   color: #fff; /* theme-literal: the fixed contrast pair on a filled accent button, same on either palette */
 }
 .vault-btn.primary:hover { filter: brightness(1.08); }
-/* Import: a light green tint off the same token the detail page uses for an
-   inbound read, so "data coming in" reads the same colour everywhere. Mixed
-   rather than filled, so it stays legible on either palette without a
-   hard-coded contrast pair. */
-.vault-btn.secure {
-  border-color: var(--secure-fg);
-  background: color-mix(in srgb, var(--secure-fg) 16%, transparent);
-  color: var(--secure-fg);
-}
-.vault-btn.secure:hover {
-  border-color: var(--secure-fg);
-  background: color-mix(in srgb, var(--secure-fg) 26%, transparent);
-}
+/* Import: plain until hovered, then outline and text go green — the same shape
+   as `.danger` above, so the two actions in this row behave identically and
+   only their colour differs. The token is the one the detail page uses for an
+   inbound read, so "data coming in" is green throughout. */
+.vault-btn.secure:hover { border-color: var(--secure-fg); color: var(--secure-fg); }
 /* Nothing to clear, so the button says so by being unavailable rather than
    disappearing — the pane keeps its shape between an empty and a full vault. */
 .vault-btn:disabled {
