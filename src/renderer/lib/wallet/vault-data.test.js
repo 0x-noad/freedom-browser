@@ -309,7 +309,6 @@ function setupDom() {
     signalReady: jest.fn(),
     onPartitionChanged: jest.fn(),
     foreignGrantsFor: jest.fn().mockResolvedValue({ locked: false, reads: [], readers: [] }),
-    revokeForeignRead: jest.fn().mockResolvedValue({ revoked: true }),
     setForeignReadEnabled: jest.fn().mockResolvedValue({ changed: true }),
   };
   global.window = { vaultData, confirm: () => true, electronAPI: {} };
@@ -1003,7 +1002,6 @@ describe('detail view: cross-origin grants, both directions', () => {
       OWNER_NS,
       false,
     );
-    expect(vaultData.revokeForeignRead).not.toHaveBeenCalled();
   });
 
   test('a read the READER switched off reads as off on the owner end', async () => {
@@ -1121,7 +1119,6 @@ describe('detail view: the reads this site holds', () => {
       'web:owner.example',
       false,
     );
-    expect(vaultData.revokeForeignRead).not.toHaveBeenCalled();
     const after = els.get('vault-detail-reads').children;
     expect(after).toHaveLength(1);
     expect(after[0].querySelectorAll('input[type=checkbox]')[0].checked).toBe(false);

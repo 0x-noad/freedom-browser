@@ -40,10 +40,9 @@
  * `src/shared/ipc-channels.js` (see vault-ipc-channels.js).
  */
 
-const { app, ipcMain } = require('electron');
+const { app } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const CH = require('./vault-ipc-channels');
 
 const PERMISSIONS_FILE = 'vault-permissions.enc';
 /** Pre-encryption file, migrated on first load and then deleted. */
@@ -240,24 +239,6 @@ function removeForeignReadsTo(ownerNamespace) {
 }
 
 /**
- * Drop one reader's cross-origin read of one owner, from either side's UI.
- * Deletes no data: the owner's published subtree and the reader's own partition
- * are both untouched.
- * @returns {boolean} true when a grant actually changed
- */
-function removeForeignRead(readerNamespace, ownerNamespace) {
-  const permissions = loadPermissions();
-  const record = permissions[readerNamespace];
-  if (!record) return false;
-  const kept = (record.foreignReads || []).filter((e) => e.namespace !== ownerNamespace);
-  if (kept.length === (record.foreignReads || []).length) return false;
-  record.foreignReads = kept;
-  permissionsCache = permissions;
-  savePermissions();
-  return true;
-}
-
-/**
  * Turn one held cross-origin read off or on, keeping the entry either way.
  *
  * Off is not removal: the paths the user once approved stay on the record so the
@@ -314,21 +295,6 @@ function updateLastUsed(namespace, now) {
   return false;
 }
 
-/**
- * Register the management IPC handlers (for the browser's own settings UI).
- * The per-site connect/data channels live in data-vault-manager.js.
- * @param {(namespace: string) => void} [onRevoke]  Called so the manager can drop the live session.
- */
-function registerDataVaultPermissionsIpc(onRevoke) {
-  ipcMain.handle(CH.VAULT_GET_ALL_PERMISSIONS, () => getAllPermissions());
-  ipcMain.handle(CH.VAULT_REVOKE_PERMISSION, (_event, namespace) => {
-    const ok = revokePermission(namespace);
-    if (ok && typeof onRevoke === 'function') onRevoke(namespace);
-    return ok;
-  });
-  console.log('[DataVaultPermissions] IPC handlers registered');
-}
-
 function _resetCache() {
   permissionsCache = null;
   loadFailed = false;
@@ -339,12 +305,10 @@ module.exports = {
   getPermission,
   grantPermission,
   revokePermission,
-  removeForeignRead,
   removeForeignReadsTo,
   setForeignReadEnabled,
   getAllPermissions,
   updateLastUsed,
   replaceAll,
-  registerDataVaultPermissionsIpc,
   _resetCache,
 };

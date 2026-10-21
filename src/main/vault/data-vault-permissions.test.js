@@ -88,39 +88,14 @@ describe('foreignReads on a remembered grant', () => {
   });
 });
 
-describe('removeForeignRead', () => {
-  test('drops one owner and leaves the rest', () => {
-    const other = { namespace: 'web:other.example', origin: 'https://other.example', paths: ['/shared'] };
-    perms.grantPermission(READER, grant({ foreignReads: [foreignRead, other] }), NOW);
-
-    expect(perms.removeForeignRead(READER, OWNER)).toBe(true);
-    expect(perms.getPermission(READER).foreignReads).toEqual([other]);
-  });
-
-  test('deletes no other part of the grant', () => {
-    perms.grantPermission(READER, grant({ foreignReads: [foreignRead] }), NOW);
-    perms.removeForeignRead(READER, OWNER);
-
-    const record = perms.getPermission(READER);
-    expect(record.fields).toEqual([{ path: '/own', read: true, write: true }]);
-    expect(record.methods).toEqual(['vault_getData']);
-  });
-
-  test('reports no change for an unknown reader or owner', () => {
-    perms.grantPermission(READER, grant({ foreignReads: [foreignRead] }), NOW);
-
-    expect(perms.removeForeignRead('web:nobody.example', OWNER)).toBe(false);
-    expect(perms.removeForeignRead(READER, 'web:nobody.example')).toBe(false);
-  });
-});
-
 describe('setForeignReadEnabled', () => {
   test('turns one read off and KEEPS the entry, paths and all', () => {
     perms.grantPermission(READER, grant({ foreignReads: [foreignRead] }), NOW);
 
     expect(perms.setForeignReadEnabled(READER, OWNER, false)).toBe(true);
-    // The difference from removeForeignRead: the entry survives, so the Data
-    // pane can offer it back and the user does not have to re-approve paths.
+    // The whole point of the checkbox: the entry survives, so the Data pane
+    // can offer it back and the user does not re-approve paths. There is no
+    // revoke path to contrast it with — this is the only control.
     expect(perms.getPermission(READER).foreignReads).toEqual([
       { ...foreignRead, enabled: false },
     ]);

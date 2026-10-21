@@ -191,8 +191,6 @@ class DataVaultManager {
     // Site-facing provider path (untrusted pages via window.vault).
     ipcMain.handle(CH.VAULT_PROVIDER_REQUEST, (event, msg) => this._onRequest(event, msg));
     ipcMain.handle(CH.VAULT_IMPORT, (_event, bundle) => this.importAll(bundle));
-    // Revoking a permission from the settings UI must also kill any live session.
-    perms.registerDataVaultPermissionsIpc((namespace) => this._teardownNamespace(namespace));
 
     // Owner-facing management path (trusted wallet UI only — the "Data" pane).
     // These are on the main-window preload, NEVER reachable from a site.
@@ -204,9 +202,6 @@ class DataVaultManager {
     ipcMain.handle(CH.VAULT_CLEAR_ALL, () => this.clearAll());
     ipcMain.handle(CH.VAULT_EXPORT, () => this.exportToFile());
     ipcMain.handle(CH.VAULT_FOREIGN_GRANTS, (_e, namespace) => this.foreignGrantsFor(namespace));
-    ipcMain.handle(CH.VAULT_REVOKE_FOREIGN_READ, (_e, args) =>
-      this.revokeForeignRead(args && args.readerNamespace, args && args.ownerNamespace)
-    );
     ipcMain.handle(CH.VAULT_SET_FOREIGN_READ_ENABLED, (_e, args) =>
       this.setForeignReadEnabled(
         args && args.readerNamespace,
@@ -936,21 +931,6 @@ class DataVaultManager {
     const changed = perms.setForeignReadEnabled(readerNamespace, ownerNamespace, enabled);
     if (changed) this._teardownNamespace(readerNamespace);
     return { changed, readerNamespace, ownerNamespace, enabled: !!enabled };
-  }
-
-  /**
-   * Remove one reader's cross-origin read of one owner, from either side's UI.
-   *
-   * Deletes nothing: the owner's published data and the reader's own partition
-   * both stay. The reader's live sessions end so the approval cannot be spent
-   * mid-flight and the page hears `permissionsChanged`; it keeps its own grant
-   * and reconnects without a prompt.
-   */
-  revokeForeignRead(readerNamespace, ownerNamespace) {
-    if (!readerNamespace || !ownerNamespace) return { revoked: false };
-    const revoked = perms.removeForeignRead(readerNamespace, ownerNamespace);
-    if (revoked) this._teardownNamespace(readerNamespace);
-    return { revoked, readerNamespace, ownerNamespace };
   }
 
   /** Owner view of one site's stored data. Requires the vault to be unlocked. */
