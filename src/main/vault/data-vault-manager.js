@@ -1023,10 +1023,15 @@ class DataVaultManager {
 // --- helpers -----------------------------------------------------------------
 
 /**
- * Map a display URL (or the browser's transport-stable permission key) to an
- * origin string deriveOriginNamespace accepts. Kept tiny; the browser's
- * src/shared/origin-utils.js getPermissionKey is the richer, canonical source and
- * should be used in the real integration so VAULT namespaces track permissions.
+ * Map a display URL to an origin string deriveOriginNamespace accepts.
+ *
+ * Deliberately NOT `src/shared/origin-utils.js` getPermissionKey, though it is
+ * the canonical source for permission scoping. The two agree on ordinary URLs
+ * (both reduce to `scheme://host[:port]`) but differ on dweb name hosts, which
+ * getPermissionKey folds to the bare name so a permission survives a transport
+ * change. A partition must not: a name resolves through several paths, under
+ * registries with different owners, so folding them would let a compromised
+ * resolution path reach data written over an honest one. Keep them separate.
  * @param {string} url
  * @returns {string|null}
  */
