@@ -83,6 +83,7 @@ export function initVaultData(opts = {}) {
   const usageText = document.getElementById('vault-usage-text');
   const usageFill = document.getElementById('vault-usage-bar-fill');
   const exportBtn = document.getElementById('vault-export-btn');
+  const importBtn = document.getElementById('vault-import-btn');
   const clearBtn = document.getElementById('vault-clear-btn');
   const backBtn = document.getElementById('vault-detail-back');
   const detailSite = document.getElementById('vault-detail-site');
@@ -190,9 +191,24 @@ export function initVaultData(opts = {}) {
 
     const count = usage.partitionCount;
     usageText.textContent = `${fmtBytes(usage.totalBytes)} · ${count} site${count === 1 ? '' : 's'}`;
+    setEmptyActions(!parts.length);
     // The list first: the bar's segments point at its rows.
     renderList(parts);
     renderUsageBar(parts);
+  }
+
+  /**
+   * An empty vault offers the opposite action.
+   *
+   * With nothing stored, Export would write a bundle of nothing and Clear would
+   * clear nothing — so the slot shows Import instead, and Clear is disabled
+   * rather than hidden, keeping the pane the same shape either way. Driven off
+   * the rendered partition list, so it always agrees with what is on screen.
+   */
+  function setEmptyActions(empty) {
+    if (importBtn) importBtn.classList.toggle('hidden', !empty);
+    if (exportBtn) exportBtn.classList.toggle('hidden', empty);
+    if (clearBtn) clearBtn.disabled = empty;
   }
 
   /**
@@ -822,6 +838,23 @@ export function initVaultData(opts = {}) {
       console.error('[vault-data] export failed', err);
     }
   });
+  if (importBtn) {
+    importBtn.addEventListener('click', async () => {
+      importBtn.disabled = true;
+      try {
+        const r = await window.vaultData.importVault();
+        // `canceled` is the user closing the picker: say nothing, change nothing.
+        if (r && r.imported) refresh();
+      } catch (err) {
+        // The message is worth showing: "wrong vault?" and "not a vault export"
+        // are the two likely outcomes and both are actionable.
+        console.error('[vault-data] import failed', err);
+        window.alert(`Import failed: ${err.message}`);
+      } finally {
+        importBtn.disabled = false;
+      }
+    });
+  }
   clearBtn.addEventListener('click', async () => {
     if (!window.confirm('Delete ALL vault data for every site? This cannot be undone.')) return;
     await window.vaultData.clearAll();

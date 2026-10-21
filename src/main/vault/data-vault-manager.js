@@ -190,7 +190,6 @@ class DataVaultManager {
   register() {
     // Site-facing provider path (untrusted pages via window.vault).
     ipcMain.handle(CH.VAULT_PROVIDER_REQUEST, (event, msg) => this._onRequest(event, msg));
-    ipcMain.handle(CH.VAULT_IMPORT, (_event, bundle) => this.importAll(bundle));
 
     // Owner-facing management path (trusted wallet UI only — the "Data" pane).
     // These are on the main-window preload, NEVER reachable from a site.
@@ -201,6 +200,7 @@ class DataVaultManager {
     ipcMain.handle(CH.VAULT_DELETE_PARTITION, (_e, namespace) => this.deletePartition(namespace));
     ipcMain.handle(CH.VAULT_CLEAR_ALL, () => this.clearAll());
     ipcMain.handle(CH.VAULT_EXPORT, () => this.exportToFile());
+    ipcMain.handle(CH.VAULT_IMPORT, () => this.importFromFile());
     ipcMain.handle(CH.VAULT_FOREIGN_GRANTS, (_e, namespace) => this.foreignGrantsFor(namespace));
     ipcMain.handle(CH.VAULT_SET_FOREIGN_READ_ENABLED, (_e, args) =>
       this.setForeignReadEnabled(
@@ -984,6 +984,40 @@ class DataVaultManager {
       freedBytes += r.freedBytes;
     }
     return { cleared: all.length, freedBytes };
+  }
+
+  /**
+   * Import a bundle from a user-chosen file.
+   *
+   * The mirror of `exportToFile`, and deliberately shaped the same way: main
+   * owns the file, so the renderer neither reads the disk nor carries a
+   * multi-megabyte bundle across IPC — it asks, and gets a count back.
+   *
+   * `importAll` fails closed on a bundle sealed to another mnemonic (the AEAD
+   * tag will not verify), so a wrong file restores nothing rather than a
+   * half-vault. A malformed JSON file is reported as such instead of reaching
+   * the engine.
+   */
+  async importFromFile() {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: 'Import vault data',
+      properties: ['openFile'],
+      filters: [{ name: 'Vault export', extensions: ['json'] }],
+    });
+    const filePath = filePaths && filePaths[0];
+    if (canceled || !filePath) return { imported: false, canceled: true };
+    const raw = await fs.promises.readFile(filePath, 'utf-8');
+    let bundle;
+    try {
+      bundle = JSON.parse(raw);
+    } catch {
+      throw new Error('That file is not a vault export (could not be read as JSON).');
+    }
+    const { imported, restoredGrants } = await this.importAll(bundle);
+    // `partitions`, not `imported`: the shape mirrors exportToFile, and spreading
+    // importAll's result would have let its COUNT overwrite the boolean flag the
+    // caller branches on — zero entries would then read as "nothing happened".
+    return { imported: true, path: filePath, partitions: imported, restoredGrants };
   }
 
   /** Export the whole vault to a user-chosen file (sealed blobs; never decrypted). */
