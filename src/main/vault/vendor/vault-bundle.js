@@ -1,7 +1,7 @@
 /* GENERATED — do not edit by hand.
  * @vault/{vault-core,crypto-core,protocol} bundled for Freedom Browser.
  * Source:   https://github.com/absolutions19/vault3r-code-public
- * Revision: cb0e3e6cc3e9
+ * Revision: 92fe47be1dc0
  * License:  MPL-2.0 (same as Freedom Browser)
  * Inlines:  @noble/ciphers, @noble/curves, @noble/hashes, @scure/base,
  *           @scure/bip39, tldts — all MIT. See the vendor README beside
@@ -42,25 +42,25 @@ var __toESM = (mod2, isNodeMode, target) => (target = mod2 != null ? __create(__
 ));
 var __toCommonJS = (mod2) => __copyProps(__defProp({}, "__esModule", { value: true }), mod2);
 
-// packages/vault-core/src/adapters.ts
+// ../vault3r-code-public/packages/vault-core/src/adapters.ts
 var systemClock;
 var init_adapters = __esm({
-  "packages/vault-core/src/adapters.ts"() {
+  "../vault3r-code-public/packages/vault-core/src/adapters.ts"() {
     "use strict";
     systemClock = { now: () => Date.now() };
   }
 });
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/cryptoNode.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/cryptoNode.js
 var nc, crypto;
 var init_cryptoNode = __esm({
-  "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/cryptoNode.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/cryptoNode.js"() {
     nc = __toESM(require("node:crypto"), 1);
     crypto = nc && typeof nc === "object" && "webcrypto" in nc ? nc.webcrypto : nc && typeof nc === "object" && "randomBytes" in nc ? nc : void 0;
   }
 });
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/utils.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/utils.js
 function isBytes(a) {
   return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
 }
@@ -218,7 +218,7 @@ function randomBytes(bytesLength = 32) {
 }
 var isLE, swap8IfBE, swap32IfBE, hasHexBuiltin, hexes, asciis, Hash;
 var init_utils = __esm({
-  "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/utils.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/utils.js"() {
     init_cryptoNode();
     isLE = /* @__PURE__ */ (() => new Uint8Array(new Uint32Array([287454020]).buffer)[0] === 68)();
     swap8IfBE = isLE ? (n) => n : (n) => byteSwap(n);
@@ -234,7 +234,7 @@ var init_utils = __esm({
   }
 });
 
-// packages/crypto-core/src/encoding.ts
+// ../vault3r-code-public/packages/crypto-core/src/encoding.ts
 function utf8ToBytes2(s) {
   return enc.encode(s);
 }
@@ -302,7 +302,7 @@ function timingSafeEqual(a, b) {
 }
 var enc, dec, B64U, B64U_REV;
 var init_encoding = __esm({
-  "packages/crypto-core/src/encoding.ts"() {
+  "../vault3r-code-public/packages/crypto-core/src/encoding.ts"() {
     "use strict";
     init_utils();
     enc = new TextEncoder();
@@ -316,7 +316,7 @@ var init_encoding = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_md.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_md.js
 function setBigUint64(view, byteOffset, value, isLE3) {
   if (typeof view.setBigUint64 === "function")
     return view.setBigUint64(byteOffset, value, isLE3);
@@ -337,7 +337,7 @@ function Maj(a, b, c) {
 }
 var HashMD, SHA256_IV, SHA512_IV;
 var init_md = __esm({
-  "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_md.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_md.js"() {
     init_utils();
     HashMD = class extends Hash {
       constructor(blockLen, outputLen, padOffset, isLE3) {
@@ -460,7 +460,7 @@ var init_md = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_u64.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_u64.js
 function fromBig(n, le = false) {
   if (le)
     return { h: Number(n & U32_MASK64), l: Number(n >> _32n & U32_MASK64) };
@@ -482,7 +482,7 @@ function add(Ah, Al, Bh, Bl) {
 }
 var U32_MASK64, _32n, shrSH, shrSL, rotrSH, rotrSL, rotrBH, rotrBL, rotr32H, rotr32L, add3L, add3H, add4L, add4H, add5L, add5H;
 var init_u64 = __esm({
-  "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_u64.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_u64.js"() {
     U32_MASK64 = /* @__PURE__ */ BigInt(2 ** 32 - 1);
     _32n = /* @__PURE__ */ BigInt(32);
     shrSH = (h, _l, s) => h >>> s;
@@ -502,10 +502,10 @@ var init_u64 = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha2.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha2.js
 var SHA256_K, SHA256_W, SHA256, K512, SHA512_Kh, SHA512_Kl, SHA512_W_H, SHA512_W_L, SHA512, sha256, sha512;
 var init_sha2 = __esm({
-  "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha2.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha2.js"() {
     init_md();
     init_u64();
     init_utils();
@@ -848,7 +848,7 @@ var init_sha2 = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/utils.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/utils.js
 function _abool2(value, title = "") {
   if (typeof value !== "boolean") {
     const prefix = title && `"${title}"`;
@@ -955,7 +955,7 @@ function memoized(fn) {
 }
 var _0n, _1n, isPosBig, bitMask, notImplemented;
 var init_utils2 = __esm({
-  "node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/utils.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/utils.js"() {
     init_utils();
     init_utils();
     _0n = /* @__PURE__ */ BigInt(0);
@@ -968,7 +968,7 @@ var init_utils2 = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/modular.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/modular.js
 function mod(a, b) {
   const result = a % b;
   return result >= _0n2 ? result : b + result;
@@ -1265,7 +1265,7 @@ function Field(ORDER, bitLenOrOpts, isLE3 = false, opts = {}) {
 }
 var _0n2, _1n2, _2n, _3n, _4n, _5n, _7n, _8n, _9n, _16n, isNegativeLE, FIELD_FIELDS;
 var init_modular = __esm({
-  "node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/modular.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/modular.js"() {
     init_utils2();
     _0n2 = BigInt(0);
     _1n2 = BigInt(1);
@@ -1300,7 +1300,7 @@ var init_modular = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/curve.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/curve.js
 function negateCt(condition, item) {
   const neg = item.negate();
   return condition ? neg : item;
@@ -1433,7 +1433,7 @@ function _createCurveFields(type, CURVE, curveOpts = {}, FpFnLE) {
 }
 var _0n3, _1n3, pointPrecomputes, pointWindowSizes, wNAF;
 var init_curve = __esm({
-  "node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/curve.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/curve.js"() {
     init_utils2();
     init_modular();
     _0n3 = BigInt(0);
@@ -1570,7 +1570,7 @@ var init_curve = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/edwards.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/edwards.js
 function isEdValidXY(Fp2, CURVE, x, y) {
   const x2 = Fp2.sqr(x);
   const y2 = Fp2.sqr(y);
@@ -2051,7 +2051,7 @@ function twistedEdwards(c) {
 }
 var _0n4, _1n4, _2n2, _8n2, PrimeEdwardsPoint;
 var init_edwards = __esm({
-  "node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/edwards.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/edwards.js"() {
     init_utils2();
     init_curve();
     init_modular();
@@ -2129,7 +2129,7 @@ var init_edwards = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/montgomery.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/montgomery.js
 function validateOpts(curve) {
   _validateObject(curve, {
     adjustScalarBytes: "function",
@@ -2247,7 +2247,7 @@ function montgomery(curveDef) {
 }
 var _0n5, _1n5, _2n3;
 var init_montgomery = __esm({
-  "node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/montgomery.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/montgomery.js"() {
     init_utils2();
     init_modular();
     _0n5 = BigInt(0);
@@ -2256,7 +2256,7 @@ var init_montgomery = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/ed25519.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/ed25519.js
 function ed25519_pow_2_252_3(x) {
   const _10n = BigInt(10), _20n = BigInt(20), _40n = BigInt(40), _80n = BigInt(80);
   const P2 = ed25519_CURVE_p;
@@ -2334,7 +2334,7 @@ function ristretto255_map(bytes) {
 }
 var _0n6, _1n6, _2n4, _3n2, _5n2, _8n3, ed25519_CURVE_p, ed25519_CURVE, ED25519_SQRT_M1, Fp, Fn, ed25519Defaults, ed25519, x25519, SQRT_M1, SQRT_AD_MINUS_ONE, INVSQRT_A_MINUS_D, ONE_MINUS_D_SQ, D_MINUS_ONE_SQ, invertSqrt, MAX_255B, bytes255ToNumberLE, _RistrettoPoint;
 var init_ed25519 = __esm({
-  "node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/ed25519.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/ed25519.js"() {
     init_sha2();
     init_utils();
     init_curve();
@@ -2503,10 +2503,10 @@ var init_ed25519 = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hmac.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hmac.js
 var HMAC, hmac;
 var init_hmac = __esm({
-  "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hmac.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hmac.js"() {
     init_utils();
     HMAC = class extends Hash {
       constructor(hash, _key) {
@@ -2577,7 +2577,7 @@ var init_hmac = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hkdf.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hkdf.js
 function extract(hash, ikm, salt) {
   ahash(hash);
   if (salt === void 0)
@@ -2610,7 +2610,7 @@ function expand(hash, prk, info, length = 32) {
 }
 var HKDF_COUNTER, EMPTY_BUFFER, hkdf;
 var init_hkdf = __esm({
-  "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hkdf.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hkdf.js"() {
     init_hmac();
     init_utils();
     HKDF_COUNTER = /* @__PURE__ */ Uint8Array.from([0]);
@@ -2619,7 +2619,7 @@ var init_hkdf = __esm({
   }
 });
 
-// packages/crypto-core/src/primitives.ts
+// ../vault3r-code-public/packages/crypto-core/src/primitives.ts
 function randomBytes2(n) {
   return randomBytes(n);
 }
@@ -2661,7 +2661,7 @@ function x25519SharedSecret(privateKey32, peerPublicKey32) {
   return x25519.getSharedSecret(privateKey32, peerPublicKey32);
 }
 var init_primitives = __esm({
-  "packages/crypto-core/src/primitives.ts"() {
+  "../vault3r-code-public/packages/crypto-core/src/primitives.ts"() {
     "use strict";
     init_ed25519();
     init_sha2();
@@ -2670,7 +2670,7 @@ var init_primitives = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/utils.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/utils.js
 function isBytes2(a) {
   return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
 }
@@ -2777,7 +2777,7 @@ function copyBytes2(bytes) {
 }
 var isLE2, wrapCipher;
 var init_utils3 = __esm({
-  "node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/utils.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/utils.js"() {
     isLE2 = /* @__PURE__ */ (() => new Uint8Array(new Uint32Array([287454020]).buffer)[0] === 68)();
     wrapCipher = /* @__NO_SIDE_EFFECTS__ */ (params, constructor) => {
       function wrappedCipher(key, ...args) {
@@ -2831,7 +2831,7 @@ var init_utils3 = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/_arx.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/_arx.js
 function rotl(a, b) {
   return a << b | a >>> 32 - b;
 }
@@ -2931,7 +2931,7 @@ function createCipher(core, opts) {
 }
 var _utf8ToBytes, sigma16, sigma32, sigma16_32, sigma32_32, BLOCK_LEN, BLOCK_LEN32, MAX_COUNTER, U32_EMPTY;
 var init_arx = __esm({
-  "node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/_arx.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/_arx.js"() {
     init_utils3();
     _utf8ToBytes = (str) => Uint8Array.from(str.split("").map((c) => c.charCodeAt(0)));
     sigma16 = _utf8ToBytes("expand 16-byte k");
@@ -2945,7 +2945,7 @@ var init_arx = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/_poly1305.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/_poly1305.js
 function wrapConstructorWithKey(hashCons) {
   const hashC = (msg, key) => hashCons(key).update(toBytes2(msg)).digest();
   const tmp = hashCons(new Uint8Array(32));
@@ -2956,7 +2956,7 @@ function wrapConstructorWithKey(hashCons) {
 }
 var u8to16, Poly1305, poly1305;
 var init_poly1305 = __esm({
-  "node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/_poly1305.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/_poly1305.js"() {
     init_utils3();
     u8to16 = (a, i) => a[i++] & 255 | (a[i++] & 255) << 8;
     Poly1305 = class {
@@ -3206,7 +3206,7 @@ var init_poly1305 = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/chacha.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/chacha.js
 function chachaCore(s, k, n, out, cnt, rounds = 20) {
   let y00 = s[0], y01 = s[1], y02 = s[2], y03 = s[3], y04 = k[0], y05 = k[1], y06 = k[2], y07 = k[3], y08 = k[4], y09 = k[5], y10 = k[6], y11 = k[7], y12 = cnt, y13 = n[0], y14 = n[1], y15 = n[2];
   let x00 = y00, x01 = y01, x02 = y02, x03 = y03, x04 = y04, x05 = y05, x06 = y06, x07 = y07, x08 = y08, x09 = y09, x10 = y10, x11 = y11, x12 = y12, x13 = y13, x14 = y14, x15 = y15;
@@ -3386,7 +3386,7 @@ function computeTag(fn, key, nonce, data, AAD) {
 }
 var chacha20, xchacha20, ZEROS16, updatePadded, ZEROS32, _poly1305_aead, chacha20poly1305, xchacha20poly1305;
 var init_chacha = __esm({
-  "node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/chacha.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+ciphers@1.3.0/node_modules/@noble/ciphers/esm/chacha.js"() {
     init_arx();
     init_poly1305();
     init_utils3();
@@ -3442,7 +3442,7 @@ var init_chacha = __esm({
   }
 });
 
-// packages/crypto-core/src/xchacha.ts
+// ../vault3r-code-public/packages/crypto-core/src/xchacha.ts
 function rotl2(x, n) {
   return (x << n | x >>> 32 - n) >>> 0;
 }
@@ -3513,7 +3513,7 @@ function xchachaOpen(key, nonce24, ciphertext, tag, aad) {
 }
 var SIGMA, XCHACHA_NONCE_BYTES, XCHACHA_TAG_BYTES, XCHACHA_KEY_BYTES;
 var init_xchacha = __esm({
-  "packages/crypto-core/src/xchacha.ts"() {
+  "../vault3r-code-public/packages/crypto-core/src/xchacha.ts"() {
     "use strict";
     init_chacha();
     init_encoding();
@@ -3524,10 +3524,10 @@ var init_xchacha = __esm({
   }
 });
 
-// packages/protocol/src/constants.ts
+// ../vault3r-code-public/packages/protocol/src/constants.ts
 var PROTOCOL_VERSION, NS_PREFIX_WEB, SHARED_POINTER, REQUEST_MAX_SKEW_MS, SESSION_DEFAULT_TTL_MS, SESSION_ABSOLUTE_MAX_TTL_MS, DELEGATION_DEFAULT_TTL_MS, MAX_ENVELOPE_BYTES, MAX_PLAINTEXT_BYTES, MAX_JSON_DEPTH, MAX_PATHS_PER_REQUEST, MAX_PATCH_OPS, MAX_NAMESPACE_BYTES, MAX_FIELD_PATH_LEN, MAX_FOREIGN_ORIGINS, MAX_FOREIGN_PATHS_PER_ORIGIN;
 var init_constants = __esm({
-  "packages/protocol/src/constants.ts"() {
+  "../vault3r-code-public/packages/protocol/src/constants.ts"() {
     "use strict";
     PROTOCOL_VERSION = "1";
     NS_PREFIX_WEB = "web";
@@ -3548,10 +3548,10 @@ var init_constants = __esm({
   }
 });
 
-// packages/protocol/src/errors.ts
+// ../vault3r-code-public/packages/protocol/src/errors.ts
 var ErrorCode, CODE_TO_NAME, DEFAULT_MESSAGE, VaultError;
 var init_errors = __esm({
-  "packages/protocol/src/errors.ts"() {
+  "../vault3r-code-public/packages/protocol/src/errors.ts"() {
     "use strict";
     ErrorCode = {
       /** User explicitly rejected the request at the vault. */
@@ -3652,7 +3652,7 @@ var init_errors = __esm({
   }
 });
 
-// packages/protocol/src/canonical.ts
+// ../vault3r-code-public/packages/protocol/src/canonical.ts
 function encodeString(s) {
   return JSON.stringify(s);
 }
@@ -3703,7 +3703,7 @@ function canonicalBytes(value) {
 }
 var CanonicalizeError, textEncoder;
 var init_canonical = __esm({
-  "packages/protocol/src/canonical.ts"() {
+  "../vault3r-code-public/packages/protocol/src/canonical.ts"() {
     "use strict";
     CanonicalizeError = class extends Error {
       constructor(message) {
@@ -3715,7 +3715,7 @@ var init_canonical = __esm({
   }
 });
 
-// packages/protocol/src/strict-json.ts
+// ../vault3r-code-public/packages/protocol/src/strict-json.ts
 function parseJsonStrict(text, opts = {}) {
   const maxDepth = opts.maxDepth ?? MAX_JSON_DEPTH;
   let i = 0;
@@ -3887,7 +3887,7 @@ function parseJsonStrict(text, opts = {}) {
 }
 var StrictJsonError;
 var init_strict_json = __esm({
-  "packages/protocol/src/strict-json.ts"() {
+  "../vault3r-code-public/packages/protocol/src/strict-json.ts"() {
     "use strict";
     init_constants();
     StrictJsonError = class extends Error {
@@ -3900,14 +3900,14 @@ var init_strict_json = __esm({
   }
 });
 
-// packages/protocol/src/types.ts
+// ../vault3r-code-public/packages/protocol/src/types.ts
 var init_types = __esm({
-  "packages/protocol/src/types.ts"() {
+  "../vault3r-code-public/packages/protocol/src/types.ts"() {
     "use strict";
   }
 });
 
-// packages/protocol/src/typed-data.ts
+// ../vault3r-code-public/packages/protocol/src/typed-data.ts
 function typedSigningPreimage(td) {
   const envelope = {
     tag: "VAULT712",
@@ -3930,14 +3930,14 @@ function settleSigningPreimage(input) {
   });
 }
 var init_typed_data = __esm({
-  "packages/protocol/src/typed-data.ts"() {
+  "../vault3r-code-public/packages/protocol/src/typed-data.ts"() {
     "use strict";
     init_canonical();
     init_constants();
   }
 });
 
-// packages/protocol/src/jsonrpc.ts
+// ../vault3r-code-public/packages/protocol/src/jsonrpc.ts
 function makeNotification(method, params) {
   return { jsonrpc: JSONRPC_VERSION, method, params };
 }
@@ -3952,16 +3952,16 @@ function isJsonRpcRequest(m) {
 }
 var JSONRPC_VERSION;
 var init_jsonrpc = __esm({
-  "packages/protocol/src/jsonrpc.ts"() {
+  "../vault3r-code-public/packages/protocol/src/jsonrpc.ts"() {
     "use strict";
     JSONRPC_VERSION = "2.0";
   }
 });
 
-// packages/protocol/src/methods.ts
+// ../vault3r-code-public/packages/protocol/src/methods.ts
 var Method;
 var init_methods = __esm({
-  "packages/protocol/src/methods.ts"() {
+  "../vault3r-code-public/packages/protocol/src/methods.ts"() {
     "use strict";
     Method = {
       SessionPropose: "vault_sessionPropose",
@@ -3984,7 +3984,7 @@ var init_methods = __esm({
   }
 });
 
-// packages/protocol/src/envelope.ts
+// ../vault3r-code-public/packages/protocol/src/envelope.ts
 function tagToMsgType(tag) {
   switch (tag) {
     case "pair":
@@ -4001,13 +4001,13 @@ function makeAad(topic, tag, msgType, dir) {
   return { topic, tag, pv: PROTOCOL_VERSION, msgType, dir };
 }
 var init_envelope = __esm({
-  "packages/protocol/src/envelope.ts"() {
+  "../vault3r-code-public/packages/protocol/src/envelope.ts"() {
     "use strict";
     init_constants();
   }
 });
 
-// packages/protocol/src/pairing.ts
+// ../vault3r-code-public/packages/protocol/src/pairing.ts
 function parsePairingUri(uri) {
   const url = new URL(uri);
   if (url.protocol !== "vault:") throw new Error("not a vault: pairing URI");
@@ -4031,22 +4031,22 @@ function parsePairingUri(uri) {
   };
 }
 var init_pairing = __esm({
-  "packages/protocol/src/pairing.ts"() {
+  "../vault3r-code-public/packages/protocol/src/pairing.ts"() {
     "use strict";
     init_constants();
   }
 });
 
-// packages/protocol/src/transport.ts
+// ../vault3r-code-public/packages/protocol/src/transport.ts
 var init_transport = __esm({
-  "packages/protocol/src/transport.ts"() {
+  "../vault3r-code-public/packages/protocol/src/transport.ts"() {
     "use strict";
   }
 });
 
-// packages/protocol/src/index.ts
+// ../vault3r-code-public/packages/protocol/src/index.ts
 var init_src = __esm({
-  "packages/protocol/src/index.ts"() {
+  "../vault3r-code-public/packages/protocol/src/index.ts"() {
     "use strict";
     init_constants();
     init_errors();
@@ -4062,7 +4062,7 @@ var init_src = __esm({
   }
 });
 
-// packages/crypto-core/src/handshake.ts
+// ../vault3r-code-public/packages/crypto-core/src/handshake.ts
 function transcriptHash(p) {
   const bytes = canonicalBytes({
     tag: "vault-handshake/v1",
@@ -4082,7 +4082,7 @@ function deriveSessionKey(ourPrivate, peerPublic, params) {
   return hkdfSha256(shared, salt, info, 32);
 }
 var init_handshake = __esm({
-  "packages/crypto-core/src/handshake.ts"() {
+  "../vault3r-code-public/packages/crypto-core/src/handshake.ts"() {
     "use strict";
     init_src();
     init_primitives();
@@ -4090,7 +4090,7 @@ var init_handshake = __esm({
   }
 });
 
-// packages/crypto-core/src/session-envelope.ts
+// ../vault3r-code-public/packages/crypto-core/src/session-envelope.ts
 function base64UrlLen(n) {
   return n === 0 ? 0 : Math.floor(n / 3) * 4 + (n % 3 === 0 ? 0 : n % 3 + 1);
 }
@@ -4128,7 +4128,7 @@ function openEnvelope(sessionKey, aad, payload) {
 }
 var VERSION_BYTE, MAX_ENVELOPE_B64_LEN;
 var init_session_envelope = __esm({
-  "packages/crypto-core/src/session-envelope.ts"() {
+  "../vault3r-code-public/packages/crypto-core/src/session-envelope.ts"() {
     "use strict";
     init_src();
     init_xchacha();
@@ -4139,9 +4139,9 @@ var init_session_envelope = __esm({
   }
 });
 
-// node_modules/.pnpm/tldts@6.1.86/node_modules/tldts/dist/cjs/index.js
+// ../vault3r-code-public/node_modules/.pnpm/tldts@6.1.86/node_modules/tldts/dist/cjs/index.js
 var require_cjs = __commonJS({
-  "node_modules/.pnpm/tldts@6.1.86/node_modules/tldts/dist/cjs/index.js"(exports2) {
+  "../vault3r-code-public/node_modules/.pnpm/tldts@6.1.86/node_modules/tldts/dist/cjs/index.js"(exports2) {
     "use strict";
     function shareSameDomainSuffix(hostname, vhost) {
       if (hostname.endsWith(vhost)) {
@@ -4591,7 +4591,7 @@ var require_cjs = __commonJS({
   }
 });
 
-// packages/crypto-core/src/namespace.ts
+// ../vault3r-code-public/packages/crypto-core/src/namespace.ts
 function normalizeHost(input) {
   const raw = input.trim().toLowerCase().replace(/\.+$/, "");
   if (raw.length === 0) throw new NamespaceError("empty host");
@@ -4618,10 +4618,6 @@ function normalizeHost(input) {
     );
   }
   return hostname;
-}
-function isLoopbackName(hostname) {
-  const h = hostname.toLowerCase().replace(/\.+$/, "");
-  return h === "localhost" || h.endsWith(".localhost");
 }
 function registrableDomain(host) {
   return (0, import_tldts.getDomain)(host);
@@ -4656,7 +4652,7 @@ function deriveNamespace(host, granularity) {
   const namespace = `${NS_PREFIX_WEB}:${canonicalKey}`;
   return { namespace, canonicalKey, storageKey: storageKeyForNamespace(namespace) };
 }
-function deriveOriginNamespace(origin, granularity = "registrable-domain") {
+function deriveOriginNamespace(origin) {
   if (typeof origin !== "string" || origin.trim().length === 0) {
     throw new NamespaceError("empty origin");
   }
@@ -4675,21 +4671,14 @@ function deriveOriginNamespace(origin, granularity = "registrable-domain") {
     throw new NamespaceError("origin must not contain a path");
   }
   const scheme = url.protocol.replace(/:$/, "").toLowerCase();
-  if (scheme === "http" || scheme === "https") {
-    const derived = deriveNamespace(url.hostname, granularity);
-    if (url.port.length > 0 && isLoopbackName(url.hostname)) {
-      const canonicalKey2 = `${derived.canonicalKey}:${url.port}`;
-      const namespace2 = `${NS_PREFIX_WEB}:${canonicalKey2}`;
-      return { namespace: namespace2, canonicalKey: canonicalKey2, storageKey: storageKeyForNamespace(namespace2) };
-    }
-    return derived;
+  if (scheme !== "http" && scheme !== "https" && !DWEB_SCHEMES.has(scheme)) {
+    throw new NamespaceError(`unsupported origin scheme: ${scheme}`);
   }
-  if (!DWEB_SCHEMES.has(scheme)) throw new NamespaceError(`unsupported origin scheme: ${scheme}`);
   const rawAuthority = url.host;
-  if (rawAuthority.length === 0) throw new NamespaceError(`dweb origin has no authority: ${origin}`);
+  if (rawAuthority.length === 0) throw new NamespaceError(`origin has no authority: ${origin}`);
   const authority = CASE_INSENSITIVE_DWEB_SCHEMES.has(scheme) ? rawAuthority.toLowerCase() : rawAuthority;
-  const canonicalKey = `${scheme}:${authority}`;
-  const namespace = `${NS_PREFIX_WEB}:dweb:${canonicalKey}`;
+  const canonicalKey = `${scheme}://${authority}`;
+  const namespace = `${NS_PREFIX_WEB}:${canonicalKey}`;
   return { namespace, canonicalKey, storageKey: storageKeyForNamespace(namespace) };
 }
 function confusableSkeleton(s) {
@@ -4723,7 +4712,7 @@ function detectHomograph(displayHost, knownDomains = []) {
 }
 var import_tldts, NamespaceError, DWEB_SCHEMES, CASE_INSENSITIVE_DWEB_SCHEMES, CONFUSABLES, SCRIPT_RANGES;
 var init_namespace = __esm({
-  "packages/crypto-core/src/namespace.ts"() {
+  "../vault3r-code-public/packages/crypto-core/src/namespace.ts"() {
     "use strict";
     import_tldts = __toESM(require_cjs(), 1);
     init_src();
@@ -4789,7 +4778,7 @@ var init_namespace = __esm({
   }
 });
 
-// packages/crypto-core/src/identity.ts
+// ../vault3r-code-public/packages/crypto-core/src/identity.ts
 function omit(obj, key) {
   const { [key]: _drop, ...rest } = obj;
   return rest;
@@ -4849,7 +4838,7 @@ function signDelegation(delegationNoSig, seed32) {
   return { ...delegationNoSig, sig };
 }
 var init_identity = __esm({
-  "packages/crypto-core/src/identity.ts"() {
+  "../vault3r-code-public/packages/crypto-core/src/identity.ts"() {
     "use strict";
     init_src();
     init_primitives();
@@ -4857,7 +4846,7 @@ var init_identity = __esm({
   }
 });
 
-// packages/crypto-core/src/signing.ts
+// ../vault3r-code-public/packages/crypto-core/src/signing.ts
 function signTyped(typed, seed32) {
   return toBase64Url(ed25519Sign(typedSigningPreimage(typed), seed32));
 }
@@ -4873,7 +4862,7 @@ function verifyTyped(typed, sigB64, publicKey32B64) {
   return ed25519Verify(typedSigningPreimage(typed), sig, pub);
 }
 var init_signing = __esm({
-  "packages/crypto-core/src/signing.ts"() {
+  "../vault3r-code-public/packages/crypto-core/src/signing.ts"() {
     "use strict";
     init_src();
     init_primitives();
@@ -4881,7 +4870,7 @@ var init_signing = __esm({
   }
 });
 
-// packages/crypto-core/src/value-hash.ts
+// ../vault3r-code-public/packages/crypto-core/src/value-hash.ts
 function stableJsonStringify(value) {
   return serialize(value);
 }
@@ -4905,17 +4894,17 @@ function hashJsonValue(value) {
   return `sha256:${toHex(sha2562(utf8ToBytes2(stableJsonStringify(value))))}`;
 }
 var init_value_hash = __esm({
-  "packages/crypto-core/src/value-hash.ts"() {
+  "../vault3r-code-public/packages/crypto-core/src/value-hash.ts"() {
     "use strict";
     init_primitives();
     init_encoding();
   }
 });
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_blake.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_blake.js
 var BSIGMA;
 var init_blake = __esm({
-  "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_blake.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_blake.js"() {
     BSIGMA = /* @__PURE__ */ Uint8Array.from([
       0,
       1,
@@ -5178,7 +5167,7 @@ var init_blake = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/blake2.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/blake2.js
 function G1b(a, b, c, d, msg, x) {
   const Xl = msg[x], Xh = msg[x + 1];
   let Al = BBUF[2 * a], Ah = BBUF[2 * a + 1];
@@ -5231,7 +5220,7 @@ function checkBlake2Opts(outputLen, opts = {}, keyLen, saltLen, persLen) {
 }
 var B2B_IV, BBUF, BLAKE2, BLAKE2b, blake2b;
 var init_blake2 = __esm({
-  "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/blake2.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/blake2.js"() {
     init_blake();
     init_u64();
     init_utils();
@@ -5469,7 +5458,7 @@ var init_blake2 = __esm({
   }
 });
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/argon2.js
+// ../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/argon2.js
 function mul(a, b) {
   const aL = a & 65535;
   const aH = a >>> 16;
@@ -5740,7 +5729,7 @@ function argon2(type, password, salt, opts) {
 }
 var AT, ARGON2_SYNC_POINTS, abytesOrZero, A2_BUF, maxUint32, argon2id;
 var init_argon2 = __esm({
-  "node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/argon2.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/argon2.js"() {
     init_u64();
     init_blake2();
     init_utils();
@@ -5757,7 +5746,7 @@ var init_argon2 = __esm({
   }
 });
 
-// node_modules/.pnpm/@scure+base@1.2.6/node_modules/@scure/base/lib/esm/index.js
+// ../vault3r-code-public/node_modules/.pnpm/@scure+base@1.2.6/node_modules/@scure/base/lib/esm/index.js
 function isBytes3(a) {
   return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
 }
@@ -6022,7 +6011,7 @@ function checksum(len, fn) {
 }
 var gcd, radix2carry, powers, utils;
 var init_esm = __esm({
-  "node_modules/.pnpm/@scure+base@1.2.6/node_modules/@scure/base/lib/esm/index.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@scure+base@1.2.6/node_modules/@scure/base/lib/esm/index.js"() {
     gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
     radix2carry = /* @__NO_SIDE_EFFECTS__ */ (from, to) => from + (to - gcd(from, to));
     powers = /* @__PURE__ */ (() => {
@@ -6045,7 +6034,7 @@ var init_esm = __esm({
   }
 });
 
-// node_modules/.pnpm/@scure+bip39@1.6.0/node_modules/@scure/bip39/esm/index.js
+// ../vault3r-code-public/node_modules/.pnpm/@scure+bip39@1.6.0/node_modules/@scure/bip39/esm/index.js
 function nfkd(str) {
   if (typeof str !== "string")
     throw new TypeError("invalid mnemonic type: " + typeof str);
@@ -6097,7 +6086,7 @@ function validateMnemonic(mnemonic, wordlist2) {
 }
 var isJapanese, calcChecksum;
 var init_esm2 = __esm({
-  "node_modules/.pnpm/@scure+bip39@1.6.0/node_modules/@scure/bip39/esm/index.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@scure+bip39@1.6.0/node_modules/@scure/bip39/esm/index.js"() {
     init_sha2();
     init_utils();
     init_esm();
@@ -6109,10 +6098,10 @@ var init_esm2 = __esm({
   }
 });
 
-// node_modules/.pnpm/@scure+bip39@1.6.0/node_modules/@scure/bip39/esm/wordlists/english.js
+// ../vault3r-code-public/node_modules/.pnpm/@scure+bip39@1.6.0/node_modules/@scure/bip39/esm/wordlists/english.js
 var wordlist;
 var init_english = __esm({
-  "node_modules/.pnpm/@scure+bip39@1.6.0/node_modules/@scure/bip39/esm/wordlists/english.js"() {
+  "../vault3r-code-public/node_modules/.pnpm/@scure+bip39@1.6.0/node_modules/@scure/bip39/esm/wordlists/english.js"() {
     wordlist = `abandon
 ability
 able
@@ -8164,7 +8153,7 @@ zoo`.split("\n");
   }
 });
 
-// packages/crypto-core/src/recovery.ts
+// ../vault3r-code-public/packages/crypto-core/src/recovery.ts
 function generateRecoveryMnemonic() {
   return generateMnemonic(wordlist, 256);
 }
@@ -8237,7 +8226,7 @@ function parseRecoveryBlob(s) {
 }
 var DEFAULT_RECOVERY_PARAMS, DEK_BYTES, SALT_BYTES;
 var init_recovery = __esm({
-  "packages/crypto-core/src/recovery.ts"() {
+  "../vault3r-code-public/packages/crypto-core/src/recovery.ts"() {
     "use strict";
     init_argon2();
     init_esm2();
@@ -8252,7 +8241,7 @@ var init_recovery = __esm({
   }
 });
 
-// packages/crypto-core/src/index.ts
+// ../vault3r-code-public/packages/crypto-core/src/index.ts
 var src_exports = {};
 __export(src_exports, {
   DEFAULT_RECOVERY_PARAMS: () => DEFAULT_RECOVERY_PARAMS,
@@ -8281,7 +8270,6 @@ __export(src_exports, {
   hchacha20: () => hchacha20,
   hkdfSha256: () => hkdfSha256,
   isAuthoritativeForHost: () => isAuthoritativeForHost,
-  isLoopbackName: () => isLoopbackName,
   isMixedScript: () => isMixedScript,
   isValidRecoveryMnemonic: () => isValidRecoveryMnemonic,
   normalizeHost: () => normalizeHost,
@@ -8313,7 +8301,7 @@ __export(src_exports, {
   xchachaSeal: () => xchachaSeal
 });
 var init_src2 = __esm({
-  "packages/crypto-core/src/index.ts"() {
+  "../vault3r-code-public/packages/crypto-core/src/index.ts"() {
     "use strict";
     init_encoding();
     init_primitives();
@@ -8328,10 +8316,10 @@ var init_src2 = __esm({
   }
 });
 
-// packages/vault-core/src/in-memory.ts
+// ../vault3r-code-public/packages/vault-core/src/in-memory.ts
 var PACK_VERSION, InMemoryKeystore, InMemoryStorage, StaticIdentityResolver, StaticRevocationChecker, AutoConsent;
 var init_in_memory = __esm({
-  "packages/vault-core/src/in-memory.ts"() {
+  "../vault3r-code-public/packages/vault-core/src/in-memory.ts"() {
     "use strict";
     init_src2();
     init_src();
@@ -8443,7 +8431,7 @@ var init_in_memory = __esm({
   }
 });
 
-// packages/vault-core/src/json-pointer.ts
+// ../vault3r-code-public/packages/vault-core/src/json-pointer.ts
 function parsePointer(pointer) {
   if (typeof pointer !== "string") throw VaultError.of("FieldOutOfScope", "pointer must be a string");
   if (utf8.encode(pointer).length > MAX_FIELD_PATH_LEN) throw VaultError.of("QuotaExceeded", "pointer too long");
@@ -8575,7 +8563,7 @@ function applyPatch(doc, ops) {
 }
 var MAX_TOKENS, utf8, FORBIDDEN_TOKENS;
 var init_json_pointer = __esm({
-  "packages/vault-core/src/json-pointer.ts"() {
+  "../vault3r-code-public/packages/vault-core/src/json-pointer.ts"() {
     "use strict";
     init_src();
     MAX_TOKENS = 64;
@@ -8584,7 +8572,7 @@ var init_json_pointer = __esm({
   }
 });
 
-// packages/vault-core/src/grants.ts
+// ../vault3r-code-public/packages/vault-core/src/grants.ts
 function pointerCovers(rulePath, path) {
   const ruleTokens = parsePointer(rulePath);
   const pathTokens = parsePointer(path);
@@ -8637,17 +8625,17 @@ function normalizeFields(fields) {
   return [...byPath.values()];
 }
 var init_grants = __esm({
-  "packages/vault-core/src/grants.ts"() {
+  "../vault3r-code-public/packages/vault-core/src/grants.ts"() {
     "use strict";
     init_src();
     init_json_pointer();
   }
 });
 
-// packages/vault-core/src/replay.ts
+// ../vault3r-code-public/packages/vault-core/src/replay.ts
 var ReplayGuard;
 var init_replay = __esm({
-  "packages/vault-core/src/replay.ts"() {
+  "../vault3r-code-public/packages/vault-core/src/replay.ts"() {
     "use strict";
     init_src();
     ReplayGuard = class {
@@ -8686,7 +8674,7 @@ var init_replay = __esm({
   }
 });
 
-// packages/vault-core/src/document-store.ts
+// ../vault3r-code-public/packages/vault-core/src/document-store.ts
 function docStorageId(storageKey) {
   return `doc:${storageKey}`;
 }
@@ -8703,7 +8691,7 @@ function etagToVersion(etag) {
 }
 var MANIFEST_KEY, MANIFEST_STORAGE_KEY, MANIFEST_AAD, OWNER_KEY, OWNER_DOMAIN, DocumentStore;
 var init_document_store = __esm({
-  "packages/vault-core/src/document-store.ts"() {
+  "../vault3r-code-public/packages/vault-core/src/document-store.ts"() {
     "use strict";
     init_src2();
     init_src();
@@ -8844,7 +8832,7 @@ var init_document_store = __esm({
   }
 });
 
-// packages/vault-core/src/identity-verify.ts
+// ../vault3r-code-public/packages/vault-core/src/identity-verify.ts
 async function verifyProposal(params, ctx) {
   let canonicalHost;
   try {
@@ -8937,17 +8925,17 @@ async function verifyProposal(params, ctx) {
   };
 }
 var init_identity_verify = __esm({
-  "packages/vault-core/src/identity-verify.ts"() {
+  "../vault3r-code-public/packages/vault-core/src/identity-verify.ts"() {
     "use strict";
     init_src2();
     init_src();
   }
 });
 
-// packages/vault-core/src/fetch-resolver.ts
+// ../vault3r-code-public/packages/vault-core/src/fetch-resolver.ts
 var MAX_RECORD_BYTES, FetchIdentityResolver;
 var init_fetch_resolver = __esm({
-  "packages/vault-core/src/fetch-resolver.ts"() {
+  "../vault3r-code-public/packages/vault-core/src/fetch-resolver.ts"() {
     "use strict";
     init_src2();
     MAX_RECORD_BYTES = 128 * 1024;
@@ -8987,10 +8975,10 @@ var init_fetch_resolver = __esm({
   }
 });
 
-// packages/vault-core/src/session.ts
+// ../vault3r-code-public/packages/vault-core/src/session.ts
 var SessionStore;
 var init_session = __esm({
-  "packages/vault-core/src/session.ts"() {
+  "../vault3r-code-public/packages/vault-core/src/session.ts"() {
     "use strict";
     SessionStore = class {
       sessions = /* @__PURE__ */ new Map();
@@ -9014,7 +9002,7 @@ var init_session = __esm({
   }
 });
 
-// packages/vault-core/src/engine.ts
+// ../vault3r-code-public/packages/vault-core/src/engine.ts
 function normalizeForeignPaths(paths) {
   const kept = [];
   for (const p of paths ?? []) {
@@ -9042,7 +9030,7 @@ function clampForeignToRequested(granted, requested) {
 }
 var VaultEngine;
 var init_engine = __esm({
-  "packages/vault-core/src/engine.ts"() {
+  "../vault3r-code-public/packages/vault-core/src/engine.ts"() {
     "use strict";
     init_src();
     init_src2();
@@ -9151,7 +9139,6 @@ var init_engine = __esm({
         const grantedMethods = decision.grantedMethods ?? requested.methods;
         const grantedFields = normalizeFields(decision.grantedFields ?? requested.fields);
         const writePolicy = decision.writePolicy ?? "ask-once-per-session";
-        const derived = deriveNamespace(verified.canonicalHost, verified.verification.granularity ?? "registrable-domain");
         const expiresAt = now + this.sessionTtlMs;
         const grantId = this.randomId();
         const grant = {
@@ -9176,7 +9163,9 @@ var init_engine = __esm({
         const session = {
           id: sessionId,
           namespace: verified.verification.namespace,
-          storageKey: derived.storageKey,
+          // From the namespace the verification derived, not a second derivation of
+          // its own: two derivations of one value are two chances to disagree.
+          storageKey: storageKeyForNamespace(verified.verification.namespace),
           grant,
           foreignReads: /* @__PURE__ */ new Map(),
           delegatedKeyPub: verified.delegatedKeyPub,
@@ -9519,8 +9508,7 @@ var init_engine = __esm({
       /** Trusted connect: derive namespace from the host-attested origin, take consent, mint a session. */
       async connectLocal(input) {
         const now = this.clock.now();
-        const granularity = input.granularity ?? "registrable-domain";
-        const derived = deriveOriginNamespace(input.origin, granularity);
+        const derived = deriveOriginNamespace(input.origin);
         const requestedMethods = [...new Set(input.requestedScopes.flatMap((s) => s.methods))];
         const requestedFields = normalizeFields(input.requestedScopes.flatMap((s) => s.fields));
         if (requestedMethods.length === 0) throw VaultError.of("UnsupportedMethod", "no method requested");
@@ -9530,7 +9518,10 @@ var init_engine = __esm({
           tier: "verified",
           namespace: derived.namespace,
           domain: input.origin,
-          granularity,
+          // Granularity is a relay concept: it says how much of a PROVEN domain the
+          // namespace keeps. Here the namespace is the origin itself, so there is
+          // nothing to choose.
+          granularity: null,
           identityKid: null,
           homographFlag: false,
           allowedMethods: requestedMethods
@@ -9617,10 +9608,6 @@ var init_engine = __esm({
        * Resolve a connect's declared cross-origin reads. THE single derivation site:
        * neither the host, nor the consent UI, nor the page ever turns an origin into
        * a namespace, so every rule `deriveOriginNamespace` enforces applies here too.
-       *
-       * Always derived at the default granularity, never `input.granularity`: the
-       * reader's choice governs where the READER's own partition lives and must not
-       * steer which partition its cross-origin reads point at.
        */
       resolveForeignRequests(scopes, ownNamespace) {
         const rules = scopes.flatMap((s) => s.foreign ?? []);
@@ -9778,13 +9765,13 @@ var init_engine = __esm({
   }
 });
 
-// packages/vault-core/src/node.ts
+// ../vault3r-code-public/packages/vault-core/src/node.ts
 function topicFromKey(key) {
   return toHex(sha2562(key));
 }
 var VaultNode;
 var init_node = __esm({
-  "packages/vault-core/src/node.ts"() {
+  "../vault3r-code-public/packages/vault-core/src/node.ts"() {
     "use strict";
     init_src();
     init_src2();
@@ -9876,7 +9863,7 @@ var init_node = __esm({
   }
 });
 
-// packages/vault-core/src/index.ts
+// ../vault3r-code-public/packages/vault-core/src/index.ts
 var src_exports2 = {};
 __export(src_exports2, {
   AutoConsent: () => AutoConsent,
@@ -9910,7 +9897,7 @@ __export(src_exports2, {
   withinDepth: () => withinDepth
 });
 var init_src3 = __esm({
-  "packages/vault-core/src/index.ts"() {
+  "../vault3r-code-public/packages/vault-core/src/index.ts"() {
     "use strict";
     init_adapters();
     init_in_memory();
@@ -9926,7 +9913,7 @@ var init_src3 = __esm({
   }
 });
 
-// ../freedom-browser/src/main/vault/vendor/_entry.cjs
+// src/main/vault/vendor/_entry.cjs
 module.exports = {
   vaultCore: (init_src3(), __toCommonJS(src_exports2)),
   cryptoCore: (init_src2(), __toCommonJS(src_exports))
