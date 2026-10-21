@@ -52,22 +52,24 @@ recorded in `LICENSE_AUDIT.md`:
 | `@noble/curves` | 1.9.7 | Ed25519, for the device identity the adapter interface requires |
 | `@scure/base` | 1.2.6 | base64url / hex encoding of sealed blobs |
 | `@scure/bip39` | 1.6.0 | reading the mnemonic the browser already holds |
-| `tldts` | 6.1.86 | the Public Suffix List, for the networked mode's authoritative-domain check. **Inert in this build** — see below |
 
-Five of the six are already in Freedom's npm tree at these same versions, as
-transitive dependencies of the wallet. `tldts` is not — it arrives only with
-this bundle, which is why it has its own line in `LICENSE_AUDIT.md`. Electron
-exposes no Public Suffix List API, so the data has to come from somewhere; a
-naive "last two labels" check would make `attacker.co.uk` authoritative for
-`victim.co.uk`.
+All five are already in Freedom's npm tree at these same versions, as
+transitive dependencies of the wallet, so this bundle adds no component the
+artifact did not already carry.
 
-**It is dead weight here, though.** That authoritativeness check serves the
-engine's networked mode, where a server proves a domain by serving a
-`.well-known` identity record. Freedom uses the browser mode instead: the main
-process reads the origin off the sender frame, and the namespace *is* that
-origin, so no suffix list is consulted. The PSL trie is still in the bundle
-(~8 KB of the file, more once gzipped out of the picture) because
-`VaultEngine` statically imports the verification path, which esbuild cannot
-tree-shake. Removing it means making that path an injected adapter instead of
-an import — a worthwhile follow-up in the engine, not a change to this
-directory.
+**What is deliberately absent.** The bundler builds from each engine package's
+`browser.ts` entry, not its index, so the bundle leaves out the engine's
+networked identity model — the proposal-verification pipeline, the
+`.well-known` resolver and the relay transport runtime — and the Public Suffix
+List (`tldts`, ~170 KB of trie data) that only that model consults. The
+networked mode needs it to decide whether an identity record's self-declared
+domain is authoritative for the host it came from; a naive "last two labels"
+check would make `attacker.co.uk` authoritative for `victim.co.uk`. Freedom
+uses the browser mode: the main process reads the origin off the sender frame,
+the namespace *is* that origin, and no suffix list is consulted.
+
+Do not widen the entry back to the package index to pick up some other export.
+`tldts` ships CommonJS without `sideEffects: false`, so esbuild cannot
+tree-shake it out of anything that stays reachable — the index re-exports the
+suffix-list half of namespace derivation, and importing it brings all 170 KB
+back. Add what is needed to the engine's `browser.ts` instead.
