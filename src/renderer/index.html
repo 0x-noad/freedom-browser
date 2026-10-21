@@ -1929,6 +1929,11 @@
                       <div id="vault-usage-text" class="vault-usage-text">—</div>
                     </div>
                     <div class="vault-actions">
+                      <!-- One slot, two buttons: an empty vault offers Import,
+                           a vault with data offers Export. Separate buttons
+                           rather than one relabelled, so neither the handler
+                           nor the styling has to be swapped at runtime. -->
+                      <button type="button" id="vault-import-btn" class="vault-btn secure hidden">Import vault</button>
                       <button type="button" id="vault-export-btn" class="vault-btn">Export vault</button>
                       <button type="button" id="vault-clear-btn" class="vault-btn danger">Clear all data</button>
                     </div>

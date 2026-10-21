@@ -19,7 +19,11 @@ jest.mock('electron', () => ({
     removeHandler: () => {},
   },
   nativeImage: { createFromBuffer: () => null },
+  dialog: { showOpenDialog: (...args) => mockOpenDialog(...args) },
 }));
+
+/** Swapped per test; the manager owns the picker, so this stands in for it. */
+let mockOpenDialog = async () => ({ canceled: true, filePaths: [] });
 
 jest.mock('../vault-timer', () => ({ resetVaultAutoLockTimer: jest.fn() }));
 
@@ -645,5 +649,88 @@ describe('setForeignReadEnabled', () => {
     expect(manager.setForeignReadEnabled('', OWNER_NS, false)).toEqual({ changed: false });
     expect(manager.setForeignReadEnabled(READER_NS, null, false)).toEqual({ changed: false });
     expect(perms.setForeignReadEnabled).not.toHaveBeenCalled();
+  });
+});
+
+describe('importFromFile: main owns the picker and the file', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  let manager;
+  let tmpDir;
+
+  beforeEach(() => {
+    jest.resetModules();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-import-'));
+    const { DataVaultManager } = require('./data-vault-manager');
+    manager = new DataVaultManager({
+      dataDir: tmpDir,
+      identityVault: { isUnlocked: () => true, getMnemonic: () => 'x', ensureUnlocked: async () => true },
+      promptConsent: async () => ({ approved: true }),
+    });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    mockOpenDialog = async () => ({ canceled: true, filePaths: [] });
+    jest.restoreAllMocks();
+  });
+
+  /** Write a file the picker will "choose". */
+  const pick = (contents) => {
+    const file = path.join(tmpDir, 'bundle.json');
+    fs.writeFileSync(file, contents);
+    mockOpenDialog = async () => ({ canceled: false, filePaths: [file] });
+    return file;
+  };
+
+  test('a cancelled picker imports nothing and does not reach importAll', async () => {
+    mockOpenDialog = async () => ({ canceled: true, filePaths: [] });
+    const spy = jest.spyOn(manager, 'importAll');
+
+    expect(await manager.importFromFile()).toEqual({ imported: false, canceled: true });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test('an empty selection is treated as a cancel, not as a path', async () => {
+    mockOpenDialog = async () => ({ canceled: false, filePaths: [] });
+    expect(await manager.importFromFile()).toEqual({ imported: false, canceled: true });
+  });
+
+  test('a chosen file is parsed in main and handed to importAll', async () => {
+    const file = pick(JSON.stringify({ format: 'vault3r-data-export/1', entries: { 'doc:a': 'eA==' } }));
+    const spy = jest.spyOn(manager, 'importAll').mockResolvedValue({ imported: 1, restoredGrants: 0 });
+
+    const result = await manager.importFromFile();
+
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ format: 'vault3r-data-export/1' }));
+    // `partitions` carries the count; `imported` stays the boolean the caller
+    // branches on, so a bundle of zero entries is still a successful import.
+    expect(result).toEqual({ imported: true, path: file, partitions: 1, restoredGrants: 0 });
+  });
+
+  test('a file that is not JSON is reported as such, not passed on', async () => {
+    pick('this is not a vault export');
+    const spy = jest.spyOn(manager, 'importAll');
+
+    await expect(manager.importFromFile()).rejects.toThrow(/not a vault export/i);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test('an unrecognized format is refused by importAll', async () => {
+    pick(JSON.stringify({ format: 'something-else', entries: {} }));
+    await expect(manager.importFromFile()).rejects.toThrow(/unrecognized export format/i);
+  });
+
+  test('the IPC handler takes no argument from the renderer', async () => {
+    const CH = require('./vault-ipc-channels');
+    const spy = jest.spyOn(manager, 'importFromFile').mockResolvedValue({ imported: false });
+    manager.register();
+
+    // A renderer passing a bundle cannot make the host import it: the handler
+    // ignores the payload and opens its own picker.
+    await ipcHandlers[CH.VAULT_IMPORT]({}, { format: 'vault3r-data-export/1', entries: {} });
+
+    expect(spy).toHaveBeenCalledWith();
   });
 });

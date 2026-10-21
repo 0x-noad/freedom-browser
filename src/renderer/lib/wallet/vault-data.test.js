@@ -252,6 +252,7 @@ const ELEMENT_IDS = [
   'vault-usage-text',
   'vault-usage-bar-fill',
   'vault-export-btn',
+  'vault-import-btn',
   'vault-clear-btn',
   'vault-detail-back',
   'vault-detail-site',
@@ -303,6 +304,7 @@ function setupDom() {
     deletePartition: jest.fn().mockResolvedValue({ deleted: true }),
     clearAll: jest.fn().mockResolvedValue({ cleared: true }),
     exportVault: jest.fn().mockResolvedValue({ saved: true }),
+    importVault: jest.fn().mockResolvedValue({ imported: true, restoredGrants: 2 }),
     onConsentRequest: jest.fn(),
     onConsentCancelled: jest.fn(),
     respondConsent: jest.fn(),
@@ -1668,5 +1670,95 @@ describe('Sites with data: the layout', () => {
 
   test('rows carry no drag affordance', () => {
     expect(css).not.toMatch(/vault-row-handle|\.dragging/);
+  });
+});
+
+describe('an empty vault offers Import instead of Export', () => {
+  beforeEach(setupDom);
+
+  const site = (host) => ({
+    namespace: `web:https://${host}`,
+    origin: `https://${host}`,
+    bytes: 1024,
+    fieldCount: 1,
+    connectedAt: 1,
+  });
+
+  async function render(parts) {
+    const { initVaultData } = require('./vault-data.js');
+    const api = initVaultData({});
+    vaultData.listPartitions.mockResolvedValue(parts);
+    vaultData.getUsage.mockResolvedValue({
+      unlocked: true,
+      totalBytes: parts.length ? 1024 : 0,
+      partitionCount: parts.length,
+    });
+    await api.refresh();
+    return api;
+  }
+
+  test('with no partitions: Import shown, Export hidden, Clear disabled', async () => {
+    await render([]);
+
+    expect(els.get('vault-import-btn').classList.contains('hidden')).toBe(false);
+    expect(els.get('vault-export-btn').classList.contains('hidden')).toBe(true);
+    expect(els.get('vault-clear-btn').disabled).toBe(true);
+  });
+
+  test('with a partition: Export shown, Import hidden, Clear enabled', async () => {
+    await render([site('shop.example')]);
+
+    expect(els.get('vault-export-btn').classList.contains('hidden')).toBe(false);
+    expect(els.get('vault-import-btn').classList.contains('hidden')).toBe(true);
+    expect(els.get('vault-clear-btn').disabled).toBe(false);
+  });
+
+  test('clearing everything flips the slot back to Import', async () => {
+    const api = await render([site('shop.example')]);
+    expect(els.get('vault-export-btn').classList.contains('hidden')).toBe(false);
+
+    // What Clear all data does, then the refresh it triggers.
+    vaultData.listPartitions.mockResolvedValue([]);
+    vaultData.getUsage.mockResolvedValue({ unlocked: true, totalBytes: 0, partitionCount: 0 });
+    await api.refresh();
+
+    expect(els.get('vault-import-btn').classList.contains('hidden')).toBe(false);
+    expect(els.get('vault-clear-btn').disabled).toBe(true);
+  });
+
+  test('Import asks main for the file and re-renders on success', async () => {
+    await render([]);
+    await els.get('vault-import-btn').fire('click');
+    await Promise.resolve();
+
+    expect(vaultData.importVault).toHaveBeenCalled();
+    // Main owns the picker, so the renderer passes nothing and reads no file.
+    expect(vaultData.importVault).toHaveBeenCalledWith();
+  });
+
+  test('a cancelled picker changes nothing', async () => {
+    const api = await render([]);
+    vaultData.importVault.mockResolvedValue({ imported: false, canceled: true });
+    const before = vaultData.listPartitions.mock.calls.length;
+
+    await els.get('vault-import-btn').fire('click');
+    await Promise.resolve();
+
+    expect(vaultData.listPartitions.mock.calls.length).toBe(before);
+    expect(api).toBeTruthy();
+  });
+
+  test('a failed import surfaces the reason and leaves the button usable', async () => {
+    await render([]);
+    const alerts = [];
+    global.window.alert = (m) => alerts.push(m);
+    vaultData.importVault.mockRejectedValue(new Error('could not open the exported permissions (wrong vault?)'));
+
+    await els.get('vault-import-btn').fire('click');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(alerts[0]).toContain('wrong vault?');
+    expect(els.get('vault-import-btn').disabled).toBe(false);
   });
 });

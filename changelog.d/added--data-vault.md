@@ -5,3 +5,4 @@
   - A site can publish part of its data under `/shared` and ask to read what another site published there — one approved pair at a time, and the consent sheet says on the writing site's own prompt that other sites can ask for it
   - A granted read can be switched off and back on from either site's page in the **Data** pane, without deleting anything
   - A locked vault shows an unlock prompt and nothing else: the list of sites you hold data for is as private as the data
+  - An empty vault offers **Import vault** in place of Export, so a restore is reachable right after setup or a Clear all

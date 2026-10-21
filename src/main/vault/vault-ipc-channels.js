@@ -19,9 +19,6 @@ module.exports = {
   // closed tab). Push-only, owner plane: the renderer answers nothing.
   VAULT_CONSENT_CANCEL: 'datavault:consent-cancel',
 
-  // Management (browser settings UI -> main).
-  VAULT_IMPORT: 'vault:import',
-
   // Owner-facing "Data" pane (trusted wallet UI only). Distinct `datavault:`
   // prefix so these can never be confused with the site-facing provider path.
   VAULT_LIST_PARTITIONS: 'datavault:list-partitions',
@@ -31,6 +28,10 @@ module.exports = {
   VAULT_DELETE_PARTITION: 'datavault:delete-partition',
   VAULT_CLEAR_ALL: 'datavault:clear-all',
   VAULT_EXPORT: 'datavault:export', // integration decision #5
+  // Import sits beside export on the OWNER prefix, not on `vault:`: it opens a
+  // file picker and writes sealed blobs plus the restored grant map, which is
+  // the Data pane's business and nothing a site may ask for.
+  VAULT_IMPORT: 'datavault:import',
   // Cross-origin published reads, seen from either end of one grant: which
   // sites this partition reads, and which sites read it. Removing one deletes
   // no data on either side, so it is not folded into VAULT_DELETE_PARTITION.

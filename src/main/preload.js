@@ -888,6 +888,8 @@ contextBridge.exposeInMainWorld('vaultData', {
   clearAll: () => ipcRenderer.invoke('datavault:clear-all'),
   /** { saved, path?, canceled? } — main shows the save dialog */
   exportVault: () => ipcRenderer.invoke('datavault:export'),
+  /** { imported, path, imported: n, restoredGrants } — main owns the file picker */
+  importVault: () => ipcRenderer.invoke('datavault:import'),
   /**
    * One partition's cross-origin read grants, from both ends.
    * { locked, reads: [{ ownerNamespace, ownerOrigin, paths, enabled }],
