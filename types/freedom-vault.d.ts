@@ -80,7 +80,12 @@ export interface FreedomVaultScope {
 export interface FreedomVaultConnectParams {
   requestedScopes: FreedomVaultScope[];
   appMetadata?: {
-    /** Shown on the consent sheet and the freedom://dapps tile. ≤ 128 chars. */
+    /**
+     * Shown on the `freedom://dapps` tile and used for the monogram fallback.
+     * NOT shown on the consent sheet: that names the origin the browser
+     * observed on the frame, and a page-supplied name above it would be the
+     * spoofable half. ≤ 128 chars.
+     */
     name?: string;
     /**
      * `data:` URI only — PNG, JPEG or WebP (SVG is rejected), declared MIME must
