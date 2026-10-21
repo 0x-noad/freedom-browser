@@ -52,7 +52,7 @@ recorded in `LICENSE_AUDIT.md`:
 | `@noble/curves` | 1.9.7 | Ed25519, for the device identity the adapter interface requires |
 | `@scure/base` | 1.2.6 | base64url / hex encoding of sealed blobs |
 | `@scure/bip39` | 1.6.0 | reading the mnemonic the browser already holds |
-| `tldts` | 6.1.86 | the Public Suffix List: eTLD+1 for host-granularity namespaces, and the authoritative-domain check |
+| `tldts` | 6.1.86 | the Public Suffix List, for the networked mode's authoritative-domain check. **Inert in this build** — see below |
 
 Five of the six are already in Freedom's npm tree at these same versions, as
 transitive dependencies of the wallet. `tldts` is not — it arrives only with
@@ -60,3 +60,14 @@ this bundle, which is why it has its own line in `LICENSE_AUDIT.md`. Electron
 exposes no Public Suffix List API, so the data has to come from somewhere; a
 naive "last two labels" check would make `attacker.co.uk` authoritative for
 `victim.co.uk`.
+
+**It is dead weight here, though.** That authoritativeness check serves the
+engine's networked mode, where a server proves a domain by serving a
+`.well-known` identity record. Freedom uses the browser mode instead: the main
+process reads the origin off the sender frame, and the namespace *is* that
+origin, so no suffix list is consulted. The PSL trie is still in the bundle
+(~8 KB of the file, more once gzipped out of the picture) because
+`VaultEngine` statically imports the verification path, which esbuild cannot
+tree-shake. Removing it means making that path an injected adapter instead of
+an import — a worthwhile follow-up in the engine, not a change to this
+directory.

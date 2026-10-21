@@ -38,9 +38,9 @@ jest.mock('electron', () => ({
 jest.mock('../vault-timer', () => ({ resetVaultAutoLockTimer: jest.fn() }));
 
 const OWNER_ORIGIN = 'http://owner.localhost:8799';
-const OWNER_NS = 'web:owner.localhost:8799';
+const OWNER_NS = 'web:http://owner.localhost:8799';
 const READER_ORIGIN = 'http://reader.localhost:8799';
-const READER_NS = 'web:reader.localhost:8799';
+const READER_NS = 'web:http://reader.localhost:8799';
 
 let tmpDir;
 let manager;
