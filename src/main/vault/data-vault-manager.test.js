@@ -591,7 +591,9 @@ describe('foreignGrantsFor', () => {
   test('tells the OWNER end the same thing, from the reader records', () => {
     const off = { ...foreignRead(), enabled: false };
     jest.spyOn(perms, 'getPermission').mockReturnValue(null);
-    jest.spyOn(perms, 'getAllPermissions').mockReturnValue([
+    // getAllRecords, not getAllPermissions: the owner's reader list is the one
+    // view that means readers rather than sites, so it sees every record.
+    jest.spyOn(perms, 'getAllRecords').mockReturnValue([
       { namespace: READER_NS, origin: 'https://reader.example', foreignReads: [off] },
       {
         namespace: 'web:second.example',

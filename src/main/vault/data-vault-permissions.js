@@ -170,6 +170,70 @@ function getPermission(namespace) {
 }
 
 /**
+ * Freedom Agent's reader identity.
+ *
+ * A reader in the same records as a site, so one grant model, one Data pane row
+ * and one checkbox cover it — but NOT a site: it owns no partition and holds no
+ * methods or fields. `deriveOriginNamespace` only ever mints `web:` namespaces,
+ * so no origin can resolve to this one and no page can claim to be the Agent.
+ */
+const AGENT_NAMESPACE = 'agent:freedom';
+
+/**
+ * Every record, the Agent's included. Only for code that means "readers".
+ *
+ * `getAllPermissions` below is the one callers want: it answers SITES, because
+ * all five of its vault call sites mean sites (the partition list, the launcher
+ * count and tiles, the usage total, Clear all data), and a reserved record
+ * surfacing as a site would show the Agent as a partition holding data it does
+ * not have. Opting in here is deliberate: a sixth site-shaped caller gets the
+ * safe answer by default.
+ */
+function getAllRecords() {
+  return Object.values(loadPermissions()).sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
+}
+
+/**
+ * Record that the user let the Agent read `paths` of one owner's published data.
+ *
+ * Merge-upserts, where `grantPermission` deliberately replaces: that function
+ * writes a whole consent decision, while this adds one owner to a list the user
+ * builds up over time, so approving a second site must not drop the first. A
+ * re-approval unions the paths and switches the entry back on — the user has
+ * just answered yes, which outranks an earlier no.
+ */
+function grantAgentRead(ownerNamespace, ownerOrigin, paths, now) {
+  const permissions = loadPermissions();
+  const previous = permissions[AGENT_NAMESPACE];
+  const foreignReads = (previous?.foreignReads || []).filter((e) => e.namespace !== ownerNamespace);
+  const held = (previous?.foreignReads || []).find((e) => e.namespace === ownerNamespace);
+  foreignReads.push({
+    namespace: ownerNamespace,
+    origin: ownerOrigin,
+    paths: [...new Set([...(held?.paths || []), ...paths])],
+    enabled: true,
+  });
+  permissions[AGENT_NAMESPACE] = {
+    namespace: AGENT_NAMESPACE,
+    origin: AGENT_NAMESPACE,
+    appMetadata: {},
+    icon: null,
+    // No partition of its own, so nothing to read or write: the Agent's whole
+    // grant is the cross-origin reads above.
+    methods: [],
+    fields: [],
+    foreignReads,
+    writePolicy: 'ask-once-per-session',
+    connectedAt: previous?.connectedAt ?? now,
+    lastUsed: now,
+  };
+  permissionsCache = permissions;
+  savePermissions();
+  console.log('[DataVaultPermissions] Granted the Agent a published read');
+  return permissions[AGENT_NAMESPACE];
+}
+
+/**
  * Persist the exact grant the user approved at the consent prompt.
  *
  * NOTE on `icon`: the tile icon a site supplied at connect is pinned HERE, next
@@ -280,8 +344,9 @@ function revokePermission(namespace) {
   return false;
 }
 
+/** Sites that hold a partition. See getAllRecords for why the Agent is not one. */
 function getAllPermissions() {
-  return Object.values(loadPermissions()).sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
+  return getAllRecords().filter((r) => r.namespace !== AGENT_NAMESPACE);
 }
 
 function updateLastUsed(namespace, now) {
@@ -301,9 +366,12 @@ function _resetCache() {
 }
 
 module.exports = {
+  AGENT_NAMESPACE,
   loadPermissions,
   getPermission,
   grantPermission,
+  grantAgentRead,
+  getAllRecords,
   revokePermission,
   removeForeignReadsTo,
   setForeignReadEnabled,

@@ -38,7 +38,15 @@ const { deriveOriginNamespace, storageKeyForNamespace } = require('./vendor/cryp
 // Imported rather than reimplemented: `covers()` below and the engine's own
 // authorization must agree on token-boundary pointer matching, and a second
 // hand-rolled copy of that rule is exactly what drifts.
-const { pointerCovers } = require('./vendor/vault-core');
+const {
+  pointerCovers,
+  // The engine's own predicates, not a second copy of the rules: whether a
+  // pointer is well-formed, whether it is under `/shared`, and whether a grant
+  // entry covers it must mean exactly what they mean for a site's own read.
+  parsePointer,
+  foreignReadAllows,
+  pointerGet,
+} = require('./vendor/vault-core');
 const CH = require('./vault-ipc-channels');
 const perms = require('./data-vault-permissions');
 const { DataVaultKeystore } = require('./data-vault-keystore');
@@ -50,6 +58,9 @@ const { resetVaultAutoLockTimer } = require('../vault-timer');
  *  data:, blob:) is rejected — the launcher must never become a way to navigate
  *  the browser somewhere a stored grant didn't come from. */
 const LAUNCHABLE_SCHEMES = new Set(['http', 'https', 'ipfs', 'ipns', 'bzz', 'swarm', 'ens', 'ar', 'rad', 'hyper']);
+
+/** Most pointers the Agent may ask for in one read. */
+const AGENT_MAX_PATHS = 32;
 
 const EXPORT_FORMAT = 'vault3r-data-export/2';
 /** Reserved key for vault-owned metadata; distinct from any site's namespace. */
@@ -901,13 +912,19 @@ class DataVaultManager {
     }));
 
     const readers = [];
-    for (const record of perms.getAllPermissions()) {
+    // getAllRecords, not getAllPermissions: this is the one view that means
+    // readers rather than sites, so it is where the Agent's row comes from.
+    for (const record of perms.getAllRecords()) {
       if (record.namespace === namespace) continue;
       for (const e of record.foreignReads || []) {
         if (e.namespace !== namespace) continue;
         readers.push({
           readerNamespace: record.namespace,
           readerOrigin: record.origin,
+          // The pane labels this row "Freedom Agent" instead of an origin. A
+          // flag, not a string test on the origin, so the name of the reserved
+          // namespace stays an implementation detail of the store.
+          isAgent: record.namespace === perms.AGENT_NAMESPACE,
           paths: e.paths || [],
           // The same flag the reader's own view toggles: one grant, one state,
           // whichever side of it the user is looking at.
@@ -931,6 +948,93 @@ class DataVaultManager {
     const changed = perms.setForeignReadEnabled(readerNamespace, ownerNamespace, enabled);
     if (changed) this._teardownNamespace(readerNamespace);
     return { changed, readerNamespace, ownerNamespace, enabled: !!enabled };
+  }
+
+  /**
+   * What Freedom Agent may read of one site's published data.
+   *
+   * The Agent is a reader, not a site. It holds no partition, cannot write
+   * anything, and reaches only what an owner put under `/shared` — and only for
+   * owners the user approved, through `foreignReadAllows`, the same predicate
+   * that bounds a site's cross-origin read.
+   *
+   * NOTHING here distinguishes "you have no data for that site" from "you never
+   * approved this" or "you turned it off": each answers `null` per path. That is
+   * what keeps the tool from being a way to enumerate which sites the user holds
+   * data for — the cross-origin history leak the vault exists to prevent.
+   *
+   * @param {string} origin the OWNER being read, resolved by the engine itself
+   * @param {string[]} paths JSON pointers under that owner's `/shared`
+   */
+  async agentGetShared(origin, paths) {
+    const requested = Array.isArray(paths) ? paths : [];
+    if (requested.length > AGENT_MAX_PATHS) {
+      throw rpcError(4400, `too many paths (max ${AGENT_MAX_PATHS})`);
+    }
+    // Never raises the unlock prompt, where a site's read may: the Agent can be
+    // working while the user is away, and a sheet nobody is there to read is not
+    // consent. Saying the vault is locked leaks nothing — it is already on
+    // screen, and it is the Agent's own user asking.
+    if (!this._keystore.isUnlocked()) return { locked: true, values: {} };
+
+    let namespace;
+    try {
+      namespace = deriveOriginNamespace(origin).namespace;
+    } catch {
+      throw rpcError(4400, 'unresolvable site');
+    }
+
+    const values = {};
+    for (const path of requested) {
+      try {
+        parsePointer(path);
+      } catch {
+        throw rpcError(4400, `not a JSON pointer: ${path}`);
+      }
+      values[path] = null;
+    }
+
+    const record = perms.getPermission(perms.AGENT_NAMESPACE);
+    const entry = activeForeignReads(record || {}).find((e) => e.namespace === namespace);
+    // `foreignReadAllows` is also what refuses a path outside `/shared`, so there
+    // is no separate check here to drift from it.
+    const readable = entry ? requested.filter((path) => foreignReadAllows(entry, path)) : [];
+    if (readable.length === 0) return { locked: false, values };
+
+    let doc;
+    try {
+      doc = await this._engine.adminReadPartition(storageKeyForNamespace(namespace));
+    } catch (err) {
+      // A blob that will not open is a state to report, not an exception to turn
+      // into "Error: …" in a transcript. Same handling as the Data pane's.
+      if (err && err.codeName === 'KeyInvalidated') {
+        const reason = (err.data && err.data.reason) || 'unknown';
+        return { locked: false, unreadable: { reason }, values };
+      }
+      throw err;
+    }
+    for (const path of readable) {
+      const got = pointerGet(doc, path);
+      values[path] = got === undefined ? null : got;
+    }
+    return { locked: false, values };
+  }
+
+  /**
+   * The sites the user let the Agent read, so it need not guess origins.
+   *
+   * Only what the user approved, which is why listing it is not the enumeration
+   * leak `agentGetShared` is careful to avoid: every entry here is a site the
+   * user named to the Agent themselves.
+   */
+  agentSharedSources() {
+    if (!this._keystore.isUnlocked()) return { locked: true, sources: [] };
+    const record = perms.getPermission(perms.AGENT_NAMESPACE);
+    const sources = activeForeignReads(record || {}).map((e) => ({
+      origin: e.origin,
+      paths: e.paths || [],
+    }));
+    return { locked: false, sources };
   }
 
   /** Owner view of one site's stored data. Requires the vault to be unlocked. */
