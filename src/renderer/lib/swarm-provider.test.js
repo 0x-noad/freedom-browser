@@ -15,6 +15,10 @@ jest.mock('./tabs.js', () => ({
 jest.mock('./wallet-ui.js', () => ({
   showSwarmConnect: jest.fn(),
   updateSwarmConnectionBanner: jest.fn(),
+  // dapp-provider schedules a 50ms timer that updates all three connection
+  // banners. It can land while this suite's mock of wallet-ui is in place, and
+  // a missing export there fails whatever suite happens to be running.
+  updateVaultConnectionBanner: jest.fn(),
   showSwarmPublishApproval: jest.fn(),
   showSwarmFeedApproval: jest.fn(),
   showSwarmMessagingApproval: jest.fn(),

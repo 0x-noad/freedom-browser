@@ -47,6 +47,7 @@ describe('dApp provider Agent wallet handoff', () => {
       showVaultUnlock: jest.fn(),
       updateSwarmConnectionBanner: jest.fn(),
       updateX402ConnectionBanner: jest.fn(),
+      updateVaultConnectionBanner: jest.fn(),
     }));
     jest.doMock('./wallet/dapp-tx.js', () => ({
       buildDappTxContext: jest.fn(),
@@ -103,6 +104,7 @@ describe('dApp provider Agent wallet handoff', () => {
       showVaultUnlock: jest.fn(),
       updateSwarmConnectionBanner: jest.fn(),
       updateX402ConnectionBanner: jest.fn(),
+      updateVaultConnectionBanner: jest.fn(),
     }));
     jest.doMock('./wallet/dapp-tx.js', () => ({
       buildDappTxContext: jest.fn(),
@@ -242,6 +244,7 @@ const loadProvider = async (options = {}) => {
     showVaultUnlock: jest.fn(),
     updateSwarmConnectionBanner: jest.fn(),
     updateX402ConnectionBanner: jest.fn(),
+    updateVaultConnectionBanner: jest.fn(),
   };
   jest.doMock('./wallet-ui.js', () => walletUi);
   jest.doMock('./wallet/dapp-tx.js', () => ({
