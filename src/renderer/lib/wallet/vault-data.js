@@ -465,14 +465,16 @@ export function initVaultData(opts = {}) {
    * answers from stored state on every render, so what it shows is what the
    * grant says rather than what was clicked.
    */
-  function permissionItem(namespace, enabled, direction, onToggle) {
+  function permissionItem(namespace, enabled, direction, onToggle, label) {
     const row = document.createElement('div');
     row.className = `vault-perm ${direction}`;
 
     const ns = document.createElement('span');
     ns.className = 'vault-perm-ns';
-    ns.textContent = namespace;
-    ns.title = namespace;
+    // Every other row names a site, so the namespace IS the label. The Agent is
+    // not a site and has no origin to show, so it passes its own name.
+    ns.textContent = label || namespace;
+    ns.title = label || namespace;
 
     const tog = document.createElement('label');
     tog.className = 'vault-perm-tog';
@@ -506,6 +508,32 @@ export function initVaultData(opts = {}) {
     if (permsHeader) permsHeader.classList.toggle('hidden', reads.length + readers.length === 0);
   }
 
+  /**
+   * Freedom Agent's row for one partition: at most one, and only when it is a
+   * question the user can answer.
+   *
+   * Offered whenever AI is on, held grant or not, because this row is the only
+   * place the read is switched on. When AI is off there is no Agent to read
+   * anything, so the row appears only if a grant is already held — which keeps
+   * one made earlier visible and revocable instead of surviving out of sight.
+   */
+  function agentRow(namespace, grants) {
+    const held = (grants.readers || []).find((e) => e.isAgent);
+    if (!grants.agentAvailable && !held) return [];
+    return [
+      permissionItem(
+        'agent',
+        Boolean(held) && held.enabled !== false,
+        'in',
+        async (on) => {
+          await window.vaultData.setAgentReadEnabled(namespace, on);
+          renderForeignGrants(namespace);
+        },
+        'Freedom Agent'
+      ),
+    ];
+  }
+
   /** Fill (or hide) both cross-origin directions for one partition. */
   async function renderForeignGrants(namespace) {
     if (!detailReads || !detailReaders) return;
@@ -531,11 +559,20 @@ export function initVaultData(opts = {}) {
       // The owner's end of the same grant, so the same item and the same
       // state: a read the reader switched off reads as off here too, rather
       // than telling the owner they are being read when they are not.
-      (grants.readers || []).map((e) =>
-        permissionItem(e.readerNamespace, e.enabled !== false, 'in', async (on) => {
-          await window.vaultData.setForeignReadEnabled(e.readerNamespace, namespace, on);
-          renderForeignGrants(namespace);
-        })
+      //
+      // The Agent reads this partition through a grant of exactly this kind, so
+      // it arrives in this list — but it is not a site, it has no origin to
+      // name, and its row is the only way to switch it ON, so it is lifted out
+      // and rendered by agentRow below.
+      agentRow(namespace, grants).concat(
+        (grants.readers || [])
+          .filter((e) => !e.isAgent)
+          .map((e) =>
+            permissionItem(e.readerNamespace, e.enabled !== false, 'in', async (on) => {
+              await window.vaultData.setForeignReadEnabled(e.readerNamespace, namespace, on);
+              renderForeignGrants(namespace);
+            })
+          )
       )
     );
   }

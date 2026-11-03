@@ -59,6 +59,9 @@ const { resetVaultAutoLockTimer } = require('../vault-timer');
  *  the browser somewhere a stored grant didn't come from. */
 const LAUNCHABLE_SCHEMES = new Set(['http', 'https', 'ipfs', 'ipns', 'bzz', 'swarm', 'ens', 'ar', 'rad', 'hyper']);
 
+/** The published subtree, and the only thing the Agent is ever granted. */
+const SHARED_ROOT = '/shared';
+
 /** Most pointers the Agent may ask for in one read. */
 const AGENT_MAX_PATHS = 32;
 
@@ -150,9 +153,15 @@ class DataVaultManager {
    *   an answer could only grant a session nobody holds.
    * @param {() => number} [deps.now]  Injectable clock (tests).
    */
-  constructor({ dataDir, identityVault, promptConsent, cancelConsent, openUrl, isHomeFrame, nativeImage, onPartitionChanged, now }) {
+  constructor({ dataDir, identityVault, promptConsent, cancelConsent, openUrl, isHomeFrame, nativeImage, onPartitionChanged, now, isAgentEnabled }) {
     this._now = now || (() => Date.now());
     this._promptConsent = promptConsent;
+    // Injected rather than read here: `loadSettings()` applies the native theme
+    // on the way past, and the vault has no business triggering that. The host
+    // supplies the read (register-data-vault.js), as it does for every other
+    // browser fact the manager needs. Absent means no Agent, which is also what
+    // a Freedom without AI switched on means.
+    this._isAgentEnabled = typeof isAgentEnabled === 'function' ? isAgentEnabled : () => false;
     // Takes a sheet off screen when the page that asked for it is gone.
     // Optional: without it an abandoned prompt still settles, it just lingers.
     this._cancelConsent = typeof cancelConsent === 'function' ? cancelConsent : null;
@@ -213,6 +222,9 @@ class DataVaultManager {
     ipcMain.handle(CH.VAULT_EXPORT, () => this.exportToFile());
     ipcMain.handle(CH.VAULT_IMPORT, () => this.importFromFile());
     ipcMain.handle(CH.VAULT_FOREIGN_GRANTS, (_e, namespace) => this.foreignGrantsFor(namespace));
+    ipcMain.handle(CH.VAULT_SET_AGENT_READ_ENABLED, (_e, { namespace, enabled } = {}) =>
+      this.setAgentReadEnabled(namespace, enabled)
+    );
     ipcMain.handle(CH.VAULT_SET_FOREIGN_READ_ENABLED, (_e, args) =>
       this.setForeignReadEnabled(
         args && args.readerNamespace,
@@ -932,7 +944,44 @@ class DataVaultManager {
         });
       }
     }
-    return { locked: false, reads, readers };
+    // Whether to offer the Agent control for this partition at all. With AI
+    // switched off — the default — the Agent cannot run, and a control for a
+    // reader that does not exist is a question the user cannot answer.
+    // Existing grants still render, so one made before AI was turned off stays
+    // visible and revocable rather than quietly surviving out of sight.
+    const agentAvailable = this._isAgentEnabled() === true;
+    return { locked: false, reads, readers, agentAvailable };
+  }
+
+  /**
+   * Switch Freedom Agent's read of ONE partition's published data on or off.
+   *
+   * The owner plane is the only place this can be switched on: the Agent has no
+   * way to ask for itself, by design — a tool that could raise its own consent
+   * sheet could raise it repeatedly until someone clicked through.
+   *
+   * On always grants exactly `/shared`, never a wider or narrower slice. The
+   * user is answering one question — may the Agent see what this site
+   * published — and a path picker would make them answer a different, harder
+   * one. Off keeps the entry, like the reader checkbox does, so the state is
+   * recoverable rather than re-granted from nothing.
+   */
+  setAgentReadEnabled(ownerNamespace, enabled) {
+    if (!ownerNamespace) return { changed: false };
+    const owner = perms.getPermission(ownerNamespace);
+    // No record means no partition the user has approved anything for, so there
+    // is nothing to grant a read of.
+    if (!owner) return { changed: false };
+
+    const held = (perms.getPermission(perms.AGENT_NAMESPACE)?.foreignReads || []).find(
+      (e) => e.namespace === ownerNamespace
+    );
+    if (enabled && !held) {
+      perms.grantAgentRead(ownerNamespace, owner.origin, [SHARED_ROOT], this._now());
+      return { changed: true, ownerNamespace, enabled: true };
+    }
+    const changed = perms.setForeignReadEnabled(perms.AGENT_NAMESPACE, ownerNamespace, !!enabled);
+    return { changed, ownerNamespace, enabled: !!enabled };
   }
 
   /**

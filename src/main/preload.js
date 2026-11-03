@@ -1173,6 +1173,14 @@ contextBridge.exposeInMainWorld('vaultData', {
       ownerNamespace,
       enabled,
     }),
+  /**
+   * { changed, ownerNamespace, enabled } — let Freedom Agent read what this
+   * partition published, or stop it. Switching on also creates the grant (at
+   * `/shared`, always): the Agent cannot ask for itself, so this is the only
+   * place it is granted.
+   */
+  setAgentReadEnabled: (namespace, enabled) =>
+    ipcRenderer.invoke('datavault:set-agent-read-enabled', { namespace, enabled }),
 
   // Consent flow — a site is asking for access. Main pushes a request; the
   // "Data" pane renders per-field toggles and responds with the user's decision.

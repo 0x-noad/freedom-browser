@@ -6,3 +6,4 @@
   - A granted read can be switched off and back on from either site's page in the **Data** pane, without deleting anything
   - A locked vault shows an unlock prompt and nothing else: the list of sites you hold data for is as private as the data
   - An empty vault offers **Import vault** in place of Export, so a restore is reachable right after setup or a Clear all
+  - Freedom Agent can be allowed to read what one site published under `/shared`, per site, from that site's page in the **Data** pane — never the rest of a partition, never to write, and switched off the same way any other read is

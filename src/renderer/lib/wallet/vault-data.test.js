@@ -312,6 +312,7 @@ function setupDom() {
     onPartitionChanged: jest.fn(),
     foreignGrantsFor: jest.fn().mockResolvedValue({ locked: false, reads: [], readers: [] }),
     setForeignReadEnabled: jest.fn().mockResolvedValue({ changed: true }),
+    setAgentReadEnabled: jest.fn().mockResolvedValue({ changed: true }),
   };
   global.window = { vaultData, confirm: () => true, electronAPI: {} };
 }
@@ -1760,5 +1761,100 @@ describe('an empty vault offers Import instead of Export', () => {
 
     expect(alerts[0]).toContain('wrong vault?');
     expect(els.get('vault-import-btn').disabled).toBe(false);
+  });
+});
+
+describe('Freedom Agent’s row', () => {
+  beforeEach(setupDom);
+
+  const partition = {
+    namespace: 'web:https://site.example',
+    origin: 'https://site.example',
+    bytes: 10,
+    lastUsed: 1,
+  };
+
+  /** Open the detail view and hand back the rows in the readers group. */
+  async function openWith(grants) {
+    vaultData.foreignGrantsFor.mockResolvedValue({ locked: false, reads: [], readers: [], ...grants });
+    await openDetail(partition);
+    await Promise.resolve();
+    await Promise.resolve();
+    return els.get('vault-detail-readers').children;
+  }
+
+  const agentReader = (enabled = true) => ({
+    readerNamespace: 'agent:freedom',
+    readerOrigin: 'agent:freedom',
+    isAgent: true,
+    paths: ['/shared'],
+    enabled,
+  });
+
+  test('is offered whenever AI is on, with no grant held yet', async () => {
+    const rows = await openWith({ agentAvailable: true });
+
+    expect(rows).toHaveLength(1);
+    // Named, not addressed: the Agent has no origin, and `agent:freedom` is an
+    // implementation detail of the store.
+    expect(rows[0].children[0].textContent).toBe('Freedom Agent');
+    expect(rows[0].children[1].children[1].checked).toBe(false);
+  });
+
+  test('is not offered when AI is off and nothing was ever granted', async () => {
+    const rows = await openWith({ agentAvailable: false });
+
+    expect(rows).toHaveLength(0);
+    expect(els.get('vault-detail-readers-group').classList.contains('hidden')).toBe(true);
+  });
+
+  test('a grant made earlier still shows with AI off, so it stays revocable', async () => {
+    const rows = await openWith({ agentAvailable: false, readers: [agentReader()] });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].children[1].children[1].checked).toBe(true);
+  });
+
+  test('reads as on when the grant is held and enabled', async () => {
+    const rows = await openWith({ agentAvailable: true, readers: [agentReader()] });
+
+    expect(rows[0].children[1].children[1].checked).toBe(true);
+  });
+
+  test('reads as off when the grant is held but switched off', async () => {
+    const rows = await openWith({ agentAvailable: true, readers: [agentReader(false)] });
+
+    expect(rows[0].children[1].children[1].checked).toBe(false);
+  });
+
+  test('ticking it switches the read on through its own channel', async () => {
+    const rows = await openWith({ agentAvailable: true });
+
+    const box = rows[0].children[1].children[1];
+    box.checked = true; // the click the user makes, before the event fires
+    await box.fire('change');
+
+    expect(vaultData.setAgentReadEnabled).toHaveBeenCalledWith(partition.namespace, true);
+    // Never the site-to-site channel: the Agent is not a site, and that one
+    // cannot create a grant.
+    expect(vaultData.setForeignReadEnabled).not.toHaveBeenCalled();
+  });
+
+  test('appears once, not also as a site that reads this partition', async () => {
+    const rows = await openWith({
+      agentAvailable: true,
+      readers: [
+        agentReader(),
+        {
+          readerNamespace: 'web:https://b.example',
+          readerOrigin: 'https://b.example',
+          paths: ['/shared'],
+          enabled: true,
+        },
+      ],
+    });
+
+    const labels = Array.from(rows).map((r) => r.children[0].textContent);
+    expect(labels).toEqual(['Freedom Agent', 'web:https://b.example']);
   });
 });

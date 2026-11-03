@@ -54,11 +54,12 @@ async function call(event, method, params = {}) {
   return reply.result;
 }
 
-function build({ unlocked = true } = {}) {
+function build({ unlocked = true, agentEnabled = true } = {}) {
   const { DataVaultManager } = require('./data-vault-manager');
   ensureUnlocked = jest.fn(async () => unlocked);
   return new DataVaultManager({
     dataDir: tmpDir,
+    isAgentEnabled: () => agentEnabled,
     identityVault: {
       isUnlocked: () => unlocked,
       getMnemonic: () => 'test test test test test test test test test test test junk',
@@ -331,5 +332,81 @@ describe('deleting data takes the Agent’s reach with it', () => {
     expect(manager.agentSharedSources().sources).toEqual([]);
     // The record may remain; what must not remain is a grant to anything.
     expect(await manager.listPartitions()).toEqual([]);
+  });
+});
+
+describe('the owner plane is where the read is switched on', () => {
+  test('switching it on grants exactly /shared, and nothing wider', async () => {
+    await ownerWrites({ '/shared/ok': 'yes', '/private/secret': 'no' });
+
+    expect(manager.setAgentReadEnabled(OWNER_NS, true)).toMatchObject({
+      changed: true,
+      enabled: true,
+    });
+
+    expect(manager.agentSharedSources().sources).toEqual([
+      { origin: OWNER_ORIGIN, paths: ['/shared'] },
+    ]);
+    const res = await manager.agentGetShared(OWNER_ORIGIN, ['/shared/ok', '/private/secret']);
+    expect(res.values).toEqual({ '/shared/ok': 'yes', '/private/secret': null });
+  });
+
+  test('switching it off keeps the entry, so it can be switched back on', async () => {
+    await ownerWrites({ '/shared/ok': 'yes' });
+    manager.setAgentReadEnabled(OWNER_NS, true);
+
+    manager.setAgentReadEnabled(OWNER_NS, false);
+    expect((await manager.agentGetShared(OWNER_ORIGIN, ['/shared/ok'])).values).toEqual({
+      '/shared/ok': null,
+    });
+    const held = perms.getPermission(perms.AGENT_NAMESPACE).foreignReads;
+    expect(held).toEqual([
+      { namespace: OWNER_NS, origin: OWNER_ORIGIN, paths: ['/shared'], enabled: false },
+    ]);
+
+    manager.setAgentReadEnabled(OWNER_NS, true);
+    expect((await manager.agentGetShared(OWNER_ORIGIN, ['/shared/ok'])).values).toEqual({
+      '/shared/ok': 'yes',
+    });
+  });
+
+  test('a site with no record of its own cannot be granted', () => {
+    expect(manager.setAgentReadEnabled('web:never.visited', true)).toEqual({ changed: false });
+    expect(manager.agentSharedSources().sources).toEqual([]);
+  });
+
+  test('a missing namespace is refused rather than granted to nothing', () => {
+    expect(manager.setAgentReadEnabled(undefined, true)).toEqual({ changed: false });
+  });
+});
+
+describe('the pane is told whether to offer the control', () => {
+  test('available when AI is on', async () => {
+    await ownerWrites({ '/shared/ok': 'yes' });
+
+    expect(manager.foreignGrantsFor(OWNER_NS).agentAvailable).toBe(true);
+  });
+
+  test('not available when AI is off, so the pane asks nothing it cannot answer', async () => {
+    await ownerWrites({ '/shared/ok': 'yes' });
+    // A second host over the same store: only the flag differs.
+    manager = build({ agentEnabled: false });
+
+    expect(manager.foreignGrantsFor(OWNER_NS).agentAvailable).toBe(false);
+  });
+
+  test('a host that supplies no reader means no Agent', async () => {
+    const { DataVaultManager } = require('./data-vault-manager');
+    const bare = new DataVaultManager({
+      dataDir: tmpDir,
+      identityVault: {
+        isUnlocked: () => true,
+        getMnemonic: () => 'test test test test test test test test test test test junk',
+        ensureUnlocked: async () => true,
+      },
+      promptConsent: async () => ({ approved: false }),
+    });
+
+    expect(bare.foreignGrantsFor(OWNER_NS).agentAvailable).toBe(false);
   });
 });

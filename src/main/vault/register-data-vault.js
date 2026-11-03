@@ -10,6 +10,7 @@ const { app, ipcMain, dialog, nativeImage, BrowserWindow } = require('electron')
 const identity = require('../identity/vault');
 const { DataVaultManager } = require('./data-vault-manager');
 const VAULT_INJECT_SOURCE = require('./vault-provider-inject');
+const { loadSettings } = require('../settings-store');
 
 /** The internal page allowed to reach the owner-plane home API. */
 const HOME_PAGE_FILE = '/pages/dapps.html';
@@ -199,6 +200,9 @@ function registerDataVault() {
       ensureUnlocked: requestUnlockFromUi,
     },
     promptConsent,
+    // Whether Freedom Agent exists to be granted anything. Read at call time,
+    // not at startup: AI can be switched on and off while the browser runs.
+    isAgentEnabled: () => loadSettings()?.enableAi === true,
     cancelConsent,
     // Tiles pass a namespace; main resolved it to the origin it observed itself.
     openUrl: (url) => {

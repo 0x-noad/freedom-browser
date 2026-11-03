@@ -40,6 +40,13 @@ module.exports = {
   // checkbox is the only control, and it is re-tickable, so there is no
   // separate "revoke" channel.
   VAULT_SET_FOREIGN_READ_ENABLED: 'datavault:set-foreign-read-enabled',
+  // Freedom Agent's read of one partition's published data, from the owner's
+  // own detail view. Separate from the channel above because this one also
+  // CREATES the grant: the Agent never asks for itself, so the owner plane is
+  // the only place it can be switched on. Chrome-only, like its neighbours —
+  // reached from `src/main/preload.js`, never the webview preload, so
+  // `ipc-sender-policy.js` refuses it from every tab by default.
+  VAULT_SET_AGENT_READ_ENABLED: 'datavault:set-agent-read-enabled',
 
   // Vault home page (`vault://home`) — the dApp launcher. Same owner-plane trust
   // level as the `datavault:*` channels above: wired ONLY to the internal page's
