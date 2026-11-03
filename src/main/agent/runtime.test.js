@@ -146,6 +146,7 @@ describe('Freedom agent runtime', () => {
       controller: {
         setWalletController: jest.fn(),
         setWalletTransferController: jest.fn(),
+        setVaultController: jest.fn(),
         setNodeController: jest.fn(),
         setNodeRequestController: jest.fn(),
         setNodeLifecycleController: jest.fn(),

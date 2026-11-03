@@ -29,6 +29,8 @@ class AutomationController {
     if (options.walletTransferController) {
       this.setWalletTransferController(options.walletTransferController);
     }
+    this.vaultController = null;
+    if (options.vaultController) this.setVaultController(options.vaultController);
     this.nodeController = null;
     if (options.nodeController) this.setNodeController(options.nodeController);
     this.nodeRequestController = null;
@@ -93,6 +95,21 @@ class AutomationController {
       throw new TypeError('Automation wallet transfer controller requires transfer()');
     }
     this.walletTransferController = walletTransferController;
+  }
+
+  setVaultController(vaultController) {
+    if (vaultController === null) {
+      this.vaultController = null;
+      return;
+    }
+    if (
+      !vaultController ||
+      typeof vaultController.readShared !== 'function' ||
+      typeof vaultController.listShared !== 'function'
+    ) {
+      throw new TypeError('Automation vault controller requires readShared() and listShared()');
+    }
+    this.vaultController = vaultController;
   }
 
   setNodeController(nodeController) {
@@ -460,6 +477,10 @@ class AutomationController {
           requestApproval: execution?.requestApproval,
           signal: execution?.signal,
         });
+      case OPERATIONS.VAULT_LIST_SHARED:
+        return this.#requireVaultController().listShared();
+      case OPERATIONS.VAULT_READ_SHARED:
+        return this.#requireVaultController().readShared(input);
       case OPERATIONS.NODE_STATUS:
         return this.#requireNodeController().status();
       case OPERATIONS.NODE_REQUEST:
@@ -555,6 +576,16 @@ class AutomationController {
       );
     }
     return this.uploadController;
+  }
+
+  #requireVaultController() {
+    if (!this.vaultController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'The data vault is unavailable in this runtime'
+      );
+    }
+    return this.vaultController;
   }
 
   #requireWalletTransferController() {

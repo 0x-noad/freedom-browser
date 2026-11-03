@@ -24,6 +24,8 @@ const OPERATIONS = Object.freeze({
   DOWNLOAD: 'browser_download',
   WALLET_ACTION: 'browser_wallet_action',
   WALLET_TRANSFER: 'wallet_transfer',
+  VAULT_LIST_SHARED: 'vault_list_shared',
+  VAULT_READ_SHARED: 'vault_read_shared',
   NODE_STATUS: 'node_status',
   NODE_REQUEST: 'node_request',
   NODE_OPERATION_STATUS: 'node_operation_status',

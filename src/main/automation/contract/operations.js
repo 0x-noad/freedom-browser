@@ -76,6 +76,8 @@ const PRESS_KEYS = Object.freeze([
 const PRESS_KEY_SET = new Set(PRESS_KEYS);
 const DIAGNOSTIC_SERVICE_SET = new Set(DIAGNOSTIC_SERVICES);
 const NODE_REQUEST_METHODS = Object.freeze(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
+/** Pointers one vault read may name. The vault enforces its own bound too. */
+const MAX_VAULT_READ_PATHS = 32;
 const NODE_REQUEST_METHOD_SET = new Set(NODE_REQUEST_METHODS);
 const NODE_REQUEST_SERVICE_SET = new Set(NODE_REQUEST_SERVICES);
 const NODE_LIFECYCLE_SERVICE_SET = new Set(NODE_LIFECYCLE_SERVICES);
@@ -680,10 +682,37 @@ function validateOperationInput(operation, rawInput) {
     }
   }
 
+  if (operation === OPERATIONS.VAULT_READ_SHARED) {
+    // The owner being read. Left as the caller wrote it: the vault resolves an
+    // origin to a partition itself, and normalizing here would launder one it
+    // would otherwise refuse.
+    normalized.origin = requireString(input.origin, 'origin').trim();
+    if (!Array.isArray(input.paths) || input.paths.length === 0) {
+      throw invalidArgument('paths must be a non-empty array of JSON pointers', {
+        field: 'paths',
+      });
+    }
+    if (input.paths.length > MAX_VAULT_READ_PATHS) {
+      throw invalidArgument(`paths must name at most ${MAX_VAULT_READ_PATHS} pointers`, {
+        field: 'paths',
+      });
+    }
+    normalized.paths = input.paths.map((path, index) => {
+      const pointer = requireString(path, `paths[${index}]`);
+      if (!pointer.startsWith('/')) {
+        throw invalidArgument('Each path must be a JSON pointer beginning with "/"', {
+          field: `paths[${index}]`,
+        });
+      }
+      return pointer;
+    });
+  }
+
   return normalized;
 }
 
 module.exports = {
+  MAX_VAULT_READ_PATHS,
   DEFAULT_DIAGNOSTIC_MAX_BYTES,
   DEFAULT_DIAGNOSTIC_MAX_LINES,
   DEFAULT_WAIT_TIMEOUT_MS,

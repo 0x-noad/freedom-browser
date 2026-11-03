@@ -32,6 +32,8 @@ const { LocalDictation } = require('./dictation-local');
 const { registerDictationIpc } = require('./dictation-ipc');
 const { DomainService } = require('../domains/service');
 const { DomainOperationStore } = require('../domains/operation-store');
+const { VaultAgentController } = require('../vault/vault-agent-controller');
+const { getDataVaultManager } = require('../vault/register-data-vault');
 
 function createFreedomAgentRuntime(options = {}) {
   let featureController = new AbortController();
@@ -145,6 +147,13 @@ function createFreedomAgentRuntime(options = {}) {
     log.warn('[Domains] Domain operations are unavailable; the saved journal was not changed');
   }
   options.controller.setWalletTransferController(walletController);
+  // Reads of what a site published into the data vault, for the partitions the
+  // user switched on in the Data pane. The controller reads the live manager per
+  // call, so a vault that is not registered in this build simply reports the
+  // capability unavailable.
+  options.controller.setVaultController(
+    new VaultAgentController({ getManager: getDataVaultManager })
+  );
   options.controller.setNodeController(nodeController);
   options.controller.setNodeRequestController(nodeRequestController);
   options.controller.setNodeLifecycleController(nodeLifecycleController);
@@ -243,6 +252,7 @@ function createFreedomAgentRuntime(options = {}) {
       nodeOperationStore.close();
       workspaceStore.close();
       options.controller.setWalletTransferController(null);
+      options.controller.setVaultController(null);
       options.controller.setNodeController(null);
       options.controller.setNodeRequestController(null);
       options.controller.setNodeLifecycleController(null);

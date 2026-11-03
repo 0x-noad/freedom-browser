@@ -455,6 +455,25 @@ un-copy it — revoking stops future reads, not past ones.
 Treat `/shared` as published. If you would not put it on a page, do not put it
 there.
 
+### Freedom Agent can be one of those readers
+
+If the user switches it on, Freedom's own AI agent can read what you published
+under `/shared`, for your site specifically. It is a reader like any other and
+the same rules hold: only `/shared`, never anything else in the partition, and
+never a write — there is no operation that would let it change, publish or
+grant anything. Nothing you do at connect asks for this or opts out of it: the
+user switches it on per site in the **Data** pane, where it sits beside the
+sites that read you, with the same checkbox.
+
+You cannot detect it. An Agent read raises no `change` event, does not appear
+in `getPermissions()`, and there is no flag that says a read came from it
+rather than from a site. Do not try to behave differently for it.
+
+What follows is just the section above: the Agent holds a copy of whatever it
+read, and it may put that in a conversation with a model provider the user
+chose. That is one more reason `/shared` is the published subtree and nothing
+sensitive belongs in it.
+
 ### Locking
 
 The vault auto-locks after 15 minutes idle. That is the browser's current

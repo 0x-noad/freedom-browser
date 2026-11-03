@@ -182,6 +182,20 @@ function registerConsentBridge() {
   });
 }
 
+/**
+ * The manager this process registered, for code that cannot be handed it.
+ *
+ * `registerDataVault` returns the manager and `src/main/index.js` has no use
+ * for it, so the Agent's controller — built much later, by the AI runtime —
+ * reads it from here instead of threading a handle through startup. Null until
+ * the vault registers, which is also what a build without it looks like.
+ */
+let activeManager = null;
+
+function getDataVaultManager() {
+  return activeManager;
+}
+
 function registerDataVault() {
   // Serve the provider source to webview preloads (mirrors the ethereum inject).
   ipcMain.on('internal:get-vault-inject-source', (event) => {
@@ -221,7 +235,8 @@ function registerDataVault() {
   });
 
   manager.register();
+  activeManager = manager;
   return manager;
 }
 
-module.exports = { registerDataVault, isHomeFrame, HOME_PAGE_FILE };
+module.exports = { registerDataVault, getDataVaultManager, isHomeFrame, HOME_PAGE_FILE };

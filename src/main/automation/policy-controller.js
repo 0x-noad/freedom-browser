@@ -28,6 +28,10 @@ const OPERATION_CLASSES = Object.freeze({
   [OPERATIONS.DOWNLOAD]: 'transfer',
   [OPERATIONS.WALLET_ACTION]: 'interact',
   [OPERATIONS.WALLET_TRANSFER]: 'privileged',
+  // Reads of data the user already approved, with no write counterpart in the
+  // operation set at all.
+  [OPERATIONS.VAULT_LIST_SHARED]: 'observe',
+  [OPERATIONS.VAULT_READ_SHARED]: 'observe',
   [OPERATIONS.NODE_STATUS]: 'observe',
   [OPERATIONS.NODE_REQUEST]: 'privileged',
   [OPERATIONS.NODE_OPERATION_STATUS]: 'observe',
