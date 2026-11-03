@@ -210,6 +210,16 @@
   color: var(--text);
   word-break: break-all;
 }
+/* A reader the pane NAMES instead of addressing — Freedom Agent, which has no
+   origin. Monospace is for machine identifiers (see the inputs rule in
+   ui-consistency.md), so a name takes the same face, size and weight the site
+   rows already give a site's name in .vault-row-host. */
+.vault-perm-ns.vault-perm-name {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  word-break: normal;
+}
 .vault-perm-tog {
   display: flex;
   align-items: center;

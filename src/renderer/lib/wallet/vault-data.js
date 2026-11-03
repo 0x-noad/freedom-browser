@@ -470,9 +470,10 @@ export function initVaultData(opts = {}) {
     row.className = `vault-perm ${direction}`;
 
     const ns = document.createElement('span');
-    ns.className = 'vault-perm-ns';
     // Every other row names a site, so the namespace IS the label. The Agent is
-    // not a site and has no origin to show, so it passes its own name.
+    // not a site and has no origin to show, so it passes its own name — and a
+    // name is set in the sans face, not the namespace monospace beside it.
+    ns.className = label ? 'vault-perm-ns vault-perm-name' : 'vault-perm-ns';
     ns.textContent = label || namespace;
     ns.title = label || namespace;
 

@@ -1856,5 +1856,10 @@ describe('Freedom Agent’s row', () => {
 
     const labels = Array.from(rows).map((r) => r.children[0].textContent);
     expect(labels).toEqual(['Freedom Agent', 'web:https://b.example']);
+
+    // A name is set in the sans face, a namespace in the monospace one, so the
+    // only row that is not a site does not read as an oddly-spelled namespace.
+    const faces = Array.from(rows).map((r) => r.children[0].className);
+    expect(faces).toEqual(['vault-perm-ns vault-perm-name', 'vault-perm-ns']);
   });
 });
