@@ -1119,3 +1119,59 @@ test.each(['failed', 'timed_out', 'outcome_unknown', 'cancelled'])(
     expect(controller.execute).toHaveBeenCalledTimes(1);
   }
 );
+
+// A vault read is not an action on a page. The adapter's default tabMode folds
+// the Agent's current tab into the call, which put that tab's id, title and
+// ORIGIN on the receipt — so reading one site's published data was reported
+// under a different site's name. For a capability whose whole premise is that
+// the user can see which site the Agent read, that attribution is the feature
+// failing, not a label being untidy.
+describe.each([
+  [OPERATIONS.VAULT_LIST_SHARED, {}],
+  [OPERATIONS.VAULT_READ_SHARED, { origin: 'https://notes.example', paths: ['/shared/handle'] }],
+])('%s is attributed to the vault, not to the open page', (operation, params) => {
+  async function readWithPageOpen() {
+    const onToolOutcome = jest.fn();
+    const controller = {
+      execute: jest.fn(async () => ({
+        ok: true,
+        runtimeId: 'runtime_test',
+        contextId: 'context_test',
+        result: { locked: false, values: {}, sources: [] },
+      })),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_elsewhere',
+      onToolOutcome,
+    });
+    // The Agent is on an unrelated site, and the adapter has remembered it.
+    controller.execute.mockResolvedValueOnce(
+      successEnvelope({
+        tabs: [{ tabId: 'tab_elsewhere', url: 'https://bank.example/accounts', title: 'My bank' }],
+      })
+    );
+    await tools.find((tool) => tool.name === OPERATIONS.LIST_TABS).execute('call_tabs', {});
+
+    await tools.find((tool) => tool.name === operation).execute('call_vault', params);
+    return { controller, outcome: onToolOutcome.mock.calls.at(-1)[0] };
+  }
+
+  test('carries no tab into the operation input', async () => {
+    const { controller } = await readWithPageOpen();
+
+    expect(controller.execute).toHaveBeenLastCalledWith(operation, params);
+  });
+
+  test('names no page, and above all no other origin, on the receipt', async () => {
+    const { outcome } = await readWithPageOpen();
+
+    expect(outcome).toMatchObject({ operation, status: 'succeeded' });
+    expect(outcome.tabId).toBeUndefined();
+    expect(outcome.pageId).toBeUndefined();
+    expect(outcome.origin).toBeUndefined();
+    expect(outcome.pageTitle).toBeUndefined();
+    expect(JSON.stringify(outcome)).not.toContain('bank.example');
+  });
+});

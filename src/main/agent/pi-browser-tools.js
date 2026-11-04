@@ -318,6 +318,10 @@ const TOOL_SPECS = Object.freeze([
       "List the sites whose published data the user has allowed you to read from Freedom's data vault, with the pointers each allowance covers. Nothing here is a list of the vault's contents: a site appears only because the user switched it on for you in the Data pane, per site. Empty means none is switched on — ask the user to enable one on that site's row in the Data pane rather than guessing origins and reading them. locked=true means the vault is locked; ask the user to unlock it, and do not expect a prompt to appear on its own.",
     parameters: EMPTY_PARAMETERS,
     cancellable: false,
+    // The vault is not a page. Without this the adapter attributes the call to
+    // whichever tab the Agent happens to be on, putting that tab's id, title
+    // and ORIGIN on the receipt — naming a site the read never touched.
+    tabMode: 'none',
   },
   {
     operation: OPERATIONS.VAULT_READ_SHARED,
@@ -338,6 +342,8 @@ const TOOL_SPECS = Object.freeze([
       additionalProperties: false,
     },
     cancellable: false,
+    // As above: the only origin this call concerns is the one in `origin`.
+    tabMode: 'none',
   },
   {
     operation: OPERATIONS.NODE_STATUS,
