@@ -25,6 +25,8 @@ jest.mock('./dictation-ipc', () => ({ registerDictationIpc: jest.fn(() => jest.f
 jest.mock('../domains/service');
 jest.mock('../domains/operation-store');
 
+const { VaultAgentController } = require('../vault/vault-agent-controller');
+
 const { FreedomAgentService } = require('./freedom-agent-service');
 const { registerFreedomAgentIpc, registerUnavailableAgentIpc } = require('./ipc');
 const { AgentProviderResolver } = require('./provider-resolver');
@@ -233,6 +235,12 @@ describe('Freedom agent runtime', () => {
       nodeLifecycleController
     );
     expect(options.controller.setDiagnosticsController).toHaveBeenCalledWith(diagnosticsController);
+    // The vault boundary is the real class, not a mock: its whole job is to
+    // read the live manager per call, so wiring a captured one would be the
+    // bug it exists to avoid.
+    expect(options.controller.setVaultController).toHaveBeenCalledWith(
+      expect.any(VaultAgentController)
+    );
     expect(SwarmPublicationController).toHaveBeenCalledWith({
       store: expect.any(Object),
       postageReadiness: expect.any(Object),

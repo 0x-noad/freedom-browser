@@ -597,3 +597,90 @@ test('page tool discovery handles an adapter without WebMCP, including workspace
   const result = await controller.execute(OPERATIONS.LIST_PAGE_TOOLS, { tabId });
   expect(result).toMatchObject({ ok: true, result: { available: false, tools: [] } });
 });
+
+// The seam between the model's tool call and the vault. Everything the vault
+// decides is tested against the real engine in data-vault-agent-read.test.js;
+// what matters here is that the dispatch reaches it, that it is read-only, and
+// that a runtime with no vault says so instead of answering.
+describe('the Agent’s vault boundary', () => {
+  const sources = { locked: false, sources: [{ origin: 'https://notes.example', paths: ['/shared'] }] };
+
+  test('routes the published-data read through the vault controller', async () => {
+    const { controller, authorize } = createController();
+    const readShared = jest.fn(async () => ({ locked: false, values: { '/shared/handle': '@noad' } }));
+    controller.setVaultController({ readShared, listShared: jest.fn(async () => sources) });
+
+    await expect(
+      controller.execute(OPERATIONS.VAULT_READ_SHARED, {
+        origin: 'https://notes.example',
+        paths: ['/shared/handle'],
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { locked: false, values: { '/shared/handle': '@noad' } },
+    });
+    // Validated input, and no tab: this operation concerns no page.
+    expect(readShared).toHaveBeenCalledWith({
+      origin: 'https://notes.example',
+      paths: ['/shared/handle'],
+    });
+    expect(authorize).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: OPERATIONS.VAULT_READ_SHARED, tab: null })
+    );
+  });
+
+  test('routes the allowed-site list through the same boundary', async () => {
+    const { controller } = createController();
+    const listShared = jest.fn(async () => sources);
+    controller.setVaultController({ readShared: jest.fn(), listShared });
+
+    await expect(controller.execute(OPERATIONS.VAULT_LIST_SHARED)).resolves.toMatchObject({
+      ok: true,
+      result: sources,
+    });
+    expect(listShared).toHaveBeenCalledTimes(1);
+  });
+
+  test('reports the capability unavailable when no vault is registered', async () => {
+    const { controller } = createController();
+
+    for (const [operation, input] of [
+      [OPERATIONS.VAULT_LIST_SHARED, undefined],
+      [OPERATIONS.VAULT_READ_SHARED, { origin: 'https://notes.example', paths: ['/shared/x'] }],
+    ]) {
+      await expect(controller.execute(operation, input)).resolves.toMatchObject({
+        ok: false,
+        error: { code: ERROR_CODES.CAPABILITY_UNAVAILABLE },
+      });
+    }
+  });
+
+  test('refuses a controller that cannot do both halves', () => {
+    const { controller } = createController();
+
+    expect(() => controller.setVaultController({ readShared: jest.fn() })).toThrow(/listShared/);
+    expect(() => controller.setVaultController({ listShared: jest.fn() })).toThrow(/readShared/);
+    // Teardown really detaches it, so a vault from a closed profile cannot be
+    // read by the next runtime.
+    controller.setVaultController({ readShared: jest.fn(), listShared: jest.fn() });
+    controller.setVaultController(null);
+    expect(controller.vaultController).toBeNull();
+  });
+
+  test('rejects a read the contract refuses, without reaching the vault', async () => {
+    const { controller } = createController();
+    const readShared = jest.fn();
+    controller.setVaultController({ readShared, listShared: jest.fn() });
+
+    for (const input of [
+      { origin: 'https://notes.example', paths: [] },
+      { origin: 'https://notes.example', paths: ['shared/x'] },
+      { paths: ['/shared/x'] },
+    ]) {
+      await expect(controller.execute(OPERATIONS.VAULT_READ_SHARED, input)).resolves.toMatchObject({
+        ok: false,
+      });
+    }
+    expect(readShared).not.toHaveBeenCalled();
+  });
+});
