@@ -1953,3 +1953,58 @@ describe('fresh observations across turns and handoffs', () => {
     expect((await root.execute(OPERATIONS.NAVIGATE, { tabId: 'tab_assigned', url: 'file:///private/file' })).error.code).toBe('POLICY_DENIED');
   });
 });
+
+// A capability wired correctly everywhere else is still refused if it is not
+// named here, and the refusal says nothing about which list is missing it.
+// The Agent's vault reads shipped exactly that way: declared, validated,
+// dispatched and tested, and answered "outside the embedded agent capability
+// scope" the first time anyone asked for one in the running app.
+describe('the vault reads are inside the embedded scope', () => {
+  const { DELEGATED_BROWSER_OPERATIONS } = require('./origin-scoped-controller');
+
+  test.each([OPERATIONS.VAULT_LIST_SHARED, OPERATIONS.VAULT_READ_SHARED])(
+    '%s reaches the controller instead of being refused',
+    async (operation) => {
+      const controller = {
+        execute: jest.fn(async () => ({ ok: true, result: { locked: false } })),
+        inspectAction: jest.fn(),
+      };
+      const scoped = await createOriginScopedAutomationController({
+        controller,
+        tabId: null,
+      });
+
+      const result = await scoped.execute(operation, {
+        origin: 'https://notes.example',
+        paths: ['/shared/handle'],
+      });
+
+      expect(result.ok).toBe(true);
+      expect(controller.execute).toHaveBeenCalledWith(
+        operation,
+        expect.objectContaining({ origin: 'https://notes.example' })
+      );
+    }
+  );
+
+  test('no owned tab is needed, because the vault is not a page', async () => {
+    const controller = {
+      execute: jest.fn(async () => ({ ok: true, result: { locked: false, sources: [] } })),
+      inspectAction: jest.fn(),
+    };
+    const scoped = await createOriginScopedAutomationController({ controller, tabId: null });
+
+    // A page operation in the same empty workspace is refused for want of a
+    // tab; the vault read beside it is not.
+    expect((await scoped.execute(OPERATIONS.SNAPSHOT, {})).ok).toBe(false);
+    expect((await scoped.execute(OPERATIONS.VAULT_LIST_SHARED, {})).ok).toBe(true);
+  });
+
+  test('a delegated helper does not inherit them', () => {
+    // Helpers get page capabilities only — the rule the wallet, node and
+    // publication tools already follow. A helper reading the user's vault is
+    // a grant the user made to the Agent, not to whatever it spawned.
+    expect(DELEGATED_BROWSER_OPERATIONS.has(OPERATIONS.VAULT_LIST_SHARED)).toBe(false);
+    expect(DELEGATED_BROWSER_OPERATIONS.has(OPERATIONS.VAULT_READ_SHARED)).toBe(false);
+  });
+});

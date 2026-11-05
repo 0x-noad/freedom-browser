@@ -38,6 +38,8 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.DOWNLOAD,
   OPERATIONS.WALLET_ACTION,
   OPERATIONS.WALLET_TRANSFER,
+  OPERATIONS.VAULT_LIST_SHARED,
+  OPERATIONS.VAULT_READ_SHARED,
   OPERATIONS.NODE_STATUS,
   OPERATIONS.NODE_REQUEST,
   OPERATIONS.NODE_OPERATION_STATUS,
@@ -497,6 +499,15 @@ class OriginScopedAutomationController {
       return this.#executeController(operation, input, execution);
     }
     if (operation === OPERATIONS.NODE_STATUS) {
+      return this.#executeController(operation, input, execution);
+    }
+    // Read-only and tab-free, like NODE_STATUS above: the vault decides what
+    // the Agent may see from the grants the user made in the Data pane, so
+    // there is nothing for this scope to approve and no page to own.
+    if (
+      operation === OPERATIONS.VAULT_LIST_SHARED ||
+      operation === OPERATIONS.VAULT_READ_SHARED
+    ) {
       return this.#executeController(operation, input, execution);
     }
     if (operation === OPERATIONS.NODE_REQUEST) {

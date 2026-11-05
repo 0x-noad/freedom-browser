@@ -22,6 +22,7 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { EventEmitter } = require('events');
 
 const ipcHandlers = {};
 jest.mock('electron', () => ({
@@ -75,6 +76,29 @@ function fakeModelSdk() {
     SessionManager: jest.fn(),
     SettingsManager: jest.fn(),
   };
+}
+
+/**
+ * The page the Agent is sitting on. The scope requires a real owned tab, and
+ * an unrelated open site is also what makes the attribution claim meaningful.
+ */
+class FakePageAdapter extends EventEmitter {
+  constructor(url = 'https://bank.example/accounts') {
+    super();
+    this.state = { url, title: 'My bank', loading: false, navigationId: 1, available: true };
+    this.snapshot = jest.fn(async () => ({ text: 'Statements', elements: [] }));
+    this.inspectAction = jest.fn(async () => ({ effect: 'none', label: 'none' }));
+    this.navigate = jest.fn(async (next) => ({ url: next }));
+    this.click = jest.fn(async () => ({ clicked: true }));
+    this.type = jest.fn(async () => ({ typed: true }));
+    this.screenshot = jest.fn(async () => ({ mediaType: 'image/png', base64: 'cG5n' }));
+    this.wait = jest.fn(async () => ({ matched: true }));
+    this.stopLoading = jest.fn(async () => ({ stopped: true }));
+  }
+
+  getState() {
+    return { ...this.state };
+  }
 }
 
 const frame = (origin, webContentsId) => ({
@@ -145,6 +169,9 @@ beforeEach(async () => {
   });
 
   const { AutomationController } = require('../automation/automation-controller');
+  const {
+    createOriginScopedAutomationController,
+  } = require('../automation/origin-scoped-controller');
   const { VaultAgentController } = require('./vault-agent-controller');
   const { createFreedomBrowserTools } = require('../agent/pi-browser-tools');
 
@@ -155,12 +182,22 @@ beforeEach(async () => {
     policyController: { authorize: async () => ({ allowed: true }) },
   });
   controller.setVaultController(new VaultAgentController({ getManager: () => manager }));
+  const openTabId = controller.registerPage(new FakePageAdapter());
+
+  // The scope the sidebar Agent actually runs inside, not the bare controller:
+  // it allowlists every operation an embedded agent may reach, and a tool left
+  // out of that list is refused no matter how correctly the rest is wired.
+  // This suite missed exactly that by testing the controller underneath it.
+  const scoped = await createOriginScopedAutomationController({
+    controller,
+    tabId: openTabId,
+  });
 
   tools = await createFreedomBrowserTools({
     sdk: fakeModelSdk(),
-    controller,
+    controller: scoped,
     // The Agent is sitting on some page, as it always is in a real run.
-    tabId: 'tab_elsewhere',
+    tabId: openTabId,
     onToolOutcome: (outcome) => outcomes.push(outcome),
   });
 });
