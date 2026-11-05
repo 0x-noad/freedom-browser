@@ -62,7 +62,14 @@ const LAUNCHABLE_SCHEMES = new Set(['http', 'https', 'ipfs', 'ipns', 'bzz', 'swa
 /** The published subtree, and the only thing the Agent is ever granted. */
 const SHARED_ROOT = '/shared';
 
-/** Most pointers the Agent may ask for in one read. */
+/**
+ * Most pointers the Agent may ask for in one read.
+ *
+ * Unreachable through the Agent, which is the point: the automation contract's
+ * MAX_VAULT_READ_PATHS refuses an oversized read before dispatch. This guards
+ * a direct caller of `agentGetShared`. Same number in two places deliberately
+ * — raise one and the other refuses with a different error, so raise both.
+ */
 const AGENT_MAX_PATHS = 32;
 
 const EXPORT_FORMAT = 'vault3r-data-export/2';

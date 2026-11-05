@@ -552,3 +552,15 @@ test('dialog responses require an exact handle and explicit boolean; caller auth
   for (const input of [{ accept: 'true' }, { dialogRef: 'current' }, { accept: false, promptText: 'secret' }, { promptText: 'x'.repeat(121) }, { promptText: '\n' }])
     expect(() => validateOperationInput(OPERATIONS.HANDLE_DIALOG, { ...base, ...input })).toThrow();
 });
+
+test('vault reads name one site and bounded pointers, never caller authority', () => {
+  const input = { origin: 'https://notes.example', paths: ['/shared/handle', '/shared/name'] };
+  // The origin is passed through verbatim: the vault resolves it to a
+  // partition itself, and anything normalized here would be laundered past
+  // that check. Everything else the caller sends is dropped.
+  expect(validateOperationInput(OPERATIONS.VAULT_READ_SHARED, { ...input, namespace: 'web:other', enabled: true })).toEqual(input);
+  expect(validateOperationInput(OPERATIONS.VAULT_LIST_SHARED, { origin: 'https://notes.example' })).toEqual({});
+  for (const override of [{ paths: [] }, { paths: ['shared/x'] }, { paths: [42] }, { paths: 'all' },
+    { paths: new Array(33).fill('/shared/x') }, { origin: undefined }, { origin: 42 }])
+    expect(() => validateOperationInput(OPERATIONS.VAULT_READ_SHARED, { ...input, ...override })).toThrow();
+});

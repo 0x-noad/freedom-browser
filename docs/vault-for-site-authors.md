@@ -461,9 +461,15 @@ If the user switches it on, Freedom's own AI agent can read what you published
 under `/shared`, for your site specifically. It is a reader like any other and
 the same rules hold: only `/shared`, never anything else in the partition, and
 never a write — there is no operation that would let it change, publish or
-grant anything. Nothing you do at connect asks for this or opts out of it: the
-user switches it on per site in the **Data** pane, where it sits beside the
-sites that read you, with the same checkbox.
+grant anything.
+
+Nothing you do asks for this or opts out of it, but the user may well grant it
+the moment they approve you: the connection sheet carries it under
+**Permissions**, in the same shape as a cross-origin read, ticked by default
+when they have an Agent set up. They can untick it there, and afterwards it is
+a checkbox on your site's row in the **Data** pane, beside the sites that read
+you. Assume a connected site's `/shared` is readable by the Agent unless the
+user has said otherwise.
 
 You cannot detect it. An Agent read raises no `change` event, does not appear
 in `getPermissions()`, and there is no flag that says a read came from it

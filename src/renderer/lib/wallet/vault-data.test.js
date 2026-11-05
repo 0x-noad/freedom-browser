@@ -774,16 +774,19 @@ describe('consent sheet: the read-access section', () => {
     // same arrows the detail view uses.
     expect(chunk.replace(/\s+/g, ' ')).toContain('This site reads');
     expect(chunk.replace(/\s+/g, ' ')).toContain('Reads this site');
-    expect(els.get('vault-request-perms-header').classList.contains('hidden')).toBe(false);
+    // Asserted against the markup, not the fake element: nothing adds or
+    // removes `hidden` here any more, so reading it off the fake would pass
+    // whatever the markup shipped.
+    expect(html).toContain('<div class="sidebar-section-header" id="vault-request-perms-header">');
   });
 
   test('the heading stands even with no cross-origin request', () => {
     showConsent(request());
 
-    // The Agent's row is always one of the two directions, so there is always
-    // something under this heading to decide.
-    expect(els.get('vault-request-perms-header').classList.contains('hidden')).toBe(false);
+    // The Agent's row is always one of the two directions, so the heading
+    // always has something under it and the group below it is what hides.
     expect(els.get('vault-request-foreign-block').classList.contains('hidden')).toBe(true);
+    expect(els.get('vault-request-agent-block').classList.contains('hidden')).toBe(false);
   });
 
   test('shows each namespace as code, sorted, with one checkbox', () => {

@@ -76,7 +76,13 @@ const PRESS_KEYS = Object.freeze([
 const PRESS_KEY_SET = new Set(PRESS_KEYS);
 const DIAGNOSTIC_SERVICE_SET = new Set(DIAGNOSTIC_SERVICES);
 const NODE_REQUEST_METHODS = Object.freeze(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
-/** Pointers one vault read may name. The vault enforces its own bound too. */
+/**
+ * Pointers one vault read may name. This is the bound that actually fires:
+ * `validateOperationInput` runs before dispatch, so the Agent never reaches
+ * the vault with more. `AGENT_MAX_PATHS` in data-vault-manager.js is the same
+ * number again, guarding a direct caller of `agentGetShared`; raise one and
+ * the other refuses with a different error, so raise both.
+ */
 const MAX_VAULT_READ_PATHS = 32;
 const NODE_REQUEST_METHOD_SET = new Set(NODE_REQUEST_METHODS);
 const NODE_REQUEST_SERVICE_SET = new Set(NODE_REQUEST_SERVICES);
@@ -712,7 +718,6 @@ function validateOperationInput(operation, rawInput) {
 }
 
 module.exports = {
-  MAX_VAULT_READ_PATHS,
   DEFAULT_DIAGNOSTIC_MAX_BYTES,
   DEFAULT_DIAGNOSTIC_MAX_LINES,
   DEFAULT_WAIT_TIMEOUT_MS,
