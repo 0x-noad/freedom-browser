@@ -508,6 +508,13 @@ class DataVaultManager {
           origin: e.origin,
           paths: e.paths,
         })),
+        // Whether to OFFER the Agent's read on this sheet. Not part of what the
+        // site asked for — the site cannot ask for it and is not told the
+        // answer — but the moment the user is deciding what this partition is
+        // for is the honest moment to put the question. Off unless AI is on,
+        // for the reason the Data pane's row is: a control for a reader that
+        // cannot run is a question the user cannot answer.
+        agentAvailable: this._isAgentEnabled() === true,
       });
       // An answer that arrives after the asking page is gone grants nothing:
       // there is no session to attach it to, and a partition appearing for a
@@ -531,6 +538,14 @@ class DataVaultManager {
           },
           this._now(),
         );
+        // The Agent's read, if the user ticked it on the sheet. Written as its
+        // own grant rather than folded into the record above, so it is the
+        // same grant the Data pane's row writes and the same one it revokes —
+        // one way in, one way out. Re-checked against the setting here: the
+        // renderer's answer decides nothing a disabled Agent could use.
+        if (decision.grantAgentRead === true && this._isAgentEnabled() === true) {
+          perms.grantAgentRead(namespace, req.verification.domain, [SHARED_ROOT], this._now());
+        }
         // The user is willing: forget whatever they rejected before.
         this._consentRefusals.delete(namespace);
         return { ...decision, grantedMethods, grantedForeignReads: decision.grantedForeignReads || [] };

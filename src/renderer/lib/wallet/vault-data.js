@@ -99,6 +99,9 @@ export function initVaultData(opts = {}) {
   const reqOwn = document.getElementById('vault-request-own');
   const reqSharedNote = document.getElementById('vault-request-shared-note');
   const reqForeignBlock = document.getElementById('vault-request-foreign-block');
+  // Freedom Agent's read, offered on the sheet rather than asked for by the site.
+  const reqAgentBlock = document.getElementById('vault-request-agent-block');
+  const reqAgentBox = document.getElementById('vault-request-agent-box');
   // Cross-origin read grants on a partition's detail view, both directions.
   const permsHeader = document.getElementById('vault-detail-perms-header');
   const detailReads = document.getElementById('vault-detail-reads');
@@ -465,6 +468,34 @@ export function initVaultData(opts = {}) {
    * answers from stored state on every render, so what it shows is what the
    * grant says rather than what was clicked.
    */
+  /**
+   * The Agent's own mark: the three sparkles its toolbar button carries, so
+   * the one reader in this pane that is not a site is recognisable as Freedom
+   * itself rather than read as an oddly-named origin. Decorative — every place
+   * that uses it writes the name beside it.
+   */
+  function agentGlyph() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'vault-agent-glyph');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '1.8');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    for (const d of [
+      'm12 3 1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2L12 3Z',
+      'm18.5 13 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z',
+      'm5.5 13 .7 2.3 2.3.7-2.3.7L5.5 19l-.7-2.3-2.3-.7 2.3-.7.7-2.3Z',
+    ]) {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', d);
+      svg.appendChild(path);
+    }
+    return svg;
+  }
+
   function permissionItem(namespace, enabled, direction, onToggle, label) {
     const row = document.createElement('div');
     row.className = `vault-perm ${direction}`;
@@ -476,6 +507,7 @@ export function initVaultData(opts = {}) {
     ns.className = label ? 'vault-perm-ns vault-perm-name' : 'vault-perm-ns';
     ns.textContent = label || namespace;
     ns.title = label || namespace;
+    if (label) ns.appendChild(agentGlyph());
 
     const tog = document.createElement('label');
     tog.className = 'vault-perm-tog';
@@ -796,6 +828,12 @@ export function initVaultData(opts = {}) {
     reqFields.replaceChildren(...foreign.map((entry) => readAccessRow(entry.namespace)));
     if (reqForeignBlock) reqForeignBlock.classList.toggle('hidden', foreign.length === 0);
 
+    // Always starts off. Approving a site is the user agreeing to what the
+    // SITE asked for; the Agent's read is a second question on the same sheet,
+    // and a box already ticked would collect a yes they never gave.
+    if (reqAgentBox) reqAgentBox.checked = false;
+    if (reqAgentBlock) reqAgentBlock.classList.toggle('hidden', req.agentAvailable !== true);
+
     openRequestId = req.id;
 
     // Take the sidebar over, the way every other externally-triggered prompt
@@ -831,6 +869,9 @@ export function initVaultData(opts = {}) {
         grantedMethods: methods,
         grantedFields: requestedFields,
         grantedForeignReads,
+        // Only ever true from a sheet that offered it: hidden leaves the box
+        // unticked, and main re-checks the setting before writing the grant.
+        grantAgentRead: Boolean(reqAgentBox && reqAgentBox.checked),
         writePolicy: 'ask-once-per-session',
       });
     };

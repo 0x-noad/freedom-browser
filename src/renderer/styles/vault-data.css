@@ -162,6 +162,32 @@
 .vault-req-foreign-block { margin: 20px 0 24px; }
 .vault-req-foreign-block.hidden { display: none; }
 
+/* Freedom Agent's read, offered on the consent sheet. Spaced like the block
+   above it, and worded there as the user's own choice rather than the site's
+   request — which is why it is a separate block and not another row in it. */
+.vault-req-agent-block { margin: 20px 0 24px; }
+.vault-req-agent-block.hidden { display: none; }
+.vault-req-agent-name { white-space: nowrap; font-weight: 600; color: var(--text); }
+/* A sentence, not a namespace: the sans face, and no break-all splitting a
+   word across lines the way it may split an origin. */
+.vault-req-agent-label {
+  font-family: inherit;
+  font-size: 12px;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+/* The Agent's three sparkles, as its toolbar button draws them: the mark on
+   the one reader in this pane that is Freedom and not a site. Sized to the
+   text it follows and inheriting its colour, so it reads as part of the name. */
+.vault-agent-glyph {
+  width: 1em;
+  height: 1em;
+  margin-left: 0.35em;
+  vertical-align: -0.12em;
+  flex: 0 0 auto;
+}
+
 
 /* Cross-origin reads on the detail view, both directions under ONE
    "Permissions" header. One row each: the other partition's namespace in code,

@@ -4873,6 +4873,48 @@
                     <ul id="vault-request-fields" class="vault-request-fields"></ul>
                   </div>
 
+                  <!-- Freedom Agent's read of what this site publishes. NOT part
+                       of the site's request — the site cannot ask for this and is
+                       never told the answer — so it is worded and separated as the
+                       user's own choice, and starts off. Shown only while AI is on. -->
+                  <div class="vault-req-agent-block hidden" id="vault-request-agent-block">
+                    <div class="vault-req-intro">
+                      Separately from this site's request, you can let
+                      <span class="vault-req-agent-name"
+                        >Freedom Agent<svg
+                          class="vault-agent-glyph"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.8"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="m12 3 1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2L12 3Z" />
+                          <path d="m18.5 13 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" />
+                          <path d="m5.5 13 .7 2.3 2.3.7-2.3.7L5.5 19l-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" />
+                        </svg></span
+                      >
+                      read what this site marks
+                      <span class="vault-req-inline-path">/shared</span>. Never the rest
+                      of its data, and never to write. You can change this at any time in
+                      the Data pane.
+                    </div>
+                    <ul class="vault-request-fields">
+                      <li class="vault-req-read">
+                        <span class="vault-req-ns vault-req-agent-label">
+                          Let Freedom Agent read this site's published data
+                        </span>
+                        <input
+                          type="checkbox"
+                          class="vault-req-box"
+                          id="vault-request-agent-box"
+                        />
+                      </li>
+                    </ul>
+                  </div>
+
                   <div class="dapp-connect-actions">
                     <button type="button" class="dapp-connect-reject-btn" id="vault-request-deny">
                       Reject

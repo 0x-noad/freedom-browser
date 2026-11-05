@@ -410,3 +410,115 @@ describe('the pane is told whether to offer the control', () => {
     expect(bare.foreignGrantsFor(OWNER_NS).agentAvailable).toBe(false);
   });
 });
+
+/**
+ * The Agent's read offered on the consent sheet, where the user is already
+ * deciding what this partition is for. The site cannot ask for it and is never
+ * told the answer: it is a second question on the same sheet, which is why the
+ * offer is gated on the setting and the answer is re-checked against it here.
+ */
+describe('the Agent read offered at connect time', () => {
+  /** Connect as the owner, answering the sheet with `decision`. */
+  async function connectAnswering(decision, { agentEnabled = true } = {}) {
+    const seen = [];
+    const { DataVaultManager } = require('./data-vault-manager');
+    manager = new DataVaultManager({
+      dataDir: tmpDir,
+      isAgentEnabled: () => agentEnabled,
+      identityVault: {
+        isUnlocked: () => true,
+        getMnemonic: () => 'test test test test test test test test test test test junk',
+        ensureUnlocked: async () => true,
+      },
+      promptConsent: async (req) => {
+        seen.push(req);
+        return {
+          approved: true,
+          grantedMethods: ['vault_getData', 'vault_setData'],
+          grantedFields: [{ path: '/shared', read: true, write: true }],
+          grantedForeignReads: [],
+          writePolicy: 'ask-once-per-session',
+          ...decision,
+        };
+      },
+    });
+    await call(frame(OWNER_ORIGIN, 11), 'vault_connect', {
+      requestedScopes: [
+        {
+          methods: ['vault_getData', 'vault_setData'],
+          fields: [{ path: '/shared', read: true, write: true }],
+        },
+      ],
+    });
+    return seen[0];
+  }
+
+  test('the sheet is told it may offer the read while AI is on', async () => {
+    expect((await connectAnswering({})).agentAvailable).toBe(true);
+  });
+
+  test('and told not to while AI is off', async () => {
+    expect((await connectAnswering({}, { agentEnabled: false })).agentAvailable).toBe(false);
+  });
+
+  test('a ticked box grants exactly /shared, the same grant the pane writes', async () => {
+    await connectAnswering({ grantAgentRead: true });
+
+    expect(perms.getPermission(perms.AGENT_NAMESPACE).foreignReads).toEqual([
+      expect.objectContaining({ namespace: OWNER_NS, origin: OWNER_ORIGIN, paths: ['/shared'] }),
+    ]);
+  });
+
+  test('the granted read works immediately, without a second visit', async () => {
+    await connectAnswering({ grantAgentRead: true });
+    const session = await call(frame(OWNER_ORIGIN, 11), 'vault_connect', {
+      requestedScopes: [
+        {
+          methods: ['vault_getData', 'vault_setData'],
+          fields: [{ path: '/shared', read: true, write: true }],
+        },
+      ],
+    });
+    await call(frame(OWNER_ORIGIN, 11), 'vault_setData', {
+      sessionId: session.sessionId,
+      values: { '/shared/displayName': 'ada' },
+    });
+
+    const res = await manager.agentGetShared(OWNER_ORIGIN, ['/shared/displayName']);
+
+    expect(res.values['/shared/displayName']).toBe('ada');
+  });
+
+  test('approving the site without ticking grants nothing', async () => {
+    await connectAnswering({});
+
+    expect(perms.getPermission(perms.AGENT_NAMESPACE)).toBeNull();
+  });
+
+  test('a renderer claiming it while AI is off still grants nothing', async () => {
+    await connectAnswering({ grantAgentRead: true }, { agentEnabled: false });
+
+    expect(perms.getPermission(perms.AGENT_NAMESPACE)).toBeNull();
+  });
+
+  test('a rejected connection grants nothing either', async () => {
+    const { DataVaultManager } = require('./data-vault-manager');
+    manager = new DataVaultManager({
+      dataDir: tmpDir,
+      isAgentEnabled: () => true,
+      identityVault: {
+        isUnlocked: () => true,
+        getMnemonic: () => 'test test test test test test test test test test test junk',
+        ensureUnlocked: async () => true,
+      },
+      promptConsent: async () => ({ approved: false, grantAgentRead: true }),
+    });
+    await expect(
+      call(frame(OWNER_ORIGIN, 11), 'vault_connect', {
+        requestedScopes: [{ methods: ['vault_getData'], fields: [{ path: '/shared', read: true }] }],
+      })
+    ).rejects.toThrow();
+
+    expect(perms.getPermission(perms.AGENT_NAMESPACE)).toBeNull();
+  });
+});

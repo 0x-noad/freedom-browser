@@ -91,7 +91,11 @@ class FakeElement {
    * it replaces the children, also as the DOM does.
    */
   get textContent() {
-    return this.children.length ? this.children.map((c) => c.textContent).join('') : this._text;
+    // Own text AND descendants', as the DOM concatenates them: text set first
+    // and an element appended after (a name followed by an icon) still reads
+    // back as the name. Returning only the children's text once any child
+    // existed made an appended icon erase the label it was decorating.
+    return this._text + this.children.map((c) => c.textContent).join('');
   }
 
   set textContent(value) {
@@ -267,6 +271,8 @@ const ELEMENT_IDS = [
   'vault-request-own',
   'vault-request-shared-note',
   'vault-request-foreign-block',
+  'vault-request-agent-block',
+  'vault-request-agent-box',
   'vault-detail-perms-header',
   'vault-detail-reads',
   'vault-detail-reads-group',
@@ -1861,5 +1867,107 @@ describe('Freedom Agent’s row', () => {
     // only row that is not a site does not read as an oddly-spelled namespace.
     const faces = Array.from(rows).map((r) => r.children[0].className);
     expect(faces).toEqual(['vault-perm-ns vault-perm-name', 'vault-perm-ns']);
+  });
+});
+
+describe('consent sheet: Freedom Agent’s read is offered, not requested', () => {
+  beforeEach(setupDom);
+
+  /** Raise the sheet and hand back the Agent block's parts. */
+  function raiseWith(extra) {
+    showConsent(request(extra));
+    return {
+      block: els.get('vault-request-agent-block'),
+      box: els.get('vault-request-agent-box'),
+    };
+  }
+
+  test('is offered when AI is on', () => {
+    const { block, box } = raiseWith({ agentAvailable: true });
+
+    expect(block.classList.contains('hidden')).toBe(false);
+    // Off until the user says otherwise: approving the SITE is not approving
+    // this, and a pre-ticked box would collect a yes they never gave.
+    expect(box.checked).toBe(false);
+  });
+
+  test('is absent when AI is off, and absent if nothing says', () => {
+    expect(raiseWith({ agentAvailable: false }).block.classList.contains('hidden')).toBe(true);
+    expect(raiseWith({}).block.classList.contains('hidden')).toBe(true);
+  });
+
+  test('is not listed among what the site asked for', () => {
+    raiseWith({ agentAvailable: true });
+
+    // The site's own block stays empty: it asked for no cross-origin read, and
+    // the Agent is not one of its requests.
+    expect(els.get('vault-request-foreign-block').classList.contains('hidden')).toBe(true);
+    expect(els.get('vault-request-fields').children).toHaveLength(0);
+  });
+
+  test('a ticked box is the only thing that asks for the grant', () => {
+    const { box } = raiseWith({ agentAvailable: true });
+    box.checked = true;
+    els.get('vault-request-allow').onclick();
+
+    expect(vaultData.respondConsent).toHaveBeenCalledWith(
+      'consent-1',
+      expect.objectContaining({ approved: true, grantAgentRead: true })
+    );
+  });
+
+  test('approving the site alone grants the Agent nothing', () => {
+    raiseWith({ agentAvailable: true });
+    els.get('vault-request-allow').onclick();
+
+    expect(vaultData.respondConsent).toHaveBeenCalledWith(
+      'consent-1',
+      expect.objectContaining({ grantAgentRead: false })
+    );
+  });
+
+  test('a sheet that never offered it cannot ask for it', () => {
+    raiseWith({ agentAvailable: false });
+    els.get('vault-request-allow').onclick();
+
+    expect(vaultData.respondConsent).toHaveBeenCalledWith(
+      'consent-1',
+      expect.objectContaining({ grantAgentRead: false })
+    );
+  });
+});
+
+describe('the Agent’s mark', () => {
+  beforeEach(setupDom);
+
+  test('the detail row carries the sparkles, and the site rows do not', async () => {
+    const { initVaultData } = require('./vault-data.js');
+    initVaultData({});
+    vaultData.foreignGrantsFor.mockResolvedValue({
+      locked: false,
+      reads: [],
+      agentAvailable: true,
+      readers: [
+        { readerNamespace: 'agent:freedom', isAgent: true, paths: ['/shared'], enabled: true },
+        {
+          readerNamespace: 'web:https://b.example',
+          readerOrigin: 'https://b.example',
+          paths: ['/shared'],
+          enabled: true,
+        },
+      ],
+    });
+    vaultData.getPartitionData.mockResolvedValue({ data: {} });
+    await openDetail(owner());
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const rows = els.get('vault-detail-readers').children;
+    const glyphs = rows.map((row) =>
+      row.children[0].children.filter((child) => child.tagName === 'SVG').length
+    );
+    expect(glyphs).toEqual([1, 0]);
+    // The name still reads as the name with the icon inside it.
+    expect(rows[0].children[0].textContent).toBe('Freedom Agent');
   });
 });
