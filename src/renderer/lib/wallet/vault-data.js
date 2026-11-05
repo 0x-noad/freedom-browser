@@ -102,26 +102,8 @@ export function initVaultData(opts = {}) {
   // Freedom Agent's read, offered on the sheet rather than asked for by the site.
   const reqAgentBlock = document.getElementById('vault-request-agent-block');
   const reqAgentBox = document.getElementById('vault-request-agent-box');
-
-  /**
-   * The (i) beside a section heading, and the note it opens.
-   *
-   * A click rather than a hover: this is a consent sheet, so an explanation of
-   * what a box grants has to be reachable by keyboard and has to stay on screen
-   * while it is read. Closed to begin with — the rows are the decision, and the
-   * sentence is there for whoever wants it.
-   */
-  function bindBlurb(buttonId, blurbId) {
-    const button = document.getElementById(buttonId);
-    const blurb = document.getElementById(blurbId);
-    if (!button || !blurb) return;
-    button.addEventListener('click', () => {
-      const open = blurb.classList.toggle('hidden');
-      button.setAttribute('aria-expanded', String(!open));
-    });
-  }
-  bindBlurb('vault-request-foreign-info', 'vault-request-foreign-blurb');
-  bindBlurb('vault-request-agent-info', 'vault-request-agent-blurb');
+  // One heading over both directions, hidden when neither has anything.
+  const reqPermsHeader = document.getElementById('vault-request-perms-header');
   // Cross-origin read grants on a partition's detail view, both directions.
   const permsHeader = document.getElementById('vault-detail-perms-header');
   const detailReads = document.getElementById('vault-detail-reads');
@@ -838,11 +820,18 @@ export function initVaultData(opts = {}) {
     reqFields.replaceChildren(...foreign.map((entry) => readAccessRow(entry.namespace)));
     if (reqForeignBlock) reqForeignBlock.classList.toggle('hidden', foreign.length === 0);
 
-    // Always starts off. Approving a site is the user agreeing to what the
-    // SITE asked for; the Agent's read is a second question on the same sheet,
-    // and a box already ticked would collect a yes they never gave.
-    if (reqAgentBox) reqAgentBox.checked = false;
-    if (reqAgentBlock) reqAgentBlock.classList.toggle('hidden', req.agentAvailable !== true);
+    // Ticked by default, like the rows above it: with the Agent set up, a
+    // partition it can read is the expected arrangement, and the note above
+    // says what `read` grants. Unticking before Allow is how the user keeps
+    // the Agent out, and the Data pane's row is how they change their mind.
+    const agentOffered = req.agentAvailable === true;
+    if (reqAgentBox) reqAgentBox.checked = agentOffered;
+    if (reqAgentBlock) reqAgentBlock.classList.toggle('hidden', !agentOffered);
+    // The heading belongs to whichever groups are showing; with neither, a
+    // bare "Permissions" over nothing is noise.
+    if (reqPermsHeader) {
+      reqPermsHeader.classList.toggle('hidden', foreign.length === 0 && !agentOffered);
+    }
 
     openRequestId = req.id;
 

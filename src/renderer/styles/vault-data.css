@@ -119,68 +119,14 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--secure-fg);
 }
-/* Only present when the site asked to read another partition. The bottom gap is
-   the same the permissions card used to give, so the actions are not crowded.
-   Its rows are `.vault-perm`, the detail view's — this sheet used to draw a
-   lighter row of its own, which made the site's request and the Agent's offer
-   read as two different kinds of thing on one sheet. */
-.vault-req-foreign-block { margin: 20px 0 24px; }
-.vault-req-foreign-block.hidden { display: none; }
-
 /* The sheet's rows carry the Data pane's look but not its text behaviour: a
    drag across a modal full of checkboxes should not start selecting an
    identifier nobody is trying to copy. Scoped to the sheet, so the detail
    view's own rows stay selectable. */
-#vault-request-view .vault-perm { user-select: none; }
-
-/* The (i) beside a section heading, and the sentence it opens.
-
-   A button, not a hover target: on a consent sheet an explanation of what a box
-   grants has to be reachable by keyboard and has to stay put while it is read.
-   It sits hard right of the heading on the header's own flex row. */
-.vault-blurb-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--muted);
-  cursor: pointer;
-  border-radius: 4px;
-}
-.vault-blurb-btn svg { width: 14px; height: 14px; }
-.vault-blurb-btn:hover,
-.vault-blurb-btn[aria-expanded='true'] { color: var(--accent); }
-.vault-blurb-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-
-/* The note itself: the same blue the sheet's `/shared` callout uses, since both
-   say what an access MEANS rather than warning about it. No glyph of its own —
-   the button above it is the glyph. */
-.vault-blurb {
-  margin: -4px 0 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  /* theme-literal: the informational blue `.dapp-sign-warning` uses, not a surface */
-  background: rgba(59, 130, 246, 0.1);
-  /* theme-literal: the same blue at the border alpha that callout uses */
-  border: 1px solid rgba(59, 130, 246, 0.3);
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text);
-}
-.vault-blurb.hidden { display: none; }
-
-/* Freedom Agent's read, offered on the consent sheet under its own header:
-   the site cannot ask for this, so it is not one of the rows above it. The row
-   inside is `.vault-perm`, the detail view's own, so one grant looks the same
-   in the place it is offered and the place it is managed. */
-.vault-req-agent-block { margin: 20px 0 24px; }
-.vault-req-agent-block.hidden { display: none; }
-
 /* The Agent's three sparkles, as its toolbar button draws them: the mark on
-   the one reader in this pane that is Freedom and not a site. Sized to the
-   text it follows and inheriting its colour, so it reads as part of the name. */
+   the one reader that is Freedom and not a site. Sized to the text it follows
+   and inheriting its colour, so it reads as part of the name — an inline SVG
+   with no size of its own fills whatever box it lands in. */
 .vault-agent-glyph {
   width: 1em;
   height: 1em;
@@ -189,6 +135,12 @@
   flex: 0 0 auto;
 }
 
+#vault-request-view .vault-perm { user-select: none; }
+
+/* The sheet's groups sit directly above Reject/Allow, so they need more room
+   below them than the detail view's do — without it the rows sit hard against
+   the buttons, a layout that has regressed before. */
+#vault-request-view .vault-perm-group { margin-bottom: 24px; }
 
 /* Cross-origin reads on the detail view, both directions under ONE
    "Permissions" header. One row each: the other partition's namespace in code,

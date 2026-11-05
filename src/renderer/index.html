@@ -4855,72 +4855,46 @@
                       <span
                         >This site writes data marked
                         <span class="vault-req-inline-path">/shared</span> into its partition.
-                        Data marked <span class="vault-req-inline-path">/shared</span> can be
-                        read by Freedom Agent and/or other sites if you grant them
-                        permission.</span
+                        You control when a site can view another site's
+                        <span class="vault-req-inline-path">/shared</span> data by granting it
+                        'read' permissions. Permissions can be granted or revoked at any
+                        time.</span
                       >
                     </div>
                   </div>
 
-                  <!-- Only when the site asked to read another partition. Without
-                       one there is nothing to head, and an empty section above the
-                       buttons is noise. Same header, row and blurb affordance as the
-                       Agent section below it, so the sheet reads as one system. -->
-                  <div class="vault-req-foreign-block hidden" id="vault-request-foreign-block">
-                    <div class="sidebar-section-header">
-                      <span class="sidebar-section-title">Requested permissions</span>
-                      <button
-                        type="button"
-                        class="vault-blurb-btn"
-                        id="vault-request-foreign-info"
-                        aria-expanded="false"
-                        aria-controls="vault-request-foreign-blurb"
-                        aria-label="About requested permissions"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                          <circle cx="12" cy="12" r="10" />
-                          <line x1="12" y1="16" x2="12" y2="12" />
-                          <line x1="12" y1="8" x2="12.01" y2="8" />
-                        </svg>
-                      </button>
-                    </div>
-                    <div class="vault-blurb hidden" id="vault-request-foreign-blurb">
-                      This site is requesting read permissions for data marked
-                      <span class="vault-req-inline-path">/shared</span> from the sites
-                      listed below. Leave the boxes checked to grant permission. You can
-                      revoke permission at any time.
+                  <!-- One heading over both directions, as the detail view has:
+                       the site's requested reads going out, Freedom Agent's read
+                       coming in. Each group hides with its own rows and the header
+                       hides with both, so a sheet that grants neither shows none of
+                       it. The rows are the detail view's own, so a grant looks the
+                       same where it is given and where it is managed. -->
+                  <div class="sidebar-section-header hidden" id="vault-request-perms-header">
+                    <span class="sidebar-section-title">Permissions</span>
+                  </div>
+
+                  <div class="vault-perm-group hidden" id="vault-request-foreign-block">
+                    <div class="vault-perm-dir out">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <line x1="5" y1="19" x2="19" y2="5" />
+                        <polyline points="12 5 19 5 19 12" />
+                      </svg>
+                      This site reads
                     </div>
                     <div id="vault-request-fields" class="vault-perm-list"></div>
                   </div>
 
-                  <!-- Freedom Agent's read of what this site publishes. NOT part
-                       of the site's request — the site cannot ask for this and is
-                       never told the answer — which is why it sits under its own
-                       header rather than in the block above. The row is the one the
-                       Data pane's detail view uses, so the same grant looks the same
-                       wherever the user meets it. Shown only while AI is on. -->
-                  <div class="vault-req-agent-block hidden" id="vault-request-agent-block">
-                    <div class="sidebar-section-header">
-                      <span class="sidebar-section-title">Agent permissions</span>
-                      <button
-                        type="button"
-                        class="vault-blurb-btn"
-                        id="vault-request-agent-info"
-                        aria-expanded="false"
-                        aria-controls="vault-request-agent-blurb"
-                        aria-label="About Agent permissions"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                          <circle cx="12" cy="12" r="10" />
-                          <line x1="12" y1="16" x2="12" y2="12" />
-                          <line x1="12" y1="8" x2="12.01" y2="8" />
-                        </svg>
-                      </button>
-                    </div>
-                    <div class="vault-blurb hidden" id="vault-request-agent-blurb">
-                      Check the box if you want to grant Freedom Agent permission to read
-                      from this site's <span class="vault-req-inline-path">/shared</span>
-                      data. You can revoke permission at any time.
+                  <!-- Freedom Agent's read. NOT part of the site's request — the site
+                       cannot ask for this and is never told the answer — which is why
+                       it is the other direction rather than another row above. Shown
+                       only while AI is on. -->
+                  <div class="vault-perm-group hidden" id="vault-request-agent-block">
+                    <div class="vault-perm-dir in">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <line x1="19" y1="5" x2="5" y2="19" />
+                        <polyline points="12 19 5 19 5 12" />
+                      </svg>
+                      Reads this site
                     </div>
                     <div class="vault-perm-list">
                       <div class="vault-perm in">
