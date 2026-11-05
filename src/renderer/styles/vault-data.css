@@ -135,12 +135,41 @@
   flex: 0 0 auto;
 }
 
-#vault-request-view .vault-perm { user-select: none; }
+/* The (i) beside the heading, and the sentence it opens. A button, not a hover
+   target: on a consent sheet an explanation of what a box grants has to be
+   reachable by keyboard and has to stay put while it is read. */
+.vault-blurb-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.vault-blurb-btn svg { width: 15px; height: 15px; }
+.vault-blurb-btn:hover,
+.vault-blurb-btn[aria-expanded='true'] { color: var(--accent); }
+.vault-blurb-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* The sheet's groups sit directly above Reject/Allow, so they need more room
-   below them than the detail view's do — without it the rows sit hard against
-   the buttons, a layout that has regressed before. */
-#vault-request-view .vault-perm-group { margin-bottom: 24px; }
+/* The note itself: the same blue as the sheet's `/shared` callout, since both
+   say what an access MEANS rather than warning about it. No glyph of its own —
+   the button above it is the glyph. */
+.vault-blurb {
+  margin: -4px 0 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  /* theme-literal: the informational blue `.dapp-sign-warning` uses, not a surface */
+  background: rgba(59, 130, 246, 0.1);
+  /* theme-literal: the same blue at the border alpha that callout uses */
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.vault-blurb.hidden { display: none; }
 
 /* Cross-origin reads on the detail view, both directions under ONE
    "Permissions" header. One row each: the other partition's namespace in code,
@@ -420,4 +449,27 @@
   background: rgba(139, 92, 246, 0.08);
   /* theme-literal: the light half of the identity pair above */
   border-color: rgba(139, 92, 246, 0.25);
+}
+
+/* --- the consent sheet's own overrides -------------------------------------
+   Placed after the rules they refine: that is the cascade order an override
+   wants, and the renderer tests read a rule by the FIRST selector that matches,
+   so a scoped rule sitting earlier shadows the base rule in those assertions. */
+
+/* The sheet's rows carry the Data pane's look but not its text behaviour: a
+   drag across a modal full of checkboxes should not start selecting an
+   identifier nobody is trying to copy. The detail view's rows stay selectable. */
+#vault-request-view .vault-perm { user-select: none; }
+
+/* The sheet's groups sit directly above Reject/Allow, so they need more room
+   below them than the detail view's do — without it the rows sit hard against
+   the buttons, a layout that has regressed before. */
+#vault-request-view .vault-perm-group { margin-bottom: 24px; }
+
+/* No Agent set up: the row stays, so the section says the same thing about the
+   Agent either way, but it is plainly not a choice yet. Dimmed whole rather
+   than recoloured, so nothing has to be true of the tokens underneath it. */
+#vault-request-view .vault-perm-group.is-unavailable .vault-perm {
+  opacity: 0.45;
+  pointer-events: none;
 }

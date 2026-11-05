@@ -4855,10 +4855,8 @@
                       <span
                         >This site writes data marked
                         <span class="vault-req-inline-path">/shared</span> into its partition.
-                        You control when a site can view another site's
-                        <span class="vault-req-inline-path">/shared</span> data by granting it
-                        'read' permissions. Permissions can be granted or revoked at any
-                        time.</span
+                        Only data marked <span class="vault-req-inline-path">/shared</span> can
+                        be shared between sites, or with your Freedom Agent.</span
                       >
                     </div>
                   </div>
@@ -4869,9 +4867,37 @@
                        hides with both, so a sheet that grants neither shows none of
                        it. The rows are the detail view's own, so a grant looks the
                        same where it is given and where it is managed. -->
-                  <div class="sidebar-section-header hidden" id="vault-request-perms-header">
+                  <div class="sidebar-section-header" id="vault-request-perms-header">
                     <span class="sidebar-section-title">Permissions</span>
+                    <button
+                      type="button"
+                      class="vault-blurb-btn"
+                      id="vault-request-perms-info"
+                      aria-expanded="false"
+                      aria-controls="vault-request-perms-blurb"
+                      aria-label="About these permissions"
+                    >
+                      <!-- `stroke-linecap: round` is what draws the dot: it is a
+                           zero-length line, so with butt caps it renders nothing at
+                           this size. The 18px note above gets away without it. -->
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        aria-hidden="true"
+                      >
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="12" y1="16" x2="12" y2="12" />
+                        <line x1="12" y1="8" x2="12.01" y2="8" />
+                      </svg>
+                    </button>
                   </div>
+
+                  <!-- Text set by the renderer: it names the cross-origin half only
+                       when the site actually asked for one. -->
+                  <div class="vault-blurb hidden" id="vault-request-perms-blurb"></div>
 
                   <div class="vault-perm-group hidden" id="vault-request-foreign-block">
                     <div class="vault-perm-dir out">
@@ -4886,9 +4912,10 @@
 
                   <!-- Freedom Agent's read. NOT part of the site's request — the site
                        cannot ask for this and is never told the answer — which is why
-                       it is the other direction rather than another row above. Shown
-                       only while AI is on. -->
-                  <div class="vault-perm-group hidden" id="vault-request-agent-block">
+                       it is the other direction rather than another row above. Always
+                       shown: with no Agent set up it is greyed and unticked, so the
+                       sheet says the same thing about the Agent either way. -->
+                  <div class="vault-perm-group" id="vault-request-agent-block">
                     <div class="vault-perm-dir in">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <line x1="19" y1="5" x2="5" y2="19" />

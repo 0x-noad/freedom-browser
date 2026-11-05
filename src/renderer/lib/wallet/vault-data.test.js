@@ -278,6 +278,8 @@ const ELEMENT_IDS = [
   'vault-request-agent-block',
   'vault-request-agent-box',
   'vault-request-perms-header',
+  'vault-request-perms-info',
+  'vault-request-perms-blurb',
   'vault-detail-perms-header',
   'vault-detail-reads',
   'vault-detail-reads-group',
@@ -718,7 +720,7 @@ describe('consent sheet: the /shared note', () => {
     expect(html).toContain(open);
     const block = html.slice(html.indexOf(open), html.indexOf('vault-req-foreign-block'));
     expect(block.replace(/\s+/g, ' ')).toContain(
-      'This site writes data marked <span class="vault-req-inline-path">/shared</span> into its partition. You control when a site can view another site\'s <span class="vault-req-inline-path">/shared</span> data by granting it \'read\' permissions. Permissions can be granted or revoked at any time.',
+      'This site writes data marked <span class="vault-req-inline-path">/shared</span> into its partition. Only data marked <span class="vault-req-inline-path">/shared</span> can be shared between sites, or with your Freedom Agent.',
     );
     // Blue and the info glyph: this says what the access means, not what it
     // risks (docs/agent-playbooks/ui-consistency.md).
@@ -775,10 +777,13 @@ describe('consent sheet: the read-access section', () => {
     expect(els.get('vault-request-perms-header').classList.contains('hidden')).toBe(false);
   });
 
-  test('the heading is absent when neither direction has anything', () => {
+  test('the heading stands even with no cross-origin request', () => {
     showConsent(request());
 
-    expect(els.get('vault-request-perms-header').classList.contains('hidden')).toBe(true);
+    // The Agent's row is always one of the two directions, so there is always
+    // something under this heading to decide.
+    expect(els.get('vault-request-perms-header').classList.contains('hidden')).toBe(false);
+    expect(els.get('vault-request-foreign-block').classList.contains('hidden')).toBe(true);
   });
 
   test('shows each namespace as code, sorted, with one checkbox', () => {
@@ -1922,16 +1927,40 @@ describe('consent sheet: Freedom Agent’s read is offered, not requested', () =
     expect(box.checked).toBe(true);
   });
 
-  test('is absent when AI is off, and absent if nothing says', () => {
-    expect(raiseWith({ agentAvailable: false }).block.classList.contains('hidden')).toBe(true);
-    expect(raiseWith({}).block.classList.contains('hidden')).toBe(true);
+  test('is greyed and unticked when no Agent is set up', () => {
+    for (const extra of [{ agentAvailable: false }, {}]) {
+      const { block, box } = raiseWith(extra);
+
+      // Still there: the section says the same thing about the Agent either
+      // way, rather than changing shape with a setting made elsewhere.
+      expect(block.classList.contains('hidden')).toBe(false);
+      expect(box.checked).toBe(false);
+      expect(box.disabled).toBe(true);
+      expect(block.classList.contains('is-unavailable')).toBe(true);
+    }
+  });
+
+  test('the greyed state has a rule behind it', () => {
+    // The class the renderer sets and the selector that dims it have to agree:
+    // they have moved between the row and the group, and a mismatch leaves a
+    // row that looks available while its box refuses to be clicked.
+    const rule = ruleBodyFor('#vault-request-view .vault-perm-group.is-unavailable .vault-perm');
+    expect(rule).toMatch(/opacity/);
+    expect(rule).toMatch(/pointer-events:\s*none/);
+  });
+
+  test('is live and unmarked once the Agent is set up', () => {
+    const { block, box } = raiseWith({ agentAvailable: true });
+
+    expect(box.disabled).toBe(false);
+    expect(block.classList.contains('is-unavailable')).toBe(false);
   });
 
   test('is not listed among what the site asked for', () => {
     raiseWith({ agentAvailable: true });
 
-    // The site's own direction stays empty: it asked for no cross-origin read,
-    // and the Agent is not one of its requests.
+    // The site's own direction stays empty and hidden: it asked for no
+    // cross-origin read, and the Agent is not one of its requests.
     expect(els.get('vault-request-foreign-block').classList.contains('hidden')).toBe(true);
     expect(els.get('vault-request-fields').children).toHaveLength(0);
   });
@@ -2029,5 +2058,69 @@ describe('the Agent’s mark', () => {
     expect(glyphs).toEqual([1, 0]);
     // The name still reads as the name with the icon inside it.
     expect(rows[0].children[0].textContent).toBe('Freedom Agent');
+  });
+});
+
+
+describe('the Permissions heading’s (i)', () => {
+  beforeEach(setupDom);
+
+  const blurbText = (extra) => {
+    showConsent(request(extra));
+    return els.get('vault-request-perms-blurb').textContent;
+  };
+
+  test('names both halves when the site asked to read another site', () => {
+    expect(blurbText({ agentAvailable: true, foreignReads: [owner()] })).toBe(
+      "Choose which other sites in your vault this site can read /shared data from. Also choose whether or not to share this site's /shared data with your Freedom Agent."
+    );
+  });
+
+  test('names only the Agent when it did not', () => {
+    // With no cross-origin request there are no other sites to choose between,
+    // so the sentence that offers the choice would be describing nothing.
+    expect(blurbText({ agentAvailable: true })).toBe(
+      "Choose whether or not to share this site's /shared data with your Freedom Agent."
+    );
+  });
+
+  test('sets /shared as the green code it is everywhere else, without markup', () => {
+    showConsent(request({ agentAvailable: true, foreignReads: [owner()] }));
+    const blurb = els.get('vault-request-perms-blurb');
+
+    const coded = blurb.children.filter((el) =>
+      el.classList.contains('vault-req-inline-path')
+    );
+    expect(coded.map((el) => el.textContent)).toEqual(['/shared', '/shared']);
+    assertNoMarkupWrites();
+  });
+
+  test('opens and closes, and starts closed on every raise', () => {
+    showConsent(request({ agentAvailable: true }));
+    const button = els.get('vault-request-perms-info');
+    const blurb = els.get('vault-request-perms-blurb');
+
+    expect(blurb.classList.contains('hidden')).toBe(true);
+    button.fire('click');
+    expect(blurb.classList.contains('hidden')).toBe(false);
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+
+    // A second request must not arrive with the previous sheet's note open.
+    vaultData.onConsentRequest.mock.calls[0][0](request({ agentAvailable: true }));
+    expect(blurb.classList.contains('hidden')).toBe(true);
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('its dot is drawn, which needs a round cap at this size', () => {
+    const html = require('fs').readFileSync(
+      require('path').join(__dirname, '..', '..', 'index.html'),
+      'utf8'
+    );
+    const open = html.indexOf('id="vault-request-perms-info"');
+    const svg = html.slice(open, html.indexOf('</button>', open));
+    // The dot is a zero-length line; with butt caps it renders nothing, which
+    // is why it was invisible at 15px while the 18px note above kept its own.
+    expect(svg).toContain('stroke-linecap="round"');
+    expect(svg.replace(/\s+/g, ' ')).toContain('<line x1="12" y1="8" x2="12.01" y2="8" />');
   });
 });

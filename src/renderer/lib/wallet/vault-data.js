@@ -54,6 +54,9 @@ function originLabel(origin) {
   }
 }
 
+/** The published subtree, as both the copy and the engine spell it. */
+const SHARED_ROOT = '/shared';
+
 export function initVaultData(opts = {}) {
   const panel = document.getElementById('tab-data');
   if (!panel) return { refresh: () => {} };
@@ -102,8 +105,39 @@ export function initVaultData(opts = {}) {
   // Freedom Agent's read, offered on the sheet rather than asked for by the site.
   const reqAgentBlock = document.getElementById('vault-request-agent-block');
   const reqAgentBox = document.getElementById('vault-request-agent-box');
-  // One heading over both directions, hidden when neither has anything.
-  const reqPermsHeader = document.getElementById('vault-request-perms-header');
+  // One heading over both directions, and the note its (i) opens.
+  const reqPermsInfo = document.getElementById('vault-request-perms-info');
+  const reqPermsBlurb = document.getElementById('vault-request-perms-blurb');
+
+
+  /**
+   * A sentence with every `/shared` set as the pointer it is, the same green
+   * code the note above uses. Built as nodes rather than markup: the text is
+   * ours, but this module never writes HTML, and a pointer that renders as
+   * code everywhere except here would read as a different thing.
+   */
+  function sharedAsCode(sentence) {
+    return sentence.split(SHARED_ROOT).flatMap((part, index) => {
+      if (index === 0) return [document.createTextNode(part)];
+      const code = document.createElement('span');
+      code.className = 'vault-req-inline-path';
+      code.textContent = SHARED_ROOT;
+      return [code, document.createTextNode(part)];
+    });
+  }
+
+  /**
+   * The heading's (i). A click rather than a hover: on a consent sheet an
+   * explanation of what a box grants has to be reachable by keyboard and has
+   * to stay on screen while it is read. Closed to begin with — the rows are
+   * the decision, the sentence is there for whoever wants it.
+   */
+  if (reqPermsInfo && reqPermsBlurb) {
+    reqPermsInfo.addEventListener('click', () => {
+      const closed = reqPermsBlurb.classList.toggle('hidden');
+      reqPermsInfo.setAttribute('aria-expanded', String(!closed));
+    });
+  }
   // Cross-origin read grants on a partition's detail view, both directions.
   const permsHeader = document.getElementById('vault-detail-perms-header');
   const detailReads = document.getElementById('vault-detail-reads');
@@ -824,14 +858,28 @@ export function initVaultData(opts = {}) {
     // partition it can read is the expected arrangement, and the note above
     // says what `read` grants. Unticking before Allow is how the user keeps
     // the Agent out, and the Data pane's row is how they change their mind.
+    //
+    // With no Agent set up the row stays, greyed and unticked: the sheet then
+    // says the same thing about the Agent either way, rather than the section
+    // silently changing shape depending on a setting elsewhere.
     const agentOffered = req.agentAvailable === true;
-    if (reqAgentBox) reqAgentBox.checked = agentOffered;
-    if (reqAgentBlock) reqAgentBlock.classList.toggle('hidden', !agentOffered);
-    // The heading belongs to whichever groups are showing; with neither, a
-    // bare "Permissions" over nothing is noise.
-    if (reqPermsHeader) {
-      reqPermsHeader.classList.toggle('hidden', foreign.length === 0 && !agentOffered);
+    if (reqAgentBox) {
+      reqAgentBox.checked = agentOffered;
+      reqAgentBox.disabled = !agentOffered;
     }
+    if (reqAgentBlock) reqAgentBlock.classList.toggle('is-unavailable', !agentOffered);
+
+    // The note behind the (i), closed again on every raise. It names the
+    // cross-origin half only when the site actually asked for one — on a sheet
+    // with no such request there are no other sites to choose between.
+    if (reqPermsBlurb) {
+      const sentence = foreign.length
+        ? "Choose which other sites in your vault this site can read /shared data from. Also choose whether or not to share this site's /shared data with your Freedom Agent."
+        : "Choose whether or not to share this site's /shared data with your Freedom Agent.";
+      reqPermsBlurb.replaceChildren(...sharedAsCode(sentence));
+      reqPermsBlurb.classList.add('hidden');
+    }
+    if (reqPermsInfo) reqPermsInfo.setAttribute('aria-expanded', 'false');
 
     openRequestId = req.id;
 
