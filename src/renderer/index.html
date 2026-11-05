@@ -4844,8 +4844,8 @@
                          says what the access means, the way the wallet's own
                          sign pane does. Without it nothing on this sheet
                          tells the user that what this site stores there is
-                         something other sites can ask for — the location is
-                         the only mark, so this sentence is the only notice. -->
+                         something other sites — and Freedom Agent — can be
+                         given, so this sentence is the only notice. -->
                     <div class="dapp-sign-warning hidden" id="vault-request-shared-note">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="10" />
@@ -4855,7 +4855,9 @@
                       <span
                         >This site writes data marked
                         <span class="vault-req-inline-path">/shared</span> into its partition.
-                        Other sites can read this data if you give them permission.</span
+                        Data marked <span class="vault-req-inline-path">/shared</span> can be
+                        read by Freedom Agent and/or other sites if you grant them
+                        permission.</span
                       >
                     </div>
                   </div>
@@ -4875,44 +4877,42 @@
 
                   <!-- Freedom Agent's read of what this site publishes. NOT part
                        of the site's request — the site cannot ask for this and is
-                       never told the answer — so it is worded and separated as the
-                       user's own choice, and starts off. Shown only while AI is on. -->
+                       never told the answer — which is why it sits under its own
+                       header rather than in the block above. The row is the one the
+                       Data pane's detail view uses, so the same grant looks the same
+                       wherever the user meets it. Shown only while AI is on. -->
                   <div class="vault-req-agent-block hidden" id="vault-request-agent-block">
-                    <div class="vault-req-intro">
-                      Separately from this site's request, you can let
-                      <span class="vault-req-agent-name"
-                        >Freedom Agent<svg
-                          class="vault-agent-glyph"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="1.8"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          aria-hidden="true"
-                        >
-                          <path d="m12 3 1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2L12 3Z" />
-                          <path d="m18.5 13 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" />
-                          <path d="m5.5 13 .7 2.3 2.3.7-2.3.7L5.5 19l-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" />
-                        </svg></span
-                      >
-                      read what this site marks
-                      <span class="vault-req-inline-path">/shared</span>. Never the rest
-                      of its data, and never to write. You can change this at any time in
-                      the Data pane.
+                    <div class="sidebar-section-header">
+                      <span class="sidebar-section-title">Agent permissions</span>
                     </div>
-                    <ul class="vault-request-fields">
-                      <li class="vault-req-read">
-                        <span class="vault-req-ns vault-req-agent-label">
-                          Let Freedom Agent read this site's published data
-                        </span>
-                        <input
-                          type="checkbox"
-                          class="vault-req-box"
-                          id="vault-request-agent-box"
-                        />
-                      </li>
-                    </ul>
+                    <div class="vault-perm-list">
+                      <div class="vault-perm in">
+                        <span class="vault-perm-ns vault-perm-name"
+                          >Freedom Agent<svg
+                            class="vault-agent-glyph"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            aria-hidden="true"
+                          >
+                            <path d="m12 3 1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2L12 3Z" />
+                            <path d="m18.5 13 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" />
+                            <path d="m5.5 13 .7 2.3 2.3.7-2.3.7L5.5 19l-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" />
+                          </svg></span
+                        >
+                        <label class="vault-perm-tog">
+                          <span>read</span>
+                          <input
+                            type="checkbox"
+                            class="vault-perm-box"
+                            id="vault-request-agent-box"
+                          />
+                        </label>
+                      </div>
+                    </div>
                   </div>
 
                   <div class="dapp-connect-actions">

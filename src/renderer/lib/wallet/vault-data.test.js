@@ -713,7 +713,7 @@ describe('consent sheet: the /shared note', () => {
     expect(html).toContain(open);
     const block = html.slice(html.indexOf(open), html.indexOf('vault-req-foreign-block'));
     expect(block.replace(/\s+/g, ' ')).toContain(
-      'This site writes data marked <span class="vault-req-inline-path">/shared</span> into its partition. Other sites can read this data if you give them permission.',
+      'This site writes data marked <span class="vault-req-inline-path">/shared</span> into its partition. Data marked <span class="vault-req-inline-path">/shared</span> can be read by Freedom Agent and/or other sites if you grant them permission.',
     );
     // Blue and the info glyph: this says what the access means, not what it
     // risks (docs/agent-playbooks/ui-consistency.md).
@@ -1934,6 +1934,27 @@ describe('consent sheet: Freedom Agent’s read is offered, not requested', () =
       'consent-1',
       expect.objectContaining({ grantAgentRead: false })
     );
+  });
+
+  test('it is the detail view’s own row, under its own header', () => {
+    const html = require('fs').readFileSync(
+      require('path').join(__dirname, '..', '..', 'index.html'),
+      'utf8'
+    );
+    const open = html.indexOf('id="vault-request-agent-block"');
+    const block = html.slice(open, html.indexOf('dapp-connect-actions', open)).replace(/\s+/g, ' ');
+
+    // Its own heading, so the sheet never implies the SITE asked for this.
+    expect(block).toContain('<span class="sidebar-section-title">Agent permissions</span>');
+    // The same classes the Data pane's reader row is built from: one grant,
+    // one look, in the place it is offered and the place it is managed.
+    expect(block).toContain('class="vault-perm in"');
+    expect(block).toContain('class="vault-perm-ns vault-perm-name"');
+    expect(block).toContain('class="vault-perm-tog"');
+    expect(block).toContain('class="vault-perm-box"');
+    expect(block).toContain('vault-agent-glyph');
+    // Below the site's own request block, not inside it.
+    expect(open).toBeGreaterThan(html.indexOf('id="vault-request-foreign-block"'));
   });
 });
 

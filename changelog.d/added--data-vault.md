@@ -2,9 +2,9 @@
   - A site asks for a partition; you approve it once, and its data is sealed under a key derived from the wallet you already have
   - The **Data** pane lists every site holding data, what it stores and how much, and deletes one site's data or all of it
   - `freedom://dapps` lists the sites holding data in your vault and opens them
-  - A site can publish part of its data under `/shared` and ask to read what another site published there — one approved pair at a time, and the consent sheet says on the writing site's own prompt that other sites can ask for it
+  - A site can publish part of its data under `/shared` and ask to read what another site published there — one approved pair at a time, and the consent sheet says on the writing site's own prompt that Freedom Agent and other sites can ask for it
   - A granted read can be switched off and back on from either site's page in the **Data** pane, without deleting anything
   - A locked vault shows an unlock prompt and nothing else: the list of sites you hold data for is as private as the data
   - An empty vault offers **Import vault** in place of Export, so a restore is reachable right after setup or a Clear all
   - Freedom Agent can be allowed to read what one site published under `/shared`, per site, from that site's page in the **Data** pane — never the rest of a partition, never to write, and switched off the same way any other read is
-  - The connection sheet offers that read too, separately from what the site asked for and unticked, so the choice is there when you first decide what a site's partition is for
+  - The connection sheet offers that read too, under its own **Agent permissions** heading and unticked, so the choice is there when you first decide what a site's partition is for — and it is the same row, with the same controls, that the **Data** pane manages it with
