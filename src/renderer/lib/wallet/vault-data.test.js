@@ -129,6 +129,10 @@ class FakeElement {
     if (name === 'src') this.src = String(value);
   }
 
+  getAttribute(name) {
+    return this.attributes && name in this.attributes ? this.attributes[name] : null;
+  }
+
   removeAttribute(name) {
     if (this.attributes) delete this.attributes[name];
     if (name === 'src') this.src = '';
@@ -273,6 +277,10 @@ const ELEMENT_IDS = [
   'vault-request-foreign-block',
   'vault-request-agent-block',
   'vault-request-agent-box',
+  'vault-request-agent-info',
+  'vault-request-agent-blurb',
+  'vault-request-foreign-info',
+  'vault-request-foreign-blurb',
   'vault-detail-perms-header',
   'vault-detail-reads',
   'vault-detail-reads-group',
@@ -462,7 +470,7 @@ const owner = (extra = {}) => ({
 const ownRows = () =>
   els.get('vault-request-own').children.filter((el) => el.classList.contains('vault-row'));
 const readRows = () =>
-  els.get('vault-request-fields').children.filter((el) => el.classList.contains('vault-req-read'));
+  els.get('vault-request-fields').children.filter((el) => el.classList.contains('vault-perm'));
 const hostOfRow = (row) => row.children[0].children[0].textContent;
 const metaOfRow = (row) => row.children[0].children[1].textContent;
 
@@ -733,16 +741,16 @@ describe('consent sheet: the read-access section', () => {
     expect(readRows()).toHaveLength(0);
   });
 
-  test('is a list: one li per owner, with no box and no marker drawn', () => {
+  test('is the Data pane’s own row, so the sheet reads as one system', () => {
     showConsent(request({ foreignReads: [owner()] }));
 
-    expect(readRows()[0].tagName).toBe('LI');
-    expect(ruleBodyFor('.vault-req-read')).not.toMatch(/border/);
-    // A list element, but nothing marks it: no bullet from the list itself and
-    // none drawn in by a pseudo-element either.
-    expect(ruleBodyFor('.vault-request-fields')).toMatch(/list-style:\s*none/);
-    expect(ruleBodyFor('.vault-req-read::before')).toBe(null);
-    expect(ruleBodyFor('.vault-req-read::marker')).toBe(null);
+    // The same row the detail view manages this grant with. It used to be a
+    // lighter row of this sheet's own, which made the site's request and the
+    // Agent's offer below it look like two different kinds of thing.
+    const row = readRows()[0];
+    expect(row.className).toBe('vault-perm out');
+    expect(row.children[0].className).toBe('vault-perm-ns');
+    expect(row.querySelectorAll('input[type=checkbox]')[0].className).toBe('vault-perm-box');
   });
 
   test('names /shared in code, in the same green as a writable field', () => {
@@ -751,11 +759,19 @@ describe('consent sheet: the read-access section', () => {
     expect(ruleBodyFor('.vault-req-inline-path')).toMatch(/color:\s*var\(--secure-fg\)/);
   });
 
-  test('names the permission in code, but not in green', () => {
-    // `read` is a permission, not a place in the document; green is for the
-    // latter, so the sentence keeps its own colour here.
-    expect(ruleBodyFor('.vault-req-inline-code')).toMatch(/font-family:\s*ui-monospace/);
-    expect(ruleBodyFor('.vault-req-inline-code')).not.toMatch(/color/);
+  test('is headed, with the explanation behind the heading’s (i)', () => {
+    showConsent(request({ foreignReads: [owner()] }));
+
+    const html = require('fs').readFileSync(
+      require('path').join(__dirname, '..', '..', 'index.html'),
+      'utf8'
+    );
+    const start = html.indexOf('id="vault-request-foreign-block"');
+    const chunk = html.slice(start, html.indexOf('id="vault-request-agent-block"'));
+    expect(chunk).toContain('<span class="sidebar-section-title">Requested permissions</span>');
+    // The sentence that used to sit above the rows is now opened by the (i).
+    expect(chunk).toContain('id="vault-request-foreign-blurb"');
+    expect(chunk.replace(/\s+/g, ' ')).toContain('You can revoke permission at any time.');
   });
 
   test('shows each namespace as code, sorted, with one checkbox', () => {
@@ -772,11 +788,14 @@ describe('consent sheet: the read-access section', () => {
     const rows = readRows();
     // The namespace, not the URL: this names the partition being read.
     expect(rows.map((r) => r.children[0].textContent)).toEqual(['web:a.example', 'web:z.example']);
-    expect(rows.map((r) => r.children[0].className)).toEqual(['vault-req-ns', 'vault-req-ns']);
+    expect(rows.map((r) => r.children[0].className)).toEqual(['vault-perm-ns', 'vault-perm-ns']);
     for (const row of rows) {
       const boxes = row.querySelectorAll('input[type=checkbox]');
       expect(boxes).toHaveLength(1);
-      expect(boxes[0].className).toBe('vault-req-box');
+      expect(boxes[0].className).toBe('vault-perm-box');
+      // Ticked: this IS what the site asked for, and unticking is how the user
+      // narrows it. The Agent's row below starts unticked for the opposite
+      // reason — nobody asked for that one.
       expect(boxes[0].checked).toBe(true);
     }
   });
@@ -845,7 +864,8 @@ describe('consent sheet: what gets sent back', () => {
         foreignReads: [owner(), owner({ namespace: 'web:second.example' })],
       }),
     );
-    readRows()[0].children[1].checked = false;
+    // The box lives inside the row's toggle label, as it does in the Data pane.
+    readRows()[0].querySelectorAll('input[type=checkbox]')[0].checked = false;
     els.get('vault-request-allow').onclick();
 
     expect(decision().grantedForeignReads.map((e) => e.namespace)).toEqual(['web:second.example']);
@@ -901,18 +921,21 @@ describe('consent sheet: the layout rules that keep regressing', () => {
   });
 
   test('a read-access row cannot be text-selected', () => {
-    // It shows an identifier, not prose to lift out.
-    expect(ruleFor('.vault-req-read')).toMatch(/user-select:\s*none/);
+    // It shows an identifier, not prose to lift out — and a drag across a
+    // modal full of checkboxes should not start selecting one. Scoped to the
+    // sheet now that the row is shared with the detail view, whose own rows
+    // stay selectable.
+    expect(ruleFor('#vault-request-view .vault-perm')).toMatch(/user-select:\s*none/);
   });
 
   test('its checkbox is pushed to the right edge', () => {
     // The namespace takes the slack, so the box lands hard right.
-    expect(ruleFor('.vault-req-ns')).toMatch(/flex:\s*1/);
-    expect(ruleFor('.vault-req-box')).toMatch(/flex:\s*0 0 auto/);
+    expect(ruleFor('.vault-perm-ns')).toMatch(/flex:\s*1/);
+    expect(ruleFor('.vault-perm-tog')).toMatch(/flex:\s*0 0 auto/);
   });
 
   test('the namespace reads as code', () => {
-    expect(ruleFor('.vault-req-ns')).toMatch(/font-family:\s*ui-monospace/);
+    expect(ruleFor('.vault-perm-ns')).toMatch(/font-family:\s*ui-monospace/);
   });
 
   test('the read-access section leaves a gap above the buttons', () => {
@@ -1990,5 +2013,51 @@ describe('the Agent’s mark', () => {
     expect(glyphs).toEqual([1, 0]);
     // The name still reads as the name with the icon inside it.
     expect(rows[0].children[0].textContent).toBe('Freedom Agent');
+  });
+});
+
+
+describe('the (i) beside each heading', () => {
+  beforeEach(setupDom);
+
+  test.each([
+    ['vault-request-foreign-info', 'vault-request-foreign-blurb'],
+    ['vault-request-agent-info', 'vault-request-agent-blurb'],
+  ])('%s opens and closes its note, and says which it is', (buttonId, blurbId) => {
+    showConsent(request({ agentAvailable: true, foreignReads: [owner()] }));
+    const button = els.get(buttonId);
+    const blurb = els.get(blurbId);
+    // Closed to begin with, which the markup does and these fakes do not carry
+    // on their own — the markup assertion below is what pins it.
+    blurb.classList.add('hidden');
+
+    button.fire('click');
+    expect(blurb.classList.contains('hidden')).toBe(false);
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+
+    button.fire('click');
+    expect(blurb.classList.contains('hidden')).toBe(true);
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('it is a button, so a keyboard reaches the explanation', () => {
+    const html = require('fs').readFileSync(
+      require('path').join(__dirname, '..', '..', 'index.html'),
+      'utf8'
+    );
+    for (const id of ['vault-request-foreign-info', 'vault-request-agent-info']) {
+      const tag = html.slice(html.indexOf(`id="${id}"`) - 200, html.indexOf(`id="${id}"`) + 200);
+      expect(tag).toContain('<button');
+      expect(tag).toContain('aria-controls=');
+      expect(tag).toContain('aria-label=');
+      expect(tag).toContain('aria-expanded="false"');
+    }
+    // Both notes ship closed.
+    for (const id of ['vault-request-foreign-blurb', 'vault-request-agent-blurb']) {
+      expect(html).toContain(`class="vault-blurb hidden" id="${id}"`);
+    }
+    // A hover tooltip would be neither keyboard-reachable nor still there
+    // while it is read, which on a consent sheet is the whole point.
+    expect(ruleBodyFor('.vault-blurb-btn:focus-visible')).toMatch(/outline/);
   });
 });

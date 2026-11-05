@@ -4864,15 +4864,33 @@
 
                   <!-- Only when the site asked to read another partition. Without
                        one there is nothing to head, and an empty section above the
-                       buttons is noise. -->
+                       buttons is noise. Same header, row and blurb affordance as the
+                       Agent section below it, so the sheet reads as one system. -->
                   <div class="vault-req-foreign-block hidden" id="vault-request-foreign-block">
-                    <div class="vault-req-intro">
-                      This site is requesting
-                      <span class="vault-req-inline-code">read</span> permissions for data
-                      marked <span class="vault-req-inline-path">/shared</span> from the
-                      following sites:
+                    <div class="sidebar-section-header">
+                      <span class="sidebar-section-title">Requested permissions</span>
+                      <button
+                        type="button"
+                        class="vault-blurb-btn"
+                        id="vault-request-foreign-info"
+                        aria-expanded="false"
+                        aria-controls="vault-request-foreign-blurb"
+                        aria-label="About requested permissions"
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                          <circle cx="12" cy="12" r="10" />
+                          <line x1="12" y1="16" x2="12" y2="12" />
+                          <line x1="12" y1="8" x2="12.01" y2="8" />
+                        </svg>
+                      </button>
                     </div>
-                    <ul id="vault-request-fields" class="vault-request-fields"></ul>
+                    <div class="vault-blurb hidden" id="vault-request-foreign-blurb">
+                      This site is requesting read permissions for data marked
+                      <span class="vault-req-inline-path">/shared</span> from the sites
+                      listed below. Leave the boxes checked to grant permission. You can
+                      revoke permission at any time.
+                    </div>
+                    <div id="vault-request-fields" class="vault-perm-list"></div>
                   </div>
 
                   <!-- Freedom Agent's read of what this site publishes. NOT part
@@ -4884,6 +4902,25 @@
                   <div class="vault-req-agent-block hidden" id="vault-request-agent-block">
                     <div class="sidebar-section-header">
                       <span class="sidebar-section-title">Agent permissions</span>
+                      <button
+                        type="button"
+                        class="vault-blurb-btn"
+                        id="vault-request-agent-info"
+                        aria-expanded="false"
+                        aria-controls="vault-request-agent-blurb"
+                        aria-label="About Agent permissions"
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                          <circle cx="12" cy="12" r="10" />
+                          <line x1="12" y1="16" x2="12" y2="12" />
+                          <line x1="12" y1="8" x2="12.01" y2="8" />
+                        </svg>
+                      </button>
+                    </div>
+                    <div class="vault-blurb hidden" id="vault-request-agent-blurb">
+                      Check the box if you want to grant Freedom Agent permission to read
+                      from this site's <span class="vault-req-inline-path">/shared</span>
+                      data. You can revoke permission at any time.
                     </div>
                     <div class="vault-perm-list">
                       <div class="vault-perm in">

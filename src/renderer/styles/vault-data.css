@@ -119,48 +119,57 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--secure-fg);
 }
-/* A permission named inside a sentence: the same code font, but the sentence's
-   own colour — green is reserved for a place in the document, and `read` is
-   not one. Kept as its own rule rather than grouped with the selector above so
-   each reads on its own. */
-.vault-req-inline-code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-/* A read-access row: the owner's namespace as code and one checkbox beside it.
-   No outline and no marker — `list-style: none` and nothing drawing one — so
-   the rows read as the lines they are. Flex is what keeps the box hard right
-   while a long namespace wraps. Not selectable: it is an identifier being
-   shown, not text to lift out. */
-.vault-request-fields {
-  list-style: none;
-  margin: 0;
-  padding: 0 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.vault-req-read {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  line-height: 1.5;
-  user-select: none;
-}
-.vault-req-ns {
-  flex: 1;
-  min-width: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: var(--text);
-  word-break: break-all;
-}
-.vault-req-box { accent-color: var(--accent); flex: 0 0 auto; margin-top: 2px; }
-
 /* Only present when the site asked to read another partition. The bottom gap is
-   the same the permissions card used to give, so the actions are not crowded. */
+   the same the permissions card used to give, so the actions are not crowded.
+   Its rows are `.vault-perm`, the detail view's — this sheet used to draw a
+   lighter row of its own, which made the site's request and the Agent's offer
+   read as two different kinds of thing on one sheet. */
 .vault-req-foreign-block { margin: 20px 0 24px; }
 .vault-req-foreign-block.hidden { display: none; }
+
+/* The sheet's rows carry the Data pane's look but not its text behaviour: a
+   drag across a modal full of checkboxes should not start selecting an
+   identifier nobody is trying to copy. Scoped to the sheet, so the detail
+   view's own rows stay selectable. */
+#vault-request-view .vault-perm { user-select: none; }
+
+/* The (i) beside a section heading, and the sentence it opens.
+
+   A button, not a hover target: on a consent sheet an explanation of what a box
+   grants has to be reachable by keyboard and has to stay put while it is read.
+   It sits hard right of the heading on the header's own flex row. */
+.vault-blurb-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.vault-blurb-btn svg { width: 14px; height: 14px; }
+.vault-blurb-btn:hover,
+.vault-blurb-btn[aria-expanded='true'] { color: var(--accent); }
+.vault-blurb-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The note itself: the same blue the sheet's `/shared` callout uses, since both
+   say what an access MEANS rather than warning about it. No glyph of its own —
+   the button above it is the glyph. */
+.vault-blurb {
+  margin: -4px 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  /* theme-literal: the informational blue `.dapp-sign-warning` uses, not a surface */
+  background: rgba(59, 130, 246, 0.1);
+  /* theme-literal: the same blue at the border alpha that callout uses */
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.vault-blurb.hidden { display: none; }
 
 /* Freedom Agent's read, offered on the consent sheet under its own header:
    the site cannot ask for this, so it is not one of the rows above it. The row

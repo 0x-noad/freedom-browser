@@ -102,6 +102,26 @@ export function initVaultData(opts = {}) {
   // Freedom Agent's read, offered on the sheet rather than asked for by the site.
   const reqAgentBlock = document.getElementById('vault-request-agent-block');
   const reqAgentBox = document.getElementById('vault-request-agent-box');
+
+  /**
+   * The (i) beside a section heading, and the note it opens.
+   *
+   * A click rather than a hover: this is a consent sheet, so an explanation of
+   * what a box grants has to be reachable by keyboard and has to stay on screen
+   * while it is read. Closed to begin with — the rows are the decision, and the
+   * sentence is there for whoever wants it.
+   */
+  function bindBlurb(buttonId, blurbId) {
+    const button = document.getElementById(buttonId);
+    const blurb = document.getElementById(blurbId);
+    if (!button || !blurb) return;
+    button.addEventListener('click', () => {
+      const open = blurb.classList.toggle('hidden');
+      button.setAttribute('aria-expanded', String(!open));
+    });
+  }
+  bindBlurb('vault-request-foreign-info', 'vault-request-foreign-blurb');
+  bindBlurb('vault-request-agent-info', 'vault-request-agent-blurb');
   // Cross-origin read grants on a partition's detail view, both directions.
   const permsHeader = document.getElementById('vault-detail-perms-header');
   const detailReads = document.getElementById('vault-detail-reads');
@@ -763,22 +783,12 @@ export function initVaultData(opts = {}) {
    * the engine, so there is nothing to choose between.
    */
   function readAccessRow(namespace) {
-    const row = document.createElement('li');
-    row.className = 'vault-req-read';
-
-    const ns = document.createElement('span');
-    ns.className = 'vault-req-ns';
-    ns.textContent = namespace;
-    ns.title = namespace;
-    row.appendChild(ns);
-
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.className = 'vault-req-box';
-    cb.dataset.namespace = namespace;
-    cb.checked = true;
-    row.appendChild(cb);
-    return row;
+    // The Data pane's own row, which is where this grant is managed once it
+    // exists. Ticked, because this IS what the site asked for and unticking is
+    // how the user narrows it — the opposite of the Agent's row below, which
+    // nobody asked for. `out`: from this partition's side the read goes out.
+    // The toggle is a no-op; the boxes are read together when Allow is clicked.
+    return permissionItem(namespace, true, 'out', () => {});
   }
 
   function showRequest(req) {
