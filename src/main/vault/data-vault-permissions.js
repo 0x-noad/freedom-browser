@@ -9,8 +9,14 @@
  *
  * NOTE the deliberate naming split: the browser already has an "identity vault"
  * (the mnemonic store). This is the "DATA vault" — site storage — so nothing here
- * touches wallet keys. Keys are the VAULT namespace (from deriveOriginNamespace),
- * which is transport-stable for ENS names via the browser's getPermissionKey.
+ * touches wallet keys. Keys are the VAULT namespace from deriveOriginNamespace —
+ * `web:<scheme>://<authority>` — which deliberately does NOT fold a dweb name's
+ * transport the way the browser's `getPermissionKey` does: `bzz://name.eth` and
+ * `ipfs://name.eth` are two partitions. That is a security property, not an
+ * oversight, and folding them would let a hijacked resolution path reach data
+ * written over an honest one. See `originForNamespace` in data-vault-manager.js
+ * for the full reasoning, and the dweb section of docs/vault-for-site-authors.md
+ * for what it means to a site.
  *
  * ENCRYPTED AT REST via Electron `safeStorage` (Keychain / DPAPI / libsecret).
  *
